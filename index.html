@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hexfire - Tower Defense</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="game-container">
+        <!-- Main Canvas Area -->
+        <div class="canvas-container">
+            <canvas id="gameCanvas"></canvas>
+        </div>
+
+        <!-- Side Panel -->
+        <div class="side-panel">
+            <!-- Stats Panel -->
+            <div class="stats-panel">
+                <h2>HEXFIRE</h2>
+                <div class="stat-row">
+                    <span class="stat-label">Wave</span>
+                    <span class="stat-value" id="waveNumber">1</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Time</span>
+                    <span class="stat-value" id="waveTimer">2:00</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Level</span>
+                    <span class="stat-value" id="playerLevel">1</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">XP</span>
+                    <span class="stat-value" id="playerXP">0 / 100</span>
+                </div>
+                <div class="xp-bar">
+                    <div class="xp-progress" id="xpProgress"></div>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Currency</span>
+                    <span class="stat-value" id="playerCurrency" style="color: #FFD700;">0</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">🪙 Tokens</span>
+                    <span class="stat-value" id="upgradeTokens" style="color: #4CAF50;">0</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Fires</span>
+                    <span class="stat-value fire-count" id="fireCount">0</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Home Base</span>
+                    <span class="stat-value home-status" id="homeStatus">Safe</span>
+                </div>
+            </div>
+
+            <!-- Tabs -->
+            <div class="tabs">
+                <button class="tab-button active" data-tab="shop">
+                    Shop
+                    <span class="tab-badge" id="shopBadge" style="display: none;">0</span>
+                </button>
+                <button class="tab-button" data-tab="inventory">
+                    Inventory
+                    <span class="tab-badge" id="inventoryBadge" style="display: none;">0</span>
+                </button>
+            </div>
+
+            <!-- Shop Tab -->
+            <div class="tab-content active" id="shopTab">
+                <div class="inventory-grid" id="shopGrid">
+                    <!-- Shop items will be dynamically added here -->
+                </div>
+            </div>
+
+            <!-- Inventory Tab -->
+            <div class="tab-content" id="inventoryTab">
+                <div class="inventory-grid" id="inventoryGrid">
+                    <!-- Purchased towers will be dynamically added here -->
+                </div>
+            </div>
+
+            <!-- Control Buttons -->
+            <div class="controls">
+                <button id="pauseBtn" class="control-btn">Pause</button>
+                <button id="saveBtn" class="control-btn" disabled>Save Game</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Overlay for Level Up -->
+    <div id="modalOverlay" class="modal-overlay">
+        <div class="modal">
+            <h2>Level Up!</h2>
+            <p class="modal-subtitle">Choose your reward:</p>
+            <div class="modal-choices" id="modalChoices">
+                <!-- Choices will be dynamically added -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Game Over Modal -->
+    <div id="gameOverModal" class="modal-overlay">
+        <div class="modal">
+            <h2>Game Over</h2>
+            <p class="modal-subtitle">Fire reached your home base!</p>
+            <div class="game-over-stats" id="gameOverStats">
+                <!-- Stats will be added dynamically -->
+            </div>
+            <div class="modal-choices">
+                <button class="choice-btn" id="restartBtn">Restart</button>
+                <button class="choice-btn" id="loadGameBtn">Load Game</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Wave Complete Modal -->
+    <div id="waveCompleteModal" class="modal-overlay">
+        <div class="modal">
+            <h2>Wave Complete!</h2>
+            <div class="wave-stats" id="waveStats">
+                <!-- Stats will be added dynamically -->
+            </div>
+            <button class="choice-btn" id="continueBtn">Continue</button>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script type="module" src="src/main.js"></script>
+</body>
+</html>
+
