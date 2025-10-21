@@ -4,12 +4,12 @@
 
 ### SSH into your web server
 ```bash
-ssh your-username@your-domain.com
+ssh brianmcc@brianmcculloh.com
 ```
 
 ### Navigate to your web directory
 ```bash
-cd /path/to/your/website/public_html
+cd /public_html/spewnicorn.com
 # or wherever your web files are served from
 ```
 
@@ -83,7 +83,7 @@ Create `hexfire/update.sh`:
 ```bash
 #!/bin/bash
 echo "🔄 Updating HexFire..."
-cd /path/to/your/website/public_html/hexfire
+cd /public_html/spewnicorn.com/hexfire
 git pull origin main
 echo "✅ HexFire updated!"
 ```
@@ -99,7 +99,7 @@ chmod +x hexfire/update.sh
 crontab -e
 
 # Add this line to update every hour (adjust as needed)
-0 * * * * /path/to/your/website/public_html/hexfire/update.sh
+0 * * * * /public_html/spewnicorn.com/hexfire/update.sh
 ```
 
 ## Step 4: Test Your Setup
@@ -107,10 +107,10 @@ crontab -e
 ### Check if files are accessible
 ```bash
 # Test from server
-curl -I http://your-domain.com/hexfire/
+curl -I http://spewnicorn.com/hexfire/
 
 # Test from local machine
-curl -I http://your-domain.com/hexfire/index.html
+curl -I http://spewnicorn.com/hexfire/index.html
 ```
 
 ### Verify ES6 modules work
@@ -160,4 +160,4 @@ find hexfire/ -type f -name "*.css" -exec chmod 644 {} \;
 
 ## Your Game URL
 Once set up, your game will be available at:
-**http://your-domain.com/hexfire/**
+**http://spewnicorn.com/hexfire/**

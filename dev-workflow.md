@@ -17,10 +17,10 @@ git push
 ### Then update your live server:
 ```bash
 # SSH into your server
-ssh your-username@your-domain.com
+ssh brianmcc@brianmcculloh.com
 
 # Navigate to hexfire directory
-cd /path/to/your/website/public_html/hexfire
+cd /public_html/spewnicorn.com/hexfire
 
 # Run the update script
 ./update.sh

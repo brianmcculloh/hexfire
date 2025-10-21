@@ -7,9 +7,9 @@ echo "=============================="
 
 # Configuration - UPDATE THESE PATHS
 LOCAL_PATH="/Users/brianmcculloh/Documents/Websites/Method/Brian McCulloh/spewnicorn/hexfire"
-SERVER_USER="your-username"
-SERVER_HOST="your-domain.com"
-SERVER_PATH="/path/to/your/website"
+SERVER_USER="brianmcc"
+SERVER_HOST="brianmcculloh.com"
+SERVER_PATH="/public_html/spewnicorn.com"
 
 echo "📁 Local path: $LOCAL_PATH"
 echo "🌐 Server: $SERVER_USER@$SERVER_HOST:$SERVER_PATH"
