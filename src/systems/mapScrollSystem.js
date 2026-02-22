@@ -48,8 +48,8 @@ export class MapScrollSystem {
     const mapWidth = mapSize * Math.sqrt(3) * hexRadius;
     const mapHeight = mapSize * 1.5 * hexRadius;
     
-    // Set boundaries with extra 80px padding to show full outer ring + border (40px + 40px)
-    const padding = 80;
+    // Set boundaries with 400px padding to allow scrolling well beyond the map edges
+    const padding = 300;
     this.mapBounds = {
       minX: -mapWidth / 2 - padding,
       maxX: mapWidth / 2 + padding,
@@ -131,8 +131,9 @@ export class MapScrollSystem {
     const newOffsetY = this.renderer.offsetY - scrollAmountY;
     
     // Apply boundary checking (same logic as applyScroll method)
-    const canvasWidth = this.canvas.width;
-    const canvasHeight = this.canvas.height;
+    // Use CSS dimensions, not DPR-scaled backing buffer dimensions
+    const canvasWidth = this.renderer.canvasCssWidth || this.canvas.width;
+    const canvasHeight = this.renderer.canvasCssHeight || this.canvas.height;
     const visibleLeft = -newOffsetX;
     const visibleRight = canvasWidth - newOffsetX;
     const visibleTop = -newOffsetY;
@@ -178,6 +179,11 @@ export class MapScrollSystem {
    */
   calculateScrollVelocity() {
     this.targetScrollVelocity = { x: 0, y: 0 };
+    
+    // Check if edge scrolling is enabled
+    if (!CONFIG.ENABLE_EDGE_SCROLLING) {
+      return;
+    }
     
     // Only stop scrolling if mouse is over blocking UI elements
     if (this.mouseOverUI) {

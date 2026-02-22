@@ -497,6 +497,22 @@ export function getSpreadTowerSprayEndpoints(q, r, direction, range) {
   // Get main direction angle
   const mainAngle = getDirectionAngle(direction);
   
+  // Find the last valid hex along the main direction that's within map bounds
+  // This ensures the center beam stops at the map edge, just like jet towers
+  let lastValidHex = { q, r };
+  for (let i = 1; i <= range; i++) {
+    const testHex = getHexInDirection(q, r, direction, i);
+    if (isInBounds(testHex.q, testHex.r)) {
+      lastValidHex = testHex;
+    } else {
+      break; // Stop at first out-of-bounds hex
+    }
+  }
+  
+  const { x: startX, y: startY } = axialToPixel(q, r);
+  const { x: mainEndX, y: mainEndY } = axialToPixel(lastValidHex.q, lastValidHex.r);
+  const mainDistance = Math.sqrt((mainEndX - startX) ** 2 + (mainEndY - startY) ** 2);
+  
   // Calculate all spray angles: main + 4 flanking (±15° and ±30°)
   const leftAngle30 = mainAngle - (30 * Math.PI / 180);  // -30° from main
   const rightAngle30 = mainAngle + (30 * Math.PI / 180); // +30° from main
@@ -505,21 +521,13 @@ export function getSpreadTowerSprayEndpoints(q, r, direction, range) {
   
   // For each angle, calculate the spray endpoint
   [mainAngle, leftAngle15, rightAngle15, leftAngle30, rightAngle30].forEach((angle, index) => {
-    const { x: startX, y: startY } = axialToPixel(q, r);
-    
     if (index === 0) {
-      // Main jet: endpoint is at the furthest hex (100%)
-      const furthestHex = getHexInDirection(q, r, direction, range);
-      const { x: endX, y: endY } = axialToPixel(furthestHex.q, furthestHex.r);
-      endpoints.push({ x: endX, y: endY, isBorder: false });
+      // Main jet: endpoint is at the last valid hex (stops at map edge)
+      const maxRangeHex = getHexInDirection(q, r, direction, range);
+      const isAtBorder = !isInBounds(maxRangeHex.q, maxRangeHex.r);
+      endpoints.push({ x: mainEndX, y: mainEndY, isBorder: isAtBorder });
     } else {
       // Offset jets with different lengths based on angle
-      const furthestHex = getHexInDirection(q, r, direction, range);
-      const { x: endX, y: endY } = axialToPixel(furthestHex.q, furthestHex.r);
-      
-      // Calculate the distance the main jet travels
-      const mainDistance = Math.sqrt((endX - startX) ** 2 + (endY - startY) ** 2);
-      
       let offsetDistance;
       if (index === 1 || index === 2) {
         // ±15° jets: 85% + 5% = 89.25% of main distance
@@ -529,9 +537,33 @@ export function getSpreadTowerSprayEndpoints(q, r, direction, range) {
         offsetDistance = mainDistance * 0.85;
       }
       
+      // Calculate offset endpoint
       const offsetEndX = startX + Math.cos(angle) * offsetDistance;
       const offsetEndY = startY + Math.sin(angle) * offsetDistance;
+      
+      // Check if offset endpoint is within bounds by converting back to hex coordinates
+      const offsetHex = pixelToAxial(offsetEndX, offsetEndY);
+      const isOffsetInBounds = isInBounds(offsetHex.q, offsetHex.r);
+      
+      // If out of bounds, find the last valid point along this angle
+      if (!isOffsetInBounds) {
+        // Find last valid hex along this angle by testing points at decreasing distances
+        let lastValidOffsetX = startX;
+        let lastValidOffsetY = startY;
+        for (let testDist = offsetDistance; testDist > 0; testDist -= CONFIG.HEX_RADIUS * 0.5) {
+          const testX = startX + Math.cos(angle) * testDist;
+          const testY = startY + Math.sin(angle) * testDist;
+          const testHex = pixelToAxial(testX, testY);
+          if (isInBounds(testHex.q, testHex.r)) {
+            lastValidOffsetX = testX;
+            lastValidOffsetY = testY;
+            break;
+          }
+        }
+        endpoints.push({ x: lastValidOffsetX, y: lastValidOffsetY, isBorder: true });
+      } else {
       endpoints.push({ x: offsetEndX, y: offsetEndY, isBorder: false });
+      }
     }
   });
   

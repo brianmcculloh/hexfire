@@ -4,6 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Hexfire - Tower Defense</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/png" href="assets/images/ui/hexfire-logo.png">
+    <link rel="preload" href="assets/images/ui/cursor-drag.png" as="image">
+    <link rel="preload" href="assets/images/ui/cursor-default.png" as="image">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -11,118 +17,645 @@
         <!-- Main Canvas Area -->
         <div class="canvas-container">
             <canvas id="gameCanvas"></canvas>
+            
+            <!-- Control Buttons -->
+            <div class="controls">
+                <button id="pauseBtn" class="control-btn cta-button cta-red" aria-label="Pause"><img src="assets/images/ui/pause.png" alt="Pause" class="control-btn-icon" /> Pause</button>
+            </div>
+            
+            <!-- Top Left Overlay Panel (Combined Wave and Currency) -->
+            <div class="overlay-panel overlay-top-left">
+                <div class="overlay-content">
+                    <div class="overlay-row overlay-row-right">
+                        <label class="label label-white" id="overlayWaveGroupCombined">
+                            <span class="label-middle-bg"></span>
+                            <span class="label-text">Wave 1-1</span>
+                        </label>
+                    </div>
+                    <div class="overlay-timer" id="overlayWaveTimer">2:00</div>
+                    <div class="overlay-progress-bar-container overlay-level-xp-row">
+                        <div class="overlay-level-hex-wrap">
+                            <img src="assets/images/misc/level.png" class="overlay-level-hex" alt="" />
+                            <span class="overlay-level-value" id="overlayPlayerLevel">1</span>
+                        </div>
+                        <div class="overlay-progress-bar">
+                            <div class="overlay-progress-fill overlay-xp-fill" id="overlayXpProgress"></div>
+                            <span class="overlay-progress-text" id="overlayPlayerXP">0 / 100</span>
+                        </div>
+                    </div>
+                    <div class="overlay-progress-bar-container overlay-hp-container">
+                        <span class="overlay-progress-label"><img src="assets/images/misc/hp.png" style="width: 30px; height: auto; object-fit: contain; image-rendering: pixelated; vertical-align: middle; margin-right: 8px;" /></span>
+                        <div class="overlay-progress-bar">
+                            <div class="overlay-progress-fill overlay-hp-fill" id="overlayHpProgress"></div>
+                            <span class="overlay-progress-text" id="overlayTownHealth">120 / 120</span>
+                        </div>
+                    </div>
+                    <div class="overlay-row overlay-row-resource">
+                        <span class="overlay-label"><img src="assets/images/misc/total_earned.png" style="width: 30px; height: auto; object-fit: contain; image-rendering: pixelated; vertical-align: middle; margin-right: 8px;" /></span>
+                        <span class="overlay-value" id="overlayCurrency" style="color: #00FF88;">$0</span>
+                    </div>
+                    <div class="overlay-row overlay-row-resource">
+                        <span class="overlay-label"><img src="assets/images/items/upgrade_token.png" style="width: 30px; height: auto; object-fit: contain; image-rendering: pixelated; vertical-align: middle; margin-right: 8px;" /></span>
+                        <span class="overlay-value upgrade-tokens" id="overlayUpgradeTokens" style="color: #ff67e7;">0</span>
+                    </div>
+                    <div class="overlay-row overlay-row-resource">
+                        <span class="overlay-label"><img src="assets/images/items/movement_token.png" style="width: 30px; height: auto; object-fit: contain; image-rendering: pixelated; vertical-align: middle; margin-right: 8px;" /></span>
+                        <span class="overlay-value movement-tokens" id="overlayMovementTokens" style="color: #4FC3F7;">0</span>
+                    </div>
+                    <div class="overlay-row overlay-row-values-column" style="padding-right: 30px;">
+                        <span class="overlay-label">Map Fires:</span>
+                        <span class="overlay-value fire-count" id="overlayFireCount" style="color: #FFFFFF;">0</span>
+                    </div>
+                    <div class="overlay-row overlay-row-values-column" style="padding-right: 30px;">
+                        <span class="overlay-label">Map Towers:</span>
+                        <span class="overlay-value" id="overlayPlacedTowers" style="color: #FFFFFF;">0</span>
+                    </div>
+                    <div class="overlay-row overlay-row-values-column" style="padding-right: 30px;">
+                        <span class="overlay-label">Map Items:</span>
+                        <span class="overlay-value" id="overlayPlacedItems" style="color: #FFFFFF;">0</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Debug Wave Selector Panel (only visible when debug mode is on) -->
+            <div class="overlay-panel overlay-debug-selector" id="debugWaveSelectorPanel" style="display: none;">
+                <div class="overlay-content overlay-content-debug">
+                    <div class="overlay-row overlay-row-right">
+                        <label class="label label-white">
+                            <span class="label-middle-bg"></span>
+                            <span class="label-text">Debug</span>
+                        </label>
+                    </div>
+                    <div class="overlay-row debug-row-inline debug-row-nowrap">
+                        <input type="number" id="debugWaveGroupInput" min="1" max="99" value="1" class="debug-input debug-input-compact">
+                        <input type="number" id="debugWaveNumberInput" min="1" max="5" value="1" class="debug-input debug-input-compact">
+                        <button id="debugJumpToWaveBtn" class="debug-btn debug-btn-green">Go</button>
+                    </div>
+                    <div class="overlay-row debug-row-inline debug-row-level">
+                        <input type="number" id="debugPlayerLevelInput" min="1" max="99" value="1" class="debug-input debug-input-compact">
+                        <button id="debugSetPlayerLevelBtn" class="debug-btn debug-btn-yellow">LVL</button>
+                    </div>
+                    <div class="overlay-row debug-row-inline">
+                        <button id="debugPlaceAllBtn" class="debug-btn debug-btn-blue debug-btn-wrap">Place All</button>
+                        <button id="debugGameOverBtn" class="debug-btn debug-btn-red debug-btn-wrap">Game Over</button>
+                    </div>
+                    <div class="overlay-row debug-row-inline">
+                        <button id="debugPlaceBoxesBtn" class="debug-btn debug-btn-blue debug-btn-wrap">Place Boxes</button>
+                        <button id="debugPlaceItemsBtn" class="debug-btn debug-btn-green debug-btn-wrap">Place Items</button>
+                    </div>
+                    <div class="overlay-row" style="padding-right: 30px;">
+                        <span class="overlay-label">FPS</span>
+                        <span class="overlay-value" id="debugFpsCounter" style="color: #FFD700;">--</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Minimap Blur Background -->
+            <div class="minimap-blur-background"></div>
+            <!-- Minimap Canvas -->
+            <canvas id="minimapCanvas" class="minimap-canvas"></canvas>
+            
+            <!-- Bottom Edge Power-Up Indicators -->
+            <div id="bottomEdgePowerUps" class="bottom-edge-power-ups"></div>
         </div>
 
+        <!-- Side Panel Toggle Button -->
+        <button id="sidePanelToggle" class="side-panel-toggle" aria-label="Toggle sidebar">
+            <div class="toggle-icons-container">
+                <img src="assets/images/misc/total_earned.png" alt="Shop" class="toggle-icon">
+                <div class="toggle-divider"></div>
+                <img src="assets/images/misc/inventory.png" alt="Inventory" class="toggle-icon">
+            </div>
+        </button>
+        
         <!-- Side Panel -->
-        <div class="side-panel">
-            <!-- Stats Panel -->
-            <div class="stats-panel">
-                <h2>HEXFIRE</h2>
-                <div class="stat-row">
-                    <span class="stat-label">Wave</span>
-                    <span class="stat-value" id="waveNumber">1</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Time</span>
-                    <span class="stat-value" id="waveTimer">2:00</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Level</span>
-                    <span class="stat-value" id="playerLevel">1</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">XP</span>
-                    <span class="stat-value" id="playerXP">0 / 100</span>
-                </div>
-                <div class="xp-bar">
-                    <div class="xp-progress" id="xpProgress"></div>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Currency</span>
-                    <span class="stat-value" id="playerCurrency" style="color: #FFD700;">0</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">🪙 Tokens</span>
-                    <span class="stat-value" id="upgradeTokens" style="color: #4CAF50;">0</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Fires</span>
-                    <span class="stat-value fire-count" id="fireCount">0</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Home Base</span>
-                    <span class="stat-value home-status" id="homeStatus">Safe</span>
-                </div>
+        <div class="side-panel" id="sidePanel">
+            <!-- Title and Settings -->
+            <div class="title-section">
+                <h2>
+                    <img src="assets/images/ui/hexfire-logo.png" alt="Hexfire Logo" class="hexfire-logo-icon">
+                    HEXFIRE
+                </h2>
+                <button id="settingsBtn" class="settings-btn cta-button">Menu</button>
             </div>
 
             <!-- Tabs -->
             <div class="tabs">
-                <button class="tab-button active" data-tab="shop">
-                    Shop
-                    <span class="tab-badge" id="shopBadge" style="display: none;">0</span>
-                </button>
-                <button class="tab-button" data-tab="inventory">
-                    Inventory
+                <button class="tab-button cta-button cta-orange active" data-tab="inventory">
+                    <span class="tab-content-wrapper">
+                        <img src="assets/images/misc/inventory.png" alt="">
+                        Inventory
+                    </span>
                     <span class="tab-badge" id="inventoryBadge" style="display: none;">0</span>
+                </button>
+                <button class="tab-button cta-button cta-lime" data-tab="shop">
+                    <span class="tab-content-wrapper">
+                        <img src="assets/images/misc/total_earned.png" alt="">
+                        Shop
+                    </span>
+                    <span class="tab-badge" id="shopBadge" style="display: none;">0</span>
                 </button>
             </div>
 
             <!-- Shop Tab -->
-            <div class="tab-content active" id="shopTab">
-                <div class="inventory-grid" id="shopGrid">
-                    <!-- Shop items will be dynamically added here -->
+            <div class="tab-content" id="shopTab">
+                <!-- Shop Sub-tabs -->
+                <div class="shop-sub-tabs">
+                    <button class="shop-sub-tab-button cta-button cta-small cta-blue active" data-shop-sub-tab="towers">
+                        <span class="tab-content-wrapper">
+                            Towers
+                        </span>
+                        <span class="tab-badge" id="shopSubTabBadgeTowers" style="display: none;">0</span>
+                    </button>
+                    <button class="shop-sub-tab-button cta-button cta-small cta-purple" data-shop-sub-tab="items">
+                        <span class="tab-content-wrapper">
+                            Items
+                        </span>
+                        <span class="tab-badge" id="shopSubTabBadgeItems" style="display: none;">0</span>
+                    </button>
+                    <button class="shop-sub-tab-button cta-button cta-small cta-red" data-shop-sub-tab="powerups">
+                        <span class="tab-content-wrapper">
+                            Power-ups
+                        </span>
+                        <span class="tab-badge" id="shopSubTabBadgePowerups" style="display: none;">0</span>
+                    </button>
+                </div>
+                <!-- Shop Sub-tab Contents -->
+                <div class="shop-sub-tab-content active" id="shopSubTabTowers">
+                    <div class="inventory-grid" id="shopGridTowers">
+                        <!-- Tower items will be dynamically added here -->
+                    </div>
+                </div>
+                <div class="shop-sub-tab-content" id="shopSubTabItems">
+                    <div class="inventory-grid" id="shopGridItems">
+                        <!-- Item items will be dynamically added here -->
+                    </div>
+                </div>
+                <div class="shop-sub-tab-content" id="shopSubTabPowerups">
+                    <div class="inventory-grid" id="shopGridPowerups">
+                        <!-- Power-up items will be dynamically added here -->
+                    </div>
                 </div>
             </div>
 
             <!-- Inventory Tab -->
-            <div class="tab-content" id="inventoryTab">
+            <div class="tab-content active" id="inventoryTab">
                 <div class="inventory-grid" id="inventoryGrid">
                     <!-- Purchased towers will be dynamically added here -->
                 </div>
             </div>
 
-            <!-- Control Buttons -->
-            <div class="controls">
-                <button id="pauseBtn" class="control-btn">Pause</button>
-                <button id="saveBtn" class="control-btn" disabled>Save Game</button>
+            <!-- Hidden stats for backwards compatibility (kept for updateUI function) -->
+            <div style="display: none;">
+                <span id="waveNumber">1</span>
+                <span id="waveTimer">2:00</span>
+                <span id="playerLevel">1</span>
+                <span id="playerXP">0 / 100</span>
+                <div class="xp-bar"><div class="xp-progress" id="xpProgress"></div></div>
+                <span id="playerCurrency">$0</span>
+                <span id="upgradeTokens">0</span>
+                <span id="fireCount">0</span>
+                <span id="homeStatus">100%</span>
             </div>
         </div>
     </div>
 
     <!-- Modal Overlay for Level Up -->
     <div id="modalOverlay" class="modal-overlay">
-        <div class="modal">
-            <h2>Level Up!</h2>
-            <p class="modal-subtitle">Choose your reward:</p>
-            <div class="modal-choices" id="modalChoices">
-                <!-- Choices will be dynamically added -->
+        <div class="modal modal-frame-9patch">
+            <div class="modal-frame-content">
+                <h2>Level Up!</h2>
+                <div class="modal-choices" id="modalChoices">
+                    <!-- Choices will be dynamically added -->
+                </div>
             </div>
         </div>
     </div>
 
     <!-- Game Over Modal -->
-    <div id="gameOverModal" class="modal-overlay">
-        <div class="modal">
-            <h2>Game Over</h2>
-            <p class="modal-subtitle">Fire reached your home base!</p>
-            <div class="game-over-stats" id="gameOverStats">
-                <!-- Stats will be added dynamically -->
-            </div>
-            <div class="modal-choices">
-                <button class="choice-btn" id="restartBtn">Restart</button>
-                <button class="choice-btn" id="loadGameBtn">Load Game</button>
+    <div id="gameOverModal" class="modal-overlay save-load-mask">
+        <div class="modal modal-frame-9patch">
+            <div class="modal-frame-content">
+                <img src="assets/images/misc/death.png" alt="Death" class="game-over-image" style="width: 100%; max-width: 300px; height: auto; margin: 0 auto 20px; display: block; image-rendering: crisp-edges;">
+                <h2>Game Over</h2>
+                <p class="modal-subtitle">Fire destroyed the Great Tree, and all is lost... this time...</p>
+                <div class="game-over-stats" id="gameOverStats">
+                    <!-- Stats will be added dynamically -->
+                </div>
+                <div class="modal-choices">
+                    <button class="choice-btn cta-button" id="restartBtn">Restart</button>
+                    <button class="choice-btn cta-button" id="gameOverNewGameBtn" style="display: none;">New Game</button>
+                    <button class="choice-btn cta-button" id="gameOverLoadGameBtn">Load Game</button>
+                </div>
             </div>
         </div>
     </div>
 
     <!-- Wave Complete Modal -->
     <div id="waveCompleteModal" class="modal-overlay">
-        <div class="modal">
-            <h2>Wave Complete!</h2>
-            <div class="wave-stats" id="waveStats">
-                <!-- Stats will be added dynamically -->
+        <div class="modal modal-frame-9patch">
+            <div class="modal-frame-content">
+                <h2>Wave Complete!</h2>
+                <div class="wave-stats" id="waveStats">
+                    <!-- Stats will be added dynamically -->
+                </div>
+                <button class="choice-btn cta-button" id="continueBtn">Continue</button>
             </div>
-            <button class="choice-btn" id="continueBtn">Continue</button>
+        </div>
+    </div>
+
+    <!-- Reusable Confirm Modal -->
+    <div id="confirmModal" class="modal-overlay">
+        <div class="modal modal-frame-9patch">
+            <div class="modal-frame-content">
+                <h2 id="confirmTitle">Confirm</h2>
+                <p class="modal-subtitle" id="confirmMessage">Are you sure?</p>
+                <div class="modal-choices">
+                    <button class="choice-btn cta-button" id="confirmCancelBtn">Cancel</button>
+                    <button class="choice-btn cta-button cta-lime" id="confirmOkBtn">Confirm</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Rename Modal -->
+    <div id="renameModal" class="modal-overlay">
+        <div class="modal modal-frame-9patch">
+            <div class="modal-frame-content">
+                <h2 id="renameTitle">Rename Save</h2>
+                <p class="modal-subtitle">Enter a new name:</p>
+                <input type="text" id="renameInput" class="rename-input" placeholder="Save name" maxlength="50">
+                <div class="modal-choices">
+                    <button class="choice-btn cta-button" id="renameCancelBtn">Cancel</button>
+                    <button class="choice-btn cta-button cta-lime" id="renameOkBtn">Rename</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Splash Screen / Main Menu Modal -->
+    <div id="settingsModal" class="modal-overlay splash-screen">
+        <div class="modal splash-modal modal-frame-9patch">
+            <div class="modal-frame-content">
+                <div class="splash-content">
+                    <h1 class="splash-title">
+                        <img src="assets/images/ui/hexfire-logo.png" alt="Hexfire Logo" class="hexfire-logo-icon">
+                        HEXFIRE
+                    </h1>
+                    <p class="splash-description">
+                        A tile-based tower defense game set in a distant world. Defend The Grove from burning down as long as you can—towers, bombs, and every fire-extinguishing tool at your disposal.
+                    </p>
+                    <div class="splash-buttons">
+                        <button class="choice-btn splash-btn cta-button cta-purple" id="splashNewGameBtn">New Game</button>
+                        <button class="choice-btn splash-btn cta-button cta-red" id="saveGameBtn" style="display: none;">Save Game</button>
+                        <button class="choice-btn splash-btn cta-button cta-green" id="splashLoadGameBtn">Load Game</button>
+                        <button class="choice-btn splash-btn cta-button cta-green" id="splashLoadScenarioBtn">Load Scenario</button>
+                        <button class="choice-btn splash-btn cta-button" id="splashSettingsBtn">Settings</button>
+                        <button class="choice-btn splash-btn cta-button" id="closeSettingsBtn" style="display: none;">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Settings Modal (scaffolded) -->
+    <div id="settingsModalInner" class="modal-overlay">
+        <div class="modal modal-frame-9patch" style="max-width: 900px; max-height: 90vh;">
+            <div class="modal-frame-content">
+                <h2>Settings</h2>
+                <div id="settingsContent" class="settings-grid">
+                <!-- Game Difficulty -->
+                <div class="setting-item">
+                    <label style="display: block; color: #fff; margin-bottom: 8px; font-weight: bold;">Game Difficulty</label>
+                    <div class="scenario-dropdown-container">
+                        <div class="scenario-dropdown" id="settingGameDifficultyDropdown">
+                            <div class="scenario-dropdown-selected" id="settingGameDifficultySelected">
+                                <span id="settingGameDifficultyText">Easy</span>
+                                <span class="scenario-dropdown-arrow">▼</span>
+                            </div>
+                            <div class="scenario-dropdown-menu" id="settingGameDifficultyMenu">
+                                <div class="scenario-dropdown-option" data-value="easy">Easy</div>
+                                <div class="scenario-dropdown-option" data-value="medium">Medium</div>
+                                <div class="scenario-dropdown-option" data-value="hard">Hard</div>
+                                <div class="scenario-dropdown-option" data-value="expert">Expert</div>
+                                <div class="scenario-dropdown-option" data-value="hellfire">Hellfire</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Sound Effects -->
+                <div class="setting-item">
+                    <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default); margin-bottom: 6px;">
+                        <span style="font-weight: bold;">Enable Sound Effects</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="settingEnableSfx" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </label>
+                    <label for="settingSfxVolume" style="display: block; color: #fff; margin-bottom: 4px; font-weight: normal;">
+                        Sound Effects Volume: <span id="settingSfxVolumeValue">70%</span>
+                    </label>
+                    <input type="range" id="settingSfxVolume" class="setting-slider" min="0" max="100" value="70" step="5">
+                </div>
+                
+                <!-- Music -->
+                <div class="setting-item">
+                    <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default); margin-bottom: 6px;">
+                        <span style="font-weight: bold;">Enable Music</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="settingEnableMusic" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </label>
+                    <label for="settingMusicVolume" style="display: block; color: #fff; margin-bottom: 4px; font-weight: normal;">
+                        Music Volume: <span id="settingMusicVolumeValue">50%</span>
+                    </label>
+                    <input type="range" id="settingMusicVolume" class="setting-slider" min="0" max="100" value="50" step="5">
+                </div>
+                
+                <!-- Screen Shake -->
+                <div class="setting-item">
+                    <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
+                        <span style="font-weight: bold;">Enable Screen Shake</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="settingEnableScreenShake" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </label>
+                </div>
+                
+                <!-- Debug Mode -->
+                <div class="setting-item">
+                    <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
+                        <span style="font-weight: bold;">Debug Mode</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="settingDebugMode">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </label>
+                </div>
+                </div>
+                <div class="modal-choices">
+                    <button class="choice-btn cta-button" id="openAdvancedSettingsBtn">Advanced</button>
+                    <button class="choice-btn cta-button" id="closeSettingsModalBtn">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Advanced Settings Modal -->
+    <div id="advancedSettingsModal" class="modal-overlay">
+        <div class="modal modal-frame-9patch" style="max-width: 900px; max-height: 90vh;">
+            <div class="modal-frame-content">
+                <h2>Advanced Settings</h2>
+                <div class="settings-grid">
+                <!-- Fire Type Spread Mode -->
+                <div class="setting-item">
+                    <label style="display: block; color: #fff; margin-bottom: 8px; font-weight: bold;">Fire Type Spread Mode</label>
+                    <div class="scenario-dropdown-container">
+                        <div class="scenario-dropdown" id="settingFireTypeSpreadModeDropdown">
+                            <div class="scenario-dropdown-selected" id="settingFireTypeSpreadModeSelected">
+                                <span id="settingFireTypeSpreadModeText">Both (Escalate & Downgrade)</span>
+                                <span class="scenario-dropdown-arrow">▼</span>
+                            </div>
+                            <div class="scenario-dropdown-menu" id="settingFireTypeSpreadModeMenu">
+                                <div class="scenario-dropdown-option" data-value="both">Both (Escalate & Downgrade)</div>
+                                <div class="scenario-dropdown-option" data-value="escalate">Escalate Only</div>
+                                <div class="scenario-dropdown-option" data-value="downgrade">Downgrade Only</div>
+                                <div class="scenario-dropdown-option" data-value="fixed">Fixed (No Change)</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Enable Edge Scrolling -->
+                <div class="setting-item">
+                    <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
+                        <span style="font-weight: bold;">Enable Edge Scrolling</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="settingEnableEdgeScrolling">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </label>
+                </div>
+                
+                <!-- Scroll Zone Size -->
+                <div class="setting-item">
+                    <label for="settingScrollZoneSize" style="display: block; color: #fff; margin-bottom: 8px; font-weight: bold;">
+                        Scroll Zone Size: <span id="settingScrollZoneSizeValue">60</span>
+                    </label>
+                    <input type="range" id="settingScrollZoneSize" class="setting-slider" min="20" max="150" value="60" step="5">
+                </div>
+                
+                <!-- Scroll Max Speed -->
+                <div class="setting-item">
+                    <label for="settingScrollMaxSpeed" style="display: block; color: #fff; margin-bottom: 8px; font-weight: bold;">
+                        Scroll Max Speed: <span id="settingScrollMaxSpeedValue">32</span>
+                    </label>
+                    <input type="range" id="settingScrollMaxSpeed" class="setting-slider" min="10" max="100" value="32" step="2">
+                </div>
+                
+                <!-- Scroll Acceleration -->
+                <div class="setting-item">
+                    <label for="settingScrollAcceleration" style="display: block; color: #fff; margin-bottom: 8px; font-weight: bold;">
+                        Scroll Acceleration: <span id="settingScrollAccelerationValue">0.15</span>
+                    </label>
+                    <input type="range" id="settingScrollAcceleration" class="setting-slider" min="0.05" max="0.5" value="0.15" step="0.05">
+                </div>
+                
+                <!-- Scroll Smoothing -->
+                <div class="setting-item">
+                    <label for="settingScrollSmoothing" style="display: block; color: #fff; margin-bottom: 8px; font-weight: bold;">
+                        Scroll Smoothing: <span id="settingScrollSmoothingValue">0.85</span>
+                    </label>
+                    <input type="range" id="settingScrollSmoothing" class="setting-slider" min="0.5" max="0.99" value="0.85" step="0.01">
+                </div>
+                
+                <!-- Wheel Scroll Speed -->
+                <div class="setting-item">
+                    <label for="settingWheelScrollSpeed" style="display: block; color: #fff; margin-bottom: 8px; font-weight: bold;">
+                        Wheel Scroll Speed: <span id="settingWheelScrollSpeedValue">1</span>
+                    </label>
+                    <input type="range" id="settingWheelScrollSpeed" class="setting-slider" min="0.5" max="5" value="1" step="0.5">
+                </div>
+                </div>
+                <div class="modal-choices">
+                    <button class="choice-btn cta-button" id="closeAdvancedSettingsBtn">Back</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Save Game Modal -->
+    <div id="saveGameModal" class="modal-overlay save-load-mask">
+        <div class="modal modal-frame-9patch" style="max-width: 700px; max-height: 80vh;">
+            <div class="modal-frame-content">
+                <h2>Save Game</h2>
+                <p class="modal-subtitle">Select a slot to save your game:</p>
+                <div id="saveSlotsContainer" class="save-slots-container">
+                    <!-- Save slots will be populated dynamically -->
+                </div>
+                <div class="modal-choices">
+                    <button class="choice-btn cta-button" id="closeSaveGameBtn">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Load Game Modal -->
+    <div id="loadGameModal" class="modal-overlay save-load-mask">
+        <div class="modal modal-frame-9patch" style="max-width: 700px; max-height: 80vh;">
+            <div class="modal-frame-content">
+                <h2>Load Game</h2>
+                <p class="modal-subtitle">Select a save to load:</p>
+                <div id="loadSlotsContainer" class="save-slots-container">
+                    <!-- Save slots will be populated dynamically -->
+                </div>
+                <div class="modal-choices">
+                    <button class="choice-btn cta-button" id="closeLoadGameBtn">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Auto-saving Indicator -->
+    <div id="autoSavingIndicator" class="auto-saving-indicator">
+        <span><img src="assets/images/ui/icon-save.png" alt="" class="auto-saving-icon"> Auto-saving...</span>
+    </div>
+
+    <!-- Story Screen Modal -->
+    <div id="storyScreenModal" class="modal-overlay story-screen">
+        <div class="story-screen-container">
+            <div class="story-panel" id="storyPanel1" data-panel="1">
+                <div class="story-panel-content">
+                    <div class="story-image">
+                        <img src="assets/images/items/town.png" alt="Town" class="story-icon">
+                    </div>
+                    <div class="story-text-frame modal modal-frame-9patch">
+                        <div class="modal-frame-content">
+                            <div class="story-text">
+                                <h2 class="story-panel-header">You live in a distant galaxy...</h2>
+                                <p class="story-paragraph">...on an exotic planet called <span class="story-hexalon">Hexalon</span>. No one here likes trees. Or anything green, for that matter. You know what they do like? <span class="story-fire-word">FIRE</span>.</p>
+                                <p class="story-paragraph">But all is not lost. You're a powerful <span class="story-water-wielder">water wielder</span>—skilled in the art of putting out fires. And you really, really love trees.</p>
+                                <p class="story-paragraph">You live in <span class="story-grove">The Grove</span>, a mighty cluster of ancient trees. Most of this planet is desolate rocky waste, but there are some <span class="story-paths-green">paths of green</span> that meander outwards from The Grove. One catch: when fire reaches a path, it spreads very quickly.</p>
+                                <div class="story-nav-buttons">
+                                    <button type="button" class="story-next-btn cta-button">Next <img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon" /></button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="story-panel" id="storyPanel2" data-panel="2" style="display: none;">
+                <div class="story-panel-content">
+                    <div class="story-image">
+                        <img src="assets/images/items/flame_spawner.png" alt="Flame Spawner" class="story-icon">
+                    </div>
+                    <div class="story-text-frame modal modal-frame-9patch">
+                        <div class="modal-frame-content">
+                            <div class="story-text">
+                                <h2 class="story-panel-header">It's a dangerous world out there.</h2>
+                                <p class="story-paragraph">Hexalon has one thing in common with Earth: <span class="story-lightning">lightning</span>. It strikes randomly, without warning—setting the ground alight.</p>
+                                <p class="story-paragraph">Even worse: <span class="story-fire-spawners">Fire Spawners</span>. Seemingly wired to Hexalon's core, they're indestructible and spread fire in every direction.</p>
+                                <p class="story-paragraph">You'll start out battling <span class="story-fire-cinder">Cinders</span>, but as you get stronger, so do the fire types—from <span class="story-fire-flame">Flames</span>, to <span class="story-fire-blaze">Blazes</span>, to <span class="story-fire-firestorm">Firestorms</span>, to <span class="story-fire-inferno">Infernos</span>, to the strongest type of fire Hexalon keeps within its depths: <span class="story-fire-cataclysm">Cataclysms</span>.</p>
+                                <div class="story-nav-buttons">
+                                    <button type="button" class="story-back-btn cta-button"><img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon story-arrow-back" /> Back</button>
+                                    <button type="button" class="story-next-btn cta-button">Next <img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon" /></button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="story-panel" id="storyPanel3" data-panel="3" style="display: none;">
+                <div class="story-panel-content">
+                    <div class="story-image story-towers-stagger">
+                        <div class="story-towers-stagger-inner">
+                            <div class="story-towers-col story-towers-col-left">
+                                <img src="assets/images/towers/jet_range_1.png" alt="Jet Tower" class="story-tower-icon">
+                                <img src="assets/images/towers/bomber_range_1.png" alt="Bomber Tower" class="story-tower-icon">
+                                <img src="assets/images/towers/pulsing_range_1.png" alt="Pulsing Tower" class="story-tower-icon">
+                            </div>
+                            <div class="story-towers-col story-towers-col-right">
+                                <img src="assets/images/towers/spread_range_1.png" alt="Spread Tower" class="story-tower-icon">
+                                <img src="assets/images/towers/rain_range_1.png" alt="Rain Tower" class="story-tower-icon">
+                                <img src="assets/images/items/suppression_1.png" alt="Suppression Bomb" class="story-tower-icon">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="story-text-frame modal modal-frame-9patch">
+                        <div class="modal-frame-content">
+                            <div class="story-text">
+                                <h2 class="story-panel-header">You have the power to fight back.</h2>
+                                <p class="story-paragraph">Behold! As an expert <span class="story-water-wielder">water wielder</span>, you've got plenty of fire-fighting tools at your disposal—towers, suppression bombs, and more.</p>
+                                <p class="story-paragraph">Buy what you need from the <span class="story-shop">shop</span>, then drag and drop to place them on the map. (Be careful how you place them; you can only move them between waves.)</p>
+                                <p class="story-paragraph">Gain experience to earn <span class="story-upgrade-plans">UPGRADE PLANS</span>, which let you upgrade your towers to match the increasing strength of fires.</p>
+                                <div class="story-nav-buttons">
+                                    <button type="button" class="story-back-btn cta-button"><img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon story-arrow-back" /> Back</button>
+                                    <button type="button" class="story-next-btn cta-button">Next <img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon" /></button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="story-panel" id="storyPanel4" data-panel="4" style="display: none;">
+                <div class="story-panel-content">
+                    <div class="story-image">
+                        <img src="assets/images/creatures/group22.png" alt="Creature Group" class="story-icon">
+                    </div>
+                    <div class="story-text-frame modal modal-frame-9patch">
+                        <div class="modal-frame-content">
+                            <div class="story-text">
+                                <h2 class="story-panel-header">Watch out for the denizens of fire!</h2>
+                                <p class="story-paragraph">We should probably talk about the <span class="story-bosses">BOSSES</span> of Hexalon. You haven't discovered where they live or much about them yet—but you do know they seem provoked by the end of each wave group.</p>
+                                <p class="story-paragraph">These fire-loving magical enemies each have a unique summoning power they use to inflict as much fire damage as possible.</p>
+                                <p class="story-paragraph">Your job: stop the fires. Save The Grove. Ready?</p>
+                                <div class="story-nav-buttons">
+                                    <button type="button" class="story-back-btn cta-button"><img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon story-arrow-back" /> Back</button>
+                                    <button type="button" class="story-next-btn cta-button">Start Game <img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon" /></button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <button class="story-skip-btn cta-button" id="storySkipBtn">Skip</button>
+        </div>
+    </div>
+    
+    <!-- Load Scenario Modal -->
+    <div id="loadScenarioModal" class="modal-overlay save-load-mask">
+        <div class="modal modal-frame-9patch">
+            <div class="modal-frame-content">
+                <h2>Load Scenario</h2>
+                <p class="modal-subtitle">Select a scenario to load:</p>
+                <div style="margin: 20px 0;">
+                    <div class="scenario-dropdown-container">
+                        <div class="scenario-dropdown" id="scenarioDropdown">
+                            <div class="scenario-dropdown-selected" id="scenarioDropdownSelected">
+                                <span id="scenarioDropdownText">Select a scenario...</span>
+                                <span class="scenario-dropdown-arrow">▼</span>
+                            </div>
+                            <div class="scenario-dropdown-menu" id="scenarioDropdownMenu">
+                                <!-- Options will be populated dynamically -->
+                            </div>
+                        </div>
+                    </div>
+                    <div id="scenarioDescription" style="display: none; margin-top: 12px; padding: 12px; background: rgba(255,255,255,0.05); border-radius: 4px; color: #aaa; font-size: 12px; min-height: 40px;">
+                        <!-- Description will be shown here -->
+                    </div>
+                </div>
+                <div class="modal-choices">
+                    <button class="choice-btn cta-button" id="loadScenarioConfirmBtn" disabled>Load Scenario</button>
+                    <button class="choice-btn cta-button" id="loadScenarioCancelBtn">Cancel</button>
+                </div>
+            </div>
         </div>
     </div>
 

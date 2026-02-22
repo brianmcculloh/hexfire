@@ -1,70 +1,521 @@
+:root {
+    /* Arrow cursors: hotspot 0 0 (top-left). Plus/X: hotspot 16 16 (center for crosshair targeting) */
+    --cursor-default: url('assets/images/ui/cursor-default.png') 0 0, auto;
+    --cursor-drag: url('assets/images/ui/cursor-drag.png') 0 0, auto;
+    --cursor-plus: url('assets/images/ui/cursor-plus.png') 16 16, auto;
+    --cursor-x: url('assets/images/ui/cursor-x.png') 16 16, auto;
+}
+
+/* When mouse is down (click feedback), force descendants to inherit body's cursor (set via JS) - do NOT include body itself or it would inherit from html and lose our cursor */
+body.cursor-click-feedback * {
+    cursor: inherit !important;
+}
+
 * {
     margin: 0;
     padding: 0;
     box-sizing: border-box;
+    font-family: 'Exo 2', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
 }
 
+/* Custom cursor - must be 32x32px or smaller for Chrome/Edge compatibility */
+html,
 body {
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    font-family: 'Exo 2', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     background: #1a1a2e;
     color: #eee;
     overflow: hidden;
 }
+body {
+    cursor: var(--cursor-default);
+}
 
 .game-container {
-    display: flex;
+    position: relative;
     height: 100vh;
     width: 100vw;
+    overflow: hidden;
+    cursor: inherit; /* Use body's custom cursor */
 }
 
 /* Canvas Area */
 .canvas-container {
-    flex: 1;
+  cursor: inherit; /* Use body's custom cursor */
+  touch-action: pan-x pan-y; /* Allow panning but prevent browser swipe navigation */
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    background: #0f0f1e;
-    padding: 20px;
+    background: #0c0f14; /* Darkened with reduced blue saturation and luminance */
+    padding: 0px; /* Removed padding to see full map edge */
+    /* Ensure backdrop-filter works on child elements */
+    transform: translateZ(0);
+    isolation: isolate; /* Changed from auto to isolate to create proper stacking context */
 }
 
 #gameCanvas {
-    border: 2px solid #2a2a4a;
+    border: 2px solid #1f2226; /* Desaturated and darkened to match hex colors */
     border-radius: 8px;
-    background: #16213e;
+    background: #101620; /* Matches CONFIG.COLOR_BACKGROUND */
     box-shadow: 0 0 40px rgba(0, 0, 0, 0.5);
+    touch-action: pan-x pan-y; /* Allow panning but prevent browser swipe navigation */
+    cursor: inherit; /* Use body's custom cursor */
+}
+
+/* Screen shake animation for boss abilities */
+@keyframes screen-shake {
+    0% { transform: translate(0, 0); }
+    10% { transform: translate(-3px, 2px); }
+    20% { transform: translate(4px, -2px); }
+    30% { transform: translate(-2px, 3px); }
+    40% { transform: translate(3px, -1px); }
+    50% { transform: translate(-2px, -2px); }
+    60% { transform: translate(2px, 1px); }
+    70% { transform: translate(-1px, -2px); }
+    80% { transform: translate(1px, 1px); }
+    90% { transform: translate(-1px, 0); }
+    100% { transform: translate(0, 0); }
+}
+
+#gameCanvas.screen-shake {
+    animation: screen-shake 0.4s ease-out;
+}
+
+/* Sustained screen shake (loops until removed, for surround ability) */
+#gameCanvas.screen-shake-sustained {
+    animation: screen-shake 0.15s ease-in-out infinite;
+}
+
+/* Side Panel Toggle Button */
+.side-panel-toggle {
+    position: fixed;
+    right: 300px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 50px;
+    height: 115px;
+    background: #0C1A30;
+    border: 2px solid #22456C;
+    border-right: none;
+    border-radius: 8px 0 0 8px;
+    cursor: var(--cursor-default);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: right 0.3s ease, background 0.3s ease;
+    box-shadow: -2px 0 10px rgba(0, 0, 0, 0.3);
+    padding: 8px 4px;
+    box-sizing: border-box;
+}
+
+.side-panel-toggle:hover {
+    background: #1a2332;
+}
+
+.side-panel-toggle:active {
+    transform: translateY(-50%) scale(0.95);
+}
+
+.toggle-icons-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
+    height: 100%;
+    width: 100%;
+}
+
+.toggle-icon {
+    width: 35px;
+    height: auto;
+    object-fit: contain;
+    image-rendering: crisp-edges;
+}
+
+.toggle-divider {
+    width: 35px;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.2);
+    margin: 4px 0;
 }
 
 /* Side Panel */
 .side-panel {
-    width: 320px;
-    background: #16213e;
-    border-left: 2px solid #2a2a4a;
+    position: fixed;
+    top: 0;
+    right: -30px;
+    width: 350px;
+    height: calc(100vh - 19px);
+    padding-left: 20px;
+    padding-right: 30px;
+    /* Middle repeating image on element background - starts at 81px (after top) */
+    background-image: url('assets/images/ui/sidebar-middle.png');
+    background-position: left 81px; /* Start after top image */
+    background-size: 100% auto;
+    background-repeat: repeat-y;
     display: flex;
     flex-direction: column;
-    overflow-y: auto;
-    transition: all 0.3s;
+    transition: transform 0.3s ease;
+    z-index: 100;
+    transform: translateX(0);
+    margin-top: 20px;
+    margin-bottom:58px;
+
+}
+
+/* Top edge image using ::before - positioned above middle background */
+.side-panel::before {
+    content: '';
+    position: absolute;
+    top: -63px;
+    left: 0;
+    right: 0;
+    height: 81px; /* Height of top image */
+    background-image: url('assets/images/ui/sidebar-top.png');
+    background-position: top left;
+    background-size: 100% auto;
+    background-repeat: no-repeat;
+    pointer-events: none;
+    z-index: 10; /* Above middle background image */
+}
+
+/* Bottom edge image using ::after - positioned above middle background */
+.side-panel::after {
+    content: '';
+    position: absolute;
+    bottom: -69px;
+    left: 0;
+    right: 0;
+    height: 89px; /* Height of bottom image */
+    background-image: url('assets/images/ui/sidebar-bottom.png');
+    background-position: bottom left;
+    background-size: 100% auto;
+    background-repeat: no-repeat;
+    pointer-events: none;
+    z-index: 10; /* Above middle background image */
+}
+
+.side-panel.collapsed {
+    transform: translateX(calc(100% - 48px));
 }
 
 .side-panel.side-panel-drop-zone {
-    background: rgba(76, 175, 80, 0.2);
-    border-left: 2px solid #4CAF50;
+    /* Keep the 3-patch background, just add overlay effect */
     box-shadow: inset 0 0 20px rgba(76, 175, 80, 0.3);
 }
 
-/* Stats Panel */
-.stats-panel {
-    padding: 20px;
-    background: linear-gradient(135deg, #1a2332 0%, #16213e 100%);
-    border-bottom: 2px solid #2a2a4a;
+/* Drop zone overlay - add green tint using a background overlay on the element itself */
+.side-panel.side-panel-drop-zone {
+    background-image: url('assets/images/ui/sidebar-middle.png'),
+                      linear-gradient(rgba(76, 175, 80, 0.2), rgba(76, 175, 80, 0.2));
 }
 
-.stats-panel h2 {
+.side-panel.side-panel-drop-zone::before {
+    background-image: url('assets/images/ui/sidebar-top.png'),
+                      linear-gradient(rgba(76, 175, 80, 0.2), rgba(76, 175, 80, 0.2));
+}
+
+.side-panel.side-panel-drop-zone::after {
+    background-image: url('assets/images/ui/sidebar-bottom.png'),
+                      linear-gradient(rgba(76, 175, 80, 0.2), rgba(76, 175, 80, 0.2));
+}
+
+.side-panel.side-panel-drop-zone > * {
+    position: relative;
+    z-index: 4; /* Above all background layers */
+}
+
+/* Title Section */
+.title-section {
+    padding: 0 20px 0 20px;
+    background: transparent;
+    border-bottom: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.title-section h2 {
     color: #ff6b35;
     font-size: 24px;
     letter-spacing: 3px;
-    margin-bottom: 20px;
-    text-align: center;
-    text-shadow: 0 0 10px rgba(255, 107, 53, 0.5);
+    margin: 0;
+    text-shadow: 0 0 10px rgba(255, 107, 53, 1);
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.settings-btn:not(.cta-button) {
+    flex-shrink: 0;
+    padding: 10px 20px;
+    color: #fff;
+    font-size: 14px;
+    font-weight: bold;
+    width: auto;
+}
+
+.cta-button.settings-btn {
+    flex-shrink: 0;
+    /* padding-left and padding-right are set by .cta-button (28px each) */
+    /* padding-top and padding-bottom are handled by .cta-button height (66px) */
+    /* font-size, font-weight, letter-spacing, and text-transform come from .cta-button */
+    /* Don't override - let .cta-button handle it */
+    color: #fff;
+    width: auto;
+    display: flex; /* Use flex to center content */
+    align-items: center; /* Center content vertically */
+    justify-content: center; /* Center content horizontally */
+}
+
+/* ============================================
+   CTA BUTTON UTILITY CLASS - 3-Patch System
+   ============================================ */
+/* All button imagery/styling in one place - no duplication */
+.cta-button {
+    position: relative;
+    /* Middle repeating image on element background - positioned in content area only */
+    background-image: url('assets/images/ui/button_blue_middle.png');
+    background-size: 1px 66px;
+    background-repeat: repeat-x;
+    background-origin: content-box; /* Background positioning relative to content box (after padding) */
+    background-clip: content-box; /* Background only visible in content area, not padding */
+    background-position: 0 center;
+    border: none;
+    border-radius: 0;
+    cursor: var(--cursor-default);
+    transition: transform 0.08s ease-out, filter 0.2s ease, background-image 0.3s ease;
+    z-index: 0;
+    height: 66px;
+    background-color: transparent;
+    padding-left: 28px; /* Space for left cap */
+    padding-right: 28px; /* Space for right cap */
+    box-sizing: border-box; /* Include padding in width calculations */
+    display: flex; /* Use flex to center content */
+    align-items: center; /* Center content vertically */
+    justify-content: center; /* Center content horizontally */
+    font-size: 14px; /* Standard CTA button font size - applies to ALL CTA buttons */
+    font-weight: 600; /* Standard CTA button font weight - applies to ALL CTA buttons */
+    letter-spacing: 0.5px; /* Standard CTA button letter spacing - applies to ALL CTA buttons */
+    text-transform: uppercase; /* All CTA buttons use uppercase text */
+}
+
+/* Left cap using ::before - positioned in left padding area */
+.cta-button::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0; /* Position in padding area, now clickable */
+    width: 28px;
+    height: 100%;
+    background-image: url('assets/images/ui/button_blue_left.png');
+    background-position: left center;
+    background-size: 28px 66px;
+    background-repeat: no-repeat;
+    pointer-events: none; /* Allow clicks to pass through to button */
+    z-index: 1;
+    transition: all 0.3s;
+}
+
+/* Right cap using ::after - positioned in right padding area */
+.cta-button::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0; /* Position in padding area, now clickable */
+    width: 28px;
+    height: 100%;
+    background-image: url('assets/images/ui/button_blue_right.png');
+    background-position: right center;
+    background-size: 28px 66px;
+    background-repeat: no-repeat;
+    pointer-events: none; /* Allow clicks to pass through to button */
+    z-index: 1;
+    transition: all 0.3s;
+}
+
+/* Ensure button text is above caps */
+.cta-button > * {
+    position: relative;
+    z-index: 2;
+}
+
+/* All images within CTA buttons should be 32px by 32px */
+.cta-button img {
+    width: 32px;
+    height: 32px;
+    image-rendering: crisp-edges;
+    display: inline-block;
+    vertical-align: middle;
+    margin-right: 0;
+}
+
+/* Pause/Resume/Start Wave icon in control buttons (text + icon), ~25% smaller than standard CTA img */
+.control-btn .control-btn-icon {
+    width: 24px;
+    height: 24px;
+    vertical-align: middle;
+    image-rendering: crisp-edges;
+    margin-right: 0.5em;
+}
+
+.cta-button.disabled,
+.cta-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    pointer-events: none;
+    filter: brightness(0.6);
+}
+
+.cta-button.disabled:hover,
+.cta-button:disabled:hover {
+    filter: brightness(0.6);
+}
+
+/* Hover: darken background, keep text bright white (exclude tab-button and shop-sub-tab-button – they have their own hover) */
+.cta-button:not(.tab-button):not(.shop-sub-tab-button):hover {
+    filter: brightness(0.88);
+}
+.cta-button:not(.tab-button):not(.shop-sub-tab-button):hover * {
+    filter: brightness(1.136); /* Counteract parent so text stays bright white */
+}
+
+/* Click/press: shift down then back up on any CTA button (exclude shop sub-tabs – they keep original behavior) */
+.cta-button:active:not(:disabled):not(.disabled):not(.shop-sub-tab-button) {
+    transform: translateY(2px);
+}
+.cta-button:disabled:active,
+.cta-button.disabled:active {
+    transform: none;
+}
+/* Preserve tab layout transform when pressed */
+.tabs .tab-button:last-child:active:not(:disabled):not(.disabled) {
+    transform: translateX(-10px) translateY(2px);
+}
+/* Shop sub-tabs: no press effect, keep original transition for their hover */
+.shop-sub-tab-button {
+    transition: all 0.3s;
+}
+
+/* Since filter applies to the whole element including pseudo-elements, 
+   we don't need separate rules for ::before and ::after */
+
+/* Color variants - override the blue button image URLs */
+.cta-lime {
+    background-image: url('assets/images/ui/button_lime_middle.png');
+}
+
+.cta-lime::before {
+    background-image: url('assets/images/ui/button_lime_left.png');
+}
+
+.cta-lime::after {
+    background-image: url('assets/images/ui/button_lime_right.png');
+}
+
+.cta-green {
+    background-image: url('assets/images/ui/button_green_middle.png');
+}
+
+.cta-green::before {
+    background-image: url('assets/images/ui/button_green_left.png');
+}
+
+.cta-green::after {
+    background-image: url('assets/images/ui/button_green_right.png');
+}
+
+.cta-red {
+    background-image: url('assets/images/ui/button_red_middle.png');
+}
+
+.cta-red::before {
+    background-image: url('assets/images/ui/button_red_left.png');
+}
+
+.cta-red::after {
+    background-image: url('assets/images/ui/button_red_right.png');
+}
+
+.cta-orange {
+    background-image: url('assets/images/ui/button_orange_middle.png');
+}
+
+.cta-orange::before {
+    background-image: url('assets/images/ui/button_orange_left.png');
+}
+
+.cta-orange::after {
+    background-image: url('assets/images/ui/button_orange_right.png');
+}
+
+.cta-purple {
+    background-image: url('assets/images/ui/button_purple_middle.png');
+}
+
+.cta-purple::before {
+    background-image: url('assets/images/ui/button_purple_left.png');
+}
+
+.cta-purple::after {
+    background-image: url('assets/images/ui/button_purple_right.png');
+}
+
+.cta-yellow {
+    background-image: url('assets/images/ui/button_yellow_middle.png');
+}
+
+.cta-yellow::before {
+    background-image: url('assets/images/ui/button_yellow_left.png');
+}
+
+.cta-yellow::after {
+    background-image: url('assets/images/ui/button_yellow_right.png');
+}
+
+.cta-blue {
+    background-image: url('assets/images/ui/button_blue_middle.png');
+}
+
+.cta-blue::before {
+    background-image: url('assets/images/ui/button_blue_left.png');
+}
+
+.cta-blue::after {
+    background-image: url('assets/images/ui/button_blue_right.png');
+}
+
+/* Small CTA button utility class - 46px height instead of 66px */
+.cta-small {
+    height: 47px;
+    background-size: 1px 47px;
+    padding-left: 20px; /* Scaled down from 28px proportionally */
+    padding-right: 20px; /* Scaled down from 28px proportionally */
+    font-size: 9px; /* Slightly smaller font for smaller button */
+    font-weight:400;
+    text-shadow: 0 0 1px black;
+    color:white;
+}
+
+.cta-small::before {
+    width: 20px; /* Scaled down from 28px proportionally */
+    background-size: 20px 47px;
+}
+
+.cta-small::after {
+    width: 20px; /* Scaled down from 28px proportionally */
+    background-size: 20px 47px;
 }
 
 .stat-row {
@@ -112,32 +563,106 @@ body {
 /* Tabs */
 .tabs {
     display: flex;
-    background: #1a2332;
-    border-bottom: 2px solid #2a2a4a;
+    background: transparent;
+    border-bottom: none;
+    gap: 0;
+    padding: 0;
 }
 
 .tab-button {
     flex: 1;
-    padding: 12px;
-    background: transparent;
-    border: none;
-    color: #888;
-    cursor: pointer;
+    position: relative;
+    color: #fff;
     font-size: 14px;
     font-weight: bold;
     transition: all 0.3s;
+}
+
+.tabs .tab-button:last-child {
+    transform:translateX(-10px);
+}
+
+/* Content wrapper for tab buttons */
+.tab-content-wrapper {
     position: relative;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
 }
 
-.tab-button:hover {
-    background: rgba(255, 255, 255, 0.05);
-    color: #aaa;
+/* Desaturate images in inactive tabs */
+.tab-button:not(.active) .tab-content-wrapper img {
+    filter: grayscale(80%); /* Remove 80% of saturation (80% grayscale) */
+    transition: filter 0.3s;
 }
 
+/* Restore full color when hovering over inactive tab */
+.tab-button:not(.active):hover .tab-content-wrapper img {
+    filter: grayscale(0%); /* Full color on hover */
+}
+
+/* Non-active tab - use dimmed button images instead of bright ones */
+.tab-button:not(.active).cta-lime {
+    background-image: url('assets/images/ui/button_lime_dim_middle.png');
+}
+
+.tab-button:not(.active).cta-lime::before {
+    background-image: url('assets/images/ui/button_lime_dim_left.png');
+}
+
+.tab-button:not(.active).cta-lime::after {
+    background-image: url('assets/images/ui/button_lime_dim_right.png');
+}
+
+.tab-button:not(.active).cta-orange {
+    background-image: url('assets/images/ui/button_orange_dim_middle.png');
+}
+
+.tab-button:not(.active).cta-orange::before {
+    background-image: url('assets/images/ui/button_orange_dim_left.png');
+}
+
+.tab-button:not(.active).cta-orange::after {
+    background-image: url('assets/images/ui/button_orange_dim_right.png');
+}
+
+/* When hovering over non-active tab, restore bright images */
+.tab-button:not(.active):hover.cta-lime {
+    background-image: url('assets/images/ui/button_lime_middle.png');
+}
+
+.tab-button:not(.active):hover.cta-lime::before {
+    background-image: url('assets/images/ui/button_lime_left.png');
+}
+
+.tab-button:not(.active):hover.cta-lime::after {
+    background-image: url('assets/images/ui/button_lime_right.png');
+}
+
+.tab-button:not(.active):hover.cta-orange {
+    background-image: url('assets/images/ui/button_orange_middle.png');
+}
+
+.tab-button:not(.active):hover.cta-orange::before {
+    background-image: url('assets/images/ui/button_orange_left.png');
+}
+
+.tab-button:not(.active):hover.cta-orange::after {
+    background-image: url('assets/images/ui/button_orange_right.png');
+}
+
+/* Active tab - no hover effect, normal brightness */
 .tab-button.active {
-    color: #fff;
-    background: #16213e;
-    border-bottom: 2px solid #ff6b35;
+    color: #FFFFFF;
+    background-color: transparent;
+}
+
+/* Remove hover effect from active tab */
+.tab-button.active:hover {
+    /* No hover dimming for active tab */
+    filter: brightness(1.0);
 }
 
 .tab-badge {
@@ -158,18 +683,330 @@ body {
 
 .tab-badge#shopBadge {
     background: #FFD700;
-    color: #333;
+    color: #000;
 }
 
 /* Tab Content */
 .tab-content {
     display: none;
     flex: 1;
-    padding: 20px;
+    padding: 20px 10px 20px 15px;
     overflow-y: auto;
+    min-height: 0; /* Allow flex shrinking */
+    /* Reserve space for scrollbar to prevent content shifting when switching tabs */
+    scrollbar-gutter: stable;
 }
 
+
 .tab-content.active {
+    display: block;
+}
+
+/* Remove padding from shop tab content */
+#shopTab.tab-content {
+    padding: 0;
+}
+
+/* Shop Sub-tabs - sticky at top when scrolling */
+.shop-sub-tabs {
+    display: flex;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: #071025; /* Match sidebar/tab area so content doesn't show through when scrolling */
+    border-bottom: none;
+    gap: -10px; /* Negative gap to overlap buttons */
+}
+
+/* Sub-tab buttons - use CTA button styling with small size */
+.shop-sub-tab-button {
+    flex: 1;
+}
+
+.shop-sub-tab-button:first-child {
+    transform: translateX(5px);
+}
+
+.shop-sub-tab-button:last-child {
+    transform: translateX(-5px);
+}
+
+/* Towers sub-tab - blue */
+.shop-sub-tab-button[data-shop-sub-tab="towers"] {
+    /* Inherits all CTA button styling */
+}
+
+/* Items sub-tab - purple */
+.shop-sub-tab-button[data-shop-sub-tab="items"] {
+    /* Inherits all CTA button styling */
+}
+
+/* Power-ups sub-tab - red */
+.shop-sub-tab-button[data-shop-sub-tab="powerups"] {
+    /* Inherits all CTA button styling */
+}
+
+/* Non-active sub-tab - use dimmed button images (same approach as parent tabs) */
+.shop-sub-tab-button:not(.active).cta-blue {
+    background-image: url('assets/images/ui/button_blue_dim_middle.png');
+}
+
+.shop-sub-tab-button:not(.active).cta-blue::before {
+    background-image: url('assets/images/ui/button_blue_dim_left.png');
+}
+
+.shop-sub-tab-button:not(.active).cta-blue::after {
+    background-image: url('assets/images/ui/button_blue_dim_right.png');
+}
+
+.shop-sub-tab-button:not(.active).cta-purple {
+    background-image: url('assets/images/ui/button_purple_dim_middle.png');
+}
+
+.shop-sub-tab-button:not(.active).cta-purple::before {
+    background-image: url('assets/images/ui/button_purple_dim_left.png');
+}
+
+.shop-sub-tab-button:not(.active).cta-purple::after {
+    background-image: url('assets/images/ui/button_purple_dim_right.png');
+}
+
+.shop-sub-tab-button:not(.active).cta-red {
+    background-image: url('assets/images/ui/button_red_dim_middle.png');
+}
+
+.shop-sub-tab-button:not(.active).cta-red::before {
+    background-image: url('assets/images/ui/button_red_dim_left.png');
+}
+
+.shop-sub-tab-button:not(.active).cta-red::after {
+    background-image: url('assets/images/ui/button_red_dim_right.png');
+}
+
+/* When hovering over non-active sub-tab, restore bright images */
+.shop-sub-tab-button:not(.active):hover.cta-blue {
+    background-image: url('assets/images/ui/button_blue_middle.png');
+}
+
+.shop-sub-tab-button:not(.active):hover.cta-blue::before {
+    background-image: url('assets/images/ui/button_blue_left.png');
+}
+
+.shop-sub-tab-button:not(.active):hover.cta-blue::after {
+    background-image: url('assets/images/ui/button_blue_right.png');
+}
+
+.shop-sub-tab-button:not(.active):hover.cta-purple {
+    background-image: url('assets/images/ui/button_purple_middle.png');
+}
+
+.shop-sub-tab-button:not(.active):hover.cta-purple::before {
+    background-image: url('assets/images/ui/button_purple_left.png');
+}
+
+.shop-sub-tab-button:not(.active):hover.cta-purple::after {
+    background-image: url('assets/images/ui/button_purple_right.png');
+}
+
+.shop-sub-tab-button:not(.active):hover.cta-red {
+    background-image: url('assets/images/ui/button_red_middle.png');
+}
+
+.shop-sub-tab-button:not(.active):hover.cta-red::before {
+    background-image: url('assets/images/ui/button_red_left.png');
+}
+
+.shop-sub-tab-button:not(.active):hover.cta-red::after {
+    background-image: url('assets/images/ui/button_red_right.png');
+}
+
+/* Active sub-tab - no hover dimming, normal brightness */
+.shop-sub-tab-button.active {
+    color: #FFFFFF;
+    background-color: transparent;
+}
+
+.shop-sub-tab-button.active:hover {
+    filter: brightness(1.0);
+}
+
+.shop-sub-tab-content {
+    display: none;
+    flex: 1;
+    padding: 20px 10px 20px 15px;
+    overflow-y: auto;
+    min-height: 0;
+}
+
+/* ============================================
+   LABEL UTILITY CLASSES
+   ============================================
+   Reusable label elements with 3-patch background images.
+   Based on the sub-tab button styling, repurposed as labels.
+   ============================================ */
+
+/* Base label class */
+.label {
+    position: relative;
+    height: 48px;
+    padding: 0 46px 0 17px; /* Padding accounts for endcap widths */
+    box-sizing: border-box;
+    background-image: none;
+    background-color: transparent;
+    border: none;
+    border-radius: 0;
+    color: white;
+    text-transform: uppercase;
+    font-size: 12px;
+    font-weight: 700;
+    text-shadow: 0 0 1px black;
+    transition: all 0.3s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    white-space: nowrap; /* Prevent text wrapping */
+}
+
+/* Label text - normal flow, no absolute positioning needed */
+.label .label-text {
+    position: relative;
+    z-index: 3;
+    pointer-events: none;
+}
+
+/* Label middle background - positioned between endcaps, expands with content */
+.label .label-middle-bg {
+    position: absolute;
+    left: 17px;
+    right: 46px;
+    top: 0;
+    bottom: 0;
+    background-size: 1px 48px;
+    background-repeat: repeat-x;
+    background-position: 0 0;
+    pointer-events: none;
+    z-index: 0;
+    transition: filter 0.3s;
+}
+
+/* Label endcaps - left and right */
+.label::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 17px;
+    height: 100%;
+    background-position: left center;
+    background-size: 17px 48px;
+    background-repeat: no-repeat;
+    pointer-events: none;
+    z-index: 1;
+    transition: filter 0.3s;
+}
+
+.label::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 46px;
+    height: 100%;
+    background-position: right center;
+    background-size: 46px 48px;
+    background-repeat: no-repeat;
+    pointer-events: none;
+    z-index: 1;
+    transition: filter 0.3s;
+}
+
+/* Blue label variant */
+.label-blue::before {
+    background-image: url('assets/images/ui/label_blue_left.png');
+}
+
+.label-blue::after {
+    background-image: url('assets/images/ui/label_blue_right.png');
+}
+
+.label-blue .label-middle-bg {
+    background-image: url('assets/images/ui/label_blue_middle.png');
+}
+
+/* Purple label variant */
+.label-purple::before {
+    background-image: url('assets/images/ui/label_purple_left.png');
+}
+
+.label-purple::after {
+    background-image: url('assets/images/ui/label_purple_right.png');
+}
+
+.label-purple .label-middle-bg {
+    background-image: url('assets/images/ui/label_purple_middle.png');
+}
+
+
+/* Red label variant */
+.label-red::before {
+    background-image: url('assets/images/ui/label_red_left.png');
+}
+
+.label-red::after {
+    background-image: url('assets/images/ui/label_red_right.png');
+}
+
+.label-red .label-middle-bg {
+    background-image: url('assets/images/ui/label_red_middle.png');
+}
+
+
+/* Green label variant */
+.label-green::before {
+    background-image: url('assets/images/ui/label_green_left.png');
+}
+
+.label-green::after {
+    background-image: url('assets/images/ui/label_green_right.png');
+}
+
+.label-green .label-middle-bg {
+    background-image: url('assets/images/ui/label_green_middle.png');
+}
+
+/* Orange label variant */
+.label-orange::before {
+    background-image: url('assets/images/ui/label_orange_left.png');
+}
+
+.label-orange::after {
+    background-image: url('assets/images/ui/label_orange_right.png');
+}
+
+.label-orange .label-middle-bg {
+    background-image: url('assets/images/ui/label_orange_middle.png');
+}
+
+/* White label variant */
+.label-white::before {
+    background-image: url('assets/images/ui/label_white_left.png');
+}
+
+.label-white::after {
+    background-image: url('assets/images/ui/label_white_right.png');
+}
+
+.label-white .label-middle-bg {
+    background-image: url('assets/images/ui/label_white_middle.png');
+}
+
+/* White label - black text with white shadow (reversed from default) */
+.label-white {
+    color: black;
+    text-shadow: 0 0 1px white;
+}
+
+.shop-sub-tab-content.active {
     display: block;
 }
 
@@ -177,8 +1014,8 @@ body {
 .inventory-grid {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
-    gap: 12px;
     transition: all 0.3s;
+    overflow: visible; /* Allow expanding rings to be visible */
 }
 
 .inventory-grid.inventory-drop-zone {
@@ -189,20 +1026,55 @@ body {
 }
 
 .inventory-item {
-    background: rgba(255, 255, 255, 0.05);
-    border: 2px solid #2a2a4a;
-    border-radius: 8px;
-    padding: 20px;
+    background: none;
+    border: none;
+    padding: 33px 20px 10px 20px;
     text-align: center;
-    cursor: grab;
+    cursor: var(--cursor-default);
     transition: all 0.3s;
     position: relative;
+    aspect-ratio: 1 / 1; /* Perfectly square */
+    background-size: 100% 100%;
+    background-position: center;
+    background-repeat: no-repeat;
+}
+#inventoryGrid .inventory-item.tower {
+    padding-top:43px;
 }
 
-.inventory-item:hover {
-    background: rgba(255, 255, 255, 0.1);
-    border-color: #2196F3;
-    transform: translateY(-2px);
+/* Blue frame for towers */
+.inventory-item.tower {
+    background-image: url('assets/images/ui/frame-blue.png');
+}
+
+/* Purple frame for items */
+.inventory-item.item {
+    background-image: url('assets/images/ui/frame-purple.png');
+}
+
+/* Red frame for power-ups */
+.inventory-item.powerup {
+    background-image: url('assets/images/ui/frame-red.png');
+}
+
+.inventory-item:hover:not(.locked) {
+    background-image: url('assets/images/ui/frame-hover.png');
+}
+
+/* When placing (click or drag), inherit body's cursor (set via JS with absolute URL for reliable loading) */
+body.placing-item .side-panel,
+body.placing-item .side-panel .inventory-item:not(.locked) {
+    cursor: inherit !important;
+}
+
+/* Shield selected for placement - keep highlighted like hover so player sees which one they're applying */
+
+.inventory-item.shield-selected,
+.inventory-item.placing-active {
+    background-image: url('assets/images/ui/frame-hover.png');
+}
+.inventory-item.shield-selected {
+    cursor: var(--cursor-drag);
 }
 
 .inventory-item.locked {
@@ -212,12 +1084,51 @@ body {
 
 .inventory-item.locked:hover {
     transform: none;
-    border-color: #2a2a4a;
+    /* Keep original frame background based on item type, don't use hover frame */
+}
+
+/* Explicitly maintain frame colors for locked items on hover */
+.inventory-item.locked.tower:hover {
+    background-image: url('assets/images/ui/frame-blue.png');
+}
+
+.inventory-item.locked.item:hover {
+    background-image: url('assets/images/ui/frame-purple.png');
+}
+
+.inventory-item.locked.powerup:hover {
+    background-image: url('assets/images/ui/frame-red.png');
 }
 
 .inventory-item .icon {
+    /* Icon area behaves like tower graphics: fixed-size relative box with absolute-centered content */
+    position: relative;
+    width: 48px;
+    height: 48px;
+    margin: 0 auto 8px;
+    overflow: visible;
+}
+
+.inventory-item .icon .icon-inner {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+}
+
+/* Allow sprite graphics to exceed the icon box when needed */
+.inventory-item .icon .icon-inner img {
+    max-width: none;
+    max-height: none;
+}
+
+.inventory-item .icon .icon-inner .emoji-icon {
     font-size: 32px;
-    margin-bottom: 8px;
+    line-height: 1;
 }
 
 .inventory-item .name {
@@ -254,7 +1165,7 @@ body {
     border: 2px solid #2a2a4a;
     border-radius: 8px;
     padding: 16px;
-    cursor: pointer;
+    cursor: var(--cursor-default);
     transition: all 0.3s;
 }
 
@@ -282,29 +1193,29 @@ body {
 
 /* Controls */
 .controls {
-    padding: 20px;
-    background: #1a2332;
-    border-top: 2px solid #2a2a4a;
+    position: absolute;
+    bottom: 16px;
+    left: 16px;
     display: flex;
     gap: 10px;
+    z-index: 1000;
 }
 
-.control-btn {
+.control-btn:not(.cta-button) {
     flex: 1;
     padding: 12px;
-    background: #2196F3;
     color: white;
-    border: none;
-    border-radius: 6px;
     font-size: 14px;
     font-weight: bold;
-    cursor: pointer;
-    transition: all 0.3s;
 }
 
-.control-btn:hover {
-    background: #1976D2;
-    transform: translateY(-2px);
+/* CTA control buttons inherit everything from .cta-button */
+.control-btn.cta-button {
+    flex: 1;
+    /* All other styling comes from .cta-button */
+    color: white;
+    font-size: 14px;
+    font-weight: bold;
 }
 
 .control-btn:disabled {
@@ -321,82 +1232,933 @@ body {
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0, 0, 0, 0.45);
+    background: rgba(0, 0, 0, 0.2); /* Very transparent to allow modal blur to work on canvas */
     display: none;
     align-items: center;
     justify-content: center;
     z-index: 1000;
-    backdrop-filter: blur(1.5px);
+    overflow-y: auto;
+    padding: 20px;
+    /* Don't blur the overlay itself - let the modal do the blurring */
+}
+
+.modal-overlay.upgrade-token-mask {
+    background: rgba(0, 0, 0, 0.85);
+}
+
+/* Padding handled by JavaScript dynamically */
+
+.modal-overlay.skip-upgrade-mask {
+    background: rgba(0, 0, 0, 0.85);
+}
+
+/* Save/Load modals - dark background mask to cover underlying modals */
+.modal-overlay.save-load-mask {
+    background: rgba(0, 0, 0, 0.85);
+    z-index: 2000; /* Higher than settings modal (1000) to appear on top */
+}
+
+/* Splash Screen Overlay - Full Viewport */
+.splash-screen {
+    background: rgba(0, 0, 0, 0.85);
+    padding: 0;
+}
+
+/* Wave modals (placement, complete, group complete) - same darkness as settings */
+#waveCompleteModal {
+    background: rgba(0, 0, 0, 0.85);
+}
+
+.splash-modal {
+    max-width: 700px;
+    width: 90%;
+    max-height: 90vh;
+    text-align: center;
+}
+
+.splash-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 30px;
+    padding: 20px;
+}
+
+.splash-title {
+    font-size: 4rem;
+    font-weight: bold;
+    color: #FF6B35;
+    text-shadow: 0 0 20px rgba(255, 107, 53, 0.8), 0 0 40px rgba(255, 107, 53, 0.6);
+    margin: 0;
+    letter-spacing: 0.1em;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+}
+
+.splash-description {
+    font-size: 1.2rem;
+    color: #e0e0e0;
+    line-height: 1.6;
+    max-width: 600px;
+    margin: 0;
+}
+
+.splash-buttons {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 400px;
+}
+
+/* Settings modal (inner) should appear above splash screen */
+#settingsModalInner {
+    z-index: 1500;
+    background: rgba(0, 0, 0, 0.85); /* Dark overlay mask to cover main menu behind it */
+}
+
+/* Confirm modal should appear above other modals */
+#confirmModal.modal-overlay {
+    z-index: 3000 !important; /* Higher than save/load modals (2000) */
+}
+
+#confirmModal {
+    z-index: 2000;
+}
+
+/* Bottom Edge Power-Up Indicators */
+.bottom-edge-power-ups {
+    position: fixed;
+    bottom: 5px; /* Move up 5px from bottom edge */
+    left: 0;
+    right: 0;
+    display: flex;
+    justify-content: center;
+    align-items: flex-end;
+    gap: 16px;
+    padding: 0;
+    pointer-events: none;
+    z-index: 9999;
+    overflow: visible; /* Don't clip at container level */
+}
+
+.bottom-edge-power-ups .power-up-indicator {
+    position: relative;
+    width: 64px; /* 75.264px * 0.85 = 63.9744px, rounded to 64px */
+    height: 45px; /* Reduced by 10% to show less of the graphic (50px * 0.9 = 45px) */
+    pointer-events: auto !important; /* Ensure indicators can be hovered */
+    overflow: visible; /* Allow countdown timers and image tops to be visible above container */
+    cursor: var(--cursor-default); /* Show pointer cursor on hover */
+    padding-top: 30px; /* Add space at top for countdown timers and image animation */
+    margin-top: -30px; /* Offset padding so container position stays the same */
+}
+
+/* Staggered animation delays for cascading effect - applied to images */
+.bottom-edge-power-ups .power-up-indicator[data-index="0"] img { animation-delay: 0s; }
+.bottom-edge-power-ups .power-up-indicator[data-index="1"] img { animation-delay: 0.3s; }
+.bottom-edge-power-ups .power-up-indicator[data-index="2"] img { animation-delay: 0.6s; }
+.bottom-edge-power-ups .power-up-indicator[data-index="3"] img { animation-delay: 0.9s; }
+.bottom-edge-power-ups .power-up-indicator[data-index="4"] img { animation-delay: 1.2s; }
+.bottom-edge-power-ups .power-up-indicator[data-index="5"] img { animation-delay: 1.5s; }
+.bottom-edge-power-ups .power-up-indicator[data-index="6"] img { animation-delay: 1.8s; }
+.bottom-edge-power-ups .power-up-indicator[data-index="7"] img { animation-delay: 2.1s; }
+.bottom-edge-power-ups .power-up-indicator[data-index="8"] img { animation-delay: 2.4s; }
+.bottom-edge-power-ups .power-up-indicator[data-index="9"] img { animation-delay: 2.7s; }
+
+@keyframes powerUpFloat {
+    0%, 100% { top: 0px; } /* Image at default position - shows less */
+    50% { top: -6px; } /* Image moves up - shows more of it */
+}
+
+.bottom-edge-power-ups .power-up-indicator img {
+    position: absolute;
+    top: 0; /* Start position - will be animated */
+    left: 50%;
+    transform: translateX(-50%);
+    width: 64px; /* 75.264px * 0.85 = 63.9744px, rounded to 64px */
+    height: auto;
+    image-rendering: crisp-edges;
+    display: block;
+    pointer-events: none; /* Don't block hover events on parent */
+    animation: powerUpFloat 3s ease-in-out infinite; /* Slow, gentle pulse - image moves within container */
+}
+
+/* Temporary power-ups should NOT pulse */
+.bottom-edge-power-ups .power-up-indicator.temp img {
+    animation: none; /* No animation for temporary power-ups */
+    top: 0; /* Keep at fixed position */
+}
+
+.bottom-edge-power-ups .power-up-indicator .level-text {
+    position: absolute;
+    top: 14px; /* Moved down by 10px (was 4px, now 14px) */
+    right: 4px;
+    background: white; /* Changed from green to white */
+    color: black;
+    border-radius: 10px;
+    padding: 2px 6px;
+    font-size: 12px; /* Increased by 2px (was 10px) */
+    font-weight: bold;
+    z-index: 10;
+    pointer-events: none;
+    box-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3); /* Drop shadow to bottom and right for sticker effect */
+}
+
+.bottom-edge-power-ups .power-up-indicator.temp .level-text {
+    background: #00E6CC; /* Bright electric teal/aqua background for temporary power-ups */
+    color: black; /* Black text on teal for better readability */
+}
+
+.bottom-edge-power-ups .power-up-separator {
+    width: 24px; /* Gap between permanent and temporary power-ups */
+    flex-shrink: 0;
+}
+
+/* Tooltips for bottom-edge power-ups now use the centralized #game-tooltip system */
+
+/* Countdown circle for temporary power-ups */
+.bottom-edge-power-ups .power-up-indicator .temp-countdown-circle {
+    position: absolute;
+    top: -18px; /* Moved up more */
+    left: 50%;
+    transform: translateX(-50%);
+    background: transparent; /* No background */
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: bold;
+    z-index: 11;
+    pointer-events: none; /* Don't block hover events on parent */
+    /* White text with black outline and glow */
+    text-shadow: 
+        -1px -1px 0 #000,
+        1px -1px 0 #000,
+        -1px 1px 0 #000,
+        1px 1px 0 #000,
+        0 0 4px rgba(0, 0, 0, 0.8),
+        0 0 8px rgba(0, 0, 0, 0.6);
+    /* Remove width/height constraints since it's just text now */
+    width: auto;
+    height: auto;
+    padding: 0;
+}
+
+/* Hide any leftover temp power-up panel elements that might still exist */
+#tempPowerupList,
+.overlay-panel.overlay-bottom-left:empty,
+.overlay-panel.overlay-bottom-left:has(#tempPowerupList) {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+}
+
+/* Rename modal should appear above save/load modals */
+#renameModal.modal-overlay {
+    z-index: 3000 !important; /* Higher than save/load modals (2000) */
 }
 
 .modal-overlay.active {
     display: flex;
 }
 
+/* Special styling for wave group completion */
+@keyframes waveGroupCompletePulse {
+    0%, 100% {
+        box-shadow: 0 0 30px rgba(255, 215, 0, 0.8), 0 0 60px rgba(255, 215, 0, 0.6);
+    }
+    50% {
+        box-shadow: 0 0 40px rgba(255, 215, 0, 1.0), 0 0 80px rgba(255, 215, 0, 0.8);
+    }
+}
+
+@keyframes waveGroupCompleteTitle {
+    0%, 100% {
+        transform: scale(1);
+        text-shadow: none;
+    }
+    50% {
+        transform: scale(1.05);
+        text-shadow: none;
+    }
+}
+
 .modal {
-    background: #16213e;
-    border: 2px solid #2a2a4a;
     border-radius: 12px;
-    padding: 40px;
-    max-width: 500px;
-    box-shadow: 0 10px 50px rgba(0, 0, 0, 0.8);
+    padding: 60px 40px 80px;
+    max-width: 750px;
+    max-height: calc(100vh - 40px);
+    overflow-y: auto; /* Allow scrolling when content exceeds viewport */
+    overflow-x: hidden; /* Prevent horizontal scrolling */
+    box-shadow: none;
+    margin: auto;
+    position: relative;
+    /* Background removed - all modals now use modal-frame-9patch class */
+    border: none;
+    /* Firefox scrollbar styling */
+    scrollbar-width: thin;
+    scrollbar-color: rgba(34, 45, 75, 0.8) rgba(22, 33, 62, 0.3);
+    animation: none;
+}
+
+/* Utility class to remove all frames and backgrounds from modal */
+.modal-no-frame {
+    background: none !important;
+    background-image: none !important;
+    background-size: none !important;
+    background-position: none !important;
+    background-repeat: none !important;
+    background-origin: initial !important;
+    padding: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+    overflow: visible !important;
+}
+
+/* More specific rule to override modal-frame-9patch when modal-no-frame is present */
+.modal.modal-no-frame,
+.modal.modal-no-frame.modal-frame-9patch {
+    background: none !important;
+    background-image: none !important;
+    background-size: none !important;
+    background-position: none !important;
+    background-repeat: none !important;
+    background-origin: initial !important;
+    padding: 0 !important;
+}
+
+.modal-no-frame .modal-frame-content {
+    background: transparent !important;
+}
+
+/* 9-Patch Frame System - Reusable utility class for modals */
+.modal-frame-9patch {
+    padding: 80px 50px; /* Space for 180px corners on all sides - content is inset */
+    border-radius: 0;
+    position: relative;
+    /* No background color on modal itself - frame images only */
+    /* Modal frame should not exceed viewport height */
+    max-height: calc(100vh - 40px); /* Match standard modal max-height */
+    /* Frame images should not scroll - modal container stays fixed size */
+    overflow: visible; /* Frame images need to be visible, not clipped */
+    display: flex;
+    flex-direction: column;
+    /* Min-width ensures calc(100% - 360px) results in whole pixels, preventing sub-pixel gaps */
+    min-width: 500px;
+    
+    /* Frame images - positioned to form edges */
+    background-image: 
+        /* Corners at exact corners */
+        url('assets/images/ui/frame_top_left.png'),
+        url('assets/images/ui/frame_top_right.png'),
+        url('assets/images/ui/frame_bottom_left.png'),
+        url('assets/images/ui/frame_bottom_right.png'),
+        /* Middle sections - use calc to size only between corners */
+        url('assets/images/ui/frame_top_middle.png'),
+        url('assets/images/ui/frame_bottom_middle.png'),
+        url('assets/images/ui/frame_middle_left.png'),
+        url('assets/images/ui/frame_middle_right.png');
+    
+    background-size: 
+        /* Corners: exact size 180px x 180px */
+        180px 180px, 180px 180px, 180px 180px, 180px 180px,
+        /* Middle sections: stretch 1px images to fill space between corners (1px stretches cleanly) */
+        calc(100% - 360px) 180px,  /* Top: stretch 1px width to fill space between corners, height is 180px */
+        calc(100% - 360px) 180px,  /* Bottom: stretch 1px width to fill space between corners, height is 180px */
+        180px calc(100% - 360px),  /* Left: width is 180px, stretch 1px height to fill space between corners */
+        180px calc(100% - 360px);  /* Right: width is 180px, stretch 1px height to fill space between corners */
+    
+    background-repeat: no-repeat, no-repeat, no-repeat, no-repeat,  /* Corners: no repeat */
+                       no-repeat,  /* Top middle: no repeat (stretched to exact size) */
+                       no-repeat,  /* Bottom middle: no repeat (stretched to exact size) */
+                       no-repeat,  /* Left middle: no repeat (stretched to exact size) */
+                       no-repeat;  /* Right middle: no repeat (stretched to exact size) */
+    
+    background-position: 
+        top left, top right, bottom left, bottom right,  /* Corners at exact corners */
+        top 0 left 180px,      /* Top middle: starts 180px from left */
+        bottom 0 left 180px,   /* Bottom middle: starts 180px from left */
+        top 180px left 0,      /* Left middle: starts 180px from top */
+        top 180px right 0;     /* Right middle: starts 180px from top */
+    
+    background-origin: border-box; /* Background images positioned relative to border box */
+}
+
+/* Inner content wrapper - background color only fills content area (inside padding) */
+.modal-frame-9patch .modal-frame-content {
+    background-color: #071025;
+    width: 100%;
+    flex: 1; /* Fill available space in flex container */
+    min-height: 0; /* Allow flex item to shrink below content size */
+    overflow-y: auto; /* Allow scrolling when content exceeds viewport */
+    overflow-x: visible; /* Allow horizontal overflow for buttons if needed */
+    position: relative; /* For gradient mask positioning */
+    /* Firefox scrollbar styling */
+    scrollbar-width: thin;
+    scrollbar-color: rgba(34, 45, 75, 0.8) rgba(22, 33, 62, 0.3);
+    /* Webkit scrollbar styling */
+    -ms-overflow-style: -ms-autohiding-scrollbar;
+}
+
+/* Bottom gradient mask - fades from opaque to transparent over 80px */
+.modal-frame-9patch .modal-frame-content::after {
+    content: '';
+    position: sticky;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 30px;
+    background: linear-gradient(to bottom, transparent 0%, #071025 100%);
+    pointer-events: none; /* Allow clicks through */
+    z-index: 10; /* Ensure it's above content */
+    display: block;
+}
+
+/* Remove gradient mask for modals without frames */
+.modal-no-frame .modal-frame-content::after {
+    display: none;
+}
+
+.modal-frame-9patch .modal-frame-content::-webkit-scrollbar {
+    width: 10px;
+}
+
+.modal-frame-9patch .modal-frame-content::-webkit-scrollbar-track {
+    background: rgba(22, 33, 62, 0.3);
+    border-radius: 5px;
+}
+
+.modal-frame-9patch .modal-frame-content::-webkit-scrollbar-thumb {
+    background: rgba(34, 45, 75, 0.8);
+    border-radius: 5px;
+    border: 1px solid rgba(22, 33, 62, 0.5);
+}
+
+.modal-frame-9patch .modal-frame-content::-webkit-scrollbar-thumb:hover {
+    background: rgba(40, 52, 85, 0.9);
+}
+
+.modal.modal-upgrade-token h2 {
+    margin-bottom: 8px;
+}
+
+/* Level-up modal */
+.modal.modal-upgrade-token {
+    overflow: visible;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Overlay settings for level-up modal */
+.modal-overlay.upgrade-token-mask {
+    align-items: center;
+    overflow-y: auto;
+    padding: 20px;
+}
+
+
+/* Ensure modal content scales properly */
+.modal.modal-upgrade-token .modal-frame-content {
+    transform: none; /* Prevent double scaling */
+    flex: 0 1 auto !important; /* Don't grow, allow shrink, size to content - override flex: 1 */
+    min-height: auto !important; /* Don't force minimum height */
+    height: auto !important; /* Let content determine height */
+}
+
+.modal.skip-upgrade-modal {
+    padding-top: 75px;
+    padding-bottom: 60px;
+    min-width: 500px; /* Ensure modal is wide enough for "UPGRADE MORE" button */
+}
+
+.skip-upgrade-remaining {
+    margin-bottom: 0px;
+}
+
+.tower-upgrade-panel .tower-upgrade-top {
+    margin-bottom: 50px;
+}
+
+/* Custom scrollbar styling for modals */
+.modal::-webkit-scrollbar {
+    width: 10px;
+}
+
+.modal::-webkit-scrollbar-track {
+    background: rgba(22, 33, 62, 0.3);
+    border-radius: 5px;
+}
+
+.modal::-webkit-scrollbar-thumb {
+    background: rgba(34, 45, 75, 0.8); /* Slightly darker variant of modal background */
+    border-radius: 5px;
+    border: 1px solid rgba(22, 33, 62, 0.5);
+}
+
+.modal::-webkit-scrollbar-thumb:hover {
+    background: rgba(40, 52, 85, 0.9); /* Lighter on hover */
+}
+
+
+/* Background and blur layer - must match modal's background and extend with content */
+.modal::before {
+    display: none;
+}
+
+/* Boss wave modal - shift hue to red while keeping saturation and lightness */
+.modal.boss-wave-modal {
+    background: url('assets/images/ui/modal1.png') center/100% 100% no-repeat;
+    border: none;
+    box-shadow: none;
+    animation: none;
+}
+
+.modal.boss-wave-modal::before {
+    display: none;
+}
+
+/* Boss wave modal button borders - shift to red */
+.modal.boss-wave-modal .choice-btn {
+    border-color: #4a2a2a; /* Shifted from #2a2a4a (blue) to red */
+}
+
+/* Wave completion modal - shift hue to green */
+.modal.wave-complete-modal {
+    background: url('assets/images/ui/modal1.png') center/100% 100% no-repeat;
+    border: none;
+    box-shadow: none;
+    animation: none;
+}
+
+.modal.wave-complete-modal::before {
+    display: none;
+}
+
+.modal.wave-complete-modal .choice-btn {
+    border-color: #2a4a2a; /* Shifted from #2a2a4a (blue) to green */
+}
+
+/* Wave group completion modal - shift hue to gold/yellow (more saturated and bright) */
+.modal-overlay.wave-group-complete .modal {
+    background: url('assets/images/ui/modal1.png') center/100% 100% no-repeat;
+    border: none;
+    box-shadow: none;
+    animation: none;
+}
+
+.modal-overlay.wave-group-complete .modal::before {
+    display: none;
+}
+
+.modal-overlay.wave-group-complete .modal .choice-btn {
+    border-color: #B8860B; /* Bright gold */
+}
+
+.modal-overlay.wave-group-complete .modal h2 {
+    color: #FFD700; /* Gold color for title */
+    text-shadow: none;
+    animation: waveGroupCompleteTitle 1.5s ease-in-out infinite;
+}
+
+/* Glow animations */
+@keyframes bossWavePulse {
+    0%, 100% {
+        box-shadow: 0 0 30px rgba(200, 50, 50, 0.6), 0 0 60px rgba(200, 50, 50, 0.4);
+    }
+    50% {
+        box-shadow: 0 0 40px rgba(200, 50, 50, 0.8), 0 0 80px rgba(200, 50, 50, 0.6);
+    }
+}
+
+@keyframes waveCompletePulse {
+    0%, 100% {
+        box-shadow: 0 0 30px rgba(50, 200, 50, 0.6), 0 0 60px rgba(50, 200, 50, 0.4);
+    }
+    50% {
+        box-shadow: 0 0 40px rgba(50, 200, 50, 0.8), 0 0 80px rgba(50, 200, 50, 0.6);
+    }
+}
+
+@keyframes standardModalPulse {
+    0%, 100% {
+        box-shadow: 0 0 30px rgba(42, 58, 100, 0.6), 0 0 60px rgba(42, 58, 100, 0.4);
+    }
+    50% {
+        box-shadow: 0 0 40px rgba(42, 58, 100, 0.8), 0 0 80px rgba(42, 58, 100, 0.6);
+    }
+}
+
+/* Border on the modal itself - now handled by .modal border, ::after only for visual layering if needed */
+.modal::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    /* No border here - border is on .modal itself to extend with content */
+    border: none;
+    border-radius: 12px;
+    pointer-events: none;
+    z-index: 2; /* Above the blur layer */
+}
+
+/* Content wrapper - all direct children */
+.modal > * {
+    position: relative;
+    z-index: 3; /* Above border */
+}
+
+/* Exclude scenario dropdown container wrapper from opacity reduction */
+.modal > div[style*="margin: 20px 0"] {
+    opacity: 1 !important;
+}
+
+/* Handle scrollable content areas */
+.modal > div[style*="overflow"] {
+    overflow-y: auto !important;
+    max-height: inherit;
 }
 
 .modal h2 {
     color: #ff6b35;
     font-size: 32px;
-    margin-bottom: 10px;
+    margin-bottom: 24px;
     text-align: center;
+    transform: translateY(-10px);
 }
 
 .modal-subtitle {
-    color: #aaa;
+    color: #ffffff;
     text-align: center;
     margin-bottom: 30px;
 }
 
 .modal-choices {
     display: flex;
-    flex-direction: column;
-    gap: 12px;
+    flex-direction: row;
+    justify-content: center;
+    align-items: center;
+    position: relative;
+    z-index: 1;
 }
 
-.choice-btn {
+/* Settings Panel Styles */
+.settings-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+    margin: 20px 0;
+}
+
+.setting-item {
+    padding: 15px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+}
+
+.setting-slider {
+    width: 100%;
+    height: 6px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.1);
+    outline: none;
+    -webkit-appearance: none;
+    appearance: none;
+}
+
+.setting-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #4CAF50;
+    cursor: var(--cursor-default);
+    transition: all 0.2s;
+}
+
+.setting-slider::-webkit-slider-thumb:hover {
+    background: #66BB6A;
+    transform: scale(1.1);
+}
+
+.setting-slider::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #4CAF50;
+    cursor: var(--cursor-default);
+    border: none;
+    transition: all 0.2s;
+}
+
+.setting-slider::-moz-range-thumb:hover {
+    background: #66BB6A;
+    transform: scale(1.1);
+}
+
+/* Toggle Switch */
+.toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 50px;
+    height: 24px;
+}
+
+.toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.toggle-slider {
+    position: absolute;
+    cursor: var(--cursor-default);
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(255, 255, 255, 0.2);
+    transition: 0.3s;
+    border-radius: 24px;
+}
+
+.toggle-slider:before {
+    position: absolute;
+    content: "";
+    height: 18px;
+    width: 18px;
+    left: 3px;
+    bottom: 3px;
+    background-color: white;
+    transition: 0.3s;
+    border-radius: 50%;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+    background-color: #4CAF50;
+}
+
+.toggle-switch input:checked + .toggle-slider:before {
+    transform: translateX(26px);
+}
+
+.toggle-switch input:hover + .toggle-slider {
+    box-shadow: 0 0 8px rgba(76, 175, 80, 0.5);
+}
+
+.choice-btn:not(.cta-button) {
     padding: 16px 24px;
-    background: rgba(255, 255, 255, 0.05);
+    color: #fff;
+    font-size: 16px;
+    font-weight: bold;
+}
+
+/* CTA buttons get their padding from .cta-button, not from .choice-btn */
+.choice-btn.cta-button {
+    /* padding-left and padding-right come from .cta-button (28px each) */
+    /* padding-top and padding-bottom are handled by .cta-button height (66px) with vertical centering */
+    /* font-size, font-weight, letter-spacing, and text-transform come from .cta-button */
+    /* Don't override - let .cta-button handle it */
+    color: #fff;
+    width: 100%; /* Fill container like tab buttons fill their flex space */
+    display: flex; /* Use flex to center content vertically */
+    align-items: center; /* Center content vertically */
+    justify-content: center; /* Center content horizontally */
+}
+
+/* Upgrade modal buttons - match hover behavior used elsewhere */
+.upgrade-modal-btn {
+    transition: all 0.3s;
+}
+
+/* Hover effect for upgrade choice buttons (not CTA buttons) */
+.upgrade-modal-btn:hover:not(.cta-button) {
+    background: var(--btn-bg-hover);
+    border-color: var(--btn-border-hover);
+    transform: translateY(-2px);
+}
+
+#upgradeButtons {
+    .upgrade-modal-btn:first-child {
+        transform:translateX(20px);
+    }
+    .upgrade-modal-btn:last-child {
+        transform:translateX(-20px);
+    }
+}
+
+/* CTA buttons use filter hover effect, not background colors - defined earlier in file */
+
+/* Rename input field */
+.rename-input {
+    width: 100%;
+    padding: 12px 16px;
+    background: rgba(255, 255, 255, 0.1);
     border: 2px solid #2a2a4a;
     border-radius: 8px;
     color: #fff;
     font-size: 16px;
-    font-weight: bold;
-    cursor: pointer;
+    font-family: inherit;
+    margin-bottom: 20px;
+    box-sizing: border-box;
     transition: all 0.3s;
 }
 
-.choice-btn:hover {
-    background: rgba(33, 150, 243, 0.2);
+.rename-input:focus {
+    outline: none;
     border-color: #2196F3;
-    transform: translateX(4px);
+    background: rgba(255, 255, 255, 0.15);
+}
+
+.rename-input::placeholder {
+    color: rgba(255, 255, 255, 0.5);
 }
 
 .game-over-stats,
 .wave-stats {
-    background: rgba(255, 255, 255, 0.05);
     border-radius: 8px;
-    padding: 20px;
-    margin-bottom: 20px;
+    padding: 0;
+    margin-bottom: 30px; /* Add spacing between stats and buttons */
 }
 
 .game-over-stats p,
 .wave-stats p {
     padding: 8px 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Game Over Modal specific styling */
+#gameOverModal .modal-frame-content {
+    padding-left: 40px; /* More padding on left */
+    padding-right: 40px; /* More padding on right */
+}
+
+/* Scenario Dropdown */
+.scenario-dropdown-container {
+    position: relative;
+    z-index: 10;
+    /* Create stacking context for dropdown menu */
+    isolation: isolate;
+    /* Override modal > * opacity to prevent it from affecting dropdown menu */
+    opacity: 1 !important;
+}
+
+.scenario-dropdown {
+    position: relative;
+    width: 100%;
+    z-index: 1;
+}
+
+.scenario-dropdown-selected {
+    padding: 12px 16px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 2px solid #2a2a4a;
+    border-radius: 8px;
+    cursor: var(--cursor-default);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: all 0.3s;
+}
+
+.scenario-dropdown-selected:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: #4CAF50;
+}
+
+.scenario-dropdown-selected.active {
+    border-color: #4CAF50;
+    box-shadow: 0 0 10px rgba(76, 175, 80, 0.3);
+}
+
+.scenario-dropdown-selected:active {
+    transform: translateY(2px);
+}
+
+.scenario-dropdown-arrow {
+    transition: transform 0.3s;
+    color: #aaa;
+}
+
+.scenario-dropdown-selected.active .scenario-dropdown-arrow {
+    transform: rotate(180deg);
+}
+
+.scenario-dropdown-menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    margin-top: 4px;
+    background: rgba(22, 33, 62, 0.95) !important; /* More opaque for better readability */
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    backdrop-filter: blur(20px) saturate(180%);
+    border: 2px solid #2a2a4a;
+    border-radius: 8px;
+    max-height: 300px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    display: none;
+    z-index: 3000 !important;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+    /* Override modal > * opacity - backdrop-filter needs proper opacity control */
+    opacity: 1 !important;
+    /* Force hardware acceleration for blur */
+    transform: translateZ(0);
+    will-change: backdrop-filter;
+    /* Create a new stacking context */
+    isolation: isolate;
+    /* Ensure it actually covers content */
+    min-height: 40px;
+}
+
+.scenario-dropdown-menu.active {
+    display: block !important;
+}
+
+.scenario-dropdown-option {
+    padding: 12px 16px;
+    cursor: var(--cursor-default);
+    transition: all 0.2s;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.scenario-dropdown-option:last-child {
+    border-bottom: none;
+}
+
+.scenario-dropdown-option:hover {
+    background: rgba(76, 175, 80, 0.2);
+    color: #4CAF50;
+}
+
+.scenario-dropdown-option:active {
+    transform: translateY(2px);
+}
+
+.scenario-dropdown-option.selected {
+    background: rgba(76, 175, 80, 0.3);
+    color: #4CAF50;
+    font-weight: bold;
+}
+
+.choice-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.choice-btn:disabled:hover {
+    transform: none;
 }
 
 /* Dragging States */
 .dragging {
     opacity: 0.5;
-    cursor: grabbing;
+    cursor: var(--cursor-drag);
 }
 
 .drag-preview {
@@ -412,9 +2174,12 @@ body {
     width: 8px;
 }
 
-.side-panel::-webkit-scrollbar-track,
-.tab-content::-webkit-scrollbar-track {
+.side-panel::-webkit-scrollbar-track {
     background: #1a2332;
+}
+
+.tab-content::-webkit-scrollbar-track {
+    background: #071025; /* Match container background so only thumb is visible */
 }
 
 .side-panel::-webkit-scrollbar-thumb,
@@ -426,6 +2191,12 @@ body {
 .side-panel::-webkit-scrollbar-thumb:hover,
 .tab-content::-webkit-scrollbar-thumb:hover {
     background: #3a3a5a;
+}
+
+/* Firefox scrollbar styling for tab-content */
+.tab-content {
+    scrollbar-width: thin;
+    scrollbar-color: #2a2a4a #071025; /* thumb track - match background so only thumb is visible */
 }
 
 /* Inventory badge bounce animation - SUPER dramatic */
@@ -485,3 +2256,2170 @@ body {
     }
 }
 
+/* Expanding ring animation for upgradeable inventory towers */
+@keyframes upgradeRingExpand {
+    0% {
+        transform: translate(-50%, -50%) scale(1);
+        opacity: 1;
+    }
+    100% {
+        transform: translate(-50%, -50%) scale(1.15);
+        opacity: 0;
+    }
+}
+
+/* CSS class for upgradeable inventory towers with expanding ring effect */
+/* Size pulse animation for upgradeable towers in inventory (upgrade mode only) */
+.inventory-item.upgradeable-size-pulse,
+.upgradeable-size-pulse {
+    animation: inventorySizePulse 1s ease-in-out infinite;
+}
+
+@keyframes inventorySizePulse {
+    0%, 100% {
+        transform: scale(1);
+    }
+    50% {
+        transform: scale(1.1);
+    }
+}
+
+/* Level-up modal pulse animation - twice as slow as inventory pulse */
+@keyframes levelUpSizePulse {
+    0%, 100% {
+        transform: scale(0.9);
+    }
+    50% {
+        transform: scale(1);
+    }
+}
+
+/* Resume button pulse animation - matches upgradeable inventory items */
+.cta-button.resume-pulse {
+    animation: inventorySizePulse 1s ease-in-out infinite;
+}
+
+/* Dim non-upgradeable items in upgrade mode */
+.inventory-item.upgrade-mode-dimmed {
+    opacity: 0.4;
+    filter: brightness(0.6);
+    pointer-events: none;
+}
+
+/* Keep the pink pulse for map towers (not inventory) */
+.inventory-item.upgradeable-pulse {
+    position: relative;
+    border-color: #ff67e7 !important;
+    overflow: visible; /* Allow rings to extend beyond border */
+    z-index: 1; /* Ensure rings appear above other elements */
+}
+
+.inventory-item.upgradeable-pulse::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 100%;
+    height: 100%;
+    border: 3px solid #ff67e7;
+    border-radius: 10px;
+    pointer-events: none;
+    animation: upgradeRingExpand 0.9375s ease-out infinite;
+    box-shadow: 0 0 10px rgba(255, 103, 231, 0.7);
+    transform-origin: center;
+}
+
+.inventory-item.upgradeable-pulse::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 100%;
+    height: 100%;
+    border: 3px solid #ff67e7;
+    border-radius: 10px;
+    pointer-events: none;
+    animation: upgradeRingExpand 0.9375s ease-out infinite 0.46875s;
+    box-shadow: 0 0 10px rgba(255, 103, 231, 0.7);
+    transform-origin: center;
+}
+
+/* Upgrade Tokens Styling */
+.upgrade-tokens {
+    position: relative;
+    padding: 0;
+    border-radius: 4px;
+    background: transparent;
+    border: none !important;
+    transition: none;
+    user-select: none;
+}
+
+.upgrade-tokens:hover {
+    background: transparent;
+    border: none !important;
+    box-shadow: none;
+    transform: none;
+}
+
+.upgrade-tokens.clickable {
+    animation: tokenPulse 2s infinite;
+}
+
+.upgrade-tokens.disabled {
+    color: #666 !important;
+    background: transparent !important;
+    border: none !important;
+    cursor: not-allowed !important;
+    animation: none !important;
+}
+
+.upgrade-tokens.disabled:hover {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    transform: none !important;
+}
+
+@keyframes tokenPulse {
+    0% {
+        box-shadow: 0 0 5px rgba(255, 0, 255, 0.3);
+    }
+    50% {
+        box-shadow: 0 0 15px rgba(255, 0, 255, 0.6);
+    }
+    100% {
+        box-shadow: 0 0 5px rgba(255, 0, 255, 0.3);
+    }
+}
+
+/* Newly unlocked items - yellow frame background, no glow/shimmer, keep UNLOCKED text */
+.inventory-item.newly-unlocked {
+    position: relative;
+    /* Yellow frame background (overrides blue/purple/red frames) */
+    background-image: url('assets/images/ui/frame-yellow.png') !important;
+    /* Size pulse animation - no glow/shimmer */
+    animation: inventorySizePulse 1.5s ease-in-out infinite;
+}
+
+/* Keep yellow frame on hover for newly unlocked items */
+.inventory-item.newly-unlocked:hover:not(.locked) {
+    background-image: url('assets/images/ui/frame-yellow.png') !important;
+}
+
+/* Remove shimmer effect from newly unlocked items */
+.inventory-item.newly-unlocked::before {
+    display: none; /* Remove shimmer effect */
+}
+
+/* Keep UNLOCKED text for newly unlocked items */
+.inventory-item.newly-unlocked::after {
+    content: 'UNLOCKED';
+    position: absolute;
+    top: 12px;
+    right: -8px;
+    font-size: 11px;
+    font-weight: bold;
+    color: #FFD700;
+    text-shadow: 
+        2px 2px 4px rgba(0, 0, 0, 1);
+    transform: rotate(40deg);
+    z-index: 2;
+    pointer-events: none;
+    /* No animation - static text */
+    letter-spacing: 0px;
+    white-space: nowrap;
+}
+
+/* Overlay Panels */
+.overlay-panel {
+    position: absolute;
+    border-radius: 8px;
+    padding: 0;
+    z-index: 100;
+    min-width: 160px; /* Reduced by 20px from 180px */
+    overflow: hidden;
+    background: transparent;
+    border: none;
+}
+
+/* Background image layer */
+.overlay-panel::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: url('assets/images/ui/modal8.png') center/100% 100% no-repeat;
+    border-radius: 8px;
+    z-index: -1;
+}
+
+/* Content wrapper */
+.overlay-panel > * {
+    position: relative;
+    z-index: 2;
+    opacity: 1; /* Full opacity - no muting */
+}
+
+.overlay-panel .overlay-content {
+    padding: 8px 28px 35px 30px;
+}
+
+.overlay-top-left {
+    top: 3px;
+    left: 0px;
+    min-width: 210px;
+}
+
+.overlay-debug-selector {
+    top: 3px; /* Same top as top-left panel */
+    left: 203px; /* 16px (left) + 175px (min-width of top-left) + 5px (spacing) = 196px */
+    min-width: 160px;
+    max-width: 160px;
+    z-index: 101; /* Ensure it's above other panels */
+}
+.overlay-panel.overlay-debug-selector .overlay-content {
+    padding-left: 22px;
+    padding-right: 22px;
+}
+
+.overlay-content-debug {
+    gap: 5px !important;
+    padding-top: 0 !important;
+    padding-bottom: 32px !important;
+}
+
+.overlay-debug-selector .overlay-row {
+    margin: 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    min-height: 0;
+}
+
+.overlay-debug-selector .overlay-row .overlay-label {
+    margin: 0;
+}
+
+.overlay-debug-selector .debug-buttons-row {
+    margin: 0 !important;
+    padding: 0 !important;
+}
+
+.debug-input {
+    width: 60px;
+    padding: 2px 4px;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 4px;
+    color: #fff;
+    text-align: center;
+    font-size: inherit;
+}
+
+.debug-input-compact {
+    width: 36px;
+    padding: 2px 2px;
+    min-width: 0;
+}
+
+.debug-row-inline {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.debug-row-nowrap {
+    flex-wrap: nowrap !important;
+}
+
+.debug-row-inline .debug-input-compact {
+    flex-shrink: 0;
+}
+
+.debug-row-inline .cta-button {
+    flex-shrink: 0;
+    margin: 0;
+}
+
+/* Simple debug buttons (no glow effect, compact) */
+.debug-btn {
+    flex-shrink: 0;
+    margin: 0;
+    padding: 4px 8px;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 2px;
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+    font-size: 11px;
+    transition: transform 0.08s ease-out;
+    font-weight: 500;
+    cursor: var(--cursor-default);
+    transition: background 0.15s, border-color 0.15s;
+    white-space: nowrap;
+    text-align: center;
+    min-width: 32px;
+}
+
+.debug-btn:hover {
+    background: rgba(0, 0, 0, 0.8);
+    border-color: rgba(255, 255, 255, 0.5);
+}
+
+.debug-btn:active {
+    background: rgba(0, 0, 0, 0.9);
+    transform: translateY(2px);
+}
+
+/* Debug button colors */
+.debug-btn-blue {
+    background: rgba(30, 60, 120, 0.7);
+    border-color: rgba(80, 140, 220, 0.6);
+}
+
+.debug-btn-blue:hover {
+    background: rgba(30, 60, 120, 0.9);
+    border-color: rgba(80, 140, 220, 0.8);
+}
+
+.debug-btn-red {
+    background: rgba(120, 30, 30, 0.7);
+    border-color: rgba(220, 80, 80, 0.6);
+}
+
+.debug-btn-red:hover {
+    background: rgba(120, 30, 30, 0.9);
+    border-color: rgba(220, 80, 80, 0.8);
+}
+
+.debug-btn-green {
+    background: rgba(30, 120, 60, 0.7);
+    border-color: rgba(80, 220, 140, 0.6);
+}
+
+.debug-btn-green:hover {
+    background: rgba(30, 120, 60, 0.9);
+    border-color: rgba(80, 220, 140, 0.8);
+}
+
+.debug-btn-yellow {
+    background: rgba(120, 100, 30, 0.7);
+    border-color: rgba(220, 180, 80, 0.6);
+}
+
+.debug-btn-yellow:hover {
+    background: rgba(120, 100, 30, 0.9);
+    border-color: rgba(220, 180, 80, 0.8);
+}
+
+/* Debug buttons that wrap to two lines so they fit on one row */
+.debug-btn-wrap {
+    white-space: normal;
+    word-break: break-word;
+    max-width: 4.2em;
+    line-height: 1.15;
+    padding: 4px 6px;
+}
+
+.debug-row-level {
+    justify-content: space-between;
+}
+
+.debug-buttons-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin: 0;
+    padding: 0;
+}
+.debug-buttons-row .cta-button {
+    margin: 0;
+    color: #fff !important;
+}
+
+/* Map Fires / Map Towers / Map Items: align values in a column, left-aligned */
+.overlay-row-values-column {
+    justify-content: flex-start;
+}
+.overlay-row-values-column .overlay-label {
+    min-width: 95px; /* Fixed width so values align in a column */
+}
+.overlay-row-values-column .overlay-value {
+    min-width: 28px;
+    text-align: left;
+}
+
+.overlay-bottom-left {
+    bottom: 16px;
+    left: 16px;
+}
+
+.overlay-bottom-right {
+    bottom: 16px;
+    right: 16px;
+}
+
+.overlay-content {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.overlay-row {
+    display: flex;
+    justify-content: flex-start;
+    align-items: center;
+    padding: 0px 0px;
+}
+
+
+.overlay-row-right {
+    justify-content: flex-start;
+    transform:translateX(-16px);
+}
+
+.overlay-label {
+    color: #FFFFFF;
+    font-size: 15px;
+    font-weight: normal;
+    min-width: 60px;
+    flex-shrink: 0;
+}
+
+.overlay-value {
+    color: #fff;
+    font-weight: bold;
+    font-size: 15px;
+    text-align: left;
+    flex: 0 0 auto;
+}
+
+/* Currency, upgrade plans, and movement tokens - larger font and left-aligned to match progress bars */
+.overlay-value#overlayCurrency,
+.overlay-value.upgrade-tokens,
+.overlay-value.movement-tokens {
+    font-size: 21px;
+    flex: 0 0 auto;
+    margin-left: 0;
+    text-align: left;
+}
+
+/* Ensure overlay-label in currency/upgrade/movement rows matches progress label width */
+.overlay-row-resource .overlay-label {
+    min-width: auto;
+    width: auto;
+    flex-shrink: 0;
+}
+
+/* Color for fire-count, overlayPlacedTowers, and overlayPlacedItems is now set dynamically in updateUI() */
+
+.overlay-timer {
+    font-size: 46px;
+    line-height:40px;
+    font-weight: bold;
+    color: white;
+    text-align: center;
+    margin: 0px 0;
+    text-shadow: 0 0 10px rgba(255, 107, 53, 0.5);
+    transform:translateY(-5px);
+}
+
+/* Progress Bar Container - matches reference UI kit design */
+.overlay-progress-bar-container {
+    display: flex;
+    align-items: center;
+    margin: 0 0;
+    width: 100%;
+}
+
+/* Level + XP combined row: level hex with number overlay on left, XP bar on right */
+.overlay-level-hex-wrap {
+    position: relative;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px; /* 30px * 1.25 ≈ 38px */
+    height: 38px;
+    transform:translate(-4px, 2px);
+}
+.overlay-level-hex {
+    width: 44px;
+    height: 44px;
+    object-fit: contain;
+    image-rendering: pixelated;
+    display: block;
+}
+.overlay-level-value {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -65%);
+    font-size: 21px;
+    font-weight: bold;
+    color: #FFB41F;
+    pointer-events: none;
+    text-align: center;
+    line-height: 1;
+    text-shadow: 0 0 1px black, 0 0 2px black, 0 0 10px black, 0 0 20px black;
+}
+
+.overlay-progress-label {
+    color: #FFFFFF; /* Default white */
+    font-size: 15px;
+    font-weight: bold;
+    flex-shrink: 0;
+}
+
+/* XP label - yellow to match fill */
+.overlay-progress-bar-container:not(.overlay-hp-container) .overlay-progress-label {
+    color: #FCD619; /* Yellow to match XP fill */
+}
+
+/* HP label - green to match fill */
+.overlay-hp-container .overlay-progress-label {
+    color: #80FF22; /* Green to match HP fill */
+}
+
+.overlay-progress-bar {
+    flex: 1;
+    position: relative;
+    height: 24px; /* Taller bars like reference */
+    background: rgba(30, 30, 30, 0.95); /* Dark gray background matching reference */
+    border: 1px solid rgba(180, 180, 180, 0.4); /* Light gray border matching reference */
+    border-radius: 5px; /* Rounded corners all around */
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* XP bar border - yellow to match fill */
+.overlay-progress-bar-container:not(.overlay-hp-container) .overlay-progress-bar {
+    border-color: #FCD619; /* Yellow border to match XP fill */
+}
+
+/* HP bar border - green to match fill */
+.overlay-hp-container .overlay-progress-bar {
+    border-color: #80FF22; /* Green border to match HP fill */
+}
+
+/* If using background images from UI kit, uncomment and adjust these: */
+/* 
+.overlay-progress-bar {
+    background-image: url('assets/images/ui/progress_bar_bg.png');
+    background-size: 100% 100%;
+    background-repeat: no-repeat;
+    border: none;
+    clip-path: none;
+}
+*/
+
+.overlay-progress-fill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
+    width: 0%;
+    transition: width 0.3s ease;
+    z-index: 1;
+    border-radius: 4px; /* Rounded corners all around */
+}
+
+/* If using background images from UI kit for the fill, uncomment and adjust: */
+/*
+.overlay-xp-fill {
+    background-image: url('assets/images/ui/progress_bar_xp_fill.png');
+    background-size: 100% 100%;
+    background-repeat: no-repeat;
+    clip-path: none;
+}
+
+.overlay-hp-fill {
+    background-image: url('assets/images/ui/progress_bar_hp_fill.png');
+    background-size: 100% 100%;
+    background-repeat: no-repeat;
+    clip-path: none;
+}
+*/
+
+.overlay-xp-fill {
+    background: #FCD619; /* Solid yellow color for XP bar */
+}
+
+.overlay-hp-fill {
+    background: #80FF22; /* Solid green color for HP bar */
+}
+
+.overlay-progress-text {
+    position: relative;
+    z-index: 2;
+    color: #FFFFFF;
+    font-size: 13px;
+    font-weight: bold;
+    text-align: center;
+    white-space: nowrap;
+    text-shadow: 0 0 1px black, 0 0 2px black, 0 0 10px black, 0 0 20px black; /* Text shadow for readability */
+    pointer-events: none; /* Allow clicks through to underlying elements */
+}
+
+#overlayTownHealth {
+    color: #FFFFFF; /* White color for tree juice numbers */
+}
+
+/* Power-up List */
+.powerup-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.powerup-list::-webkit-scrollbar {
+    width: 6px;
+}
+
+.powerup-list::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 3px;
+}
+
+.powerup-list::-webkit-scrollbar-thumb {
+    background: rgba(255, 107, 53, 0.5);
+    border-radius: 3px;
+}
+
+.powerup-list::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 107, 53, 0.7);
+}
+
+/* Toast Notification Styles */
+.toast-notification-container {
+    position: absolute;
+    bottom: 86px;
+    left: 16px;
+    z-index: 99999 !important;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.toast-notification {
+    border-radius: 8px;
+    padding: 12px 20px;
+    color: #fff;
+    font-size: 14px;
+    font-weight: 500;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.8), 0 0 20px rgba(76, 175, 80, 0.3);
+    opacity: 0;
+    transform: translateY(-20px);
+    transition: opacity 0.3s ease, transform 0.3s ease;
+    white-space: nowrap;
+    max-width: 90vw;
+    text-align: center;
+    z-index: 99999 !important;
+    position: relative;
+    overflow: hidden; /* Ensure blur layer doesn't overflow */
+}
+
+/* Blur layer behind the toast notification */
+.toast-notification::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(22, 33, 62, 0.75);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    backdrop-filter: blur(20px) saturate(180%);
+    border-radius: 8px;
+    z-index: -1;
+}
+
+/* Border on the toast notification */
+.toast-notification::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    border: 2px solid rgba(76, 175, 80, 0.6);
+    border-radius: 8px;
+    pointer-events: none;
+    z-index: 1;
+}
+
+/* Content wrapper - don't apply opacity here as toast has its own opacity transitions */
+.toast-notification > * {
+    position: relative;
+    z-index: 2;
+}
+
+.toast-notification.toast-visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.toast-notification.toast-fading {
+    opacity: 0;
+    transform: translateY(-20px);
+}
+
+/* Minimap Styles */
+/* Minimap canvas - positioned exactly where it should be */
+.minimap-canvas {
+    position: absolute;
+    top: 4px;
+    right: 13px;
+    width: 200px;
+    height: 200px;
+    display: block;
+    background: transparent;
+    opacity: 0.8; /* 80% opacity for entire minimap */
+    /* Clip to flat-top hexagon shape to match minimap hex orientation */
+    clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
+    z-index: 51; /* Above the blur wrapper */
+    pointer-events: none;
+    transition: transform 0.2s ease-in-out; /* Faster transition for sidebar shift */
+}
+
+/* Blur wrapper - positioned to match minimap, but smaller and centered on it */
+.minimap-blur-background {
+    position: absolute;
+    /* Minimap is at top: 4px, right: 13px, size 200x200 */
+    /* Minimap center: top = 4 + 100 = 104px, right = 13 + 100 = 113px */
+    /* Wrapper is 170x148 (reduced by 1px on top and bottom from 170x150) */
+    /* To center: top = 104 - 74 = 30px, right = 113 - 85 = 28px */
+    top: 30px;
+    right: 28px;
+    width: 170px; /* 5px smaller on each side from 180px */
+    height: 148px; /* 1px smaller on top and bottom from 150px */
+    z-index: 50; /* Behind the canvas */
+    pointer-events: none;
+    /* Apply blur to background behind the minimap - blurs the main game canvas */
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    backdrop-filter: blur(20px) saturate(180%);
+    /* Clip to flat-top hexagon shape to match minimap hex orientation */
+    clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
+    overflow: hidden;
+    /* Ensure backdrop-filter works by creating proper stacking context */
+    isolation: isolate;
+    transform: translateZ(0);
+    transition: transform 0.2s ease-in-out; /* Faster transition for sidebar shift */
+}
+
+/* Tooltip Styles - match modal pattern exactly */
+#game-tooltip {
+    position: fixed !important; /* Fixed positioning to appear above sidebar (which is also fixed) */
+    overflow: hidden; /* Ensure blur layer doesn't overflow */
+    background: transparent; /* Transparent - blur is in ::before */
+    border: none; /* Border is in ::after */
+    /* Ensure tooltip is above canvas and sidebar (sidebar z-index: 100) */
+    z-index: 99999 !important;
+}
+
+/* Blur layer behind the tooltip - same pattern as modals */
+#game-tooltip::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(13, 18, 26, 0.6); /* Darkened background color (COLOR_BACKGROUND #101620 darkened by 20%) */
+    -webkit-backdrop-filter: blur(10px) saturate(150%);
+    backdrop-filter: blur(10px) saturate(150%);
+    border-radius: 8px;
+    z-index: -1; /* Behind content but can still blur what's behind the tooltip */
+    /* Force hardware acceleration for blur */
+    transform: translateZ(0);
+    will-change: backdrop-filter;
+}
+
+/* Border on the tooltip itself */
+#game-tooltip::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    border: 2px solid rgba(40, 55, 85, 0.6); /* Match overlay panel border color */
+    border-radius: 8px;
+    pointer-events: none;
+    z-index: 1; /* Above the blur layer */
+}
+
+/* Content wrapper - ensure content is above blur and border */
+#game-tooltip > * {
+    position: relative;
+    z-index: 2; /* Above border */
+    opacity: 1; /* 85% opacity for content */
+}
+
+/* Wave Countdown Timer Styles */
+.wave-countdown-container {
+    position: absolute;
+    bottom: 40px;
+    left: 40px;
+    z-index: 99999 !important;
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.wave-countdown-container * {
+    pointer-events: auto;
+}
+
+.clear-all-items-btn {
+    /* padding-left and padding-right come from .cta-button (28px each) */
+    /* font-size, font-weight, letter-spacing, and text-transform come from .cta-button */
+    /* Don't override - let .cta-button handle it */
+    color: #fff;
+    z-index: 1000;
+    position: relative;
+    top: 24px;
+    left: 142px;
+    width: auto; /* Auto width based on content, respecting .cta-button padding */
+}
+
+.clear-all-items-btn .clear-all-items-icon {
+    height: 1.2em;
+    width: auto;
+    vertical-align: middle;
+    margin-right: 0.5em;
+    image-rendering: crisp-edges;
+}
+
+.clear-all-items-btn:active {
+    transform: translateY(0);
+}
+
+.wave-countdown-display {
+    font-size: 120px;
+    font-weight: bold;
+    color: #fff;
+    text-shadow: 0 0 20px rgba(255, 255, 255, 0.8), 0 0 40px rgba(76, 175, 80, 0.6);
+    opacity: 0;
+    transform: scale(0.5);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    line-height: 1;
+    user-select: none;
+}
+
+.wave-countdown-display.countdown-visible {
+    opacity: 1;
+    transform: scale(1);
+}
+
+.wave-countdown-display.countdown-fade {
+    opacity: 0;
+    transform: scale(1.2);
+    transition: opacity 0.3s ease-out, transform 0.3s ease-out; /* Smooth fade out transition */
+}
+
+/* Countdown Arrow Styles */
+.countdown-arrow {
+    position: absolute;
+    width: 400px; /* Double the size (was 200px) */
+    height: auto;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%) translateX(-30px);
+    opacity: 0;
+    z-index: -1; /* Behind the text */
+    pointer-events: none;
+    user-select: none;
+}
+
+.countdown-arrow.countdown-arrow-visible {
+    opacity: 1;
+    animation: countdown-arrow-slide-continuous 1.8s linear; /* Much slower, more gradual rightward movement */
+}
+
+.countdown-arrow.countdown-arrow-fade {
+    opacity: 0;
+    animation: countdown-arrow-slide-continuous 1.8s linear, countdown-arrow-fade-out 0.3s ease-out forwards;
+    transition: opacity 0.3s ease-out; /* Smooth fade out transition */
+}
+
+@keyframes countdown-arrow-slide-continuous {
+    from {
+        transform: translate(-50%, -50%) translateX(-30px);
+    }
+    to {
+        transform: translate(-50%, -50%) translateX(100px); /* Continue shifting right throughout display */
+    }
+}
+
+@keyframes countdown-arrow-fade-out {
+    from {
+        opacity: 1;
+    }
+    to {
+        opacity: 0;
+    }
+}
+
+/* Save/Load Game Modals */
+.save-slots-container {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin: 20px 0;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.save-slot {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 15px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 2px solid #2a2a4a;
+    border-radius: 8px;
+    transition: all 0.3s;
+    min-width: 0; /* Allow flex items to shrink below content size if needed */
+    overflow: visible; /* Allow buttons to be visible */
+    width: 100%; /* Ensure full width is available */
+    box-sizing: border-box; /* Include padding in width calculation */
+    gap: 20px; /* Add gap between info and actions instead of margin */
+    min-height: 60px; /* Ensure slots have adequate height */
+}
+
+.save-slot:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: #4CAF50;
+}
+
+.save-slot.autosave {
+    border-color: #FFD700;
+    background: rgba(255, 215, 0, 0.1);
+}
+
+.save-slot-info {
+    flex: 1 1 0%; /* Can grow and shrink, start from 0% to allow actions priority */
+    min-width: 0; /* Allow flex item to shrink below content size */
+    overflow: hidden; /* Prevent text from overflowing */
+    text-overflow: ellipsis; /* Show ellipsis if text is too long */
+}
+
+.save-slot-name {
+    color: #ffffff;
+    font-size: 16px;
+    font-weight: bold;
+    margin-bottom: 4px;
+}
+
+.save-slot-details {
+    color: #ffffff;
+    font-size: 12px;
+}
+
+.save-slot-level {
+    color: #FCD619;
+}
+
+.save-slot-currency {
+    color: #80FF22;
+}
+
+.save-slot-actions {
+    display: flex;
+    flex-shrink: 0 !important; /* Never shrink the actions container - use !important to override any conflicting rules */
+    flex-grow: 0; /* Don't grow the actions container */
+    flex-basis: auto; /* Base size on content */
+    flex-wrap: nowrap; /* Prevent buttons from wrapping */
+    align-items: center;
+    width: auto; /* Let width be determined by content */
+}
+
+.save-slot-btn {
+    color: #fff;
+    font-size: 12px;
+    font-weight: bold;
+    white-space: nowrap; /* Prevent text from wrapping */
+    min-width: 84px; /* Minimum width to accommodate endcaps (28px each) + icon */
+    width: 84px; /* Fixed width for icon buttons with endcaps */
+    height: 66px; /* Match cta-button height */
+    flex-shrink: 0; /* Prevent button from shrinking */
+    flex-grow: 0; /* Don't grow the button */
+    box-sizing: border-box; /* Include padding in width calculation */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: visible; /* Ensure icons aren't clipped */
+    /* Padding is handled by .cta-button (28px left/right) */
+}
+
+.save-slot-icon {
+    width: 28px; /* Icon size that fits within button content area */
+    height: 28px; /* Icon size that fits within button content area */
+    image-rendering: crisp-edges;
+    object-fit: contain;
+    display: block;
+}
+
+
+.save-success-notification {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    padding: 12px 24px;
+    background: rgba(76, 175, 80, 0.9);
+    border: 2px solid #4CAF50;
+    border-radius: 8px;
+    color: #fff;
+    font-weight: bold;
+    z-index: 2000;
+    animation: slideInRight 0.3s ease-out;
+}
+
+@keyframes slideInRight {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+/* Auto-saving Indicator */
+.auto-saving-indicator {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%) translateY(-100px);
+    padding: 12px 24px;
+    background: rgba(33, 150, 243, 0.9);
+    border: 2px solid #2196F3;
+    border-radius: 8px;
+    color: #fff;
+    font-weight: bold;
+    z-index: 1500;
+    opacity: 0;
+    transition: all 0.3s ease;
+    pointer-events: none;
+}
+
+.auto-saving-indicator.active {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+}
+
+.auto-saving-indicator .auto-saving-icon {
+    height: 2em;
+    width: auto;
+    vertical-align: middle;
+    margin-right: 6px;
+}
+
+/* Story Screen */
+.story-screen {
+    background: rgba(0, 0, 0, 0.95);
+    z-index: 2000;
+    padding: 0;
+}
+
+.story-screen-container {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: var(--cursor-default);
+}
+
+.story-panel {
+    width: 90%;
+    max-width: 1200px;
+    min-height: 600px;
+    max-height: calc(100vh - 40px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.story-panel-content {
+    display: grid;
+    grid-template-columns: 1.5fr 1fr;
+    gap: 0;
+    align-items: center;
+    width: 100%;
+    min-height: 100%;
+}
+
+/* Left column: text (visually reordered) - no 9patch frame, content over overlay like placement/complete */
+.story-text-frame.modal-frame-9patch {
+    order: 1;
+    min-width: 0;
+    max-height: none;
+    margin: 0;
+    align-self: stretch;
+    min-height: 400px;
+    /* Remove 9patch frame so content displays over background overlay mask */
+    background: none !important;
+    background-image: none !important;
+    background-size: unset !important;
+    background-position: unset !important;
+    background-repeat: unset !important;
+    background-origin: initial !important;
+    padding: 0 !important;
+}
+
+.story-text-frame .modal-frame-content {
+    background: transparent !important;
+}
+
+.story-text-frame .modal-frame-content::after {
+    display: none; /* no gradient mask when no frame */
+}
+
+/* Right column: frame-boss-info.png with aspect ratio 601×677 (keep pulsing graphic frame) */
+.story-image {
+    order: 2;
+    width: 100%;
+    aspect-ratio: 601 / 677;
+    background-image: url('assets/images/ui/frame-boss-info.png');
+    background-size: 100% 100%;
+    background-position: center;
+    background-repeat: no-repeat;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 60px;
+    box-sizing: border-box;
+}
+
+.story-icon {
+    width: 12rem;
+    height: auto;
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    filter: drop-shadow(0 0 30px rgba(255, 107, 53, 0.6));
+    animation: storyIconPulse 2s ease-in-out infinite;
+    image-rendering: crisp-edges;
+}
+
+/* Story panel 3: five tower icons in two columns (3 left, 2 right) with overlap */
+.story-towers-stagger .story-towers-stagger-inner {
+    display: flex;
+    flex-direction: row;
+    justify-content: center;
+    align-items: flex-start;
+    gap: 1.5rem;
+    width: 100%;
+    max-width: 85%;
+    margin: 0 auto;
+}
+
+.story-towers-stagger .story-towers-col {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    align-items: center;
+}
+
+.story-tower-icon {
+    height: 6rem;
+    width: auto;
+    object-fit: contain;
+    image-rendering: crisp-edges;
+    filter: drop-shadow(0 0 12px rgba(255, 107, 53, 0.4));
+    margin-bottom: 1rem; /* overlap each row a bit */
+}
+
+.story-towers-stagger .story-towers-col .story-tower-icon:last-child {
+    margin-bottom: 0;
+}
+
+/* Arrow icon in story panel Next/Back buttons */
+.story-arrow-icon {
+    height: 0.9em;
+    width: auto;
+    vertical-align: middle;
+    image-rendering: crisp-edges;
+    margin-left: 0.5em;
+    margin-right: 0.5em;
+    transform: translateY(3px);
+}
+
+.story-arrow-back {
+    transform: scaleX(-1) translateY(3px);
+}
+
+/* Story panel: lightning (jitter) and Fire Spawners (pulse) */
+.story-lightning {
+    color: var(--fire-cinder, hsl(46, 100%, 60%));
+    text-transform: uppercase;
+    font-weight: 600;
+    display: inline-block;
+    animation: storyLightningJitter 0.4s ease-in-out infinite;
+}
+
+.story-bosses {
+    color: #e53935;
+    text-transform: uppercase;
+    font-weight: 600;
+    display: inline-block;
+    animation: storyLightningJitter 0.4s ease-in-out infinite;
+}
+
+.story-fire-spawners {
+    color: #ff3300;
+    text-transform: uppercase;
+    font-weight: 700;
+    display: inline-block;
+    text-shadow: 
+        0 0 5px #ff3300,
+        0 0 10px #ff6600,
+        0 0 20px #ff6600,
+        0 0 30px #ff3300,
+        0 -5px 15px rgba(255, 100, 0, 0.5);
+    animation: fireFlicker 0.15s ease-in-out infinite alternate;
+}
+
+@keyframes storyLightningJitter {
+    0%, 100% { transform: translate(0, 0); }
+    12% { transform: translate(0.6px, -1px); }
+    25% { transform: translate(-0.75px, 0.5px); }
+    37% { transform: translate(0.5px, 0.75px); }
+    50% { transform: translate(-0.6px, -0.5px); }
+    62% { transform: translate(0.9px, 0.4px); }
+    75% { transform: translate(-0.4px, 0.6px); }
+    87% { transform: translate(0.5px, -0.6px); }
+}
+
+@keyframes storyFireSpawnersPulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.05); }
+}
+
+/* Story panel 1: Hexalon (logo color), The Grove / paths of green (green + pulse on Grove) */
+.story-hexalon {
+    color: #FF6B35;
+    text-transform: uppercase;
+    font-weight: 600;
+}
+
+.story-fire-word {
+    color: #ff3300;
+    font-weight: 700;
+    text-shadow: 
+        0 0 5px #ff3300,
+        0 0 10px #ff6600,
+        0 0 20px #ff6600,
+        0 0 30px #ff3300,
+        0 -5px 15px rgba(255, 100, 0, 0.5);
+    animation: fireFlicker 0.15s ease-in-out infinite alternate;
+    display: inline-block;
+}
+
+@keyframes fireFlicker {
+    0% {
+        text-shadow: 
+            0 0 5px #ff3300,
+            0 0 10px #ff6600,
+            0 0 20px #ff6600,
+            0 0 30px #ff3300,
+            0 -5px 15px rgba(255, 100, 0, 0.5);
+        transform: scale(1) translateY(0);
+    }
+    25% {
+        text-shadow: 
+            0 0 8px #ff4400,
+            0 0 15px #ff7700,
+            0 0 25px #ff5500,
+            0 0 35px #ff2200,
+            0 -8px 20px rgba(255, 80, 0, 0.6);
+    }
+    50% {
+        text-shadow: 
+            0 0 4px #ff2200,
+            0 0 12px #ff5500,
+            0 0 18px #ff6600,
+            0 0 28px #ff3300,
+            0 -6px 12px rgba(255, 120, 0, 0.4);
+        transform: scale(1.02) translateY(-1px);
+    }
+    75% {
+        text-shadow: 
+            0 0 7px #ff5500,
+            0 0 14px #ff8800,
+            0 0 22px #ff4400,
+            0 0 32px #ff2200,
+            0 -7px 18px rgba(255, 90, 0, 0.55);
+    }
+    100% {
+        text-shadow: 
+            0 0 6px #ff4400,
+            0 0 12px #ff7700,
+            0 0 20px #ff5500,
+            0 0 30px #ff3300,
+            0 -6px 16px rgba(255, 110, 0, 0.5);
+        transform: scale(1.01) translateY(-0.5px);
+    }
+}
+
+.story-grove {
+    color: #80FF22;
+    text-transform: uppercase;
+    font-weight: 600;
+    display: inline-block;
+    animation: storyFireSpawnersPulse 1.8s ease-in-out infinite;
+}
+
+.story-paths-green {
+    color: #80FF22;
+    font-weight: 600;
+}
+
+.story-water-wielder {
+    color: #00FF88;
+    text-transform: uppercase;
+    font-weight: 600;
+}
+
+.story-shop {
+    color: #00FF88;
+    text-transform: uppercase;
+    font-weight: 600;
+    display: inline-block;
+    animation: storyFireSpawnersPulse 1.8s ease-in-out infinite;
+}
+
+.story-upgrade-plans {
+    color: #ff67e7;
+    font-weight: 600;
+    display: inline-block;
+    animation: storyFireSpawnersPulse 1.8s ease-in-out infinite;
+}
+
+/* Story panel fire type colors (set from config in main.js; fallbacks match config) */
+.story-fire-cinder { color: var(--fire-cinder, hsl(46, 100%, 60%)); font-weight: 600; }
+.story-fire-flame { color: var(--fire-flame, hsl(31, 100%, 55%)); font-weight: 600; }
+.story-fire-blaze { color: var(--fire-blaze, hsl(16, 100%, 55%)); font-weight: 600; }
+.story-fire-firestorm { color: var(--fire-firestorm, hsl(350, 100%, 55%)); font-weight: 600; }
+.story-fire-inferno { color: var(--fire-inferno, hsl(310, 100%, 60%)); font-weight: 600; }
+.story-fire-cataclysm { color: var(--fire-cataclysm, hsl(275, 100%, 60%)); font-weight: 600; }
+
+@keyframes turretRotate {
+  from {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+
+@keyframes towerHexSnapRotate {
+  0% {
+    transform: translate(-50%, -50%) rotate(90deg);
+  }
+  16.66% {
+    transform: translate(-50%, -50%) rotate(150deg);
+  }
+  33.33% {
+    transform: translate(-50%, -50%) rotate(210deg);
+  }
+  50% {
+    transform: translate(-50%, -50%) rotate(270deg);
+  }
+  66.66% {
+    transform: translate(-50%, -50%) rotate(330deg);
+  }
+  83.33% {
+    transform: translate(-50%, -50%) rotate(30deg);
+  }
+  100% {
+    transform: translate(-50%, -50%) rotate(90deg);
+  }
+}
+
+/* Helper class for rotatable tower turrets - rotation center at base center */
+.tower-turret-rotatable {
+  transform-origin: center center;
+}
+
+@keyframes storyIconPulse {
+    0%, 100% {
+        transform: scale(1);
+        filter: drop-shadow(0 0 30px rgba(255, 107, 53, 0.6));
+    }
+    50% {
+        transform: scale(1.05);
+        filter: drop-shadow(0 0 50px rgba(255, 107, 53, 0.8));
+    }
+}
+
+@keyframes storyIconPulseGreen {
+    0%, 100% {
+        transform: scale(1);
+        filter: drop-shadow(0 0 30px rgba(0, 255, 0, 0.8));
+    }
+    50% {
+        transform: scale(1.05);
+        filter: drop-shadow(0 0 50px rgba(0, 255, 0, 1));
+    }
+}
+
+#storyPanel1 .story-icon {
+    animation: storyIconPulseGreen 2s ease-in-out infinite;
+}
+
+#storyPanel4 .story-icon {
+    width: 18.75rem; /* 25% larger than 15rem */
+}
+
+.story-text {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    color: #fff;
+    padding: 40px;
+    min-height: 100%;
+    align-items: flex-start;
+    text-align: left;
+}
+
+.story-nav-buttons {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-top: auto;
+    flex-shrink: 0;
+}
+
+#storyPanel1 .story-nav-buttons {
+    justify-content: flex-end; /* Single Next button on the right */
+}
+
+.story-back-btn {
+    color: #fff;
+    width: auto;
+    gap: 0.6em; /* space between arrow and "Back" text; parent .cta-button is already flex */
+}
+
+.story-next-btn {
+    /* padding-left and padding-right come from .cta-button (28px each) */
+    /* font-size, font-weight, letter-spacing, and text-transform come from .cta-button */
+    /* Don't override - let .cta-button handle it */
+    color: #fff;
+    flex-shrink: 0;
+    width: auto; /* Auto width based on content, respecting .cta-button padding */
+}
+
+.story-title {
+    font-size: 2.5rem;
+    font-weight: bold;
+    color: #FF6B35;
+    text-shadow: 0 0 20px rgba(255, 107, 53, 0.6);
+    margin: 0 0 16px 0;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+#storyPanel1 .story-title {
+    font-size: 75px;
+    letter-spacing: 5px;
+    font-weight: 700;
+    text-shadow: 0 0 20px rgba(255, 107, 53, 1);
+}
+
+#storyPanel1 .story-title .hexfire-logo-icon {
+    height: 1.7em;
+}
+
+.hexfire-logo-icon {
+    height: 1.7em;
+    width: auto;
+    image-rendering: crisp-edges;
+    flex-shrink: 0;
+}
+
+.story-panel .story-text h2.story-panel-header {
+    font-size: 2rem;
+    font-weight: 700;
+    color: #FF6B35;
+    text-shadow: 0 0 20px rgba(255, 107, 53, 0.6);
+    margin: 0 0 8px 0 !important;
+    padding: 0 !important;
+    line-height: 1.3;
+    letter-spacing: 0;
+    text-align: left !important;
+    transform: none !important;
+    width: 100% !important;
+    display: block !important;
+    align-self: stretch !important;
+}
+
+.story-paragraph {
+    font-size: 1.2rem;
+    line-height: 1.8;
+    color: #e0e0e0;
+    margin: 0;
+}
+
+.story-paragraph strong {
+    color: #4CAF50;
+    font-weight: bold;
+}
+
+.story-skip-btn {
+    position: absolute;
+    bottom: 30px;
+    right: 30px;
+    /* padding-left and padding-right come from .cta-button (28px each) */
+    /* font-size, font-weight, letter-spacing, and text-transform come from .cta-button */
+    /* Don't override - let .cta-button handle it */
+    color: #fff;
+    z-index: 10;
+    width: auto; /* Auto width based on content, respecting .cta-button padding */
+    min-width: 100px; /* Maintain minimum width for consistent appearance */
+}
+
+/* Placement Phase Modal Styles */
+.placement-header-container {
+    position: relative;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    margin-bottom: 5px!important;
+}
+
+.placement-boss-header-label {
+    position: absolute;
+    top: -18px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    z-index: 10;
+    pointer-events: none;
+}
+
+.placement-boss-header-icon {
+    width: 42px;
+    height: 42px;
+    image-rendering: crisp-edges;
+    flex-shrink: 0;
+}
+
+.placement-boss-header-text {
+    color: #FF0000;
+    font-size: 32px;
+    font-weight: 300;
+    font-family: "Exo 2", sans-serif;
+    text-transform: uppercase;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.9), 0 0 8px rgba(0, 0, 0, 0.5);
+    letter-spacing: 2px;
+}
+
+.placement-title {
+    color: #FFFFFF;
+    font-size: 24px;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    margin: 0;
+    text-align: center;
+}
+
+.placement-instructions {
+    color: #FFFFFF;
+    font-size: 14px;
+    line-height: 1.6;
+    margin: 0 auto 18px auto;
+    text-align: center;
+    max-width:500px;
+}
+
+.placement-content-layout {
+    display: flex;
+    margin-bottom: 15px;
+    justify-content: center;
+}
+
+.placement-content-boss {
+    /* Two-column layout for boss waves */
+    align-items: flex-end;
+}
+
+.placement-content-centered {
+    justify-content: center;
+}
+
+.placement-left-column {
+    flex: 1 1 50%;
+    display: flex;
+    justify-content: flex-end;
+    align-items: flex-end;
+}
+
+.placement-right-column {
+    flex: 1 1 50%;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    align-items: center;
+    justify-content: flex-end;
+}
+
+.placement-center-column {
+    flex: 0 1 auto;
+    max-width: 500px;
+    display: flex;
+    flex-direction: column;
+    gap: 30px;
+}
+
+/* Boss Section */
+.placement-boss-section {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+}
+
+.placement-boss-frame {
+    position: relative;
+    width: 320px;
+    height: 320px;
+    background-image: url('assets/images/ui/frame-boss.png');
+    background-size: contain;
+    background-position: center;
+    background-repeat: no-repeat;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+    z-index: 2;
+}
+
+.placement-boss-image {
+    max-width: 85%;
+    max-height: 85%;
+    width: auto;
+    height: auto;
+    image-rendering: crisp-edges;
+    object-fit: contain;
+    position: relative;
+    z-index: 3;
+}
+
+.placement-boss-info-frame {
+    /* Match frame-boss-info.png aspect ratio exactly (601×677) */
+    width: 270px;
+    aspect-ratio: 601 / 677;
+    background-image: url('assets/images/ui/frame-boss-info.png');
+    background-size: 100% 100%;
+    background-position: center;
+    background-repeat: no-repeat;
+    padding: 100px 30px 20px 36px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    box-sizing: border-box;
+    position: relative;
+    margin-top: -128px;
+    z-index: 1;
+}
+
+.placement-boss-info-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 16px;
+}
+
+.placement-boss-icon {
+    width: 52px;
+    height: 52px;
+    image-rendering: crisp-edges;
+    flex-shrink: 0;
+    margin-top:-6px;
+}
+
+.placement-boss-text-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
+    min-width: 0;
+}
+
+.placement-boss-label {
+    color: #FF0000;
+    font-size: 14px;
+    font-weight: 300;
+    line-height: 14px;
+}
+
+.placement-boss-power-label {
+    color: #E2E09B;
+    font-size: 14px;
+    font-weight: 300;
+    line-height: 14px;
+    margin-top:-3px;
+}
+
+.placement-boss-ability:first-child {
+    margin-top: 2px;
+}
+
+.placement-boss-name {
+    color: #FFFFFF;
+    font-size: 15px;
+    font-weight: bold;
+    line-height: 1.2;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    text-transform: uppercase;
+}
+
+.placement-boss-title {
+    color: #FFFFFF;
+    font-size: 12px;
+    line-height: 1.2;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+}
+
+.placement-boss-power {
+    color: #FFFFFF;
+    font-size: 15px;
+    font-weight: bold;
+    line-height: 1.2;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    text-transform: uppercase;
+}
+
+.placement-boss-description {
+    color: #FFFFFF;
+    font-size: 13px;
+    line-height: 1.6;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+}
+
+/* New Item Section */
+.placement-new-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+
+.placement-new-item-header {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+}
+
+.placement-new-item-label {
+    color: #FFFFFF;
+    font-size: 16px;
+    font-weight: 300;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.placement-divider {
+    width: 100%;
+    max-width: 250px;
+    height: auto;
+    image-rendering: crisp-edges;
+}
+
+.placement-new-items-container {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 15px;
+    flex-wrap: nowrap;
+}
+
+.placement-new-item-frame {
+    background-image: url('assets/images/ui/frame-new-item.png');
+    background-size: 100% 100%;
+    background-position: center;
+    background-repeat: no-repeat;
+    padding: 20px 25px;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    width: 297px;
+    height: 166.5px;
+    box-sizing: border-box;
+}
+
+.placement-new-item-icon {
+    width: 60px;
+    height: auto;
+    image-rendering: crisp-edges;
+    flex-shrink: 0;
+}
+
+.placement-new-item-icon-dig-site {
+    width: 88px;
+}
+
+.placement-new-item-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.placement-new-item-name {
+    color: #1FE2F5;
+    font-size: 16px;
+    font-weight: bold;
+    text-transform: uppercase;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+}
+
+.placement-new-item-description {
+    color: #FFFFFF;
+    font-size: 13px;
+    line-height: 1.5;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+}
+
+/* New Fire Type Section */
+.placement-new-fire-type {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    margin-bottom:20px;
+}
+
+.placement-new-fire-type-frame {
+    background-image: url('assets/images/ui/frame-new-fire-type.png');
+    background-size: 100% 100%;
+    background-position: center;
+    background-repeat: no-repeat;
+    padding: 20px 25px;
+    display: flex;
+    gap:5px;
+    flex-direction: column;
+    width: 297px;
+    height: 166.5px;
+    box-sizing: border-box;
+    justify-content: center;
+}
+
+.placement-new-fire-type-header {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+}
+
+.placement-new-fire-type-icon {
+    width: 28px;
+    height: 28px;
+    image-rendering: crisp-edges;
+    flex-shrink: 0;
+}
+
+.placement-new-fire-type-label {
+    color: #FF4E4E;
+    font-size: 18px;
+    font-weight: bold;
+    text-transform: uppercase;
+}
+
+.placement-new-fire-type-content {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    justify-content: center;
+}
+
+.placement-new-fire-type-left {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: -10px;
+}
+
+.placement-new-fire-type-hex-wrapper {
+    position: relative;
+    width: 100px;
+    height: 100px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.placement-new-fire-type-hex-border {
+    position: absolute;
+    width: 100px;
+    height: 115px;
+    background-image: url('assets/images/ui/frame-fire-type.png');
+    background-size: 100% 100%;
+    background-position: center 13px;
+    background-repeat: no-repeat;
+    z-index: 2;
+}
+
+.placement-new-fire-type-hex {
+    position: absolute;
+    top:15px;
+    width: 74px;
+    height: 89px;
+    clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+    z-index: 1;
+}
+
+.placement-new-fire-type-name {
+    position: relative;
+    z-index: 3;
+    color: white;
+    transform: translateY(8px);
+    font-size: 14px;
+    font-weight: bold;
+    text-transform: uppercase;
+    text-align: center;
+    line-height: 13px;
+    text-shadow:0 0 15px white, 0 0 5px white
+}
+
+.placement-new-fire-type-name-wrapped {
+    font-size: 16px;
+    line-height: 15px;
+}
+
+.placement-new-fire-type-right {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+}
+
+.placement-new-fire-type-stat {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #FFFFFF;
+    font-size: 16px;
+    font-weight: bold;
+}
+
+.placement-new-fire-type-stat img {
+    width: 34px;
+    height: 34px;
+    image-rendering: crisp-edges;
+}
+
+/* Fire Types Section */
+.placement-fire-types {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+
+.placement-fire-types-header {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+}
+
+.placement-fire-types-label {
+    color: #FFFFFF;
+    font-size: 16px;
+    font-weight: 300;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.placement-fire-types-frame {
+    padding: 0 0 20px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 320px;
+    box-sizing: border-box;
+}
+
+.placement-fire-type-entry {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    width: 100%;
+    justify-content: space-between;
+}
+
+.placement-fire-type-hex {
+    display: inline-block;
+    width: 16px;
+    height: 19px;
+    clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    flex-shrink: 0;
+}
+
+.placement-fire-type-name {
+    font-size: 14px;
+    font-weight: normal;
+    flex: 0 0 auto;
+}
+
+.placement-fire-type-stats-group {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+}
+
+.placement-fire-type-percent {
+    color: #FFFFFF;
+    font-size: 14px;
+    font-weight: normal;
+    flex: 0 0 auto;
+}
+
+.placement-fire-type-stat {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: #FFFFFF;
+    font-size: 13px;
+    flex-shrink: 0;
+}
+
+.placement-fire-type-stat img {
+    width: 16px;
+    height: 16px;
+    image-rendering: crisp-edges;
+}
+
+/* Boss Reward Section */
+.placement-boss-reward {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.placement-boss-reward-header {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+    gap: 4px;
+}
+
+.placement-boss-reward-label {
+    color: #FFFFFF;
+    font-size: 16px;
+    font-weight: 300;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.placement-boss-reward-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+}
+
+.placement-boss-reward-item {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 16px;
+    width: 100%;
+    max-width: 270px;
+}
+
+.placement-boss-reward-frame {
+    position: relative;
+    width: 120px;
+    height: 120px;
+    flex-shrink: 0;
+    background-image: url('assets/images/ui/frame-round-blue.png');
+    background-size: 100% 100%;
+    background-position: center;
+    background-repeat: no-repeat;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.placement-boss-reward-icon {
+    width: 64px;
+    height: auto;
+    image-rendering: crisp-edges;
+}
+
+.placement-boss-reward-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+}
+
+.placement-boss-reward-amount {
+    font-size: 26px;
+    font-weight: bold;
+    font-family: "Exo 2", sans-serif;
+    line-height: 1;
+    margin-bottom: 5px;
+}
+
+.placement-boss-reward-label-text {
+    color: #FFFFFF;
+    font-size: 14px;
+    font-weight: normal;
+    font-family: "Exo 2", sans-serif;
+    text-transform: uppercase;
+    line-height: 1.2;
+}
+
+/* Placement Start Button */
+.placement-start-button-container {
+    display: flex;
+    justify-content: center;
+    margin-top: 0;
+    width: 100%;
+}
+
+.placement-start-button {
+    width: auto !important;
+    min-width: auto !important;
+    max-width: none !important;
+}

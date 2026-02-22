@@ -1,6 +1,6 @@
 // Tower System - Manages tower placement, rotation, and spraying
 
-import { CONFIG, getTowerRange, getSpreadTowerRange, getTowerPower, getPulsingAttackInterval, getPulsingAttackPower, getRainRange, getRainPower, getBomberAttackInterval, getBomberImpactZone } from '../config.js';
+import { CONFIG, getTowerRange, getSpreadTowerRange, getTowerPower, getPulsingAttackInterval, getPulsingPower, getRainRange, getRainPower, getBomberAttackInterval, getBomberImpactZone, getBomberMaxDistance, getBomberMinDistance, getShieldHealth, getFireTypeConfig, getPowerUpMultiplier } from '../config.js';
 import { getHexLine, hexKey, getHexInDirection, getDirectionAngle, getSpreadTowerTargets } from '../utils/hexMath.js';
 
 let towerIdCounter = 0;
@@ -33,11 +33,13 @@ export class TowerSystem {
     // Set tower levels based on whether we're using stored tower data
     let rangeLevel = 1;
     let powerLevel = 1;
+    let shieldData = null;
     
     if (useStoredTower && storedTowerData) {
-      // Use stored tower's levels
+      // Use stored tower's levels and shield
       rangeLevel = storedTowerData.rangeLevel || 1;
       powerLevel = storedTowerData.powerLevel || 1;
+      shieldData = storedTowerData.shield || null;
     } else if (!useStoredTower && this.gameState.player.inventory.upgrades && this.gameState.player.inventory.upgrades.length > 0) {
       // Check for upgrades from inventory (only if not using stored tower)
       const upgrade = this.gameState.player.inventory.upgrades.shift(); // Remove first upgrade
@@ -63,6 +65,8 @@ export class TowerSystem {
       isActive: true,
       health: CONFIG.TOWER_HEALTH, // Health decreases when on fire
       maxHealth: CONFIG.TOWER_HEALTH,
+      // Shield properties
+      shield: shieldData, // { level: number, health: number, maxHealth: number } or null
       // Erupting tower specific
       timeSinceLastAttack: 0, // For erupting towers
       flashTime: 0, // For visual flash effect when attacking
@@ -88,8 +92,19 @@ export class TowerSystem {
     // If pulsing tower, trigger immediately once on placement (only if wave is active)
     if (tower.type === CONFIG.TOWER_TYPE_PULSING && this.gameState.wave.isActive) {
       // Trigger immediate attack
-      const attackPower = getPulsingAttackPower(tower.powerLevel);
+      const powerPerSecond = getPulsingPower(tower.powerLevel);
+      const attackInterval = getPulsingAttackInterval(tower.rangeLevel);
+      let attackPower = powerPerSecond * attackInterval;
+      const powerUps = this.gameState?.player?.powerUps || {};
+      const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+      const waterPowerMultiplier = getPowerUpMultiplier('waterTowerPower', powerUps, tempPowerUps);
+      attackPower *= waterPowerMultiplier;
       tower.flashTime = 0.3; // Flash for 0.3 seconds
+      
+      // Play pulsing tower shoot sound
+      if (window.AudioManager) {
+        window.AudioManager.playSFXSegment('pulsing_tower_shoots', 0.5, { volume: 0.1875, startOffset: 0, dedupeMs: 50 });
+      }
       
       // Attack all adjacent hexes immediately
       tower.affectedHexes.forEach(hexCoord => {
@@ -122,6 +137,11 @@ export class TowerSystem {
   removeTower(towerId) {
     const tower = this.towers.get(towerId);
     if (!tower) return;
+    
+    // Clean up particles for this tower
+    if (this.gameState?.renderer?.cleanupTowerParticles) {
+      this.gameState.renderer.cleanupTowerParticles(towerId);
+    }
     
     this.gridSystem.removeTower(tower.q, tower.r);
     this.towers.delete(towerId);
@@ -228,8 +248,7 @@ export class TowerSystem {
       const rainRange = getRainRange(tower.rangeLevel);
       affectedHexes = this.getHexesInRadius(tower.q, tower.r, rainRange);
     } else if (tower.type === CONFIG.TOWER_TYPE_BOMBER) {
-      // Bomber tower: shows bomb trajectory line (no continuous effect)
-      const range = CONFIG.BOMBER_MAX_DISTANCE;
+      const range = getBomberMaxDistance();
       affectedHexes = getHexLine(tower.q, tower.r, tower.direction, range);
     } else if (tower.type === CONFIG.TOWER_TYPE_SPREAD) {
       // Spread tower: 3 jets (main direction + 2 flanking at ±30°)
@@ -289,6 +308,61 @@ export class TowerSystem {
       this.gridSystem.setHex(hex.q, hex.r, { isBeingSprayed: false });
     });
     
+    // Mark all water tank hexes as not being sprayed (will be set to true if being hit)
+    if (this.gameState.waterTankSystem) {
+      const waterTanks = this.gameState.waterTankSystem.getAllWaterTanks();
+      waterTanks.forEach(tank => {
+        const hex = this.gridSystem.getHex(tank.q, tank.r);
+        if (hex) {
+          this.gridSystem.setHex(tank.q, tank.r, { isBeingSprayed: false });
+        }
+      });
+    }
+    
+    // Mark all temporary power-up item hexes as not being sprayed (will be set to true if being hit)
+    if (this.gameState.tempPowerUpItemSystem) {
+      const tempPowerUpItems = this.gameState.tempPowerUpItemSystem.getAllItems();
+      tempPowerUpItems.forEach(item => {
+        const hex = this.gridSystem.getHex(item.q, item.r);
+        if (hex) {
+          this.gridSystem.setHex(item.q, item.r, { isBeingSprayed: false });
+        }
+      });
+    }
+    
+    // Mark all mystery item hexes as not being sprayed (will be set to true if being hit)
+    if (this.gameState.mysteryItemSystem) {
+      const mysteryItems = this.gameState.mysteryItemSystem.getAllItems();
+      mysteryItems.forEach(item => {
+        const hex = this.gridSystem.getHex(item.q, item.r);
+        if (hex) {
+          this.gridSystem.setHex(item.q, item.r, { isBeingSprayed: false });
+        }
+      });
+    }
+    
+    // Mark all currency item hexes as not being sprayed (will be set to true if being hit)
+    if (this.gameState.currencyItemSystem) {
+      const currencyItems = this.gameState.currencyItemSystem.getAllItems();
+      currencyItems.forEach(item => {
+        const hex = this.gridSystem.getHex(item.q, item.r);
+        if (hex) {
+          this.gridSystem.setHex(item.q, item.r, { isBeingSprayed: false });
+        }
+      });
+    }
+    
+    // Mark all dig site hexes as not being sprayed (will be set to true if being hit)
+    if (this.gameState.digSiteSystem) {
+      const digSites = this.gameState.digSiteSystem.getAllDigSites();
+      digSites.forEach(site => {
+        const hex = this.gridSystem.getHex(site.q, site.r);
+        if (hex) {
+          this.gridSystem.setHex(site.q, site.r, { isBeingSprayed: false });
+        }
+      });
+    }
+    
     const towersToRemove = [];
     
     // Process each tower's spray
@@ -298,23 +372,59 @@ export class TowerSystem {
       // Check if tower is on fire and take damage
       const towerHex = this.gridSystem.getHex(tower.q, tower.r);
       if (towerHex && towerHex.isBurning) {
-        tower.health -= deltaTime;
+        // Get fire type damage per second
+        const fireConfig = getFireTypeConfig(towerHex.fireType);
+        const damagePerSecond = fireConfig ? fireConfig.damagePerSecond : 1;
+        const damageThisTick = deltaTime * damagePerSecond;
         
-        // Tower destroyed by fire
-        if (tower.health <= 0) {
-          towersToRemove.push(tower.id);
+        // Check if tower has an active shield
+        const hasActiveShield = tower.shield && tower.shield.health > 0;
+        
+        if (hasActiveShield) {
+          // Tower has shield - damage shield only
+          tower.shield.health -= damageThisTick;
           
-          // Track destroyed tower for wave end
-          if (!this.gameState.destroyedTowersThisWave) {
-            this.gameState.destroyedTowersThisWave = 0;
+          // Shield destroyed
+          if (tower.shield.health <= 0) {
+            tower.shield = null;
           }
-          this.gameState.destroyedTowersThisWave++;
+        } else {
+          // No shield or shield destroyed - damage tower
+          tower.health -= damageThisTick;
           
-          return; // Skip processing this tower
+          // Tower destroyed by fire
+          if (tower.health <= 0) {
+            // Spawn fire explosion particles
+            try {
+              this.gameState?.renderer?.spawnFireExplosionParticles?.(tower.q, tower.r, 'tower');
+            } catch (e) {
+              // ignore render side errors
+            }
+            
+            // Play destroyed sound effect
+            if (window.AudioManager) {
+              window.AudioManager.playSFX('destroyed');
+            }
+            
+            towersToRemove.push(tower.id);
+            
+            // Track destroyed tower for wave end
+            if (!this.gameState.destroyedTowersThisWave) {
+              this.gameState.destroyedTowersThisWave = 0;
+            }
+            this.gameState.destroyedTowersThisWave++;
+            
+            return; // Skip processing this tower
+          }
         }
       } else {
-        // Tower not on fire - restore health slowly
+        // Tower not on fire - restore health slowly (shields don't regenerate)
         tower.health = Math.min(tower.maxHealth, tower.health + deltaTime * 0.5);
+      }
+      
+      // Skip attack logic during placement phase - towers must not fire, spray, or play activation sounds
+      if (this.gameState.wave?.isPlacementPhase) {
+        return;
       }
       
       // Handle different tower types
@@ -325,15 +435,23 @@ export class TowerSystem {
         
         if (tower.timeSinceLastAttack >= attackInterval) {
           tower.timeSinceLastAttack = 0;
-          const attackPower = getPulsingAttackPower(tower.powerLevel); // Power upgrades increase damage
+          const powerPerSecond = getPulsingPower(tower.powerLevel);
+          const attackPower = powerPerSecond * attackInterval;
           
           // Trigger flash effect for visual feedback
           tower.flashTime = 0.3; // Flash for 0.3 seconds
           
+          // Play pulsing tower shoot sound
+          if (window.AudioManager) {
+            window.AudioManager.playSFXSegment('pulsing_tower_shoots', 0.5, { volume: 0.1875, startOffset: 0, dedupeMs: 50 });
+          }
+          
           // Attack all adjacent hexes
           tower.affectedHexes.forEach(hexCoord => {
             const hex = this.gridSystem.getHex(hexCoord.q, hexCoord.r);
-            if (hex && hex.isBurning) {
+            if (!hex) return;
+            
+            if (hex.isBurning) {
               this.gridSystem.setHex(hexCoord.q, hexCoord.r, { isBeingSprayed: true });
               
               const extinguished = this.fireSystem.extinguishHex(
@@ -346,6 +464,33 @@ export class TowerSystem {
                 this.onFireExtinguished(hex.fireType, hexCoord.q, hexCoord.r);
               }
             }
+            
+            // Damage water tanks
+            if (hex.hasWaterTank) {
+              this.gridSystem.setHex(hexCoord.q, hexCoord.r, { isBeingSprayed: true });
+              this.gameState.waterTankSystem?.damageWaterTank(hexCoord.q, hexCoord.r, attackPower);
+            }
+            
+            // Damage temporary power-up items
+            if (hex.hasTempPowerUpItem) {
+              this.gridSystem.setHex(hexCoord.q, hexCoord.r, { isBeingSprayed: true });
+              this.gameState.tempPowerUpItemSystem?.damageItem(hexCoord.q, hexCoord.r, attackPower);
+              this.gameState.tempPowerUpItemSystem?.checkCollection(hexCoord.q, hexCoord.r);
+            }
+            
+            // Damage mystery items
+            if (hex.hasMysteryItem) {
+              this.gridSystem.setHex(hexCoord.q, hexCoord.r, { isBeingSprayed: true });
+              this.gameState.mysteryItemSystem?.damageItem(hexCoord.q, hexCoord.r, attackPower);
+              this.gameState.mysteryItemSystem?.checkCollection(hexCoord.q, hexCoord.r);
+            }
+            
+            // Damage currency items
+            if (hex.hasCurrencyItem) {
+              this.gridSystem.setHex(hexCoord.q, hexCoord.r, { isBeingSprayed: true });
+              this.gameState.currencyItemSystem?.damageItem(hexCoord.q, hexCoord.r, attackPower);
+              this.gameState.currencyItemSystem?.checkCollection(hexCoord.q, hexCoord.r);
+            }
           });
         }
         
@@ -355,12 +500,19 @@ export class TowerSystem {
         }
       } else if (tower.type === CONFIG.TOWER_TYPE_RAIN) {
         // Rain tower: constant AOE effect
-        const rainPower = getRainPower(tower.powerLevel); // Power per second
+        let rainPower = getRainPower(tower.powerLevel); // Power per second
+        // Apply water pressure power-up
+        const powerUps = this.gameState?.player?.powerUps || {};
+        const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+        const waterPowerMultiplier = getPowerUpMultiplier('waterTowerPower', powerUps, tempPowerUps);
+        rainPower *= waterPowerMultiplier;
         const extinguishAmount = rainPower * deltaTime;
         
         tower.affectedHexes.forEach(hexCoord => {
           const hex = this.gridSystem.getHex(hexCoord.q, hexCoord.r);
-          if (hex && hex.isBurning) {
+          if (!hex) return;
+          
+          if (hex.isBurning) {
             this.gridSystem.setHex(hexCoord.q, hexCoord.r, { isBeingSprayed: true });
             
             const extinguished = this.fireSystem.extinguishHex(
@@ -372,6 +524,33 @@ export class TowerSystem {
             if (extinguished && this.onFireExtinguished) {
               this.onFireExtinguished(hex.fireType, hexCoord.q, hexCoord.r);
             }
+          }
+          
+          // Damage water tanks
+          if (hex.hasWaterTank) {
+            this.gridSystem.setHex(hexCoord.q, hexCoord.r, { isBeingSprayed: true });
+            this.gameState.waterTankSystem?.damageWaterTank(hexCoord.q, hexCoord.r, extinguishAmount);
+          }
+          
+          // Damage temporary power-up items
+          if (hex.hasTempPowerUpItem) {
+            this.gridSystem.setHex(hexCoord.q, hexCoord.r, { isBeingSprayed: true });
+            this.gameState.tempPowerUpItemSystem?.damageItem(hexCoord.q, hexCoord.r, extinguishAmount);
+            this.gameState.tempPowerUpItemSystem?.checkCollection(hexCoord.q, hexCoord.r);
+          }
+          
+          // Damage mystery items
+          if (hex.hasMysteryItem) {
+            this.gridSystem.setHex(hexCoord.q, hexCoord.r, { isBeingSprayed: true });
+            this.gameState.mysteryItemSystem?.damageItem(hexCoord.q, hexCoord.r, extinguishAmount);
+            this.gameState.mysteryItemSystem?.checkCollection(hexCoord.q, hexCoord.r);
+          }
+          
+          // Damage currency items
+          if (hex.hasCurrencyItem) {
+            this.gridSystem.setHex(hexCoord.q, hexCoord.r, { isBeingSprayed: true });
+            this.gameState.currencyItemSystem?.damageItem(hexCoord.q, hexCoord.r, extinguishAmount);
+            this.gameState.currencyItemSystem?.checkCollection(hexCoord.q, hexCoord.r);
           }
         });
       } else if (tower.type === CONFIG.TOWER_TYPE_BOMBER) {
@@ -390,23 +569,64 @@ export class TowerSystem {
         this.updateWaterBombs(tower, deltaTime);
       } else {
         // Water tower: continuous spray
-        const powerTime = getTowerPower(tower.powerLevel);
-        const extinguishRate = deltaTime / powerTime;
+        let power = getTowerPower(tower.powerLevel);
+        
+        const powerUps = this.gameState?.player?.powerUps || {};
+        const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+        const waterPowerMultiplier = getPowerUpMultiplier('waterTowerPower', powerUps, tempPowerUps);
+        power *= waterPowerMultiplier;
         
         tower.affectedHexes.forEach(hexCoord => {
           const hex = this.gridSystem.getHex(hexCoord.q, hexCoord.r);
-          if (hex && hex.isBurning) {
+          if (!hex) return;
+          
+            if (hex.isBurning) {
             this.gridSystem.setHex(hexCoord.q, hexCoord.r, { isBeingSprayed: true });
+            
+            const extinguishAmount = power * deltaTime;
             
             const extinguished = this.fireSystem.extinguishHex(
               hexCoord.q,
               hexCoord.r,
-              hex.maxExtinguishTime * extinguishRate
+              extinguishAmount
             );
             
             if (extinguished && this.onFireExtinguished) {
               this.onFireExtinguished(hex.fireType, hexCoord.q, hexCoord.r);
             }
+          }
+          
+          if (hex.hasTempPowerUpItem) {
+            this.gridSystem.setHex(hexCoord.q, hexCoord.r, { isBeingSprayed: true });
+            const damageAmount = power * deltaTime;
+            this.gameState.tempPowerUpItemSystem?.damageItem(hexCoord.q, hexCoord.r, damageAmount);
+            this.gameState.tempPowerUpItemSystem?.checkCollection(hexCoord.q, hexCoord.r);
+          }
+          
+          if (hex.hasMysteryItem) {
+            this.gridSystem.setHex(hexCoord.q, hexCoord.r, { isBeingSprayed: true });
+            const damageAmount = power * deltaTime;
+            this.gameState.mysteryItemSystem?.damageItem(hexCoord.q, hexCoord.r, damageAmount);
+            this.gameState.mysteryItemSystem?.checkCollection(hexCoord.q, hexCoord.r);
+          }
+          
+          if (hex.hasCurrencyItem) {
+            this.gridSystem.setHex(hexCoord.q, hexCoord.r, { isBeingSprayed: true });
+            const damageAmount = power * deltaTime;
+            this.gameState.currencyItemSystem?.damageItem(hexCoord.q, hexCoord.r, damageAmount);
+            this.gameState.currencyItemSystem?.checkCollection(hexCoord.q, hexCoord.r);
+          }
+          
+          if (hex.hasWaterTank) {
+            this.gridSystem.setHex(hexCoord.q, hexCoord.r, { isBeingSprayed: true });
+            const damageAmount = power * deltaTime;
+            this.gameState.waterTankSystem?.damageWaterTank(hexCoord.q, hexCoord.r, damageAmount);
+          }
+          
+          if (hex.hasDigSite) {
+            this.gridSystem.setHex(hexCoord.q, hexCoord.r, { isBeingSprayed: true });
+            // Add water power to dig site (for water vs fire damage calculation)
+            this.gameState.digSiteSystem?.addWaterPower(hexCoord.q, hexCoord.r, power);
           }
         });
       }
@@ -449,6 +669,7 @@ export class TowerSystem {
       type: tower.type,
       rangeLevel: tower.rangeLevel,
       powerLevel: tower.powerLevel,
+      shield: tower.shield ? { ...tower.shield } : null, // Copy shield data if present
       // Note: direction is not stored as it will be set when placed
     };
 
@@ -524,9 +745,23 @@ export class TowerSystem {
    * @returns {number} Distance in hexes (2-10)
    */
   getWeightedBombDistance() {
-    // Weighted distribution: [2, 3, 4, 5, 6, 7, 8, 9, 10] with weights [1, 2, 3, 4, 5, 4, 3, 2, 1]
-    const distances = [2, 3, 4, 5, 6, 7, 8, 9, 10];
-    const weights = [1, 2, 3, 4, 5, 4, 3, 2, 1];
+    const minDistance = getBomberMinDistance();
+    const maxDistance = getBomberMaxDistance();
+    
+    // Create array of distances from min to max
+    const distances = [];
+    for (let d = minDistance; d <= maxDistance; d++) {
+      distances.push(d);
+    }
+    
+    // Weighted distribution: higher weights for middle distances
+    // Create weights that peak in the middle and taper at edges
+    const weights = distances.map((d, i) => {
+      const mid = distances.length / 2;
+      const distanceFromMid = Math.abs(i - mid);
+      // Peak weight at middle, decrease towards edges
+      return Math.max(1, Math.floor(mid + 1 - distanceFromMid));
+    });
     
     // Calculate total weight
     const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
@@ -543,7 +778,7 @@ export class TowerSystem {
     }
     
     // Fallback (should never reach here)
-    return 6;
+    return minDistance + Math.floor((maxDistance - minDistance) / 2);
   }
 
   /**
@@ -558,7 +793,13 @@ export class TowerSystem {
     }
     tower.lastBombFiredAt = now;
     
-    // Calculate weighted random distance (2-10 hexes with weighted distribution)
+    // Play bomber shoot sound
+    if (window.AudioManager) {
+      window.AudioManager.playSFXSegment('bomber_tower_shoots', 0.5, { volume: 0.1875, startOffset: 0, dedupeMs: 50 });
+    }
+    
+    const minDistance = getBomberMinDistance();
+    const maxDistance = getBomberMaxDistance();
     const distance = this.getWeightedBombDistance();
     
     // Get target hex in tower's direction
@@ -567,7 +808,7 @@ export class TowerSystem {
     // Check if target hex is within map bounds, if not, find the closest valid hex
     if (!this.gridSystem.getHex(targetHex.q, targetHex.r)) {
       // Find the furthest valid hex in the direction
-      for (let d = distance - 1; d >= CONFIG.BOMBER_MIN_DISTANCE; d--) {
+      for (let d = distance - 1; d >= minDistance; d--) {
         const testHex = getHexInDirection(tower.q, tower.r, tower.direction, d);
         if (this.gridSystem.getHex(testHex.q, testHex.r)) {
           targetHex = testHex;
@@ -575,6 +816,10 @@ export class TowerSystem {
         }
       }
     }
+    
+    const basePower = CONFIG.BOMBER_BASE_POWER;
+    const attackInterval = getBomberAttackInterval(tower.rangeLevel);
+    const powerPerBomb = basePower;
     
     const bomb = {
       id: `bomb_${Date.now()}_${Math.random()}`,
@@ -584,12 +829,13 @@ export class TowerSystem {
       targetR: targetHex.r,
       currentQ: tower.q,
       currentR: tower.r,
-      progress: 0, // 0 to 1
-      speed: CONFIG.BOMBER_TRAVEL_SPEED, // hexes per second
+      progress: 0,
+      speed: CONFIG.BOMBER_TRAVEL_SPEED,
       totalDistance: distance,
       towerId: tower.id,
       powerLevel: tower.powerLevel,
-      impactLevel: tower.powerLevel, // Impact zone level matches power level
+      impactLevel: tower.powerLevel,
+      powerPerBomb: powerPerBomb,
       exploded: false,
     };
     
@@ -637,6 +883,11 @@ export class TowerSystem {
    * @param {Object} bomb - Water bomb data
    */
   explodeWaterBomb(bomb) {
+    // Play explosion sound
+    if (window.AudioManager) {
+      window.AudioManager.playSFX('suppression_bomb_explodes', { volume: 0.7, dedupeMs: 50 });
+    }
+    
     // Get impact zone hexes based on bomb's impact level
     const impactHexes = getBomberImpactZone(bomb.targetQ, bomb.targetR, bomb.impactLevel);
     
@@ -650,9 +901,14 @@ export class TowerSystem {
     // Apply damage to each hex in the impact zone
     impactHexes.forEach(impactHex => {
       const hex = this.gridSystem.getHex(impactHex.q, impactHex.r);
-      if (hex && hex.isBurning) {
-        // Calculate power with multiplier
-        const basePower = CONFIG.BOMBER_BASE_POWER;
+      if (!hex) return;
+      
+      if (hex.isBurning) {
+        let basePower = bomb.powerPerBomb;
+        const powerUps = this.gameState?.player?.powerUps || {};
+        const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+        const waterPowerMultiplier = getPowerUpMultiplier('waterTowerPower', powerUps, tempPowerUps);
+        basePower *= waterPowerMultiplier;
         const finalPower = basePower * impactHex.powerMultiplier;
         
         const extinguished = this.fireSystem.extinguishHex(
@@ -664,6 +920,54 @@ export class TowerSystem {
         if (extinguished && this.onFireExtinguished) {
           this.onFireExtinguished(hex.fireType, impactHex.q, impactHex.r);
         }
+      }
+      
+      // Damage water tanks
+      if (hex.hasWaterTank) {
+        this.gridSystem.setHex(impactHex.q, impactHex.r, { isBeingSprayed: true });
+        let basePower = bomb.powerPerBomb;
+        const powerUps = this.gameState?.player?.powerUps || {};
+        const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+        const waterPowerMultiplier = getPowerUpMultiplier('waterTowerPower', powerUps, tempPowerUps);
+        basePower *= waterPowerMultiplier;
+        const finalPower = basePower * impactHex.powerMultiplier;
+        this.gameState.waterTankSystem?.damageWaterTank(impactHex.q, impactHex.r, finalPower);
+      }
+      
+      if (hex.hasTempPowerUpItem) {
+        this.gridSystem.setHex(impactHex.q, impactHex.r, { isBeingSprayed: true });
+        let basePower = bomb.powerPerBomb;
+        const powerUps = this.gameState?.player?.powerUps || {};
+        const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+        const waterPowerMultiplier = getPowerUpMultiplier('waterTowerPower', powerUps, tempPowerUps);
+        basePower *= waterPowerMultiplier;
+        const finalPower = basePower * impactHex.powerMultiplier;
+        this.gameState.tempPowerUpItemSystem?.damageItem(impactHex.q, impactHex.r, finalPower);
+        this.gameState.tempPowerUpItemSystem?.checkCollection(impactHex.q, impactHex.r);
+      }
+      
+      if (hex.hasMysteryItem) {
+        this.gridSystem.setHex(impactHex.q, impactHex.r, { isBeingSprayed: true });
+        let basePower = bomb.powerPerBomb;
+        const powerUps = this.gameState?.player?.powerUps || {};
+        const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+        const waterPowerMultiplier = getPowerUpMultiplier('waterTowerPower', powerUps, tempPowerUps);
+        basePower *= waterPowerMultiplier;
+        const finalPower = basePower * impactHex.powerMultiplier;
+        this.gameState.mysteryItemSystem?.damageItem(impactHex.q, impactHex.r, finalPower);
+        this.gameState.mysteryItemSystem?.checkCollection(impactHex.q, impactHex.r);
+      }
+      
+      if (hex.hasCurrencyItem) {
+        this.gridSystem.setHex(impactHex.q, impactHex.r, { isBeingSprayed: true });
+        let basePower = bomb.powerPerBomb;
+        const powerUps = this.gameState?.player?.powerUps || {};
+        const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+        const waterPowerMultiplier = getPowerUpMultiplier('waterTowerPower', powerUps, tempPowerUps);
+        basePower *= waterPowerMultiplier;
+        const finalPower = basePower * impactHex.powerMultiplier;
+        this.gameState.currencyItemSystem?.damageItem(impactHex.q, impactHex.r, finalPower);
+        this.gameState.currencyItemSystem?.checkCollection(impactHex.q, impactHex.r);
       }
     });
   }
@@ -691,6 +995,57 @@ export class TowerSystem {
         tower.bombs = [];
       }
     });
+  }
+
+  /**
+   * Apply a shield to a tower
+   * @param {string} towerId - Tower ID
+   * @param {number} shieldLevel - Shield level (1-4)
+   * @returns {boolean} True if shield was applied successfully
+   */
+  applyShield(towerId, shieldLevel) {
+    const tower = this.towers.get(towerId);
+    if (!tower || tower.shield) return false; // Tower doesn't exist or already has shield
+    
+    const shieldHealth = getShieldHealth(shieldLevel);
+    tower.shield = {
+      level: shieldLevel,
+      health: shieldHealth,
+      maxHealth: shieldHealth
+    };
+    
+    return true;
+  }
+
+  /**
+   * Check if a tower has a shield
+   * @param {string} towerId - Tower ID
+   * @returns {boolean} True if tower has a shield
+   */
+  hasShield(towerId) {
+    const tower = this.towers.get(towerId);
+    return tower && tower.shield && tower.shield.health > 0;
+  }
+
+  /**
+   * Get shield information for a tower
+   * @param {string} towerId - Tower ID
+   * @returns {Object|null} Shield data or null
+   */
+  getShield(towerId) {
+    const tower = this.towers.get(towerId);
+    return tower?.shield || null;
+  }
+
+  /**
+   * Remove shield from a tower (when shield is destroyed)
+   * @param {string} towerId - Tower ID
+   */
+  removeShield(towerId) {
+    const tower = this.towers.get(towerId);
+    if (tower) {
+      tower.shield = null;
+    }
   }
 }
 
