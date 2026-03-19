@@ -1,5 +1,5 @@
 // Simple reusable confirm modal helper
-export function showConfirmModal({ title = 'Confirm', message = 'Are you sure?', confirmText = 'Confirm', cancelText = 'Cancel', confirmButtonClass = 'cta-lime', itemIcon = null, cost = null } = {}) {
+export function showConfirmModal({ title = 'Confirm', message = 'Are you sure?', confirmText = 'Confirm', cancelText = 'Cancel', confirmButtonClass = 'cta-lime', itemIcon = null, cost = null, confirmButtonIcon = null, aboveTutorial = false } = {}) {
   return new Promise((resolve) => {
     const overlay = document.getElementById('confirmModal');
     const titleEl = document.getElementById('confirmTitle');
@@ -83,6 +83,15 @@ export function showConfirmModal({ title = 'Confirm', message = 'Are you sure?',
       const textSpan = document.createElement('span');
       textSpan.textContent = confirmText;
       okBtn.appendChild(textSpan);
+    } else if (confirmButtonIcon) {
+      okBtn.innerHTML = '';
+      const img = document.createElement('img');
+      img.src = confirmButtonIcon;
+      img.style.cssText = 'margin-right: 8px; width: 36px; height: 36px; object-fit: contain;';
+      okBtn.appendChild(img);
+      const textSpan = document.createElement('span');
+      textSpan.textContent = confirmText;
+      okBtn.appendChild(textSpan);
     } else {
       okBtn.textContent = confirmText;
     }
@@ -102,10 +111,12 @@ export function showConfirmModal({ title = 'Confirm', message = 'Are you sure?',
 
     // Show modal (CSS centers via flex when 'active')
     overlay.classList.add('active');
+    if (aboveTutorial) overlay.classList.add('confirm-modal-above-tutorial');
 
     // Handlers
     const cleanup = () => {
       overlay.classList.remove('active');
+      overlay.classList.remove('confirm-modal-above-tutorial');
       okBtn.removeEventListener('click', onOk);
       cancelBtn.removeEventListener('click', onCancel);
       overlay.removeEventListener('click', onBackdrop);

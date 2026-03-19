@@ -11,6 +11,63 @@ body.cursor-click-feedback * {
     cursor: inherit !important;
 }
 
+/* Tutorial mode: red X only on blocked clickables (buttons, inventory items, etc.); default cursor elsewhere */
+body.tutorial-mode button,
+body.tutorial-mode a[href],
+body.tutorial-mode [role="button"],
+body.tutorial-mode .cta-button,
+body.tutorial-mode .tab-button,
+body.tutorial-mode .scenario-dropdown-option,
+body.tutorial-mode .scenario-dropdown-selected,
+body.tutorial-mode .inventory-item {
+    cursor: var(--cursor-x) !important;
+}
+/* Allowed elements for current step: show default cursor and ensure clickable */
+body.tutorial-mode .tutorial-allowed,
+body.tutorial-mode .tutorial-allowed * {
+    cursor: var(--cursor-default) !important;
+    pointer-events: auto !important;
+}
+/* When placing tower/item during tutorial, canvas must inherit body cursor (red X / green +) - overrides tutorial-allowed */
+body.tutorial-mode.placing-item #gameCanvas {
+    cursor: inherit !important;
+}
+/* Modal overlay when open: allow all interactions */
+body.tutorial-mode .modal-overlay.active,
+body.tutorial-mode .modal-overlay.active * {
+    cursor: var(--cursor-default) !important;
+}
+/* Step 21: invisible overlay over shield - guarantees click is received */
+.tutorial-shield-overlay {
+    position: fixed;
+    z-index: 9998; /* Below tutorial arrow (2147483647) but above shop */
+    cursor: var(--cursor-default);
+    pointer-events: auto;
+    background: transparent;
+}
+/* Tutorial step 21: shield must be clickable with default cursor (override .inventory-item red X) */
+body.tutorial-mode.tutorial-step-21 #shield-1-shop,
+body.tutorial-mode.tutorial-step-21 #shield-1-shop * {
+    cursor: var(--cursor-default) !important;
+    pointer-events: auto !important;
+}
+/* Tutorial-disabled: shop sub-tabs that are blocked during step 21 */
+body.tutorial-mode .tutorial-disabled {
+    pointer-events: none !important;
+    opacity: 0.5;
+}
+/* Tutorial complete (past last step): default cursor everywhere */
+body.tutorial-mode.tutorial-steps-complete button,
+body.tutorial-mode.tutorial-steps-complete a[href],
+body.tutorial-mode.tutorial-steps-complete [role="button"],
+body.tutorial-mode.tutorial-steps-complete .cta-button,
+body.tutorial-mode.tutorial-steps-complete .tab-button,
+body.tutorial-mode.tutorial-steps-complete .scenario-dropdown-option,
+body.tutorial-mode.tutorial-steps-complete .scenario-dropdown-selected,
+body.tutorial-mode.tutorial-steps-complete .inventory-item {
+    cursor: var(--cursor-default) !important;
+}
+
 * {
     margin: 0;
     padding: 0;
@@ -482,6 +539,18 @@ body {
 
 .cta-yellow::after {
     background-image: url('assets/images/ui/button_yellow_right.png');
+}
+
+.cta-special {
+    background-image: url('assets/images/ui/button_special_middle.png');
+}
+
+.cta-special::before {
+    background-image: url('assets/images/ui/button_special_left.png');
+}
+
+.cta-special::after {
+    background-image: url('assets/images/ui/button_special_right.png');
 }
 
 .cta-blue {
@@ -1079,11 +1148,12 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
 
 .inventory-item.locked {
     opacity: 0.3;
-    cursor: not-allowed;
+    cursor: var(--cursor-x);
 }
 
 .inventory-item.locked:hover {
     transform: none;
+    cursor: var(--cursor-x);
     /* Keep original frame background based on item type, don't use hover frame */
 }
 
@@ -1260,7 +1330,7 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
 
 /* Splash Screen Overlay - Full Viewport */
 .splash-screen {
-    background: rgba(0, 0, 0, 0.85);
+    background: rgba(0, 0, 0, 1);
     padding: 0;
 }
 
@@ -1268,6 +1338,650 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
 #waveCompleteModal {
     background: rgba(0, 0, 0, 0.85);
 }
+
+/* Modal content above hero graphic (hero appears behind modal text/buttons) */
+#waveCompleteModal .modal {
+    position: relative;
+    z-index: 2;
+}
+
+/* Wave complete hero graphic - bottom left, fixed pixel dimensions (no viewport scaling) */
+/* z-index: 1 so it appears behind modal content but above the overlay background mask */
+/* 20% larger: scale(1.2) with bottom-left origin */
+.wave-complete-hero-graphic {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: 400px;
+    height: 520px;
+    max-height: 100vh;
+    overflow: visible;
+    margin-left: 0px;
+    z-index: 1;
+    pointer-events: none;
+    opacity: 0;
+    transform-origin: bottom left;
+    transform: translateX(-100%) scale(1.2);
+    transition: opacity 0.4s ease-in, transform 0.4s ease-in;
+}
+
+.wave-complete-hero-graphic.shifted-in {
+    opacity: 1;
+    transform: translateX(0) scale(1.2);
+}
+
+.wave-complete-hero-graphic img.pulsing {
+    animation: waveCompleteHeroPulse 2s ease-in-out infinite;
+}
+
+@keyframes waveCompleteHeroPulse {
+    0%, 100% {
+        transform: scaleX(-1) translateY(0);
+    }
+    50% {
+        transform: scaleX(-1) translateY(-10px);
+    }
+}
+
+.wave-complete-hero-graphic img {
+    position: absolute;
+    top: 50px;
+    left: 0;
+    width: 400px;
+    height: auto;
+    object-fit: contain;
+    object-position: top left;
+    image-rendering: crisp-edges;
+    transform: scaleX(-1);
+}
+
+/* Hero size variants - container/img only; pill stays fixed size */
+.wave-complete-hero-graphic.hero-size-78\.75 {
+    width: 315px;
+    height: 410px;
+}
+.wave-complete-hero-graphic.hero-size-78\.75 img {
+    width: 315px;
+}
+
+.wave-complete-hero-graphic.hero-size-90 {
+    width: 360px;
+    height: 468px;
+}
+.wave-complete-hero-graphic.hero-size-90 img {
+    width: 360px;
+}
+
+.wave-complete-hero-graphic.hero-size-120 {
+    width: 480px;
+    height: 624px;
+}
+.wave-complete-hero-graphic.hero-size-120 img {
+    width: 480px;
+}
+
+.wave-complete-hero-graphic.hero-size-110 {
+    width: 440px;
+    height: 572px;
+}
+.wave-complete-hero-graphic.hero-size-110 img {
+    width: 440px;
+}
+
+.wave-complete-hero-graphic.hero-size-135 {
+    width: 540px;
+    height: 702px;
+}
+.wave-complete-hero-graphic.hero-size-135 img {
+    width: 540px;
+}
+
+.wave-complete-hero-graphic.hero-size-140\.6 {
+    width: 563px;
+    height: 731px;
+}
+.wave-complete-hero-graphic.hero-size-140\.6 img {
+    width: 563px;
+}
+
+.wave-complete-hero-graphic.hero-size-125 {
+    width: 500px;
+    height: 650px;
+}
+.wave-complete-hero-graphic.hero-size-125 img {
+    width: 500px;
+}
+
+.wave-complete-hero-graphic.hero-size-150 {
+    width: 600px;
+    height: 780px;
+}
+.wave-complete-hero-graphic.hero-size-150 img {
+    width: 600px;
+}
+
+.wave-complete-hero-graphic.hero-size-160 {
+    width: 640px;
+    height: 832px;
+}
+.wave-complete-hero-graphic.hero-size-160 img {
+    width: 640px;
+}
+
+.wave-complete-hero-graphic.hero-size-144 {
+    width: 576px;
+    height: 749px;
+}
+.wave-complete-hero-graphic.hero-size-144 img {
+    width: 576px;
+}
+
+.wave-complete-hero-graphic.hero-size-170 {
+    width: 680px;
+    height: 884px;
+}
+.wave-complete-hero-graphic.hero-size-170 img {
+    width: 680px;
+}
+
+/* Hero vertical shift - move img down (base top: 50px) */
+.wave-complete-hero-graphic.hero-shift-100 img {
+    top: 150px;
+}
+.wave-complete-hero-graphic.hero-shift-50 img {
+    top: 100px;
+}
+.wave-complete-hero-graphic.hero-shift-150 img {
+    top: 200px;
+}
+.wave-complete-hero-graphic.hero-shift-200 img {
+    top: 250px;
+}
+.wave-complete-hero-graphic.hero-shift-300 img {
+    top: 350px;
+}
+
+/* Hero vertical shift - move img up (base top: 50px) */
+.wave-complete-hero-graphic.hero-shift-up-50 img {
+    top: 0;
+}
+.wave-complete-hero-graphic.hero-shift-up-100 img {
+    top: -50px;
+}
+.wave-complete-hero-graphic.hero-shift-up-150 img {
+    top: -100px;
+}
+
+/* Hero vertical shift - move img down */
+.wave-complete-hero-graphic.hero-shift-down-25 img {
+    top: 75px;
+}
+.wave-complete-hero-graphic.hero-shift-down-50 img {
+    top: 100px;
+}
+.wave-complete-hero-graphic.hero-shift-down-75 img {
+    top: 125px;
+}
+.wave-complete-hero-graphic.hero-shift-down-80 img {
+    top: 130px;
+}
+.wave-complete-hero-graphic.hero-shift-down-100 img {
+    top: 150px;
+}
+.wave-complete-hero-graphic.hero-shift-down-200 img {
+    top: 250px;
+}
+
+/* Hero horizontal shift - move img left */
+.wave-complete-hero-graphic.hero-shift-left-50 img {
+    left: -50px;
+}
+.wave-complete-hero-graphic.hero-shift-left-100 img {
+    left: -100px;
+}
+.wave-complete-hero-graphic.hero-shift-left-200 img {
+    left: -200px;
+}
+
+/* Hero name/title pill - black pill with white text, like boss overlay */
+/* Positioned to stay fully visible (container has 80px off left edge) */
+.wave-complete-hero-pill {
+    position: absolute;
+    bottom: 12px;
+    left: 100px;
+    right: auto;
+    padding: 8px 20px;
+    background: rgba(0, 0, 0, 0.7);
+    border-radius: 999px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    pointer-events: none;
+    z-index: 2;
+}
+
+.wave-complete-hero-pill-name {
+    color: #FFFFFF;
+    font-size: 19px;
+    font-weight: bold;
+    font-family: "Exo 2", sans-serif;
+    line-height: 1.2;
+    text-transform: uppercase;
+}
+
+.wave-complete-hero-pill-title {
+    color: #FFFFFF;
+    font-size: 12px;
+    font-family: "Exo 2", sans-serif;
+    line-height: 1.2;
+}
+
+/* Character speech bubble - white bg, black text, tail pointing down */
+.character-speech-bubble {
+    position: fixed;
+    width: fit-content;
+    min-width: 0;
+    max-width: 340px;
+    padding: 25px 25px 30px 25px;
+    background: #151B29;
+    color: #FFFFFF;
+    font-size: 18px;
+    font-weight: 400;
+    font-family: "Exo 2", sans-serif;
+    line-height: 1.4;
+    text-align: center;
+    border-radius: 55px;
+    box-shadow: 0 0 10px rgba(143, 255, 141, 0.6),0 0 60px rgba(70, 255, 70, 0.8);
+    pointer-events: none;
+    z-index: 10;
+}
+
+.character-speech-bubble::after {
+    content: '';
+    position: absolute;
+    top: calc(100% - 1px);
+    left: 50%;
+    margin-left: -20px;
+    border: 20px solid transparent;
+    border-top-color: #151B29;
+}
+
+/* Tail centered for hero speech bubble */
+.character-speech-bubble-hero::after {
+    left: 50%;
+    margin-left: -20px;
+}
+
+/* Boss speech bubble: shrinks to fit content, black text (story classes can override for effects) */
+.character-speech-bubble-boss {
+    width: fit-content;
+    min-width: 0;
+    max-width: 340px;
+    color: #FFFFFF;
+    box-shadow: 0 0 10px rgba(255, 83, 83, 0.8), 0 0 60px rgb(255, 11, 11);
+}
+
+/* Tail points toward boss on right */
+.character-speech-bubble-boss::after {
+    left: 50%;
+    margin-left: -10px;
+}
+
+/* Boss power activation speech bubble - positioned above boss during casting */
+.boss-power-speech-bubble {
+    position: fixed;
+    width: fit-content;
+    min-width: 150px;
+    max-width: 340px;
+    margin: 0;
+    padding: 15px 20px;
+    font-size: 50px;
+    font-weight:bold;
+    pointer-events: none;
+    z-index: 100001;
+}
+
+/* ========== Text effects - colors and effects are separate and combinable ========== */
+/*
+ * COLORS (6): grove, water, fire, upgrade, hexalon, rainbow
+ * Each has 3 variations: text-[color], text-gradient-[color], text-cycle-[color]
+ *
+ * EFFECTS (combinable with colors): text-wave, text-wave-fast, text-glow, text-glow-pulse,
+ *   text-breathe, text-jitter, text-jitter-fast, text-shimmer, text-grow-pulse
+ *
+ * FIRE TYPES (game-specific): text-fire-cinder, text-fire-flame, text-fire-blaze,
+ *   text-fire-firestorm, text-fire-inferno, text-fire-cataclysm
+ *
+ * Examples:
+ *   <span class="text-fire">fire</span>
+ *   <span class="text-wave text-water">water wielder</span>
+ *   <span class="text-gradient-grove text-glow">shop</span>
+ *   <span class="text-jitter text-fire text-uppercase">BOSSES</span>
+ *   <span class="text-cycle-rainbow text-glow-pulse">rainbow pulse</span>
+ */
+
+/* ---- COLORS: solid (text-[color]) ---- */
+.text-grove { color: #16fb16; font-weight: 600; }
+.text-water { color: #0bcaff; font-weight: 600; }
+.text-fire { color: #f34317; font-weight: 600; }
+.text-upgrade { color: #ff67cf; font-weight: 600; }
+.text-hexalon { color: #ff9d00; font-weight: 600; }
+.text-rainbow { color: #ff8800; font-weight: 600; }
+
+/* ---- COLORS: gradient (text-gradient-[color]) - animated ---- */
+
+/* Gradient: fire colors across text - animated */
+.text-gradient-fire {
+    background: repeating-linear-gradient(90deg,
+        #ff8453 0%,
+        #ff1616 25%,
+        #ffb701 50%,
+        #fb0000 75%,
+        #ff8453 100%
+    );
+    background-size: 50% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    display: inline-block;
+    font-weight:bold;
+    animation: textGradientFire 4s linear infinite;
+}
+@keyframes textGradientFire {
+    0% { background-position: 0 0; }
+    100% { background-position: 100% 0; }
+}
+
+/* Gradient: grove (green) - animated */
+.text-gradient-grove {
+    background: repeating-linear-gradient(90deg,
+        #16fbc6 0%,
+        #47ff22 25%,
+        #bcff5f 50%,
+        #22ff89 75%,
+        #16fbc6 100%
+    );
+    background-size: 50% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    display: inline-block;
+    font-weight:bold;
+    animation: textGradientGrove 4s linear infinite;
+}
+@keyframes textGradientGrove {
+    0% { background-position: 0 0; }
+    100% { background-position: 100% 0; }
+}
+
+/* Gradient: water (blue) - animated */
+.text-gradient-water {
+    background: repeating-linear-gradient(90deg,
+        #2259ff 0%,
+        #2b99ff 25%,
+        #448cff 50%,
+        #3c84ff 75%,
+        #3044ff 100%
+    );
+    background-size: 50% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    display: inline-block;
+    font-weight:bold;
+    animation: textGradientWater 4s linear infinite;
+}
+@keyframes textGradientWater {
+    0% { background-position: 0 0; }
+    100% { background-position: 100% 0; }
+}
+
+/* Gradient: upgrade (purple) - animated */
+.text-gradient-upgrade {
+    background: repeating-linear-gradient(90deg,
+        #d137f8 0%,
+        #ff67e7 25%,
+        #ff1395 50%,
+        #e222ff 75%,
+        #d137f8 100%
+    );
+    background-size: 50% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    display: inline-block;
+    font-weight:bold;
+    animation: textGradientUpgrade 4s linear infinite;
+}
+@keyframes textGradientUpgrade {
+    0% { background-position: 0 0; }
+    100% { background-position: 100% 0; }
+}
+
+/* Gradient: hexalon (orange) - animated */
+.text-gradient-hexalon {
+    background: repeating-linear-gradient(90deg,
+        #b25e1a 0%,
+        #ff9d00 25%,
+        #c36710 50%,
+        #ff5111 75%,
+        #b25e1a 100%
+    );
+    background-size: 50% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    display: inline-block;
+    font-weight:bold;
+    animation: textGradientHexalon 4s linear infinite;
+}
+@keyframes textGradientHexalon {
+    0% { background-position: 0 0; }
+    100% { background-position: 100% 0; }
+}
+
+/* Rainbow gradient - seamless loop (repeating pattern, scroll by one tile) */
+.text-gradient-rainbow {
+    background: repeating-linear-gradient(90deg,
+        #ff0000 0%,
+        #ff8800 12.5%,
+        #ffff00 25%,
+        #00ff00 37.5%,
+        #00ffff 50%,
+        #0088ff 62.5%,
+        #ff00ff 75%,
+        #ff0000 87.5%
+    );
+    background-size: 50% 100%;
+    font-weight:bold;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    display: inline-block;
+    animation: textGradientRainbow 4s linear infinite;
+}
+@keyframes textGradientRainbow {
+    0% { background-position: 0 0; }
+    100% { background-position: 100% 0; }
+}
+
+/* ---- COLORS: cycle (text-cycle-[color]) - animated color transition ---- */
+.text-cycle-fire {
+    display: inline-block;
+    animation: textCycleFire 2s ease-in-out infinite;
+}
+@keyframes textCycleFire {
+    0%, 100% { color: #ff0000; }
+    33% { color: #ffc400; }
+    66% { color: #ff6a00; }
+}
+.text-cycle-grove {
+    display: inline-block;
+    animation: textCycleGrove 2s ease-in-out infinite;
+}
+@keyframes textCycleGrove {
+    0%, 100% { color: #16fb6e; }
+    33% { color: #b5ff22; }
+    66% { color: #22ff61; }
+}
+.text-cycle-water {
+    display: inline-block;
+    animation: textCycleWater 2s ease-in-out infinite;
+}
+@keyframes textCycleWater {
+    0%, 100% { color: #2277ff; }
+    33% { color: #04e6ff; }
+    66% { color: #29b0ff; }
+}
+.text-cycle-upgrade {
+    display: inline-block;
+    animation: textCycleUpgrade 2s ease-in-out infinite;
+}
+@keyframes textCycleUpgrade {
+    0%, 100% { color: #d137f8; }
+    33% { color: #ff67e7; }
+    66% { color: #e222ff; }
+}
+.text-cycle-hexalon {
+    display: inline-block;
+    animation: textCycleHexalon 2s ease-in-out infinite;
+}
+@keyframes textCycleHexalon {
+    0%, 100% { color: #b25e1a; }
+    33% { color: #ff9d00; }
+    66% { color: #ff5111; }
+}
+.text-cycle-rainbow {
+    display: inline-block;
+    animation: textCycleRainbow 4s ease-in-out infinite;
+}
+@keyframes textCycleRainbow {
+    0% { color: #ff0000; }
+    14% { color: #ff8800; }
+    28% { color: #ffff00; }
+    42% { color: #00ff00; }
+    57% { color: #00ffff; }
+    71% { color: #0088ff; }
+    85% { color: #ff00ff; }
+    100% { color: #ff0000; }
+}
+
+/* ---- Fire type colors (game-specific, use CSS vars from config) ---- */
+.text-fire-cinder { color: var(--fire-cinder, hsl(46, 100%, 60%)); font-weight: 600; }
+.text-fire-flame { color: var(--fire-flame, hsl(31, 100%, 55%)); font-weight: 600; }
+.text-fire-blaze { color: var(--fire-blaze, hsl(16, 100%, 55%)); font-weight: 600; }
+.text-fire-firestorm { color: var(--fire-firestorm, hsl(350, 100%, 55%)); font-weight: 600; }
+.text-fire-inferno { color: var(--fire-inferno, hsl(310, 100%, 60%)); font-weight: 600; }
+.text-fire-cataclysm { color: var(--fire-cataclysm, hsl(275, 100%, 60%)); font-weight: 600; }
+
+/* ---- EFFECTS (combinable, no colors) ---- */
+/* Wave: letters move up/down in staggered wave (requires JS - text-wave or text-wave-fast) */
+.text-wave, .text-wave-fast {
+    display: inline-block;
+}
+.text-wave-letter {
+    display: inline-block; /* Required for transform animation to work */
+}
+.text-wave .text-wave-letter { animation: textWaveBounce 2s ease-in-out infinite; }
+.text-wave-fast .text-wave-letter { animation: textWaveBounce 1s ease-in-out infinite; }
+@keyframes textWaveBounce {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-4px); }
+}
+
+/* Glow: static glow (uses currentColor) */
+.text-glow {
+    display: inline-block;
+    text-shadow: 0 0 5px currentColor, 0 0 8px currentColor, 0 0 22px currentColor, 0 0 45px currentColor;
+}
+
+/* Glow pulse: text-shadow breathes */
+.text-glow-pulse {
+    display: inline-block;
+    animation: textGlowPulse 2s ease-in-out infinite;
+}
+@keyframes textGlowPulse {
+    0%, 100% { text-shadow: 0 0 2px currentColor, 0 0 4px currentColor; }
+    50% { text-shadow: 0 0 6px currentColor, 0 0 10px currentColor, 0 0 30px currentColor, 0 0 45px currentColor; }
+}
+
+/* Glow + Jitter: animation must include text-shadow so glow persists (animation overrides static styles) */
+.text-jitter.text-glow,
+.text-glow.text-jitter {
+    animation: textJitterFlickerGlow 0.15s ease-in-out infinite alternate;
+}
+@keyframes textJitterFlickerGlow {
+    0% { transform: scale(1) translateY(0); text-shadow: 0 0 5px currentColor, 0 0 8px currentColor, 0 0 22px currentColor, 0 0 45px currentColor; }
+    50% { transform: scale(1.015) translateY(-0.75px); text-shadow: 0 0 5px currentColor, 0 0 8px currentColor, 0 0 22px currentColor, 0 0 45px currentColor; }
+    100% { transform: scale(1.0075) translateY(-0.4px); text-shadow: 0 0 5px currentColor, 0 0 8px currentColor, 0 0 22px currentColor, 0 0 45px currentColor; }
+}
+
+/* Breathe: letter-spacing pulse */
+.text-breathe {
+    display: inline-block;
+    animation: textLetterSpacingPulse 2s ease-in-out infinite;
+}
+@keyframes textLetterSpacingPulse {
+    0%, 100% { letter-spacing: 0.02em; }
+    50% { letter-spacing: 0.12em; }
+}
+
+/* Jitter: rapid flicker (from legacy text-fire) */
+.text-jitter {
+    display: inline-block;
+    animation: textJitterFlicker 0.15s ease-in-out infinite alternate;
+}
+@keyframes textJitterFlicker {
+    0% { transform: scale(1) translateY(0); }
+    50% { transform: scale(1.015) translateY(-0.75px); }
+    100% { transform: scale(1.0075) translateY(-0.4px); }
+}
+
+/* Jitter fast: wobble (from legacy text-jitter) */
+.text-jitter-fast {
+    display: inline-block;
+    animation: textJitterWobble 0.4s ease-in-out infinite;
+}
+@keyframes textJitterWobble {
+    0%, 100% { transform: translate(0, 0); }
+    12% { transform: translate(0.6px, -1px); }
+    25% { transform: translate(-0.75px, 0.5px); }
+    37% { transform: translate(0.5px, 0.75px); }
+    50% { transform: translate(-0.6px, -0.5px); }
+    62% { transform: translate(0.9px, 0.4px); }
+    75% { transform: translate(-0.4px, 0.6px); }
+    87% { transform: translate(0.5px, -0.6px); }
+}
+
+/* Shimmer: light sweep across text (uses currentColor - combine with text-[color]) */
+.text-shimmer {
+    background: linear-gradient(90deg, currentColor 0%, currentColor 35%, #fff 50%, currentColor 65%, currentColor 100%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    display: inline-block;
+    animation: textShimmer 2.5s ease-in-out infinite;
+}
+@keyframes textShimmer {
+    0% { background-position: 100% 50%; }
+    100% { background-position: -100% 50%; }
+}
+
+/* Grow pulse: text animates larger/smaller */
+.text-grow-pulse {
+    display: inline-block;
+    animation: textGrowPulse 2s ease-in-out infinite;
+}
+@keyframes textGrowPulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.08); }
+}
+
+/* Utility */
+.text-uppercase { text-transform: uppercase; }
 
 .splash-modal {
     max-width: 700px;
@@ -1308,11 +2022,41 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
     display: flex;
     flex-direction: column;
     width: 100%;
-    max-width: 400px;
+    max-width: 630px;
+}
+
+.splash-buttons-row {
+    display: flex;
+    flex-direction: row;
+    gap: 12px;
+    width: 100%;
+}
+#splashShowTutorialBtn {
+    margin-left:-15px;
+}
+#splashLoadGameBtn {
+    margin-right:-15px;
+}
+#splashSettingsBtn {
+    margin-right:-7.5px;
+}
+#splashLeaderboardBtn {
+    margin-left:-7.5px;
+}
+
+.splash-buttons-row .splash-btn {
+    flex: 1;
+}
+
+.splash-btn .splash-btn-icon {
+    vertical-align: middle;
+    image-rendering: crisp-edges;
+    margin-right: 8px;
 }
 
 /* Settings modal (inner) should appear above splash screen */
-#settingsModalInner {
+#settingsModalInner,
+#advancedSettingsModal {
     z-index: 1500;
     background: rgba(0, 0, 0, 0.85); /* Dark overlay mask to cover main menu behind it */
 }
@@ -1320,6 +2064,16 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
 /* Confirm modal should appear above other modals */
 #confirmModal.modal-overlay {
     z-index: 3000 !important; /* Higher than save/load modals (2000) */
+}
+
+/* Tutorial arrow above confirm modal (step 22 confirm purchase) - confirm modal is 3000 */
+body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
+    z-index: 10000 !important;
+}
+
+/* Restart/Exit tutorial confirm modal above tutorial bubble (step 28) - tutorial bubble is 2147483647 */
+#confirmModal.confirm-modal-above-tutorial {
+    z-index: 2147483648 !important;
 }
 
 #confirmModal {
@@ -1487,7 +2241,7 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
 .modal {
     border-radius: 12px;
     padding: 60px 40px 80px;
-    max-width: 750px;
+    max-width: 770px;
     max-height: calc(100vh - 40px);
     overflow-y: auto; /* Allow scrolling when content exceeds viewport */
     overflow-x: hidden; /* Prevent horizontal scrolling */
@@ -1834,6 +2588,37 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
     color: #ffffff;
     text-align: center;
     margin-bottom: 30px;
+}
+
+/* Score leaderboard */
+.leaderboard-list {
+    max-height: 60vh;
+    overflow-y: auto;
+    padding: 8px 0;
+}
+.leaderboard-entry {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    margin: 2px 0;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 4px;
+    gap: 16px;
+}
+.leaderboard-rank {
+    color: #aaa;
+    min-width: 32px;
+    font-weight: bold;
+}
+.leaderboard-score {
+    color: #FFD700;
+    font-weight: bold;
+    flex: 1;
+}
+.leaderboard-date {
+    color: #aaa;
+    font-size: 12px;
 }
 
 .modal-choices {
@@ -2367,7 +3152,7 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
 }
 
 .upgrade-tokens.disabled {
-    color: #666 !important;
+    color: #ff67e7 !important; /* Keep upgrade plan pink even at 0 (like movement tokens) */
     background: transparent !important;
     border: none !important;
     cursor: not-allowed !important;
@@ -2465,6 +3250,17 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
 
 .overlay-panel .overlay-content {
     padding: 8px 28px 35px 30px;
+}
+
+/* Hide game overlay until game is started (skip/start on story, or load game/scenario) */
+body.game-not-started .overlay-top-left {
+    visibility: hidden;
+    pointer-events: none;
+}
+
+body.game-not-started .controls {
+    visibility: hidden;
+    pointer-events: none;
 }
 
 .overlay-top-left {
@@ -2714,6 +3510,24 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
     flex-shrink: 0;
 }
 
+/* Combined row: upgrade plans + movement tokens on same row */
+/* No gap - matches currency row spacing (icon margin-right: 8px only) */
+.overlay-row-resource-combined {
+    flex-wrap: wrap;
+    gap: 0;
+}
+.overlay-label-compact {
+    margin-left: 0;
+}
+/* Each pair (icon + value) is a flex unit; space between upgrade plans and movement tokens */
+.overlay-resource-pair {
+    display: inline-flex;
+    align-items: center;
+}
+.overlay-resource-pair-movement {
+    margin-left: 23px;
+}
+
 /* Color for fire-count, overlayPlacedTowers, and overlayPlacedItems is now set dynamically in updateUI() */
 
 .overlay-timer {
@@ -2787,7 +3601,7 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
 .overlay-progress-bar {
     flex: 1;
     position: relative;
-    height: 24px; /* Taller bars like reference */
+    height: 28px; /* Taller bars like reference */
     background: rgba(30, 30, 30, 0.95); /* Dark gray background matching reference */
     border: 1px solid rgba(180, 180, 180, 0.4); /* Light gray border matching reference */
     border-radius: 5px; /* Rounded corners all around */
@@ -2869,6 +3683,37 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
 #overlayTownHealth {
     color: #FFFFFF; /* White color for tree juice numbers */
 }
+
+/* Score row - text only, matches XP/town health font style (no progress bar) */
+/* Align score value with left edge of progress bars above (icon area = 38px to match level hex / hp label) */
+.overlay-row-score {
+    display: flex;
+    align-items: center;
+    margin: 0;
+    width: 100%;
+}
+.overlay-row-score .overlay-label {
+    min-width: 38px;
+    width: 38px;
+    flex-shrink: 0;
+}
+.overlay-score-value {
+    color: #FFFFFF;
+    font-size: 21px;
+    font-weight: bold;
+    text-shadow: 0 0 1px black, 0 0 2px black, 0 0 10px black, 0 0 20px black;
+    margin-left: 0;
+}
+
+/* Subtle dividers between overlay stat groups */
+.overlay-divider {
+    height: 1px;
+    background: rgba(255, 255, 255, 0.15);
+    margin: 4px 0;
+    width: 100%;
+}
+
+/* Tooltip-enabled overlay rows - keep default cursor on hover */
 
 /* Power-up List */
 .powerup-list {
@@ -2971,47 +3816,72 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
     transform: translateY(-20px);
 }
 
-/* Minimap Styles */
-/* Minimap canvas - positioned exactly where it should be */
-.minimap-canvas {
+/* Minimap Container - pill above minimap, center-aligned, moved down to make room */
+.minimap-container {
     position: absolute;
     top: 4px;
     right: 13px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    z-index: 50;
+    transition: transform 0.2s ease-in-out;
+}
+
+/* Wave Group Name Pill - above minimap, white text on black (like boss/hero pills) */
+.wave-group-name-pill {
+    padding: 8px 16px;
+    background: rgba(0, 0, 0, 0.85);
+    border-radius: 999px;
+    color: #FFFFFF;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: "Exo 2", sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+/* Wrapper for minimap + blur (both centered) */
+.minimap-wrapper {
+    position: relative;
+    width: 200px;
+    height: 200px;
+    transform:translateY(-25px);
+}
+
+/* Minimap Styles */
+.minimap-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
     width: 200px;
     height: 200px;
     display: block;
     background: transparent;
-    opacity: 0.8; /* 80% opacity for entire minimap */
-    /* Clip to flat-top hexagon shape to match minimap hex orientation */
+    opacity: 0.8;
     clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
-    z-index: 51; /* Above the blur wrapper */
+    z-index: 51;
     pointer-events: none;
-    transition: transform 0.2s ease-in-out; /* Faster transition for sidebar shift */
 }
 
-/* Blur wrapper - positioned to match minimap, but smaller and centered on it */
+/* Blur - centered within minimap wrapper */
 .minimap-blur-background {
     position: absolute;
-    /* Minimap is at top: 4px, right: 13px, size 200x200 */
-    /* Minimap center: top = 4 + 100 = 104px, right = 13 + 100 = 113px */
-    /* Wrapper is 170x148 (reduced by 1px on top and bottom from 170x150) */
-    /* To center: top = 104 - 74 = 30px, right = 113 - 85 = 28px */
-    top: 30px;
-    right: 28px;
-    width: 170px; /* 5px smaller on each side from 180px */
-    height: 148px; /* 1px smaller on top and bottom from 150px */
-    z-index: 50; /* Behind the canvas */
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) translateZ(0);
+    width: 170px;
+    height: 148px;
+    z-index: 50;
     pointer-events: none;
-    /* Apply blur to background behind the minimap - blurs the main game canvas */
     -webkit-backdrop-filter: blur(20px) saturate(180%);
     backdrop-filter: blur(20px) saturate(180%);
-    /* Clip to flat-top hexagon shape to match minimap hex orientation */
     clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
     overflow: hidden;
-    /* Ensure backdrop-filter works by creating proper stacking context */
     isolation: isolate;
-    transform: translateZ(0);
-    transition: transform 0.2s ease-in-out; /* Faster transition for sidebar shift */
 }
 
 /* Tooltip Styles - match modal pattern exactly */
@@ -3327,7 +4197,7 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
 
 /* Story Screen */
 .story-screen {
-    background: rgba(0, 0, 0, 0.95);
+    background: rgba(0, 0, 0, 1);
     z-index: 2000;
     padding: 0;
 }
@@ -3461,160 +4331,7 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
     transform: scaleX(-1) translateY(3px);
 }
 
-/* Story panel: lightning (jitter) and Fire Spawners (pulse) */
-.story-lightning {
-    color: var(--fire-cinder, hsl(46, 100%, 60%));
-    text-transform: uppercase;
-    font-weight: 600;
-    display: inline-block;
-    animation: storyLightningJitter 0.4s ease-in-out infinite;
-}
-
-.story-bosses {
-    color: #e53935;
-    text-transform: uppercase;
-    font-weight: 600;
-    display: inline-block;
-    animation: storyLightningJitter 0.4s ease-in-out infinite;
-}
-
-.story-fire-spawners {
-    color: #ff3300;
-    text-transform: uppercase;
-    font-weight: 700;
-    display: inline-block;
-    text-shadow: 
-        0 0 5px #ff3300,
-        0 0 10px #ff6600,
-        0 0 20px #ff6600,
-        0 0 30px #ff3300,
-        0 -5px 15px rgba(255, 100, 0, 0.5);
-    animation: fireFlicker 0.15s ease-in-out infinite alternate;
-}
-
-@keyframes storyLightningJitter {
-    0%, 100% { transform: translate(0, 0); }
-    12% { transform: translate(0.6px, -1px); }
-    25% { transform: translate(-0.75px, 0.5px); }
-    37% { transform: translate(0.5px, 0.75px); }
-    50% { transform: translate(-0.6px, -0.5px); }
-    62% { transform: translate(0.9px, 0.4px); }
-    75% { transform: translate(-0.4px, 0.6px); }
-    87% { transform: translate(0.5px, -0.6px); }
-}
-
-@keyframes storyFireSpawnersPulse {
-    0%, 100% { transform: scale(1); }
-    50% { transform: scale(1.05); }
-}
-
-/* Story panel 1: Hexalon (logo color), The Grove / paths of green (green + pulse on Grove) */
-.story-hexalon {
-    color: #FF6B35;
-    text-transform: uppercase;
-    font-weight: 600;
-}
-
-.story-fire-word {
-    color: #ff3300;
-    font-weight: 700;
-    text-shadow: 
-        0 0 5px #ff3300,
-        0 0 10px #ff6600,
-        0 0 20px #ff6600,
-        0 0 30px #ff3300,
-        0 -5px 15px rgba(255, 100, 0, 0.5);
-    animation: fireFlicker 0.15s ease-in-out infinite alternate;
-    display: inline-block;
-}
-
-@keyframes fireFlicker {
-    0% {
-        text-shadow: 
-            0 0 5px #ff3300,
-            0 0 10px #ff6600,
-            0 0 20px #ff6600,
-            0 0 30px #ff3300,
-            0 -5px 15px rgba(255, 100, 0, 0.5);
-        transform: scale(1) translateY(0);
-    }
-    25% {
-        text-shadow: 
-            0 0 8px #ff4400,
-            0 0 15px #ff7700,
-            0 0 25px #ff5500,
-            0 0 35px #ff2200,
-            0 -8px 20px rgba(255, 80, 0, 0.6);
-    }
-    50% {
-        text-shadow: 
-            0 0 4px #ff2200,
-            0 0 12px #ff5500,
-            0 0 18px #ff6600,
-            0 0 28px #ff3300,
-            0 -6px 12px rgba(255, 120, 0, 0.4);
-        transform: scale(1.02) translateY(-1px);
-    }
-    75% {
-        text-shadow: 
-            0 0 7px #ff5500,
-            0 0 14px #ff8800,
-            0 0 22px #ff4400,
-            0 0 32px #ff2200,
-            0 -7px 18px rgba(255, 90, 0, 0.55);
-    }
-    100% {
-        text-shadow: 
-            0 0 6px #ff4400,
-            0 0 12px #ff7700,
-            0 0 20px #ff5500,
-            0 0 30px #ff3300,
-            0 -6px 16px rgba(255, 110, 0, 0.5);
-        transform: scale(1.01) translateY(-0.5px);
-    }
-}
-
-.story-grove {
-    color: #80FF22;
-    text-transform: uppercase;
-    font-weight: 600;
-    display: inline-block;
-    animation: storyFireSpawnersPulse 1.8s ease-in-out infinite;
-}
-
-.story-paths-green {
-    color: #80FF22;
-    font-weight: 600;
-}
-
-.story-water-wielder {
-    color: #00FF88;
-    text-transform: uppercase;
-    font-weight: 600;
-}
-
-.story-shop {
-    color: #00FF88;
-    text-transform: uppercase;
-    font-weight: 600;
-    display: inline-block;
-    animation: storyFireSpawnersPulse 1.8s ease-in-out infinite;
-}
-
-.story-upgrade-plans {
-    color: #ff67e7;
-    font-weight: 600;
-    display: inline-block;
-    animation: storyFireSpawnersPulse 1.8s ease-in-out infinite;
-}
-
-/* Story panel fire type colors (set from config in main.js; fallbacks match config) */
-.story-fire-cinder { color: var(--fire-cinder, hsl(46, 100%, 60%)); font-weight: 600; }
-.story-fire-flame { color: var(--fire-flame, hsl(31, 100%, 55%)); font-weight: 600; }
-.story-fire-blaze { color: var(--fire-blaze, hsl(16, 100%, 55%)); font-weight: 600; }
-.story-fire-firestorm { color: var(--fire-firestorm, hsl(350, 100%, 55%)); font-weight: 600; }
-.story-fire-inferno { color: var(--fire-inferno, hsl(310, 100%, 60%)); font-weight: 600; }
-.story-fire-cataclysm { color: var(--fire-cataclysm, hsl(275, 100%, 60%)); font-weight: 600; }
+/* Story panel: use text-* classes for styled text (see text effects section above) */
 
 @keyframes turretRotate {
   from {
@@ -3714,6 +4431,12 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
     gap: 0.6em; /* space between arrow and "Back" text; parent .cta-button is already flex */
 }
 
+.story-start-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
 .story-next-btn {
     /* padding-left and padding-right come from .cta-button (28px each) */
     /* font-size, font-weight, letter-spacing, and text-transform come from .cta-button */
@@ -3721,6 +4444,336 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
     color: #fff;
     flex-shrink: 0;
     width: auto; /* Auto width based on content, respecting .cta-button padding */
+}
+
+/* Tutorial buttons container - bottom right, fixed position; right value updated by JS based on sidebar state */
+.tutorial-buttons-container {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 99;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    transition: right 0.3s ease;
+}
+
+.tutorial-buttons-container .exit-tutorial-btn {
+    transition: filter 0.2s ease, transform 0.08s ease-out;
+}
+
+/* Tutorial centered bubble - intro step and final step (shifted up 200px so they don't cover the grove) */
+.tutorial-centered-bubble {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, calc(-50% - 200px));
+    z-index: 2147483647; /* Highest - always on top */
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.tutorial-centered-bubble-inner {
+    background: #fff;
+    color: #000;
+    padding: 28px 32px;
+    border-radius: 12px;
+    max-width: min(360px, calc(100vw - 20px));
+    font-size: 20px;
+    font-weight: 400;
+    font-family: "Exo 2", sans-serif;
+    line-height: 1.4;
+    text-align: center;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.6), 0 0 60px rgba(0, 0, 0, 0.8);
+}
+
+.tutorial-centered-bubble-text {
+    margin: 0 0 20px 0;
+}
+
+.tutorial-continue-btn {
+    display: block;
+    margin: 0;
+    flex-shrink: 0;
+    color: #fff !important;
+}
+
+.tutorial-step-indicator {
+    font-size: 11px;
+    text-transform: uppercase;
+    color: rgba(0, 0, 0, 0.6);
+    margin-top: 12px;
+    letter-spacing: 0.5px;
+}
+
+.tutorial-step-indicator-in-bubble {
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+/* Footer row: step counter on left, button on right (when button is present) */
+.tutorial-bubble-footer {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 16px;
+    width: 100%;
+    gap: 16px;
+}
+.tutorial-bubble-footer .tutorial-step-indicator {
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+/* Tutorial arrow - points at current step target (animation on icon only) */
+.tutorial-arrow {
+    position: fixed;
+    z-index: 2147483647; /* Highest - always on top */
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+/* Default: arrow from left, pointing right. [bubble] [arrow] -> target (arrow between bubble and target) */
+.tutorial-arrow {
+    transform: translate(-100%, -50%);
+    flex-direction: row;
+}
+
+/* Arrow from right: [target] [arrow] [bubble] */
+.tutorial-arrow.tutorial-arrow-from-right {
+    transform: translate(0, -50%);
+    flex-direction: row-reverse;
+}
+
+/* Arrow from top: [bubble above] [arrow below] -> target (arrow under bubble) */
+.tutorial-arrow.tutorial-arrow-from-top {
+    transform: translate(-50%, -100%);
+    flex-direction: column-reverse;
+}
+.tutorial-arrow.tutorial-arrow-from-top .tutorial-speech-bubble {
+    order: 2; /* Bubble on top */
+}
+.tutorial-arrow.tutorial-arrow-from-top .tutorial-arrow-wrapper {
+    order: 1; /* Arrow below bubble, pointing down at target */
+}
+
+/* Arrow from bottom: [target] [arrow above] [bubble below] */
+.tutorial-arrow.tutorial-arrow-from-bottom {
+    transform: translate(-50%, 0);
+    flex-direction: column;
+}
+
+/* Step 9 part 2: bubble below the arrow (arrow points up at tower, bubble below for "rotate" instruction) */
+.tutorial-arrow.tutorial-bubble-below-arrow.tutorial-arrow-from-bottom .tutorial-speech-bubble {
+    order: 2; /* Bubble below */
+}
+.tutorial-arrow.tutorial-bubble-below-arrow.tutorial-arrow-from-bottom .tutorial-arrow-wrapper {
+    order: 1; /* Arrow above bubble, pointing up at target */
+}
+/* Bubble tail points up toward the arrow when bubble is below */
+.tutorial-arrow.tutorial-bubble-below-arrow.tutorial-arrow-from-bottom .tutorial-speech-bubble::after {
+    top: -20px;
+    bottom: auto;
+    left: 50%;
+    right: auto;
+    margin: 0 0 0 -20px;
+    border: 20px solid transparent;
+    border-bottom-color: #fff;
+}
+
+/* Tutorial speech bubble - instructions for current step (no animation) */
+.tutorial-speech-bubble-btn {
+    display: block;
+    margin: 0;
+    flex-shrink: 0;
+    color: #fff !important;
+    pointer-events: auto; /* Clickable when visible; parent bubble has pointer-events: none for scroll passthrough */
+}
+
+.tutorial-speech-bubble {
+    background: #fff;
+    color: #000;
+    padding: 14px 18px 20px 22px; /* 20px bottom so step indicator (e.g. STEP 10/11) isn't cut off by tail */
+    border-radius: 12px;
+    overflow: visible; /* Tail ::after extends outside; ensure step indicator isn't clipped */
+    pointer-events: none; /* Allow wheel/scroll to pass through to canvas; button has pointer-events: auto */
+    min-width: 220px;
+    max-width: 350px;
+    font-size: 19px;
+    font-weight: 400;
+    font-family: "Exo 2", sans-serif;
+    line-height: 1.35;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.6), 0 0 60px rgba(0, 0, 0, 0.8);
+    position: relative;
+    flex-shrink: 0;
+}
+
+/* Bubble connector tail - points toward arrow. Default: bubble left of arrow, tail on right */
+.tutorial-speech-bubble::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    right: -20px;
+    margin-top: -20px;
+    border: 20px solid transparent;
+    border-left-color: #fff;
+}
+
+.tutorial-arrow.tutorial-arrow-from-right .tutorial-speech-bubble::after {
+    right: auto;
+    left: -20px;
+    margin-top: -20px;
+    border-left-color: transparent;
+    border-right-color: #fff;
+}
+
+/* From top: bubble above arrow, tail points down */
+.tutorial-arrow.tutorial-arrow-from-top .tutorial-speech-bubble::after {
+    top: auto;
+    bottom: -20px;
+    left: 50%;
+    right: auto;
+    margin-left: -20px;
+    margin-top: 0;
+    border: 20px solid transparent;
+    border-left-color: transparent;
+    border-right-color: transparent;
+    border-top-color: #fff;
+}
+
+/* From bottom: bubble below arrow, tail points up */
+.tutorial-arrow.tutorial-arrow-from-bottom .tutorial-speech-bubble::after {
+    top: -20px;
+    bottom: auto;
+    left: 50%;
+    right: auto;
+    margin-left: -20px;
+    margin-top: 0;
+    border: 20px solid transparent;
+    border-left-color: transparent;
+    border-right-color: transparent;
+    border-bottom-color: #fff;
+}
+
+/* Wrapper for arrow - pulse animation (toward target) */
+.tutorial-arrow-wrapper {
+    flex-shrink: 0;
+    animation: tutorial-arrow-pulse-left 1.2s ease-in-out infinite;
+}
+
+.tutorial-arrow.tutorial-arrow-from-right .tutorial-arrow-wrapper {
+    animation: tutorial-arrow-pulse-right 1.2s ease-in-out infinite;
+}
+
+.tutorial-arrow.tutorial-arrow-from-top .tutorial-arrow-wrapper {
+    animation: tutorial-arrow-pulse-top 1.2s ease-in-out infinite;
+}
+
+.tutorial-arrow.tutorial-arrow-from-bottom .tutorial-arrow-wrapper {
+    animation: tutorial-arrow-pulse-bottom 1.2s ease-in-out infinite;
+}
+
+@keyframes tutorial-arrow-pulse-left {
+    0%, 100% { transform: translateX(0); opacity: 1; }
+    50% { transform: translateX(12px); opacity: 0.85; }
+}
+
+@keyframes tutorial-arrow-pulse-right {
+    0%, 100% { transform: translateX(0); opacity: 1; }
+    50% { transform: translateX(-12px); opacity: 0.85; }
+}
+
+@keyframes tutorial-arrow-pulse-top {
+    0%, 100% { transform: translateY(0); opacity: 1; }
+    50% { transform: translateY(12px); opacity: 0.85; }
+}
+
+@keyframes tutorial-arrow-pulse-bottom {
+    0%, 100% { transform: translateY(0); opacity: 1; }
+    50% { transform: translateY(-12px); opacity: 0.85; }
+}
+
+/* Icon points down by default - rotate to point at target */
+.tutorial-arrow .tutorial-arrow-icon {
+    width: 48px;
+    height: 48px;
+    display: block;
+    object-fit: contain;
+    image-rendering: crisp-edges;
+    filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.5));
+    transform: rotate(-90deg); /* down -> right (arrow from left) */
+}
+
+.tutorial-arrow.tutorial-arrow-from-right .tutorial-arrow-icon {
+    transform: rotate(90deg); /* down -> left (arrow from right) */
+}
+
+.tutorial-arrow.tutorial-arrow-from-top .tutorial-arrow-icon {
+    transform: rotate(0deg); /* points down */
+}
+
+.tutorial-arrow.tutorial-arrow-from-bottom .tutorial-arrow-icon {
+    transform: rotate(180deg); /* points up */
+}
+
+/* Hex indicator: arrow only by default - points at placement hex */
+.tutorial-hex-indicator .tutorial-speech-bubble {
+    display: none !important;
+}
+/* Step 9 part 2: show bubble below arrow (same arrow position as part 1) */
+.tutorial-hex-indicator.tutorial-hex-indicator-with-bubble .tutorial-hex-indicator-bubble {
+    display: block !important;
+}
+.tutorial-hex-indicator.tutorial-hex-indicator-with-bubble {
+    flex-direction: column; /* arrow on top, bubble below */
+}
+.tutorial-hex-indicator.tutorial-hex-indicator-with-bubble .tutorial-arrow-wrapper {
+    order: 1;
+}
+.tutorial-hex-indicator.tutorial-hex-indicator-with-bubble .tutorial-hex-indicator-bubble {
+    order: 2;
+}
+.tutorial-hex-indicator.tutorial-hex-indicator-with-bubble .tutorial-hex-indicator-bubble::after {
+    top: -20px;
+    bottom: auto;
+    left: 50%;
+    right: auto;
+    margin: 0 0 0 -20px;
+    border: 20px solid transparent;
+    border-bottom-color: #fff;
+}
+
+.tutorial-start-over-btn {
+    width: auto !important;
+    min-width: 120px;
+    color: #fff !important;
+    margin-right:-15px;
+}
+.tutorial-start-over-btn .tutorial-start-over-icon {
+    width: 36px;
+    height: 36px;
+    margin-right: 8px;
+    vertical-align: middle;
+    object-fit: contain;
+}
+
+/* Exit tutorial button */
+.exit-tutorial-btn {
+    width: auto !important;
+    min-width: 140px;
+    color: #fff !important;
+}
+
+.exit-tutorial-btn .exit-tutorial-icon {
+    width: 36px;
+    height: 36px;
+    margin-right: 8px;
+    vertical-align: middle;
+    object-fit: contain;
 }
 
 .story-title {
@@ -3801,6 +4854,90 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
     align-items: center;
     width: 100%;
     margin-bottom: 5px!important;
+}
+
+/* Wave group name pill in placement modal - matches minimap pill but 2x font size */
+/* Boss defeat graphic - wave group complete modal, bottom right */
+.boss-defeat-graphic-container {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 100000;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    pointer-events: none;
+}
+
+.boss-defeat-image-wrapper {
+    width: 462px;
+    min-height: 330px;
+    transform-origin: center center;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+}
+
+.boss-defeat-image-wrapper img {
+    width: 100%;
+    height: auto;
+    object-fit: contain;
+    object-position: bottom right;
+    transform: scaleX(-1);
+}
+
+.boss-defeat-speech-bubble {
+    margin-bottom: 8px;
+    min-width: 0;
+    max-width: 340px;
+    transform: translateY(-100px);
+}
+
+/* Boss name/title pill - matches wave map boss label (black pill, white text) */
+.boss-defeat-pill {
+    position: absolute;
+    bottom: 12px;
+    right: 12px;
+    left: auto;
+    padding: 8px 20px;
+    background: rgba(0, 0, 0, 0.7);
+    border-radius: 999px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    pointer-events: none;
+    z-index: 2;
+}
+
+.boss-defeat-pill-name {
+    color: #FFFFFF;
+    font-size: 19px;
+    font-weight: bold;
+    font-family: "Exo 2", sans-serif;
+    line-height: 1.2;
+    text-transform: uppercase;
+}
+
+.boss-defeat-pill-title {
+    color: #FFFFFF;
+    font-size: 12px;
+    font-family: "Exo 2", sans-serif;
+    line-height: 1.2;
+}
+
+.placement-wave-group-pill {
+    padding: 8px 16px;
+    background: rgba(0, 0, 0, 0.85);
+    border-radius: 999px;
+    color: #FFFFFF;
+    font-size: 16px;
+    font-weight: 600;
+    font-family: "Exo 2", sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
 }
 
 .placement-boss-header-label {
@@ -4057,6 +5194,40 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
     justify-content: center;
     gap: 15px;
     flex-wrap: nowrap;
+}
+
+/* Scenario placement: starting currency line */
+.placement-scenario-currency {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    font-size: 14px;
+    color: #FFFFFF;
+}
+.placement-scenario-currency-icon {
+    width: 28px;
+    height: auto;
+    image-rendering: crisp-edges;
+}
+.placement-scenario-currency-amount {
+    color: #00FF88;
+    font-weight: bold;
+}
+
+/* Scenario placement: inventory items in grid (match side panel inventory exactly) */
+.placement-scenario-inventory {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0;
+    width: 280px; /* Match side panel inventory tab content width */
+    margin: 0 auto;
+}
+.placement-scenario-inventory .inventory-item {
+    min-width: 0; /* Allow flex/grid shrinking */
+}
+.placement-scenario-inventory .inventory-item.tower {
+    padding-top: 43px;
 }
 
 .placement-new-item-frame {
@@ -4410,16 +5581,34 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
     line-height: 1.2;
 }
 
-/* Placement Start Button */
-.placement-start-button-container {
+/* Placement Start Button - fixed at bottom of viewport during placement phase */
+.placement-start-button-fixed {
+    position: fixed;
+    bottom: 24px;
+    left: 0;
+    right: 0;
     display: flex;
     justify-content: center;
-    margin-top: 0;
-    width: 100%;
+    z-index: 1000;
+    pointer-events: none; /* Allow clicks through to content behind */
+}
+
+.placement-start-button-fixed .placement-start-button {
+    pointer-events: auto; /* Button itself receives clicks */
+}
+
+/* Hide empty container when button is in fixed position */
+#waveCompleteModal.placement-phase .placement-start-button-container {
+    display: none;
 }
 
 .placement-start-button {
     width: auto !important;
     min-width: auto !important;
     max-width: none !important;
+}
+
+/* Add padding so scrollable content can scroll above the fixed button */
+#waveCompleteModal.placement-phase .modal-frame-content {
+    padding-bottom:60px;
 }

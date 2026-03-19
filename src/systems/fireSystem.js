@@ -1,6 +1,6 @@
 // Fire System - Manages fire ignition, spreading, and extinguishing
 
-import { CONFIG, getFireTypeConfig, getFireTypeStrengthRank, getEvolvedFireType, getFireSpawnProbabilities, getBaseSpreadRate, getPowerUpMultiplier, getNextFireType } from '../config.js';
+import { CONFIG, getFireTypeConfig, getFireTypeStrengthRank, getFireSpawnProbabilities, getBaseSpreadRate, getPowerUpMultiplier, getNextFireType } from '../config.js';
 import { getNeighbors, hexKey, hexDistance } from '../utils/hexMath.js';
 
 export class FireSystem {
@@ -331,10 +331,8 @@ export class FireSystem {
             ];
             resultType = allTypes[Math.floor(Math.random() * allTypes.length)];
           } else {
-            // Normal: evolve (no cap; group difficulty handled by spawn bias)
-            const evolved = getEvolvedFireType(hex.fireType);
-            
-            resultType = evolved;
+            // Normal: fire type never changes when spreading
+            resultType = hex.fireType;
           }
 
           if (!targetIsBurning) {

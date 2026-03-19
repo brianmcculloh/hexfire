@@ -2,6 +2,7 @@
 // Comprehensive debugging and robust implementation
 
 import { CONFIG } from '../config.js';
+import { axialToPixel } from '../utils/hexMath.js';
 
 export class MapScrollSystem {
   constructor(canvas, renderer, gameState) {
@@ -116,6 +117,8 @@ export class MapScrollSystem {
    * @param {number} speed - Wheel scroll speed multiplier
    */
   addWheelScroll(deltaX, deltaY, speed) {
+    // Tutorial: lock scrolling - map position is guard-railed per step
+    if (this.gameState.tutorialMode) return;
     // Only allow wheel scrolling if mouse is not over blocking UI elements
     if (this.mouseOverUI) {
       return;
@@ -180,6 +183,8 @@ export class MapScrollSystem {
   calculateScrollVelocity() {
     this.targetScrollVelocity = { x: 0, y: 0 };
     
+    // Tutorial: lock edge scrolling - map position is guard-railed per step
+    if (this.gameState.tutorialMode) return;
     // Check if edge scrolling is enabled
     if (!CONFIG.ENABLE_EDGE_SCROLLING) {
       return;
@@ -369,6 +374,56 @@ export class MapScrollSystem {
   setDebugMode(enabled) {
     this.debugMode = enabled;
     console.log('🗺️ MapScrollSystem debug mode:', enabled ? 'ENABLED' : 'DISABLED');
+  }
+
+  /**
+   * Scroll the map so a hex is visible, with optional bias for speech bubble placement.
+   * Used by tutorial to auto-scroll when step 3 or 4 target is off-screen.
+   * @param {number} q - Hex q coordinate
+   * @param {number} r - Hex r coordinate
+   * @param {Object} options - { horizontal: 'left'|'center'|'right', vertical: 'top'|'center'|'bottom', extraOffsetY?: number }
+   *   - 'left' = position hex in left third (room for bubble on right)
+   *   - 'right' = position hex in right third (room for bubble on left)
+   *   - 'top' = position hex in top third
+   *   - 'bottom' = position hex in bottom third
+   *   - extraOffsetY = additional pixels to scroll up (positive = show more of top of map)
+   * @returns {boolean} True if scroll was applied
+   */
+  scrollToShowHex(q, r, options = {}) {
+    this.updateMapBounds();
+    const { x: worldX, y: worldY } = axialToPixel(q, r);
+    const canvasWidth = this.renderer.canvasCssWidth || this.canvas.clientWidth || this.canvas.width;
+    const canvasHeight = this.renderer.canvasCssHeight || this.canvas.clientHeight || this.canvas.height;
+
+    const hBias = options.horizontal || 'center';
+    const vBias = options.vertical || 'center';
+
+    // Target position within viewport (fraction 0-1)
+    const targetX = hBias === 'left' ? 0.35 : hBias === 'right' ? 0.65 : 0.5;
+    const targetY = vBias === 'top' ? 0.35 : vBias === 'bottom' ? 0.65 : 0.5;
+
+    let newOffsetX = canvasWidth * targetX - worldX;
+    let newOffsetY = canvasHeight * targetY - worldY;
+    if (options.extraOffsetY) {
+      newOffsetY += options.extraOffsetY; // Positive = scroll up (show more of top)
+    }
+
+    // Clamp to map bounds
+    const minOffsetX = canvasWidth - this.mapBounds.maxX;
+    const maxOffsetX = -this.mapBounds.minX;
+    const minOffsetY = canvasHeight - this.mapBounds.maxY;
+    const maxOffsetY = -this.mapBounds.minY;
+
+    newOffsetX = Math.max(minOffsetX, Math.min(maxOffsetX, newOffsetX));
+    newOffsetY = Math.max(minOffsetY, Math.min(maxOffsetY, newOffsetY));
+
+    const dx = Math.abs(this.renderer.offsetX - newOffsetX);
+    const dy = Math.abs(this.renderer.offsetY - newOffsetY);
+    if (dx < 1 && dy < 1) return false;
+
+    this.renderer.offsetX = newOffsetX;
+    this.renderer.offsetY = newOffsetY;
+    return true;
   }
 
   /**

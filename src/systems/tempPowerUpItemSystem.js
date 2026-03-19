@@ -98,6 +98,7 @@ export class TempPowerUpItemSystem {
    */
   trySpawnRandomItem() {
     if (!this.gameState.wave?.isActive) return; // Only spawn during active waves
+    if (this.gameState.tutorialMode) return; // No temp power-ups during tutorial
     
     // Check if any boosters are available at current wave group
     const currentWaveGroup = this.gameState.waveSystem?.currentWaveGroup || 1;
@@ -265,6 +266,9 @@ export class TempPowerUpItemSystem {
       powerUpId: item.powerUpId,
       expiresAt: expiresAt,
     });
+    
+    // Award score: 10 points per item collected
+    this.gameState.player.score = (this.gameState.player.score ?? 0) + 10;
     
     // Play power-up active sound
     if (window.AudioManager) {

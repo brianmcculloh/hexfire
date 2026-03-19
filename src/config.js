@@ -1,4 +1,5 @@
 import { getDirectionAngle, getDirectionAngle12, getHexesInRing } from './utils/hexMath.js';
+import { BOSS_PATTERNS, HERO_PATTERNS } from './patterns.js';
 
 export const CONFIG = {
   MAP_SIZE: 21,
@@ -16,7 +17,7 @@ export const CONFIG = {
   WATER_PARTICLE_LIFE_DECAY_MULTIPLIER: 2, // Compensate for single-update per frame
   DEBUG_PARTICLE_METRICS: false, // Log particle update/draw timings and counts
   
-  DEBUG_MODE: true,
+  DEBUG_MODE: false,
   DEBUG_ALL_HEXES_ON_FIRE: false,
   DEBUG_ALL_FIRE_TYPES: false,
   SHOW_FIRE_HEALTH_ON_HEX: false, // Show fire type name and health remaining on burning hexes (independent of DEBUG_MODE)
@@ -27,7 +28,7 @@ export const CONFIG = {
   DEBUG_STARTING_TOWERS: [
 
     { type: 'jet', rangeLevel: 1, powerLevel: 1, count: 1 },
-    { type: 'jet', rangeLevel: 4, powerLevel: 4, count: 1 },
+    /*{ type: 'jet', rangeLevel: 4, powerLevel: 4, count: 1 },
     
     { type: 'spread', rangeLevel: 1, powerLevel: 1, count: 1 },
     { type: 'spread', rangeLevel: 4, powerLevel: 4, count: 1 },
@@ -37,7 +38,7 @@ export const CONFIG = {
 
     { type: 'bomber', rangeLevel: 1, powerLevel: 1, count: 1 },
     { type: 'bomber', rangeLevel: 4, powerLevel: 4, count: 1 },
-    
+    */
 
     
   ],
@@ -45,419 +46,50 @@ export const CONFIG = {
   // Debug starting items (suppression bombs and shields)
   // Example: { type: 'suppression_bomb', level: 1, count: 2 } or { type: 'shield', level: 2, count: 1 }
   DEBUG_STARTING_ITEMS: [
-    { type: 'suppression_bomb', level: 1, count: 6 },
-    { type: 'shield', level: 4, count: 10 },
-    { type: 'upgrade_plan', count: 99 },
+    // { type: 'suppression_bomb', level: 1, count: 6 },
+    { type: 'shield', level: 1, count: 2 },
+    { type: 'shield', level: 2, count: 2 },
+    { type: 'shield', level: 3, count: 2 },
+    { type: 'shield', level: 4, count: 2 },
+    // { type: 'upgrade_plan', count: 99 },
   ],
   
   WAVE_DURATION: 120, // reset to 120
   SCENARIO_WAVE_DURATION: 300,
   WAVES_PER_GROUP: 5,
   WAVE_GROUP_BONUS_REWARD: 200,
-  
-  // Boss patterns by wave group
-  // Each boss wave (5th wave of each group) uses these patterns
-  // Each boss can have multiple abilities, each with its own interval and params
-  BOSS_PATTERNS: {
-    1: {
-      name: 'Arkavax',
-      title: 'The Guardian',
-      abilities: [
-        {
-          type: 'scatter-strike',
-          name: 'Scatter Strike',
-          description: 'Ignites 20 random hexes across the map every 15 seconds',
-          interval: 15,
-          soundMode: 'once',
-          params: {
-            hexCount: 20,
-            staggerRange: { min: 50, max: 200 }
-          }
-        }
-      ]
-    },
-    2: {
-      name: 'Faelith',
-      title: 'The Enlightened',
-      abilities: [
-        {
-          type: 'holy-fire',
-          name: 'Holy Fire',
-          description: 'Ignites a cross-shaped hex pattern across the map every 15 seconds',
-          interval: 15,
-          soundMode: 'once',
-          params: {
-            staggerPerHex: 70
-          }
-        }
-      ]
-    },
-    3: {
-      name: 'Ash',
-      title: 'The Caller',
-      abilities: [
-        {
-          type: 'fireball',
-          name: 'Fireball',
-          description: 'Ignites two hex clusters somewhere on the map every 15 seconds',
-          interval: 15,
-          soundMode: 'once',
-          params: {
-            staggerPerRing: 130
-          }
-        }
-      ]
-    },
-    4: {
-      name: 'Jest',
-      title: 'The Shrewd',
-      abilities: [
-        {
-          type: 'distraction',
-          name: 'Distraction',
-          description: 'Ignites random edge hexes and then targets a path every 15 seconds',
-          interval: 15,
-          soundMode: 'once',
-          params: {
-            edgeHexCount: 15,
-            edgeStagger: 120,
-            pathDelay: 800,
-            pathStagger: 50
-          }
-        }
-      ]
-    },
-    5: {
-      name: 'Seer',
-      title: 'The Matriarch',
-      abilities: [
-        {
-          type: 'cursefire',
-          name: 'Cursefire',
-          description: 'Targets all spawned items, power-ups, and dig sites every 10 seconds',
-          interval: 10,
-          soundMode: 'once',
-          params: {
-            staggerPerTarget: 80 // Milliseconds between each hex strike
-          }
-        },
-      ]
-    },
-    6: {
-      name: 'Vexxor',
-      title: 'The Hex Lord',
-      abilities: [
-        {
-          type: 'surround',
-          name: 'Surround',
-          description: 'Ignites a random ring of hexes centered around The Grove every 20 seconds',
-          interval: 20,
-          soundMode: 'loop',
-          params: {
-            staggerPerHex: 70, // Milliseconds between each hex ignition
-            minRing: 4,       // Minimum ring (2 = outside grove)
-            maxRing: 10       // Maximum ring (half of MAP_SIZE for 21)
-          }
-        },
-      ]
-    },
-    7: {
-      name: 'Skyfury',
-      title: 'The Flayer',
-      abilities: [
-        {
-          type: 'napalm',
-          name: 'Napalm',
-          description: 'Ignites two adjacent rows of hexes across the map every 15 seconds',
-          interval: 15,
-          soundMode: 'once',
-          params: {
-            staggerPerHex: 80 // Milliseconds between each hex on each row
-          }
-        },
-      ]
-    },
-    8: {
-      name: 'Mytherios',
-      title: 'The Avenger',
-      abilities: [
-        {
-          type: 'provoked-burn',
-          name: 'Provoked Burn',
-          description: 'If you level up, ignites a straight line through The Grove',
-          trigger: 'level up',
-          soundMode: 'once',
-          params: {
-            delayMs: 1000,
-            staggerPerHex: 50
-          }
-        },
-        {
-          type: 'scatter-strike',
-          name: 'Scatter Strike',
-          description: 'Ignites 20 random hexes across the map every 15 seconds',
-          interval: 15,
-          soundMode: 'once',
-          params: {
-            hexCount: 20,
-            staggerRange: { min: 50, max: 200 }
-          }
-        },
-      ]
-    },
-    9: {
-      name: 'Greeves',
-      title: 'The Explorer',
-      abilities: [
-        {
-          type: 'heat-seek',
-          name: 'Heat Seek',
-          description: 'Ignites all paths every 20 seconds',
-          interval: 20,
-          soundMode: 'multiple',
-          params: {
-            staggerMs: 400
-          }
-        },
-      ]
-    },
-    10: { 
-      name: 'Vuul',
-      title: 'The Marked',
-      abilities: [
-        {
-          type: 'mark-of-flame',
-          name: 'Mark of Flame',
-          description: 'Ignites an X pattern centered on The Grove to the map edges every 15 seconds',
-          interval: 15,
-          soundMode: 'once',
-          params: {
-            staggerPerHex: 110 // Milliseconds between each hex ignition along each diagonal
-          }
-        },
-      ]
-    },
-    11: { 
-      name: 'Galgathorn',
-      title: 'The Sabateur',
-      abilities: [
-        {
-          type: 'piercing-flame',
-          name: 'Piercing Flame',
-          description: 'Ignites all player-placed items on the map every 15 seconds',
-          interval: 15,
-          soundMode: 'multiple',
-          params: {
-            staggerPerTarget: 200 // Milliseconds between each strike
-          }
-        },
-      ]
-    },
-    12: { 
-      name: 'Hellfang',
-      title: 'The Decorated',
-      abilities: [
-        {
-          type: 'hell-stoke',
-          name: 'Hell Stoke',
-          description: 'Strengthens all fires actively burning on the map every 15 seconds',
-          interval: 15,
-          soundMode: 'once',
-          params: {
-            staggerPerHex: 20 // Milliseconds between each hex strike
-          }
-        },
-      ]
-    },
-    13: { 
-      name: 'Serpentress',
-      title: 'The Crazed',
-      abilities: [
-        {
-          type: 'serpentine-char',
-          name: 'Serpentine Char',
-          description: 'Ignites a random serpentine path across the map every 15 seconds of increasing length',
-          interval: 15,
-          soundMode: 'once',
-          params: {
-            staggerPerHex: 20,   // Milliseconds between each hex ignition
-            startingLength: 20,  // Number of hexes for the first path
-            incrementBy: 5       // Hexes to add each time the ability fires
-          }
-        },
-      ]
-    },
-    14: { 
-      name: 'Behemoth',
-      title: 'The Ancient',
-      abilities: [
-        {
-          type: 'collapsing-fire',
-          name: 'Collapsing Fire',
-          description: 'Ignites a ring of hexes every 15 seconds progressing inward throughout the wave',
-          interval: 15,
-          soundMode: 'once',
-          params: {
-            staggerPerRing: 600 // Milliseconds between each ring igniting
-          }
-        },
-      ]
-    },
-    15: { 
-      name: 'Qlaxxis',
-      title: 'The Colorful',
-      abilities: [
-        {
-          type: 'barrage-of-flames',
-          name: 'Barrage of Flames',
-          description: 'Bursts of random fire every 10 seconds of increasing strength and duration',
-          interval: 10,
-          soundMode: 'multiple',
-          params: {
-            startingDuration: 3,
-            durationIncrement: 1,
-            startingHexes: 4,
-            hexIncrement: 2,
-            strikeIntervalMs: 1000, // Milliseconds between strikes within a barrage (1 per second)
-          }
-        },
-      ]
-    },
-    16: { 
-      name: 'Crug',
-      title: 'The Heavy',
-      abilities: [
-        {
-          type: 'meteor-strike',
-          name: 'Meteor Strike',
-          description: 'Ignites three large clusters of hexes every 10 seconds',
-          interval: 10,
-          soundMode: 'once',
-          params: {
-            clusterOffsetMs: 200,
-            clusterRingCounts: [2, 3, 4], // 7, 19, 37 hexes
-          }
-        },
-      ]
-    },
-    17: { 
-      name: 'Underdweller',
-      title: 'The Blind',
-      abilities: [
-        {
-          type: 'array-of-flames',
-          name: 'Array of Flames',
-          description: 'Ignites every third hex on the map every 15 seconds',
-          interval: 15,
-          soundMode: 'once',
-          params: {
-            staggerPerHex: 25,
-            hexStep: 3, // Hit every third hex
-          }
-        },
-      ]
-    },
-    18: { 
-      name: 'Arch Demon',
-      title: 'The Immortal',
-      abilities: [
-        {
-          type: 'doomfire',
-          name: 'Doomfire',
-          description: 'Amplifies the strongest burning fire type (or ignites 4 hexes with that fire type) every 15 seconds',
-          interval: 15,
-          soundMode: 'once',
-          params: {
-            staggerPerHex: 50,
-            fallbackHexCount: 4, // Random hexes struck when no strongest-type hexes are burning
-          }
-        },
-      ]
-    },
-    19: { 
-      name: 'Thrasp',
-      title: 'The Pursuer',
-      abilities: [
-        {
-          type: 'firelash',
-          name: 'Firelash',
-          description: 'Ignites a 3-wide slash across the map, increasing in frequency over time',
-          interval: 25, // First fire at 25s; then 20, 15, 10, 8, 6, 5, 4, 3, 2, 1...
-          soundMode: 'once',
-          params: {
-            intervals: [20, 18, 16, 14, 12, 10, 8, 6, 5, 4, 3, 2, 2], // Seconds between activations (indexed by activation count)
-            staggerPerGroup: 30, // ms between each group of 3 hexes along the slash (total slash < 2s)
-          }
-        },
-      ]
-    },
-    20: { 
-      name: 'Demon of Allfire',
-      title: 'The Knower',
-      abilities: [
-        {
-          type: 'legion',
-          name: 'Legion',
-          description: 'Casts two random powers every 15 seconds',
-          interval: 15,
-          soundMode: 'once',
-          params: {
-            staggerMs: 500, // Delay between first and second ability
-            // Subset: type string, or { type, params? } to override. Name/params come from original definition.
-            abilitySubset: [
-              'holy-fire',
-              'distraction',
-              'surround',
-              'napalm',
-              'mark-of-flame',
-              'serpentine-char',
-              'collapsing-fire',
-              'meteor-strike',
-              'scatter-strike',
-              'firelash',
-            ]
-          }
-        },
-      ]
-    },
-    21: { 
-      name: 'Deathwing',
-      title: 'The Collector',
-      abilities: [
-        {
-          type: 'fire-breathe',
-          name: 'Fire Breathe',
-          description: 'Progressively blankets the map with fire every 10 seconds',
-          interval: 10,
-          soundMode: 'once',
-          params: {
-            hexCount: 65,  // Hexes ignited per activation
-            staggerMs: 25, // Delay between each hex
-          }
-        },
-      ]
-    },
-    22: { 
-      name: 'King of Flame',
-      title: 'The Uncreated',
-      abilities: [
-        {
-          type: 'purify',
-          name: 'Purify',
-          description: 'Ignites 100 random hexes every 5 seconds, with a 3-strike pattern every 3rd activation',
-          interval: 5,
-          soundMode: 'once',
-          params: {
-            hexCount: 100,
-            staggerRange: { min: 50, max: 100 },
-            tripleStaggerMs: 500, // Stagger between the 3 strikes when it fires the triple (every 3rd activation)
-          }
-        },
-      ]
-    },
-    // Future wave groups will be added here
-  },
-  
+
+  // Wave group names (1-indexed: index 0 = group 1). Displayed next to minimap. Edit for lore.
+  WAVE_GROUP_NAMES: [
+    'The Meadows',      // 1
+    'The Mesa',    // 2
+    'Ash\'s Ruins',       // 3
+    'The Rock Fields',    // 4
+    'Silver city',   // 5
+    'The High Desert',     // 6
+    'Cloudband', // 7
+    'The Gates of Mytherios', // 8
+    'Tanglevale', // 9
+    'Blight Valley',// 10
+    'The Saboteur\'s Lair',  // 11
+    'The Golden City',   // 12
+    'Stonekeep',      // 13
+    'The Pass of Cinders',    // 14
+    'The Halls of Madness',  // 15
+    'Earthroot',       // 16
+    'The Blind Abyss',       // 17
+    'Infernal Forge',     // 18
+    'Hellgate',  // 19
+    'Demon Lake',  // 20
+    'Altar of Cataclysm',// 21
+    'Eternalfire',    // 22
+  ],
+
+  // Boss patterns by wave group (see src/patterns.js)
+  BOSS_PATTERNS,
+
+  // Hero patterns by wave group (see src/patterns.js)
+  HERO_PATTERNS,
   PATH_COUNT_BY_GROUP: [
     { startGroup: 1, pathCount: 1 },
     { startGroup: 3, pathCount: 2 },
@@ -477,10 +109,10 @@ export const CONFIG = {
   FIRE_SPREAD_MULTIPLIER_PATH_TO_TOWN: 0.24 / 0.0015,
   FIRE_SPREAD_MULTIPLIER_SPAWNER_TO_ADJACENT: 0.08 / 0.0015,
 
-  DIFFICULTY_BASE_STARTING_FIRES: 2,
+  DIFFICULTY_BASE_STARTING_FIRES: 3,
   DIFFICULTY_STARTING_FIRES_INCREMENT_PER_WAVE: 1,
-  DIFFICULTY_BASE_IGNITION_CHANCE: 0.00075,
-  DIFFICULTY_IGNITION_CHANCE_INCREMENT_PER_WAVE: 0.4,
+  DIFFICULTY_BASE_IGNITION_CHANCE: 0.001,
+  DIFFICULTY_IGNITION_CHANCE_INCREMENT_PER_WAVE: 0.5,
   DIFFICULTY_FIRE_SPREAD_INCREMENT_PER_WAVE: 0.25, // Percentage increase per wave (0.20 = 20% increase per wave)
   
   FIRE_SPAWNER_RING_REDUCTION_FACTOR: 0.4, // Reduction factor per ring (0.5 = halve each ring, 0.6 = each ring is 60% of previous, etc.)
@@ -659,36 +291,6 @@ export const CONFIG = {
     { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [1.00, 0.0015] },
   ],
   
-  FIRE_TYPE_SPREAD_MODE: 'both',
-  FIRE_TYPE_SPREAD_PROGRESSION: [
-    { same: 0.900, escalate: 0.000, downgrade: 0.100 },
-    { same: 0.900, escalate: 0.005, downgrade: 0.095 },
-    { same: 0.900, escalate: 0.010, downgrade: 0.090 },
-    { same: 0.900, escalate: 0.015, downgrade: 0.085 },
-    { same: 0.900, escalate: 0.020, downgrade: 0.080 },
-    { same: 0.900, escalate: 0.025, downgrade: 0.075 },
-    { same: 0.900, escalate: 0.030, downgrade: 0.070 },
-    { same: 0.900, escalate: 0.035, downgrade: 0.065 },
-    { same: 0.900, escalate: 0.040, downgrade: 0.060 },
-    { same: 0.900, escalate: 0.045, downgrade: 0.055 },
-    { same: 0.900, escalate: 0.055, downgrade: 0.045 },
-    { same: 0.890, escalate: 0.068, downgrade: 0.042 },
-    { same: 0.880, escalate: 0.081, downgrade: 0.039 },
-    { same: 0.870, escalate: 0.094, downgrade: 0.036 },
-    { same: 0.860, escalate: 0.107, downgrade: 0.033 },
-    { same: 0.850, escalate: 0.120, downgrade: 0.030 },
-    { same: 0.840, escalate: 0.133, downgrade: 0.027 },
-    { same: 0.830, escalate: 0.146, downgrade: 0.024 },
-    { same: 0.820, escalate: 0.159, downgrade: 0.021 },
-    { same: 0.810, escalate: 0.172, downgrade: 0.018 },
-    { same: 0.800, escalate: 0.185, downgrade: 0.015 },
-    { same: 0.790, escalate: 0.198, downgrade: 0.012 },
-    { same: 0.780, escalate: 0.211, downgrade: 0.009 },
-    { same: 0.770, escalate: 0.224, downgrade: 0.006 },
-    { same: 0.760, escalate: 0.237, downgrade: 0.003 },
-    { same: 0.750, escalate: 0.250, downgrade: 0.000 },
-  ],
-  
   WATER_TANK_HEALTH: 25,
   WATER_TANK_EXPLOSION_DAMAGE: 500,
   
@@ -768,7 +370,7 @@ export const CONFIG = {
   
   TOWER_HEALTH: 30,
   
-  TOWN_HEALTH_BASE: 150000, // reset to 150
+  TOWN_HEALTH_BASE: 150, // reset to 150
   TOWN_HEALTH_PER_UPGRADE: 150,
   TOWN_PROTECTION_BONUS_FULL: 300, // Full reward when 100% of town HP is protected at wave end; percentage of HP remaining = percentage of this amount
   TOWN_UPGRADE_COST: 1000,
@@ -849,6 +451,8 @@ export const CONFIG = {
   AUDIO_SFX_VOLUME: 0.8,
   AUDIO_MUSIC_VOLUME: 0.2,
   AUDIO_SFX_MAX_CONCURRENT: 4, // Max overlapping plays per SFX key (e.g. extinguish)
+  // Use Web Audio API for music (seamless looping). Set to false to restore HTMLAudioElement if issues occur.
+  AUDIO_MUSIC_USE_WEB_API: true,
   
   // Asset paths relative to project root. Add your itch.io files under assets/sounds/sfx and assets/sounds/music.
   AUDIO_SFX_PATHS: {
@@ -864,9 +468,9 @@ export const CONFIG = {
     start_wave: 'assets/sounds/sfx/start-wave.wav',
     start_placement: 'assets/sounds/sfx/start-placement.wav',
     start_boss_placement: 'assets/sounds/sfx/start-placement-boss.wav',
-    wave_complete: 'assets/sounds/sfx/wave-complete.wav',
-    group_complete: 'assets/sounds/sfx/group-complete.wav',
-    game_over: 'assets/sounds/sfx/game-over.wav',
+    wave_complete: 'assets/sounds/sfx/wave-complete.wav?v=4',
+    group_complete: 'assets/sounds/sfx/group-complete.wav?v=7',
+    game_over: 'assets/sounds/sfx/game-over.wav?v=2',
     new_game: 'assets/sounds/sfx/new-game.wav',
     confirm: 'assets/sounds/sfx/confirm.wav',
     level_up: 'assets/sounds/sfx/level-up.wav',
@@ -930,7 +534,6 @@ export const CONFIG = {
     'collapsing-fire-a': 'assets/sounds/sfx/bosses/collapsing-fire-a.wav',
     'collapsing-fire-b': 'assets/sounds/sfx/bosses/collapsing-fire-b.wav',
     'collapsing-fire-c': 'assets/sounds/sfx/bosses/collapsing-fire-c.wav',
-    'barrage-of-flames': 'assets/sounds/sfx/bosses/barrage-of-flames.wav',
     'barrage-of-flames-a': 'assets/sounds/sfx/bosses/barrage-of-flames-a.wav',
     'barrage-of-flames-b': 'assets/sounds/sfx/bosses/barrage-of-flames-b.wav',
     'barrage-of-flames-c': 'assets/sounds/sfx/bosses/barrage-of-flames-c.wav',
@@ -940,14 +543,43 @@ export const CONFIG = {
     'array-of-flames': 'assets/sounds/sfx/bosses/array-of-flames.wav',
     'doomfire': 'assets/sounds/sfx/bosses/doomfire.wav',
     firelash: 'assets/sounds/sfx/bosses/firelash.wav',
+    'purify-a': 'assets/sounds/sfx/bosses/purify-a.wav',
+    'purify-b': 'assets/sounds/sfx/bosses/purify-b.wav',
+    'purify-c': 'assets/sounds/sfx/bosses/purify-c.wav',
+    'purify-d': 'assets/sounds/sfx/bosses/purify-d.wav',
+    'purify-e': 'assets/sounds/sfx/bosses/purify-e.wav',
   },
   AUDIO_MUSIC_PATHS: {
     menu: 'assets/sounds/music/menu.mp3',
     gameplay: 'assets/sounds/music/gameplay.mp3',
-    group1: 'assets/sounds/music/group1.wav',
+    'group1-intro': 'assets/sounds/music/group1-intro.wav',
+    'group1-loop': 'assets/sounds/music/group1-loop.wav',
+    'group2-loop': 'assets/sounds/music/group2-loop.wav?v=3',
+    'group3-loop': 'assets/sounds/music/group3-loop.wav?v=2',
+    'group4-loop': 'assets/sounds/music/group4-loop.wav',
+    'group5-loop': 'assets/sounds/music/group5-loop.wav',
+    'group6-loop': 'assets/sounds/music/group6-loop.wav',
+    'group7-loop': 'assets/sounds/music/group7-loop.wav',
+    'group8-loop': 'assets/sounds/music/group8-loop.wav',
+    'group9-loop': 'assets/sounds/music/group9-loop.wav',
+    'group10-loop': 'assets/sounds/music/group10-loop.wav',
+    'group11-loop': 'assets/sounds/music/group11-loop.wav',
+    'group12-loop': 'assets/sounds/music/group12-loop.wav',
+    'group13-loop': 'assets/sounds/music/group13-loop.wav',
+    'group14-loop': 'assets/sounds/music/group14-loop.wav',
+    'group15-loop': 'assets/sounds/music/group15-loop.wav',
+    'group16-loop': 'assets/sounds/music/group16-loop.wav',
+    'group17-loop': 'assets/sounds/music/group17-loop.wav',
+    'group18-loop': 'assets/sounds/music/group18-loop.wav',
+    'group19-loop': 'assets/sounds/music/group19-loop.wav',
+    'group20-loop': 'assets/sounds/music/group20-loop.wav',
+    'group21-loop': 'assets/sounds/music/group21-loop.wav',
+    'group22-loop': 'assets/sounds/music/group22-loop.wav',
     game_over: 'assets/sounds/music/game_over.mp3',
-    ambient_loop: 'assets/sounds/sfx/ambient-loop.wav',
+    ambient_loop: 'assets/sounds/music/ambient-loop.wav',
   },
+  
+  AUDIO_WAVE_GROUP_MUSIC_BASE: 'assets/sounds/music',
   
   SCROLL_BLOCKING_ELEMENTS: [
     '.tabs',
@@ -1011,7 +643,6 @@ export const CONFIG = {
     water_pressure: {
       id: 'water_pressure',
       name: 'Water Pressure',
-      icon: '💧',
       description: 'Increases water tower power by 10% per stack',
       cost: 700, // Cost in currency to purchase this permanent power-up
       effect: 'waterTowerPower', // Effect type (used by getPowerUpMultiplier to determine which stat to modify)
@@ -1021,7 +652,6 @@ export const CONFIG = {
     xp_boost: {
       id: 'xp_boost',
       name: 'XP Boost',
-      icon: '⭐',
       description: 'Increases XP gained by 10% per stack',
       cost: 800, // Cost in currency to purchase this permanent power-up
       effect: 'xpGain', // Effect type (used by getPowerUpMultiplier to determine which stat to modify)
@@ -1031,7 +661,6 @@ export const CONFIG = {
     tower_health: {
       id: 'tower_health',
       name: 'Tower Durability',
-      icon: '🛡️',
       description: 'Increases tower health by 20% per stack',
       cost: 900, // Cost in currency to purchase this permanent power-up
       effect: 'towerHealth', // Effect type (used by getPowerUpMultiplier to determine which stat to modify)
@@ -1041,7 +670,6 @@ export const CONFIG = {
     fire_resistance: {
       id: 'fire_resistance',
       name: 'Fire Resistance',
-      icon: '🔥',
       description: 'Reduces fire spread rate by 10% per stack',
       cost: 1000, // Cost in currency to purchase this permanent power-up
       effect: 'fireSpread', // Effect type (used by getPowerUpMultiplier to determine which stat to modify)
@@ -1051,7 +679,6 @@ export const CONFIG = {
     temp_power_up_spawn_boost: {
       id: 'temp_power_up_spawn_boost',
       name: 'Power-Up Magnet',
-      icon: '🧲',
       description: 'Increases temporary power-up spawn chance by 50% per stack',
       cost: 1200, // Cost in currency to purchase this permanent power-up
       effect: 'tempPowerUpSpawnChance', // Effect type (used to modify temp power-up spawn chance)
@@ -1064,7 +691,6 @@ export const CONFIG = {
     water_pressure: {
       id: 'water_pressure',
       name: 'Water Pressure',
-      icon: '💧',
       description: 'Increases water tower power by 50% per stack',
       rarity: 'common',
       duration: 20, // Duration in seconds that the power-up effect lasts when collected
@@ -1076,7 +702,6 @@ export const CONFIG = {
     xp_boost: {
       id: 'xp_boost',
       name: 'XP Boost',
-      icon: '⭐',
       description: 'Increases XP gained by 50% per stack',
       rarity: 'common',
       duration: 20, // Duration in seconds that the power-up effect lasts when collected
@@ -1088,7 +713,6 @@ export const CONFIG = {
     tower_health: {
       id: 'tower_health',
       name: 'Tower Durability',
-      icon: '🛡️',
       description: 'Increases tower health by 100% per stack',
       rarity: 'rare',
       duration: 20, // Duration in seconds that the power-up effect lasts when collected
@@ -1100,7 +724,6 @@ export const CONFIG = {
     fire_resistance: {
       id: 'fire_resistance',
       name: 'Fire Resistance',
-      icon: '🔥',
       description: 'Reduces fire spread rate by 50% per stack',
       rarity: 'rare',
       duration: 20, // Duration in seconds that the power-up effect lasts when collected
@@ -1155,6 +778,7 @@ export const CONFIG = {
         { type: 'movement_token', weight: 10 },
         { type: 'water_tank', weight: 3 },
         { type: 'temp_power_up', weight: 3 },
+        { type: 'shield', weight: 2}
       ],
     },
     mystery_rare: {
@@ -1170,6 +794,7 @@ export const CONFIG = {
       dropPool: [
         { type: 'money', weight: 80, minValue: 10, maxValue: 40 },
         { type: 'movement_token', weight: 10 },
+        { type: 'shield', weight: 5},
         { type: 'water_tank', weight: 3 },
         { type: 'temp_power_up', weight: 3 },
         { type: 'upgrade_plans', weight: 1 },
@@ -1551,6 +1176,9 @@ export function getSuppressionBombImpactZone(centerQ, centerR, level) {
 }
 
 export function isTowerMovementAllowed(gameState) {
+  if (gameState.tutorialDisableTowerMovement) {
+    return false;
+  }
   if (gameState.isMovementTokenMode) {
     return true;
   }
@@ -1787,131 +1415,6 @@ export function getNextFireType(fireType) {
 }
 
 /**
- * Determine the evolved fire type when spreading
- * @param {string} currentFireType - Current fire type
- * @returns {string} Evolved fire type based on FIRE_TYPE_SPREAD_MODE config
- */
-function getFireTypeSpreadChancesForCurrentWave() {
-  const progression = CONFIG.FIRE_TYPE_SPREAD_PROGRESSION || [];
-  if (!Array.isArray(progression) || progression.length === 0) {
-    return { same: 1, escalate: 0, downgrade: 0 };
-  }
-
-  let waveGroup = 1;
-  if (typeof window !== 'undefined' && window.gameState) {
-    const waveSystem = window.gameState.waveSystem;
-    if (waveSystem?.currentWaveGroup) {
-      waveGroup = waveSystem.currentWaveGroup;
-    } else if (window.gameState.wave?.number) {
-      const waveNumber = Math.max(1, window.gameState.wave.number);
-      const wavesPerGroup = waveSystem?.wavesPerGroup || 5;
-      waveGroup = Math.floor((waveNumber - 1) / wavesPerGroup) + 1;
-    }
-  }
-
-  const index = Math.max(0, Math.min(progression.length - 1, waveGroup - 1));
-  const entry = progression[index] || progression[progression.length - 1];
-  const escalate = Math.max(0, entry.escalate ?? 0);
-  const downgrade = Math.max(0, entry.downgrade ?? 0);
-  let same = entry.same;
-  if (same == null) {
-    same = Math.max(0, 1 - escalate - downgrade);
-  }
-
-  return {
-    same,
-    escalate,
-    downgrade,
-  };
-}
-
-export function getEvolvedFireType(currentFireType) {
-  // If mode is 'fixed', always return same type
-  if (CONFIG.FIRE_TYPE_SPREAD_MODE === 'fixed') {
-    return currentFireType;
-  }
-  
-  let waveNumber = 1;
-  if (typeof window !== 'undefined' && window.gameState) {
-    if (window.gameState.wave?.number) {
-      waveNumber = Math.max(1, window.gameState.wave.number);
-    } else {
-      const waveSystem = window.gameState.waveSystem;
-      if (waveSystem?.currentWaveGroup && waveSystem?.waveInGroup) {
-        const wavesPerGroup = waveSystem?.wavesPerGroup || 5;
-        waveNumber = (waveSystem.currentWaveGroup - 1) * wavesPerGroup + waveSystem.waveInGroup;
-      }
-    }
-  }
-  const spawnProbs = getFireSpawnProbabilities(waveNumber);
-  
-  // Helper function to check if a fire type can spawn (has > 0% chance)
-  const canSpawn = (fireType) => {
-    return (spawnProbs[fireType] || 0) > 0;
-  };
-  
-  const { escalate: escalateChance, downgrade: downgradeChance } = getFireTypeSpreadChancesForCurrentWave();
-  
-  // Random roll to determine evolution
-  const rand = Math.random();
-  
-  // Determine if we should change type based on mode
-  if (CONFIG.FIRE_TYPE_SPREAD_MODE === 'escalate') {
-    // Can only escalate
-    if (rand < escalateChance) {
-      const nextType = getNextFireType(currentFireType);
-      // Only allow escalation if the next type can spawn in this wave group
-      if (nextType && canSpawn(nextType)) {
-        return nextType;
-      }
-      // Can't escalate (either no next type, or next type can't spawn), stay same
-      return currentFireType;
-    }
-    // Stay same (80% chance)
-    return currentFireType;
-  } else if (CONFIG.FIRE_TYPE_SPREAD_MODE === 'downgrade') {
-    // Can only downgrade
-    if (rand < downgradeChance) {
-      const prevType = getPreviousFireType(currentFireType);
-      // Only allow downgrade if the previous type can spawn in this wave group
-      if (prevType && canSpawn(prevType)) {
-        return prevType;
-      }
-      // Can't downgrade (either no previous type, or previous type can't spawn), stay same
-      return currentFireType;
-    }
-    // Stay same (80% chance)
-    return currentFireType;
-  } else if (CONFIG.FIRE_TYPE_SPREAD_MODE === 'both') {
-    // Can escalate or downgrade
-    if (rand < escalateChance) {
-      // Try to escalate
-      const nextType = getNextFireType(currentFireType);
-      // Only allow escalation if the next type can spawn in this wave group
-      if (nextType && canSpawn(nextType)) {
-        return nextType;
-      }
-      // Can't escalate (either no next type, or next type can't spawn), stay same
-      return currentFireType;
-    } else if (rand < escalateChance + downgradeChance) {
-      // Try to downgrade
-      const prevType = getPreviousFireType(currentFireType);
-      // Only allow downgrade if the previous type can spawn in this wave group
-      if (prevType && canSpawn(prevType)) {
-        return prevType;
-      }
-      // Can't downgrade (either no previous type, or previous type can't spawn), stay same
-      return currentFireType;
-    }
-    // Stay same (80% chance)
-    return currentFireType;
-  }
-  
-  // Unknown mode, default to fixed behavior
-  return currentFireType;
-}
-
-/**
  * Calculate the XP threshold required to reach a specific level
  * @param {number} level - Level number (1-indexed)
  * @returns {number} Total XP required to reach this level
@@ -2008,16 +1511,21 @@ export function getTowerUnlockStatus(towerType, playerLevel = 1, itemLevel = nul
   if (CONFIG.DEBUG_MODE) {
     return { unlocked: true, unlockLevel: 0 };
   }
+
+  // Alias: upgrade_token (shop itemType) maps to upgrade_plan (config)
+  const lookupType = towerType === 'upgrade_token' ? 'upgrade_plan' : towerType;
   
-  // Check if we're in scenario mode and if this item is unlocked by the scenario
-  if (typeof window !== 'undefined' && window.gameState && window.gameState.wave?.isScenario) {
-    const scenarioUnlockedItems = window.gameState.scenarioUnlockedItems || [];
+  // Check if we're in scenario mode or tutorial mode and if this item is unlocked
+  const gs = typeof window !== 'undefined' && window.gameState;
+  const useScenarioUnlocks = gs && (gs.wave?.isScenario || gs.tutorialMode) && gs.scenarioUnlockedItems;
+  if (useScenarioUnlocks) {
+    const scenarioUnlockedItems = gs.scenarioUnlockedItems || [];
     
     // For suppression_bomb and shield, check for level-specific unlocks
-    if (towerType === 'suppression_bomb' || towerType === 'shield') {
+    if (lookupType === 'suppression_bomb' || lookupType === 'shield') {
       // If itemLevel is provided, check for level-specific entry (e.g., 'suppression_bomb_1', 'shield_2')
       if (itemLevel != null) { // Use != instead of !== to catch both null and undefined
-        const levelSpecificKey = `${towerType}_${itemLevel}`;
+        const levelSpecificKey = `${lookupType}_${itemLevel}`;
         if (scenarioUnlockedItems.includes(levelSpecificKey)) {
           return { unlocked: true, unlockLevel: 0 };
         }
@@ -2025,32 +1533,32 @@ export function getTowerUnlockStatus(towerType, playerLevel = 1, itemLevel = nul
       
       // Check if the base type is in unlocked items (backward compatibility - unlocks all levels)
       // This allows 'suppression_bomb' to unlock all levels, while 'suppression_bomb_1' only unlocks level 1
-      if (scenarioUnlockedItems.includes(towerType)) {
+      if (scenarioUnlockedItems.includes(lookupType)) {
         return { unlocked: true, unlockLevel: 0 };
       }
       
       return { unlocked: false, unlockLevel: 999 };
     } else {
-      // For other types, check if the type is in unlocked items
-      if (scenarioUnlockedItems.includes(towerType)) {
+      // For other types, check if the type is in unlocked items (check both alias and lookup for upgrade_token/upgrade_plan)
+      if (scenarioUnlockedItems.includes(lookupType) || scenarioUnlockedItems.includes(towerType)) {
         return { unlocked: true, unlockLevel: 0 };
       } else {
         return { unlocked: false, unlockLevel: 999 };
       }
     }
   }
-  
+
   // For suppression_bomb and shield, check for level-specific unlock
   // If itemLevel is provided, find the specific level entry
   // Otherwise, find any entry for this type (for backwards compatibility)
   let unlockEntry;
-  if (itemLevel !== null && (towerType === 'suppression_bomb' || towerType === 'shield')) {
+  if (itemLevel !== null && (lookupType === 'suppression_bomb' || lookupType === 'shield')) {
     unlockEntry = CONFIG.ITEM_UNLOCK_PROGRESSION.find(entry => 
-      entry.type === towerType && entry.level === itemLevel
+      entry.type === lookupType && entry.level === itemLevel
     );
   } else {
     // For other types or when no level specified, find first matching entry
-    unlockEntry = CONFIG.ITEM_UNLOCK_PROGRESSION.find(entry => entry.type === towerType);
+    unlockEntry = CONFIG.ITEM_UNLOCK_PROGRESSION.find(entry => entry.type === lookupType);
   }
   
   if (!unlockEntry) {

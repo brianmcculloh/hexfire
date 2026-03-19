@@ -158,6 +158,41 @@ export class NotificationSystem {
   }
 
   /**
+   * Create a floating shield notification
+   * @param {number} q - Hex q coordinate
+   * @param {number} r - Hex r coordinate
+   * @param {number} level - Shield level (1-4)
+   */
+  addShieldNotification(q, r, level) {
+    this.notifications.push({
+      id: this.nextId++,
+      q,
+      r,
+      text: `Shield Lv${level}`,
+      color: '#B794F6', // Purple color for shields (matches shield UI)
+      life: 0,
+      maxLife: 1.5,
+    });
+  }
+
+  /**
+   * Create a floating upgrade plan notification
+   * @param {number} q - Hex q coordinate
+   * @param {number} r - Hex r coordinate
+   */
+  addUpgradePlanNotification(q, r) {
+    this.notifications.push({
+      id: this.nextId++,
+      q,
+      r,
+      text: '+1 upgrade',
+      color: '#ff67e7', // Pink color for upgrade plans
+      life: 0,
+      maxLife: 1.5,
+    });
+  }
+
+  /**
    * Update notifications per frame (for smooth 60fps animation)
    * @param {number} deltaTime - Time elapsed in seconds
    */

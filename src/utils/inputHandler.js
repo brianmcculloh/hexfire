@@ -39,12 +39,14 @@ export class InputHandler {
     
     // Shield placement state
     this.selectedShieldForPlacement = null; // { shield, shieldIndex } or null
+    // Tower click-to-place (tutorial step 6 only)
+    this.selectedTowerForPlacement = null; // { tower, towerIndex } or null
     
     // Initialize map scroll system
     this.mapScrollSystem = new MapScrollSystem(canvas, renderer, gameState);
     
-    // Initialize tooltip system
-    this.tooltipSystem = new TooltipSystem();
+    // Initialize tooltip system (pass gameState so tooltips can be disabled during tutorial)
+    this.tooltipSystem = new TooltipSystem(gameState);
     
     this.setupEventListeners();
   }
@@ -271,18 +273,29 @@ export class InputHandler {
         return;
       }
       
-      // If shield is selected for placement and user clicked another inventory item, clear selection
+      // If shield is selected for placement and user clicked another inventory item, clear selection (block in tutorial step 24)
       if (this.selectedShieldForPlacement && (!item.id || !item.id.startsWith('shield-to-place-'))) {
+        if (this.gameState.tutorialShieldApplyOnlyPathTower) return; // No cancel - must apply to path tower
         this.clearShieldSelection();
+      }
+      if (this.selectedTowerForPlacement && (!item.id || !item.id.startsWith('tower-to-place-'))) {
+        this.clearTowerSelection();
       }
       
       // Check if clicking on a "tower to place" item (individual buttons)
       if (item.id && item.id.startsWith('tower-to-place-')) {
-        // Get the tower index from the ID
         const towerIndex = parseInt(item.id.split('-')[3]);
         const tower = this.gameState.player.inventory.purchasedTowers?.[towerIndex];
         
         if (tower) {
+          // Tutorial step 6 or 9: click-to-place (select then click hex)
+          const progress = this.gameState.getTutorialProgress?.() ?? -1;
+          if (this.gameState.tutorialMode && (progress === 5 || progress === 8)) {
+            this.selectTowerForPlacement(tower, towerIndex);
+            this.setPlacingActiveItem(item);
+            e.preventDefault();
+            return;
+          }
           this.setPlacingActiveItem(item);
           this.startDraggingNewTower(e, tower.type, towerIndex);
           e.preventDefault();
@@ -448,6 +461,33 @@ export class InputHandler {
   }
 
   /**
+   * Select a tower for click-to-place (tutorial step 6 only)
+   */
+  selectTowerForPlacement(tower, towerIndex) {
+    this.clearTowerSelection();
+    this.selectedTowerForPlacement = { tower, towerIndex };
+    this.gameState.selectedTowerId = null;
+    const towerEl = document.getElementById(`tower-to-place-${towerIndex}`);
+    if (towerEl) towerEl.classList.add('shield-selected'); // Reuse highlight style
+    if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_select');
+    document.body.style.cursor = CURSOR_DRAG;
+    this.setPlacingItemMode(true);
+  }
+
+  clearTowerSelection() {
+    if (!this.selectedTowerForPlacement) return;
+    if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_cancel');
+    this.gameState.placementPreview = null;
+    const { towerIndex } = this.selectedTowerForPlacement;
+    this.selectedTowerForPlacement = null;
+    const towerEl = document.getElementById(`tower-to-place-${towerIndex}`);
+    if (towerEl) towerEl.classList.remove('shield-selected');
+    this.clearPlacingActiveHighlight();
+    document.body.style.cursor = CURSOR_DEFAULT;
+    this.setPlacingItemMode(false);
+  }
+
+  /**
    * Start dragging a shield from inventory
    * @param {MouseEvent} e - Mouse event
    * @param {Object} shield - Shield data
@@ -543,22 +583,57 @@ export class InputHandler {
    * @param {Object} options - { hexCoords, tower }
    */
   updateGameCursor(hexCoords, tower) {
-    // Dragging uses CURSOR_DRAG - don't override
-    if (this.isDragging) return;
+    // Tutorial step 24: shield apply - CURSOR_DRAG when not over path tower, CURSOR_PLUS when over path tower
+    if (this.gameState.tutorialMode && this.selectedShieldForPlacement && this.gameState.tutorialShieldApplyOnlyPathTower) {
+      const ph = this.gameState.tutorialShieldApplyPathTowerHex;
+      if (tower && ph && tower.q === ph.q && tower.r === ph.r) {
+        document.body.style.cursor = CURSOR_PLUS;
+      } else if (hexCoords) {
+        document.body.style.cursor = CURSOR_X;
+      } else {
+        document.body.style.cursor = CURSOR_DRAG;
+      }
+      return;
+    }
+    // Tutorial step 6: tower click-to-place - show plus only on the one allowed hex, x elsewhere
+    if (this.gameState.tutorialMode && this.selectedTowerForPlacement) {
+      const placementHex = this.gameState.tutorialTowerPlacementHex;
+      const progress = this.gameState.getTutorialProgress?.() ?? -1;
+      if (placementHex && (progress === 5 || progress === 8)) {
+        if (hexCoords && hexCoords.q === placementHex.q && hexCoords.r === placementHex.r &&
+            this.gameState.gridSystem?.canPlaceTower(hexCoords.q, hexCoords.r)) {
+          document.body.style.cursor = CURSOR_PLUS;
+        } else if (hexCoords) {
+          document.body.style.cursor = CURSOR_X;
+        } else {
+          document.body.style.cursor = CURSOR_DRAG;
+        }
+      } else {
+        document.body.style.cursor = CURSOR_DRAG;
+      }
+      return;
+    }
+    // Tutorial mode: when not placing/dragging, cursor is handled by main.js (red X over blocked clickables)
+    if (this.gameState.tutorialMode && !this.isDragging && !this.selectedTowerForPlacement && !this.selectedShieldForPlacement) return;
+    // When dragging a tower/item for placement, show plus over valid hexes and x over invalid (spawner, center grove, etc.)
+    if (this.isDragging && this.gameState.placementPreview && hexCoords &&
+        this.gameState.placementPreview.q === hexCoords.q && this.gameState.placementPreview.r === hexCoords.r) {
+      document.body.style.cursor = this.gameState.placementPreview.isValid ? CURSOR_PLUS : CURSOR_X;
+      return;
+    }
     // Upgrade modals (selection, confirm) - use default cursor
     if (this.gameState.isUpgradeSelectionMode && this.isUpgradeModalVisible()) {
       document.body.style.cursor = CURSOR_DEFAULT;
       return;
     }
-    // Shield placement mode: plus over tower without shield, x over invalid targets, drag elsewhere
+    // Shield placement mode: plus over any tower (stackable), x over non-tower targets, drag elsewhere
     if (this.selectedShieldForPlacement) {
-      if (tower && !tower.shield) {
+      if (tower) {
         document.body.style.cursor = CURSOR_PLUS;
       } else {
         const hex = this.gameState.gridSystem?.getHex(hexCoords.q, hexCoords.r);
         const isGroveCenter = hexCoords.q === 0 && hexCoords.r === 0 && hex?.isTown;
         const hasInvalidTarget = hex && (
-          (tower && tower.shield) ||
           this.gameState.suppressionBombSystem?.getSuppressionBombAt(hexCoords.q, hexCoords.r) ||
           this.gameState.waterTankSystem?.getWaterTankAt(hexCoords.q, hexCoords.r) ||
           hex.hasMysteryItem ||
@@ -601,6 +676,7 @@ export class InputHandler {
    */
   setCursorForInventoryHover(canUpgrade) {
     if (this.isDragging) return;
+    if (this.gameState.tutorialMode) return;
     if (!this.gameState.isUpgradeSelectionMode) return;
     if (this.isUpgradeModalVisible()) return; // Don't override default cursor when modal is open
     document.body.style.cursor = canUpgrade ? CURSOR_PLUS : CURSOR_X;
@@ -611,6 +687,7 @@ export class InputHandler {
    */
   resetCursorToDefault() {
     if (this.isDragging) return;
+    if (this.gameState.tutorialMode) return;
     // Keep drag cursor when an item is selected for placement (e.g. shield click-to-place)
     if (this.selectedShieldForPlacement) {
       document.body.style.cursor = CURSOR_DRAG;
@@ -682,6 +759,15 @@ export class InputHandler {
     // Get hex at mouse position
     const hexCoords = pixelToAxial(worldPos.x, worldPos.y);
     this.hoveredHex = hexCoords;
+    
+    // Update placement preview when dragging or when tower selected for click-to-place (tutorial step 6)
+    const progress = this.gameState.getTutorialProgress?.() ?? -1;
+    const isTutorialTowerStep = this.gameState.tutorialMode && (progress === 5 || progress === 8);
+    if (this.isDragging || (this.selectedTowerForPlacement && isTutorialTowerStep)) {
+      this.updatePlacementPreview(hexCoords);
+    } else if (this.selectedTowerForPlacement && !isTutorialTowerStep) {
+      this.gameState.placementPreview = null;
+    }
     
     // Update cursor for shield placement / upgrade mode (plus over valid targets, x over invalid)
     const towerAtCursor = this.gameState.towerSystem?.getTowerAt(hexCoords.q, hexCoords.r);
@@ -769,11 +855,6 @@ export class InputHandler {
       // Clear arrow hover states
       this.renderer.arrowHoverState.clear();
     }
-    
-    // Update placement preview if dragging
-    if (this.isDragging) {
-      this.updatePlacementPreview(hexCoords);
-    }
   }
 
   /**
@@ -782,6 +863,8 @@ export class InputHandler {
    */
   handleMouseDown(e) {
     if (this.gameState.gameOver) return;
+    // Tutorial mode: block canvas unless step 6 (placement) or 7 (rotation)
+    if (this.gameState.tutorialMode && !this.gameState.tutorialCanvasInteractionAllowed?.()) return;
     
     // Right-click is handled by handleRightClick (contextmenu); don't start dragging or play tower-select
     if (e.button === 2) return;
@@ -800,8 +883,10 @@ export class InputHandler {
     if (this.gameState.selectedTowerId) {
       const clickedDirection = this.getClickedRotationHex(q, r);
       if (clickedDirection !== null) {
-        this.gameState.towerSystem.rotateTower(this.gameState.selectedTowerId, clickedDirection);
+        const towerId = this.gameState.selectedTowerId;
+        this.gameState.towerSystem.rotateTower(towerId, clickedDirection);
         if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('rotate', { volume: 0.25 });
+        this.gameState.checkTutorialRotationAdvance?.(towerId);
         return;
       }
     }
@@ -813,6 +898,10 @@ export class InputHandler {
       if (this.selectedShieldForPlacement) {
         // Apply shield to this tower
         this.applyShieldToTower(tower.id);
+        return;
+      }
+      if (this.selectedTowerForPlacement) {
+        this.clearTowerSelection();
         return;
       }
       
@@ -846,11 +935,39 @@ export class InputHandler {
       }
     }
     
+    // Tower click-to-place: place on valid hex (tutorial step 6: only the one allowed hex)
+    if (this.selectedTowerForPlacement) {
+      const { tower: towerData, towerIndex } = this.selectedTowerForPlacement;
+      const placementHex = this.gameState.tutorialTowerPlacementHex;
+      const progress = this.gameState.getTutorialProgress?.() ?? -1;
+      const isTutorialPlacementStep = this.gameState.tutorialMode && placementHex && (progress === 5 || progress === 8);
+      const canPlace = isTutorialPlacementStep
+        ? (q === placementHex.q && r === placementHex.r && this.gameState.gridSystem?.canPlaceTower(q, r))
+        : this.gameState.gridSystem?.canPlaceTower(q, r);
+      if (canPlace) {
+        const towerId = this.gameState.towerSystem?.placeTower(q, r, 0, towerData.type, true, towerData);
+        if (towerId) {
+          if (this.gameState.player.inventory.purchasedTowers?.length > towerIndex) {
+            this.gameState.player.inventory.purchasedTowers.splice(towerIndex, 1);
+          }
+          this.gameState.selectedTowerId = towerId;
+          this.gameState.checkTutorialPlacementAdvance?.(q, r);
+          if (window.updateInventory) window.updateInventory();
+          if (window.updateUI) window.updateUI();
+          if (this.gameState.waveSystem) this.gameState.waveSystem.updateClearAllButtonVisibility();
+          if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_select');
+        }
+      }
+      this.clearTowerSelection();
+      return;
+    }
+    
     // Deselect if clicking empty hex
     this.gameState.selectedTowerId = null;
     
-    // Clear shield selection if clicking empty space
+    // Clear shield selection if clicking empty space (block in tutorial step 24)
     if (this.selectedShieldForPlacement) {
+      if (this.gameState.tutorialShieldApplyOnlyPathTower) return; // No cancel - must apply to path tower
       this.clearShieldSelection();
     }
   }
@@ -861,6 +978,9 @@ export class InputHandler {
    */
   handleRightClick(e) {
     e.preventDefault(); // Prevent context menu from showing
+    
+    // Tutorial step 24: block right-click when shield selected (no cancel)
+    if (this.gameState.tutorialShieldApplyOnlyPathTower && this.selectedShieldForPlacement) return;
     
     // Only allow right-click to inventory when movement is allowed
     if (!isTowerMovementAllowed(this.gameState)) return;
@@ -921,6 +1041,8 @@ export class InputHandler {
    */
   handleMouseUp(e) {
     if (this.gameState.gameOver) return;
+    // Tutorial mode: block canvas unless step 6 (placement) or 7 (rotation)
+    if (this.gameState.tutorialMode && !this.gameState.tutorialCanvasInteractionAllowed?.()) return;
     if (!this.isDragging) return;
     
     let placed = false;
@@ -939,7 +1061,13 @@ export class InputHandler {
       const { q, r } = this.hoveredHex;
       
       if (this.dragType === 'tower-new') {
-        // Place new tower
+        // Place new tower (tutorial step 9: only on placement hex)
+        const placementHex = this.gameState.tutorialTowerPlacementHex;
+        const progress = this.gameState.getTutorialProgress?.() ?? -1;
+        const isTutorialPlacementStep = this.gameState.tutorialMode && placementHex && (progress === 5 || progress === 8);
+        if (isTutorialPlacementStep && (q !== placementHex.q || r !== placementHex.r)) {
+          // Don't place - wrong hex
+        } else {
         const towerType = this.dragData.towerType || 'jet';
         const towerIndex = this.dragData.towerIndex || 0;
         const towerData = this.gameState.player.inventory.purchasedTowers?.[towerIndex];
@@ -948,6 +1076,7 @@ export class InputHandler {
         const towerId = this.gameState.towerSystem?.placeTower(q, r, this.dragData.direction, towerType, true, towerData);
         if (towerId) {
           placed = true;
+          this.gameState.checkTutorialPlacementAdvance?.(q, r);
           if (this.gameState.player.inventory.purchasedTowers && this.gameState.player.inventory.purchasedTowers.length > towerIndex) {
             this.gameState.player.inventory.purchasedTowers.splice(towerIndex, 1);
           }
@@ -955,6 +1084,7 @@ export class InputHandler {
           if (window.updateInventory) window.updateInventory();
           if (window.updateUI) window.updateUI();
           if (this.gameState.waveSystem) this.gameState.waveSystem.updateClearAllButtonVisibility();
+        }
         }
       } else if (this.dragType === 'tower-stored') {
         // Place stored tower (with retained upgrades)
@@ -968,6 +1098,7 @@ export class InputHandler {
         const towerId = this.gameState.towerSystem?.placeTower(q, r, this.dragData.direction, storedTower.type, true, storedTower);
         if (towerId) {
           placed = true;
+          this.gameState.checkTutorialPlacementAdvance?.(q, r);
           this.gameState.towerSystem?.updateTowerAffectedHexes(towerId);
           this.gameState.selectedTowerId = towerId;
           if (window.updateInventory) window.updateInventory();
@@ -976,15 +1107,23 @@ export class InputHandler {
         }
       } else if (this.dragType === 'tower-existing') {
         // Move existing tower
+        const tower = this.gameState.towerSystem?.getTower(this.dragData.towerId);
+        const fromQ = tower?.q, fromR = tower?.r;
         const moved = this.gameState.towerSystem?.moveTower(this.dragData.towerId, q, r);
         if (moved) {
           placed = true;
+          this.gameState.checkTutorialTowerMoveAdvance?.(fromQ, fromR, q, r);
           if (this.gameState.isMovementTokenMode) {
             this.gameState.player.movementTokens = Math.max(0, (this.gameState.player.movementTokens || 0) - 1);
             this.gameState.isMovementTokenMode = false;
             if (window.hideMovementInstructions) window.hideMovementInstructions();
             if (window.updateInventory) window.updateInventory();
             if (window.updateUI) window.updateUI();
+            // Resume game and wave music after successful move
+            if (window.gameLoop?.isPaused && window.resumeGameWithAudio) {
+              window.resumeGameWithAudio();
+              if (window.syncPauseButton) window.syncPauseButton();
+            }
           }
         }
       } else if (this.dragType === 'water-tank-existing') {
@@ -1011,13 +1150,13 @@ export class InputHandler {
         const moved = this.gameState.suppressionBombSystem?.moveSuppressionBomb(this.dragData.bombId, q, r);
         if (moved) placed = true;
       } else if (this.dragType === 'shield-new') {
-        // Apply shield to tower
+        // Apply shield to tower (stackable - all towers are valid targets)
         const tower = this.gameState.towerSystem?.getTowerAt(q, r);
-        if (tower && !tower.shield) {
+        if (tower) {
           const shield = this.dragData.shield;
           const shieldIndex = this.dragData.shieldIndex;
           
-          // Apply shield to tower
+          // Apply shield to tower (adds HP, stacks if tower already has shield)
           const success = this.gameState.shieldSystem?.applyShieldToTower(tower.id, shield.level);
           if (success) {
             placed = true;
@@ -1426,9 +1565,13 @@ export class InputHandler {
       return;
     }
     
-    // Reset cursor when leaving canvas (unless dragging or shield selected, need drag cursor)
-    if (!this.isDragging) {
-      document.body.style.cursor = this.selectedShieldForPlacement ? CURSOR_DRAG : CURSOR_DEFAULT;
+    // Clear placement preview when leaving canvas with tower selected for click-to-place
+    if (this.selectedTowerForPlacement) {
+      this.gameState.placementPreview = null;
+    }
+    // Reset cursor when leaving canvas (unless dragging or shield/tower selected, need drag cursor)
+    if (!this.isDragging && !this.gameState.tutorialMode) {
+      document.body.style.cursor = (this.selectedShieldForPlacement || this.selectedTowerForPlacement) ? CURSOR_DRAG : CURSOR_DEFAULT;
     }
     
     // Only play cancel sound and stop when the player was actually dragging an item (not just hovering off canvas)
@@ -1445,9 +1588,35 @@ export class InputHandler {
    * @param {MouseEvent} e - Mouse event
    */
   handleGlobalMouseMove(e) {
-    // When upgrade modal is open, use default cursor
-    if (this.gameState.isUpgradeSelectionMode && this.isUpgradeModalVisible()) {
+    // When upgrade modal is open, use default cursor (skip when tutorial mode - cursor handled by main.js)
+    if (!this.gameState.tutorialMode && this.gameState.isUpgradeSelectionMode && this.isUpgradeModalVisible()) {
       document.body.style.cursor = CURSOR_DEFAULT;
+    }
+    // Tutorial step 6: tower selected for placement - show plus/x over map, drag elsewhere (handled here so cursor updates even when overlays block canvas mousemove)
+    if (this.gameState.tutorialMode && this.selectedTowerForPlacement) {
+      const placementHex = this.gameState.tutorialTowerPlacementHex;
+      const progress = this.gameState.getTutorialProgress?.() ?? -1;
+      if (placementHex && (progress === 5 || progress === 8)) {
+        const canvasRect = this.canvas.getBoundingClientRect();
+        const mouseX = e.clientX;
+        const mouseY = e.clientY;
+        const isOverCanvas = mouseX >= canvasRect.left && mouseX <= canvasRect.right &&
+                            mouseY >= canvasRect.top && mouseY <= canvasRect.bottom;
+        if (isOverCanvas) {
+          const canvasX = mouseX - canvasRect.left;
+          const canvasY = mouseY - canvasRect.top;
+          const worldPos = this.renderer.screenToWorld(canvasX, canvasY);
+          const hexCoords = pixelToAxial(worldPos.x, worldPos.y);
+          if (hexCoords.q === placementHex.q && hexCoords.r === placementHex.r &&
+              this.gameState.gridSystem?.canPlaceTower(hexCoords.q, hexCoords.r)) {
+            document.body.style.cursor = CURSOR_PLUS;
+          } else {
+            document.body.style.cursor = CURSOR_X;
+          }
+        } else {
+          document.body.style.cursor = CURSOR_DRAG;
+        }
+      }
     }
     // Get canvas-container div for hot zone calculations
     const canvasContainer = document.querySelector('.canvas-container');
@@ -1524,7 +1693,15 @@ export class InputHandler {
    */
   handleGlobalRightClick(e) {
     if (this.selectedShieldForPlacement) {
+      if (this.gameState.tutorialShieldApplyOnlyPathTower) {
+        e.preventDefault();
+        return; // No cancel in tutorial step 24
+      }
       this.clearShieldSelection();
+      e.preventDefault();
+    }
+    if (this.selectedTowerForPlacement) {
+      this.clearTowerSelection();
       e.preventDefault();
     }
   }
@@ -1534,6 +1711,7 @@ export class InputHandler {
    */
   handleGlobalMouseDown(e) {
     if (this.gameState.gameOver) return;
+    if (this.gameState.tutorialMode) return;
     // Skip when dragging or shield placement
     if (this.isDragging || this.selectedShieldForPlacement) return;
     // Skip when in upgrade mode selecting tower on map (we show plus/x/drag); allow when modal is open (we show default)
@@ -1547,7 +1725,12 @@ export class InputHandler {
    */
   refreshCursorAfterMouseUp(e) {
     document.body.classList.remove(BODY_CLASS_CLICK_FEEDBACK);
+    if (this.gameState.tutorialMode && !this.selectedTowerForPlacement) return; // Tutorial cursor handled by main.js
     if (this.isDragging) return; // Dragging handlers will set cursor
+    if (this.selectedTowerForPlacement) {
+      document.body.style.cursor = CURSOR_DRAG;
+      return;
+    }
     if (this.selectedShieldForPlacement) {
       // Keep cursor-drag until they hover over the map; plus/x only when over a tower
       document.body.style.cursor = CURSOR_DRAG;
@@ -1661,7 +1844,13 @@ export class InputHandler {
     if (!this.selectedShieldForPlacement) return;
     
     const tower = this.gameState.towerSystem?.getTower(towerId);
-    if (!tower || tower.shield) return; // Tower doesn't exist or already has shield
+    if (!tower) return;
+    
+    // Tutorial step 24: only allow applying to the path tower
+    if (this.gameState.tutorialShieldApplyOnlyPathTower && this.gameState.tutorialShieldApplyPathTowerHex) {
+      const ph = this.gameState.tutorialShieldApplyPathTowerHex;
+      if (tower.q !== ph.q || tower.r !== ph.r) return;
+    }
     
     const shield = this.selectedShieldForPlacement.shield;
     const shieldIndex = this.selectedShieldForPlacement.shieldIndex;
@@ -1670,6 +1859,7 @@ export class InputHandler {
     const success = this.gameState.shieldSystem?.applyShieldToTower(towerId, shield.level);
     if (success) {
       if (window.AudioManager) window.AudioManager.playSFX('shield_applied');
+      this.gameState.checkTutorialShieldApplyAdvance?.();
       
       // Remove the shield from purchasedShields array
       if (this.gameState.player.inventory.purchasedShields && this.gameState.player.inventory.purchasedShields.length > shieldIndex) {
@@ -1729,10 +1919,27 @@ export class InputHandler {
    * @param {Object} hexCoords - Hex coordinates {q, r}
    */
   updatePlacementPreview(hexCoords) {
+    if (!hexCoords) {
+      this.gameState.placementPreview = null;
+      return;
+    }
     const { q, r } = hexCoords;
     let isValid = false;
     
-    if (this.dragType === 'suppression-bomb-new') {
+    // Tutorial step 6: only the specific tutorial hex is valid for tower placement
+    const progress = this.gameState.getTutorialProgress?.() ?? -1;
+    const placementHex = this.gameState.tutorialTowerPlacementHex;
+    const moveToHex = this.gameState.tutorialTowerMoveToHex;
+    const isTutorialTowerStep = this.gameState.tutorialMode && (progress === 5 || progress === 8);
+    if (isTutorialTowerStep && placementHex && (this.dragType === 'tower-new' || this.selectedTowerForPlacement)) {
+      isValid = (q === placementHex.q && r === placementHex.r) && (this.gameState.gridSystem?.canPlaceTower(q, r) ?? false);
+    } else if (moveToHex && this.dragType === 'tower-existing') {
+      // Step 9 part 2: only allow moving tower from initial hex to the specific move-to hex
+      const moveFromHex = this.gameState.tutorialTowerMoveFromHex;
+      const tower = this.gameState.towerSystem?.getTower(this.dragData.towerId);
+      const isFromInitial = moveFromHex && tower && tower.q === moveFromHex.q && tower.r === moveFromHex.r;
+      isValid = isFromInitial && q === moveToHex.q && r === moveToHex.r && (this.gameState.gridSystem?.canPlaceTower(q, r) ?? false);
+    } else if (this.dragType === 'suppression-bomb-new') {
       isValid = this.gameState.gridSystem?.canPlaceSuppressionBomb(q, r) || false;
     } else if (this.dragType === 'suppression-bomb-existing') {
       // For existing suppression bombs, allow moving to any valid hex (not the original position)
@@ -1743,9 +1950,9 @@ export class InputHandler {
       isValid = this.gameState.waterTankSystem?.canPlaceWaterTank(q, r, this.dragData.tankId) || false;
       isValid = isValid && !(q === this.dragData.originalQ && r === this.dragData.originalR);
     } else if (this.dragType === 'shield-new') {
-      // For shields, check if there's a tower without a shield at this location
+      // For shields, any tower is a valid target (shields are stackable)
       const tower = this.gameState.towerSystem?.getTowerAt(q, r);
-      isValid = tower && !tower.shield;
+      isValid = !!tower;
     } else {
       isValid = this.gameState.gridSystem?.canPlaceTower(q, r) || false;
     }

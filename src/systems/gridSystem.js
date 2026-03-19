@@ -309,10 +309,9 @@ export class GridSystem {
     const hex = this.getHex(q, r);
     if (!hex) return false;
     
-    // Can't place on center town hex (0, 0)
-    if (q === 0 && r === 0) {
-      return false;
-    }
+    // Can't place on center town hex (0, 0) or fire spawners
+    if (q === 0 && r === 0) return false;
+    if (hex.hasFireSpawner) return false;
     
     // Can place on any hex except hexes with existing towers or water tanks
     return !hex.hasTower && !hex.hasWaterTank && !hex.hasTempPowerUpItem && !hex.hasMysteryItem && !hex.hasCurrencyItem;
@@ -347,8 +346,8 @@ export class GridSystem {
     const hex = this.getHex(q, r);
     if (!hex) return false;
     
-    // Can't place on town, existing towers, or existing suppression bombs
-    return !hex.isTown && !hex.hasTower && !hex.hasSuppressionBomb;
+    // Can't place on town, spawners, existing towers, or existing suppression bombs
+    return !hex.isTown && !hex.hasFireSpawner && !hex.hasTower && !hex.hasSuppressionBomb;
   }
 
   /**

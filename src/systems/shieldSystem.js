@@ -9,7 +9,7 @@ export class ShieldSystem {
   }
 
   /**
-   * Apply a shield to a tower
+   * Apply a shield to a tower (stackable - adds HP to existing shield)
    * @param {string} towerId - Tower ID
    * @param {number} shieldLevel - Shield level (1-4)
    * @returns {boolean} True if shield was applied successfully
@@ -18,21 +18,17 @@ export class ShieldSystem {
     const tower = this.towerSystem.getTower(towerId);
     if (!tower) return false;
     
-    // Check if tower already has a shield
-    if (tower.shield) return false;
-    
-    // Apply shield using tower system
     return this.towerSystem.applyShield(towerId, shieldLevel);
   }
 
   /**
-   * Check if a tower can receive a shield
+   * Check if a tower can receive a shield (all towers can - shields are stackable)
    * @param {string} towerId - Tower ID
    * @returns {boolean} True if tower can receive a shield
    */
   canApplyShieldToTower(towerId) {
     const tower = this.towerSystem.getTower(towerId);
-    return tower && !tower.shield;
+    return !!tower;
   }
 
   /**

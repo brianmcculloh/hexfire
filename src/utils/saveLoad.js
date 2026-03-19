@@ -1,8 +1,12 @@
 // Save/Load System - Serializes game state to localStorage
 
+import { getScenarioByName } from '../scenarios.js';
+import { CONFIG } from '../config.js';
+
 const SAVE_KEY_PREFIX = 'hexfire_save_';
 const AUTOSAVE_KEY = 'hexfire_autosave';
 const SAVE_NAME_KEY_PREFIX = 'hexfire_save_name_';
+const TUTORIAL_STATE_KEY = 'hexfire_tutorial_state';
 const MAX_SAVE_SLOTS = 10;
 
 /**
@@ -29,7 +33,10 @@ function formatTimestamp(timestamp) {
  */
 export function saveGame(gameState, slot = null, customName = null) {
   const isAutosave = slot === null;
-  
+  // Don't overwrite autosave during tutorial - we need it intact for restore on exit
+  if (isAutosave && gameState.tutorialMode) {
+    return false;
+  }
   try {
     const saveData = serializeGameState(gameState);
     const timestamp = Date.now();
@@ -221,6 +228,48 @@ export function deleteSave(slot = 0) {
 }
 
 /**
+ * Save tutorial state (for resuming tutorial later)
+ * @param {Object} gameState - Current game state (in tutorial mode)
+ * @returns {boolean} True if save succeeded
+ */
+export function saveTutorialState(gameState) {
+  try {
+    const saveData = serializeGameState(gameState);
+    saveData.timestamp = Date.now();
+    saveData.isTutorial = true;
+    const sidePanel = typeof document !== 'undefined' ? document.getElementById('sidePanel') : null;
+    saveData.sidebarExpanded = sidePanel ? !sidePanel.classList.contains('collapsed') : false;
+    sessionStorage.setItem(TUTORIAL_STATE_KEY, JSON.stringify(saveData));
+    return true;
+  } catch (error) {
+    console.error('Failed to save tutorial state:', error);
+    return false;
+  }
+}
+
+/**
+ * Load tutorial state
+ * @returns {Object|null} Loaded tutorial state or null
+ */
+export function loadTutorialState() {
+  try {
+    const str = sessionStorage.getItem(TUTORIAL_STATE_KEY);
+    if (!str) return null;
+    return JSON.parse(str);
+  } catch (error) {
+    console.error('Failed to load tutorial state:', error);
+    return null;
+  }
+}
+
+/**
+ * Clear saved tutorial state
+ */
+export function clearTutorialState() {
+  sessionStorage.removeItem(TUTORIAL_STATE_KEY);
+}
+
+/**
  * Serialize game state to a saveable format
  * @param {Object} gameState - Current game state
  * @returns {Object} Serialized save data
@@ -261,6 +310,7 @@ function serializeGameState(gameState) {
     player: {
       level: gameState.player.level,
       xp: gameState.player.xp,
+      score: gameState.player.score ?? 0,
       currency: gameState.player.currency || 0,
       upgradePlans: gameState.player.upgradePlans || 0,
       movementTokens: gameState.player.movementTokens || 0,
@@ -284,6 +334,7 @@ function serializeGameState(gameState) {
       isScenario: gameState.wave.isScenario || false,
       scenarioNumber: gameState.wave.scenarioNumber || null,
       scenarioName: gameState.wave.scenarioName || null,
+      scenarioWaveDuration: gameState.wave.scenarioWaveDuration || null,
       tempPowerUpMessageShown: gameState.waveSystem?.tempPowerUpMessageShown || false,
     },
     
@@ -493,6 +544,7 @@ export function applyLoadedState(gameState, loadedData) {
   // Restore player data
   gameState.player.level = loadedData.player.level;
   gameState.player.xp = loadedData.player.xp;
+  gameState.player.score = loadedData.player.score ?? 0;
   gameState.player.currency = loadedData.player.currency || 0;
   gameState.player.upgradePlans = loadedData.player.upgradePlans || 0;
   gameState.player.movementTokens = loadedData.player.movementTokens || 0;
@@ -533,6 +585,11 @@ export function applyLoadedState(gameState, loadedData) {
   }
   gameState.wave.scenarioNumber = loadedData.wave.scenarioNumber || null;
   gameState.wave.scenarioName = loadedData.wave.scenarioName || null;
+  // Restore scenario wave duration (for old saves, look up from scenario by name)
+  if (loadedData.wave.isScenario) {
+    gameState.wave.scenarioWaveDuration = loadedData.wave.scenarioWaveDuration
+      ?? (loadedData.wave.scenarioName ? (getScenarioByName(loadedData.wave.scenarioName)?.waveDuration ?? CONFIG.SCENARIO_WAVE_DURATION) : CONFIG.SCENARIO_WAVE_DURATION);
+  }
   
   // Restore wave group data
     if (loadedData.wave.currentGroup && gameState.waveSystem) {

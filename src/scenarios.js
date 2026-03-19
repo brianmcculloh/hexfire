@@ -18,6 +18,7 @@ import { CONFIG } from './config.js';
  *     shields: Array<{level}>
  *   },
  *   currency: number,                // Starting currency
+ *   waveDuration: number,            // Optional: Wave duration in seconds (defaults to CONFIG.SCENARIO_WAVE_DURATION, e.g. 300 = 5 min)
  *   xp: number,                      // Starting XP (defaults to 0) - DEPRECATED: use startingLevel instead
  *   startingLevel: number,           // Optional: Starting player level (XP will be set to the amount required for this level)
  *   unlockedItems: Array<string>,    // Array of item types to unlock (e.g., ['jet', 'rain', 'spread'])
@@ -66,7 +67,7 @@ export const SCENARIOS = [
       shields: []
     },
     currency: 500,
-    xp: 0, // Legacy field - use startingLevel instead
+    waveDuration: 120, // 2 minutes (optional; defaults to CONFIG.SCENARIO_WAVE_DURATION if omitted)
     startingLevel: 1, // Player starts at level 1
     unlockedItems: ['jet', 'rain'], // Only basic towers unlocked
     townHealth: CONFIG.TOWN_HEALTH_BASE // Default town health
@@ -123,7 +124,7 @@ export const SCENARIOS = [
       shields: []
     },
     currency: 800,
-    xp: 50, // Legacy field - use startingLevel instead
+    waveDuration: 300, // 5 minutes (optional; defaults to CONFIG.SCENARIO_WAVE_DURATION if omitted)
     startingLevel: 5, // Player starts at level 3
     unlockedItems: ['jet', 'rain', 'spread', 'suppression_bomb_1'], // More items unlocked (level 1 suppression bomb only)
     townHealth: CONFIG.TOWN_HEALTH_BASE * 2 // Default town health

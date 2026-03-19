@@ -12,7 +12,44 @@
     <link rel="preload" href="assets/images/ui/cursor-default.png" as="image">
     <link rel="stylesheet" href="style.css">
 </head>
-<body>
+<body class="game-not-started">
+    <!-- Tutorial overlays (direct children of body for highest z-index stacking) -->
+    <div id="tutorialCenteredBubble" class="tutorial-centered-bubble" style="display: none;" aria-hidden="true">
+        <div class="tutorial-centered-bubble-inner">
+            <p class="tutorial-centered-bubble-text"></p>
+            <div class="tutorial-bubble-footer">
+                <div class="tutorial-step-indicator"></div>
+                <button type="button" class="tutorial-continue-btn cta-button cta-blue" id="tutorialContinueBtn">Next</button>
+            </div>
+        </div>
+    </div>
+    <div id="tutorialArrow" class="tutorial-arrow" style="display: none;" aria-hidden="true">
+        <div class="tutorial-speech-bubble">
+            <span class="tutorial-speech-bubble-text"></span>
+            <div class="tutorial-bubble-footer">
+                <div class="tutorial-step-indicator tutorial-step-indicator-in-bubble"></div>
+                <button type="button" class="tutorial-speech-bubble-btn cta-button cta-blue" id="tutorialArrowContinueBtn" style="display: none;">Next</button>
+            </div>
+        </div>
+        <div class="tutorial-arrow-wrapper">
+            <img src="assets/images/ui/icon-tutorial-arrow.png" alt="" class="tutorial-arrow-icon">
+        </div>
+    </div>
+    <div id="tutorialHexIndicator" class="tutorial-arrow tutorial-hex-indicator" style="display: none;" aria-hidden="true">
+        <div class="tutorial-arrow-wrapper">
+            <img src="assets/images/ui/icon-tutorial-arrow.png" alt="" class="tutorial-arrow-icon">
+        </div>
+        <div class="tutorial-speech-bubble tutorial-hex-indicator-bubble" style="display: none;">
+            <span class="tutorial-speech-bubble-text"></span>
+            <div class="tutorial-step-indicator tutorial-step-indicator-in-bubble"></div>
+        </div>
+    </div>
+    <div id="tutorialShieldOverlay" class="tutorial-shield-overlay" style="display: none;" aria-hidden="true" title="Click to purchase shield"></div>
+    <div id="tutorialButtonsContainer" class="tutorial-buttons-container" style="display: none;">
+        <button id="tutorialStartOverBtn" class="tutorial-start-over-btn cta-button cta-lime" aria-label="Restart tutorial"><img src="assets/images/ui/icon-restart.png" alt="" class="tutorial-start-over-icon"> Restart tutorial</button>
+        <button id="exitTutorialBtn" class="exit-tutorial-btn cta-button cta-orange" aria-label="Exit tutorial"><img src="assets/images/misc/torch.png" alt="" class="exit-tutorial-icon"> Exit tutorial</button>
+    </div>
+
     <div class="game-container">
         <!-- Main Canvas Area -->
         <div class="canvas-container">
@@ -33,7 +70,7 @@
                         </label>
                     </div>
                     <div class="overlay-timer" id="overlayWaveTimer">2:00</div>
-                    <div class="overlay-progress-bar-container overlay-level-xp-row">
+                    <div id="overlayLevelXpRow" class="overlay-progress-bar-container overlay-level-xp-row overlay-row-tooltip" data-tooltip="Experience points earned by extinguishing fires. Level up to unlock new towers and upgrades.">
                         <div class="overlay-level-hex-wrap">
                             <img src="assets/images/misc/level.png" class="overlay-level-hex" alt="" />
                             <span class="overlay-level-value" id="overlayPlayerLevel">1</span>
@@ -43,34 +80,42 @@
                             <span class="overlay-progress-text" id="overlayPlayerXP">0 / 100</span>
                         </div>
                     </div>
-                    <div class="overlay-progress-bar-container overlay-hp-container">
+                    <div class="overlay-progress-bar-container overlay-hp-container overlay-row-tooltip" data-tooltip="Ancient Grove's health. If it reaches zero, it's game over! Protect the town center and surrounding trees.">
                         <span class="overlay-progress-label"><img src="assets/images/misc/hp.png" style="width: 30px; height: auto; object-fit: contain; image-rendering: pixelated; vertical-align: middle; margin-right: 8px;" /></span>
                         <div class="overlay-progress-bar">
                             <div class="overlay-progress-fill overlay-hp-fill" id="overlayHpProgress"></div>
                             <span class="overlay-progress-text" id="overlayTownHealth">120 / 120</span>
                         </div>
                     </div>
-                    <div class="overlay-row overlay-row-resource">
+                    <div class="overlay-row overlay-row-score overlay-row-tooltip" data-tooltip="Your score. Earn points by extinguishing fires and completing waves.">
+                        <span class="overlay-label"><img src="assets/images/misc/score.png" style="width: 30px; height: auto; object-fit: contain; image-rendering: pixelated; vertical-align: middle; margin-right: 8px;" /></span>
+                        <span class="overlay-value overlay-score-value" id="overlayScore">0</span>
+                    </div>
+                    <div class="overlay-divider"></div>
+                    <div class="overlay-row overlay-row-resource overlay-row-tooltip" data-tooltip="Currency earned from extinguishing fires and completing objectives. Spend at the shop to buy towers and items.">
                         <span class="overlay-label"><img src="assets/images/misc/total_earned.png" style="width: 30px; height: auto; object-fit: contain; image-rendering: pixelated; vertical-align: middle; margin-right: 8px;" /></span>
                         <span class="overlay-value" id="overlayCurrency" style="color: #00FF88;">$0</span>
                     </div>
-                    <div class="overlay-row overlay-row-resource">
-                        <span class="overlay-label"><img src="assets/images/items/upgrade_token.png" style="width: 30px; height: auto; object-fit: contain; image-rendering: pixelated; vertical-align: middle; margin-right: 8px;" /></span>
-                        <span class="overlay-value upgrade-tokens" id="overlayUpgradeTokens" style="color: #ff67e7;">0</span>
+                    <div class="overlay-row overlay-row-resource overlay-row-resource-combined">
+                        <span class="overlay-resource-pair overlay-row-tooltip" data-tooltip="Upgrade plans for towers. Use them to upgrade tower range and power during the placement phase.">
+                            <span class="overlay-label overlay-label-compact"><img src="assets/images/items/upgrade_token.png" style="width: 30px; height: auto; object-fit: contain; image-rendering: pixelated; vertical-align: middle; margin-right: 8px;" /></span>
+                            <span class="overlay-value upgrade-tokens" id="overlayUpgradeTokens" style="color: #ff67e7;">0</span>
+                        </span>
+                        <span class="overlay-resource-pair overlay-row-tooltip overlay-resource-pair-movement" data-tooltip="Movement tokens let you reposition one tower during a wave. Earn from dig sites or buy at the shop.">
+                            <span class="overlay-label overlay-label-compact"><img src="assets/images/items/movement_token.png" style="width: 30px; height: auto; object-fit: contain; image-rendering: pixelated; vertical-align: middle; margin-right: 8px;" /></span>
+                            <span class="overlay-value movement-tokens" id="overlayMovementTokens" style="color: #4FC3F7;">0</span>
+                        </span>
                     </div>
-                    <div class="overlay-row overlay-row-resource">
-                        <span class="overlay-label"><img src="assets/images/items/movement_token.png" style="width: 30px; height: auto; object-fit: contain; image-rendering: pixelated; vertical-align: middle; margin-right: 8px;" /></span>
-                        <span class="overlay-value movement-tokens" id="overlayMovementTokens" style="color: #4FC3F7;">0</span>
-                    </div>
-                    <div class="overlay-row overlay-row-values-column" style="padding-right: 30px;">
+                    <div class="overlay-divider"></div>
+                    <div class="overlay-row overlay-row-values-column overlay-row-tooltip" style="padding-right: 30px;" data-tooltip="Number of hexes currently on fire on the map.">
                         <span class="overlay-label">Map Fires:</span>
                         <span class="overlay-value fire-count" id="overlayFireCount" style="color: #FFFFFF;">0</span>
                     </div>
-                    <div class="overlay-row overlay-row-values-column" style="padding-right: 30px;">
+                    <div class="overlay-row overlay-row-values-column overlay-row-tooltip" style="padding-right: 30px;" data-tooltip="Number of towers placed on the map.">
                         <span class="overlay-label">Map Towers:</span>
                         <span class="overlay-value" id="overlayPlacedTowers" style="color: #FFFFFF;">0</span>
                     </div>
-                    <div class="overlay-row overlay-row-values-column" style="padding-right: 30px;">
+                    <div class="overlay-row overlay-row-values-column overlay-row-tooltip" style="padding-right: 30px;" data-tooltip="Number of items on the map (water tanks, suppression bombs, power-ups).">
                         <span class="overlay-label">Map Items:</span>
                         <span class="overlay-value" id="overlayPlacedItems" style="color: #FFFFFF;">0</span>
                     </div>
@@ -110,13 +155,18 @@
                 </div>
             </div>
             
-            <!-- Minimap Blur Background -->
-            <div class="minimap-blur-background"></div>
-            <!-- Minimap Canvas -->
-            <canvas id="minimapCanvas" class="minimap-canvas"></canvas>
+            <!-- Minimap Container: group name pill above minimap, center-aligned -->
+            <div class="minimap-container" id="minimapContainer">
+                <div id="waveGroupNamePill" class="wave-group-name-pill" aria-hidden="true"></div>
+                <div class="minimap-wrapper">
+                    <div class="minimap-blur-background"></div>
+                    <canvas id="minimapCanvas" class="minimap-canvas"></canvas>
+                </div>
+            </div>
             
             <!-- Bottom Edge Power-Up Indicators -->
             <div id="bottomEdgePowerUps" class="bottom-edge-power-ups"></div>
+            
         </div>
 
         <!-- Side Panel Toggle Button -->
@@ -148,7 +198,7 @@
                     </span>
                     <span class="tab-badge" id="inventoryBadge" style="display: none;">0</span>
                 </button>
-                <button class="tab-button cta-button cta-lime" data-tab="shop">
+                <button id="shopTabBtn" class="tab-button cta-button cta-lime" data-tab="shop">
                     <span class="tab-content-wrapper">
                         <img src="assets/images/misc/total_earned.png" alt="">
                         Shop
@@ -303,15 +353,21 @@
                         HEXFIRE
                     </h1>
                     <p class="splash-description">
-                        A tile-based tower defense game set in a distant world. Defend The Grove from burning down as long as you can—towers, bombs, and every fire-extinguishing tool at your disposal.
+                        A tile-based tower defense game set in a distant world. Defend the Ancient Grove from burning down as long as you can—towers, bombs, and every fire-extinguishing tool at your disposal.
                     </p>
                     <div class="splash-buttons">
-                        <button class="choice-btn splash-btn cta-button cta-purple" id="splashNewGameBtn">New Game</button>
-                        <button class="choice-btn splash-btn cta-button cta-red" id="saveGameBtn" style="display: none;">Save Game</button>
-                        <button class="choice-btn splash-btn cta-button cta-green" id="splashLoadGameBtn">Load Game</button>
-                        <button class="choice-btn splash-btn cta-button cta-green" id="splashLoadScenarioBtn">Load Scenario</button>
-                        <button class="choice-btn splash-btn cta-button" id="splashSettingsBtn">Settings</button>
-                        <button class="choice-btn splash-btn cta-button" id="closeSettingsBtn" style="display: none;">Close</button>
+                        <button class="choice-btn splash-btn cta-button cta-purple" id="splashNewGameBtn"><img src="assets/images/ui/icon-new-game.png" alt="" class="splash-btn-icon"> New Game</button>
+                        <button class="choice-btn splash-btn cta-button cta-blue" id="saveGameBtn" style="display: none;"><img src="assets/images/ui/icon-save.png" alt="" class="splash-btn-icon"> Save Game</button>
+                        <div class="splash-buttons-row">
+                            <button class="choice-btn splash-btn cta-button cta-lime" id="splashLoadGameBtn"><img src="assets/images/ui/icon-load.png" alt="" class="splash-btn-icon"> Load Game</button>
+                            <button class="choice-btn splash-btn cta-button cta-green" id="splashLoadScenarioBtn"><img src="assets/images/ui/icon-load-scenario.png" alt="" class="splash-btn-icon"> Load Scenario</button>
+                            <button class="choice-btn splash-btn cta-button cta-orange" id="splashShowTutorialBtn"><img src="assets/images/misc/torch.png" alt="" class="splash-btn-icon"> Show tutorial</button>
+                        </div>
+                        <div class="splash-buttons-row">
+                            <button class="choice-btn splash-btn cta-button cta-special" id="splashSettingsBtn"><img src="assets/images/ui/icon-settings.png" alt="" class="splash-btn-icon"> Settings</button>
+                            <button class="choice-btn splash-btn cta-button cta-yellow" id="splashLeaderboardBtn"><img src="assets/images/ui/icon-trophy.png" alt="" class="splash-btn-icon"> High Scores</button>
+                        </div>
+                        <button class="choice-btn splash-btn cta-button cta-red" id="closeSettingsBtn" style="display: none;">Close</button>
                     </div>
                 </div>
             </div>
@@ -395,6 +451,7 @@
                         </label>
                     </label>
                 </div>
+                
                 </div>
                 <div class="modal-choices">
                     <button class="choice-btn cta-button" id="openAdvancedSettingsBtn">Advanced</button>
@@ -410,25 +467,6 @@
             <div class="modal-frame-content">
                 <h2>Advanced Settings</h2>
                 <div class="settings-grid">
-                <!-- Fire Type Spread Mode -->
-                <div class="setting-item">
-                    <label style="display: block; color: #fff; margin-bottom: 8px; font-weight: bold;">Fire Type Spread Mode</label>
-                    <div class="scenario-dropdown-container">
-                        <div class="scenario-dropdown" id="settingFireTypeSpreadModeDropdown">
-                            <div class="scenario-dropdown-selected" id="settingFireTypeSpreadModeSelected">
-                                <span id="settingFireTypeSpreadModeText">Both (Escalate & Downgrade)</span>
-                                <span class="scenario-dropdown-arrow">▼</span>
-                            </div>
-                            <div class="scenario-dropdown-menu" id="settingFireTypeSpreadModeMenu">
-                                <div class="scenario-dropdown-option" data-value="both">Both (Escalate & Downgrade)</div>
-                                <div class="scenario-dropdown-option" data-value="escalate">Escalate Only</div>
-                                <div class="scenario-dropdown-option" data-value="downgrade">Downgrade Only</div>
-                                <div class="scenario-dropdown-option" data-value="fixed">Fixed (No Change)</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                
                 <!-- Enable Edge Scrolling -->
                 <div class="setting-item">
                     <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
@@ -535,10 +573,9 @@
                     <div class="story-text-frame modal modal-frame-9patch">
                         <div class="modal-frame-content">
                             <div class="story-text">
-                                <h2 class="story-panel-header">You live in a distant galaxy...</h2>
-                                <p class="story-paragraph">...on an exotic planet called <span class="story-hexalon">Hexalon</span>. No one here likes trees. Or anything green, for that matter. You know what they do like? <span class="story-fire-word">FIRE</span>.</p>
-                                <p class="story-paragraph">But all is not lost. You're a powerful <span class="story-water-wielder">water wielder</span>—skilled in the art of putting out fires. And you really, really love trees.</p>
-                                <p class="story-paragraph">You live in <span class="story-grove">The Grove</span>, a mighty cluster of ancient trees. Most of this planet is desolate rocky waste, but there are some <span class="story-paths-green">paths of green</span> that meander outwards from The Grove. One catch: when fire reaches a path, it spreads very quickly.</p>
+                                <h2 class="story-panel-header">Welcome to Hexalon...</h2>
+                                <p class="story-paragraph">...an exotic world full of magical creatures, some lovers of trees and greenery, but most worshippers of <span class="text-fire text-jitter text-glow">fire</span>. You are a powerful <span class="text-wave text-water text-cycle-water">water wielder</span>—skilled in subduing flame. Your arsenal of extinguishing devices could save many innocent beings from a fiery demise.</p>
+                                <p class="story-paragraph">Speaking of innocent beings, they exclusively live in mighty clusters of trees called <span class="text-glow-pulse text-grove">Ancient Groves</span>. Most of this planet is desolate rocky waste, but there are some <span class="text-gradient-grove">paths of green</span> that meander outwards from these groves. One catch: when fire reaches a path, it spreads very quickly.</p>
                                 <div class="story-nav-buttons">
                                     <button type="button" class="story-next-btn cta-button">Next <img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon" /></button>
                                 </div>
@@ -557,9 +594,9 @@
                         <div class="modal-frame-content">
                             <div class="story-text">
                                 <h2 class="story-panel-header">It's a dangerous world out there.</h2>
-                                <p class="story-paragraph">Hexalon has one thing in common with Earth: <span class="story-lightning">lightning</span>. It strikes randomly, without warning—setting the ground alight.</p>
-                                <p class="story-paragraph">Even worse: <span class="story-fire-spawners">Fire Spawners</span>. Seemingly wired to Hexalon's core, they're indestructible and spread fire in every direction.</p>
-                                <p class="story-paragraph">You'll start out battling <span class="story-fire-cinder">Cinders</span>, but as you get stronger, so do the fire types—from <span class="story-fire-flame">Flames</span>, to <span class="story-fire-blaze">Blazes</span>, to <span class="story-fire-firestorm">Firestorms</span>, to <span class="story-fire-inferno">Infernos</span>, to the strongest type of fire Hexalon keeps within its depths: <span class="story-fire-cataclysm">Cataclysms</span>.</p>
+                                <p class="story-paragraph">Hexalon has one thing in common with Earth: <span class="text-jitter-fast text-fire-cinder text-uppercase">lightning</span>. It strikes randomly, without warning—setting the ground alight.</p>
+                                <p class="story-paragraph">Even worse: <span class="text-cycle-fire">Fire Spawners</span>. Seemingly wired to Hexalon's core, they're indestructible and spread fire in every direction.</p>
+                                <p class="story-paragraph">You'll start out battling <span class="text-fire-cinder">Cinders</span>, but as you get stronger, so do the fire types—from <span class="text-fire-flame">Flames</span>, to <span class="text-fire-blaze">Blazes</span>, to <span class="text-fire-firestorm">Firestorms</span>, to <span class="text-fire-inferno">Infernos</span>, to the strongest type of fire Hexalon keeps within its depths: <span class="text-fire-cataclysm">Cataclysms</span>.</p>
                                 <div class="story-nav-buttons">
                                     <button type="button" class="story-back-btn cta-button"><img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon story-arrow-back" /> Back</button>
                                     <button type="button" class="story-next-btn cta-button">Next <img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon" /></button>
@@ -590,9 +627,9 @@
                         <div class="modal-frame-content">
                             <div class="story-text">
                                 <h2 class="story-panel-header">You have the power to fight back.</h2>
-                                <p class="story-paragraph">Behold! As an expert <span class="story-water-wielder">water wielder</span>, you've got plenty of fire-fighting tools at your disposal—towers, suppression bombs, and more.</p>
-                                <p class="story-paragraph">Buy what you need from the <span class="story-shop">shop</span>, then drag and drop to place them on the map. (Be careful how you place them; you can only move them between waves.)</p>
-                                <p class="story-paragraph">Gain experience to earn <span class="story-upgrade-plans">UPGRADE PLANS</span>, which let you upgrade your towers to match the increasing strength of fires.</p>
+                                <p class="story-paragraph">Behold! As an expert <span class="text-wave text-cycle-water">water wielder</span>, you've got plenty of fire-fighting tools at your disposal—towers, suppression bombs, and more.</p>
+                                <p class="story-paragraph">Buy what you need from the <span class="text-gradient-grove text-grow-pulse">shop</span>, then drag and drop to place them on the map. (Be careful how you place them; you can only move them between waves.)</p>
+                                <p class="story-paragraph">Gain experience to earn <span class="text-gradient-upgrade">upgrade plans</span>, which let you upgrade your towers to match the increasing strength of fires.</p>
                                 <div class="story-nav-buttons">
                                     <button type="button" class="story-back-btn cta-button"><img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon story-arrow-back" /> Back</button>
                                     <button type="button" class="story-next-btn cta-button">Next <img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon" /></button>
@@ -612,12 +649,21 @@
                         <div class="modal-frame-content">
                             <div class="story-text">
                                 <h2 class="story-panel-header">Watch out for the denizens of fire!</h2>
-                                <p class="story-paragraph">We should probably talk about the <span class="story-bosses">BOSSES</span> of Hexalon. You haven't discovered where they live or much about them yet—but you do know they seem provoked by the end of each wave group.</p>
+                                <p class="story-paragraph">We should probably talk about the <span class="text-jitter-fast text-fire text-uppercase">bosses</span> of Hexalon. You haven't discovered where they live or much about them yet—but you do know they seem provoked by the end of each wave group.</p>
                                 <p class="story-paragraph">These fire-loving magical enemies each have a unique summoning power they use to inflict as much fire damage as possible.</p>
-                                <p class="story-paragraph">Your job: stop the fires. Save The Grove. Ready?</p>
+                                <p class="story-paragraph">Your job: stop the fires. Save the innocent creatures of Hexalon. Ready?</p>
                                 <div class="story-nav-buttons">
                                     <button type="button" class="story-back-btn cta-button"><img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon story-arrow-back" /> Back</button>
-                                    <button type="button" class="story-next-btn cta-button">Start Game <img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon" /></button>
+                                    <div class="story-start-row">
+                                        <button type="button" class="story-next-btn cta-button">Start Game <img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon" /></button>
+                                        <label class="story-tutorial-toggle" style="display: flex; align-items: center; gap: 10px; cursor: var(--cursor-default);">
+                                            <span style="font-weight: bold; color: #fff;">Show tutorial</span>
+                                            <label class="toggle-switch">
+                                                <input type="checkbox" id="storyShowTutorialToggle" checked>
+                                                <span class="toggle-slider"></span>
+                                            </label>
+                                        </label>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -629,6 +675,22 @@
         </div>
     </div>
     
+    <!-- Score Leaderboard Modal -->
+    <div id="leaderboardModal" class="modal-overlay save-load-mask">
+        <div class="modal modal-frame-9patch">
+            <div class="modal-frame-content">
+                <h2>Score Leaderboard</h2>
+                <p class="modal-subtitle">Top 100 highest scores</p>
+                <div id="leaderboardList" class="leaderboard-list">
+                    <!-- Entries populated dynamically -->
+                </div>
+                <div class="modal-choices" style="margin-top: 16px;">
+                    <button class="choice-btn cta-button" id="leaderboardCloseBtn">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Load Scenario Modal -->
     <div id="loadScenarioModal" class="modal-overlay save-load-mask">
         <div class="modal modal-frame-9patch">
@@ -652,8 +714,8 @@
                     </div>
                 </div>
                 <div class="modal-choices">
-                    <button class="choice-btn cta-button" id="loadScenarioConfirmBtn" disabled>Load Scenario</button>
                     <button class="choice-btn cta-button" id="loadScenarioCancelBtn">Cancel</button>
+                    <button class="choice-btn splash-btn cta-button cta-green" id="loadScenarioConfirmBtn" disabled><img src="assets/images/ui/icon-load-scenario.png" alt="" class="splash-btn-icon"> Play</button>
                 </div>
             </div>
         </div>

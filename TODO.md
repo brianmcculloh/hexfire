@@ -2,16 +2,16 @@
 
 Queue:
 
-need sounds for fire breathe and purify
+finesse tutorial speech bubble wording (src/tutorial.js)
 
-test when new fire types are first introduced to make sure 1% chance is enough of a starting value 
--- do this when the spread mode is none (fixed) in settings to see actually how many of them spawn
+hero/boss text and lore
+currently working on group 6
 
-take a look at how FIRE_TYPE_SPREAD_PROGRESSION is implemented, and test to make sure it works when 'both' is set
-
+test when new fire types are first introduced to make sure 1% chance is enough of a starting value
 
 Polish:
 tutorial overlay
+keyboard shortcuts (escape, enter)
 
 
 Future Ideas:

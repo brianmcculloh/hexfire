@@ -61,8 +61,8 @@ export class ProgressionSystem {
     if (!hasPlans) return;
     
     // Pause game if not already paused
-    if (!window.gameLoop?.isPaused) {
-      window.gameLoop?.pause();
+    if (typeof window !== 'undefined' && window.pauseGameWithAudio) {
+      window.pauseGameWithAudio();
     }
     
     // Update pause button to show correct state
@@ -223,8 +223,8 @@ export class ProgressionSystem {
         
         // Pause game IMMEDIATELY when level up happens (before any other checks)
         // This ensures the game is paused even if a wave is active
-        if (!window.gameLoop?.isPaused) {
-          window.gameLoop?.pause();
+        if (typeof window !== 'undefined' && window.pauseGameWithAudio) {
+          window.pauseGameWithAudio();
         }
         
         // Update pause button to show correct state
@@ -637,9 +637,12 @@ export class ProgressionSystem {
         discoveriesDivider.style.cssText = 'width: 150px; height: auto; image-rendering: crisp-edges; margin-bottom: 12px;';
         discoveriesSection.appendChild(discoveriesDivider);
         
-        // Create grid container for all discovered items (2 columns, centered)
+        // Create grid container for all discovered items (2 columns when 2+, centered when 1)
         const discoveriesGrid = document.createElement('div');
-        discoveriesGrid.style.cssText = 'display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; justify-items: center; width: 100%; max-width: 424px;';
+        const gridStyle = newlyUnlocked.length === 1
+          ? 'display: flex; justify-content: center; gap: 12px; width: 100%; max-width: 424px;'
+          : 'display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; justify-items: center; width: 100%; max-width: 424px;';
+        discoveriesGrid.style.cssText = gridStyle;
         
         // Show all unlocked items
         newlyUnlocked.forEach((unlock) => {
@@ -697,10 +700,30 @@ export class ProgressionSystem {
             tokenImg.style.cssText = 'width: 75px; height: auto; image-rendering: pixelated;'; // Scaled from 100px to 75px
             iconDiv.appendChild(tokenImg);
             iconDiv.style.cssText = 'display: flex; justify-content: center; align-items: center;';
+          } else if (['water_pressure', 'xp_boost', 'tower_health', 'fire_resistance', 'temp_power_up_spawn_boost'].includes(unlock.towerType)) {
+            // Power-up: use power-up image
+            const powerUpGraphicMap = {
+              'water_pressure': 'water_pressure.png',
+              'xp_boost': 'xp_boost.png',
+              'tower_health': 'tower_durability.png',
+              'fire_resistance': 'fire_resistance.png',
+              'temp_power_up_spawn_boost': 'power_up_magnet.png'
+            };
+            const graphicFilename = powerUpGraphicMap[unlock.towerType];
+            if (graphicFilename) {
+              const powerUpImg = document.createElement('img');
+              powerUpImg.src = `assets/images/power_ups/${graphicFilename}`;
+              powerUpImg.style.cssText = 'width: 75px; height: auto; image-rendering: crisp-edges;';
+              iconDiv.appendChild(powerUpImg);
+              iconDiv.style.cssText = 'display: flex; justify-content: center; align-items: center;';
+            } else {
+              iconDiv.style.cssText = 'font-size: 32px; font-weight: bold; display: flex; justify-content: center;';
+              iconDiv.textContent = (unlockInfo.name || '?').charAt(0);
+            }
           } else {
-            // Fallback to emoji for unknown items
-            iconDiv.style.cssText = 'font-size: 60px; display: flex; justify-content: center;';
-            iconDiv.textContent = unlockInfo.icon;
+            // Fallback for unknown items
+            iconDiv.style.cssText = 'font-size: 32px; font-weight: bold; display: flex; justify-content: center;';
+            iconDiv.textContent = (unlockInfo.name || '?').charAt(0);
           }
           unlockIconContainer.appendChild(iconDiv);
           
@@ -972,8 +995,8 @@ export class ProgressionSystem {
       }
       
       // Ensure game is paused when showing skip upgrade confirmation
-      if (window.gameLoop && !window.gameLoop.isPaused) {
-        window.gameLoop.pause();
+      if (window.pauseGameWithAudio) {
+        window.pauseGameWithAudio();
       }
       
       // Ensure we stay in upgrade selection mode while modal is showing
@@ -1749,12 +1772,15 @@ export class ProgressionSystem {
           this.applyUpgrade(towerId, upgradeType, isInventory);
         };
       } else if (!isMaxed) {
-        btn.addEventListener('mouseenter', () => {
+        btn.addEventListener('mouseenter', (e) => {
           if (this.gameState.inputHandler?.tooltipSystem) {
+            const rect = btn.getBoundingClientRect();
+            const tooltipX = rect.left + rect.width / 2;
+            const tooltipY = rect.top;
             this.gameState.inputHandler.tooltipSystem.show(
               `<div style="color: #FF6B6B; font-weight: bold;">Insufficient plans!</div><div style="color: #FFFFFF; font-size: 14px; margin-top: 4px;">Need ${requiredTokens} plan${requiredTokens !== 1 ? 's' : ''}, have ${availablePlans}</div>`,
-              screenX,
-              screenY - 20
+              tooltipX,
+              tooltipY
             );
           }
         });
@@ -2559,8 +2585,8 @@ export class ProgressionSystem {
     // During a wave, always resume (unlock modals will pause again if needed)
     // Between waves, only resume if no unlock modals will show
     if (isWaveActive || !hasPendingUnlocks) {
-      if (window.gameLoop?.isPaused) {
-        window.gameLoop?.resume();
+      if (window.gameLoop?.isPaused && window.resumeGameWithAudio) {
+        window.resumeGameWithAudio();
       }
       
       // Hide sidebar when wave resumes after upgrading (only if mouse is not hovering)
@@ -2779,8 +2805,8 @@ export class ProgressionSystem {
    */
   showUnlockModal(towerType, unlockLevel, level = null) {
     // Pause game (if not already paused)
-    if (!window.gameLoop?.isPaused) {
-      window.gameLoop?.pause();
+    if (window.pauseGameWithAudio) {
+      window.pauseGameWithAudio();
     }
     
     // Update pause button
@@ -2899,8 +2925,8 @@ export class ProgressionSystem {
           // All unlock modals are done, resume game
           // NOTE: Don't reset unlocksCheckedDuringLevelUp here - keep it true until wave ends
           // This prevents completeWave() from checking unlocks again
-          if (window.gameLoop?.isPaused) {
-            window.gameLoop?.resume();
+          if (window.gameLoop?.isPaused && window.resumeGameWithAudio) {
+            window.resumeGameWithAudio();
           }
           // Sync pause button state
           if (window.syncPauseButton) {

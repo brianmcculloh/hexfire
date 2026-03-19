@@ -189,7 +189,9 @@ export class GameLoop {
           timerText = `${minutes}:${seconds.toString().padStart(2, '0')}`;
         } else {
           // Wave not active - show full timer duration (placement phase)
-          const waveDuration = gameState.wave.isScenario ? CONFIG.SCENARIO_WAVE_DURATION : CONFIG.WAVE_DURATION;
+          const waveDuration = gameState.wave.isScenario
+            ? (gameState.wave.scenarioWaveDuration ?? CONFIG.SCENARIO_WAVE_DURATION)
+            : CONFIG.WAVE_DURATION;
           timerText = `${Math.floor(waveDuration / 60)}:${(waveDuration % 60).toString().padStart(2, '0')}`;
         }
         
@@ -281,6 +283,10 @@ export class GameLoop {
         if (mapScrollSystem) {
           mapScrollSystem.update(frameDelta);
         }
+      }
+      // Update tutorial arrows when map scrolls so they stay fixed to hex targets
+      if (this.gameState.tutorialMode && typeof this.gameState.updateTutorialArrow === 'function') {
+        this.gameState.updateTutorialArrow();
       }
       
       this.frameCount = (this.frameCount || 0) + 1;

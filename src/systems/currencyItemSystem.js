@@ -14,11 +14,11 @@ export class CurrencyItemSystem {
   }
 
   /**
-   * Spawn a bonus item at a location (money or movement token)
+   * Spawn a bonus item at a location (money, movement token, shield, upgrade_plans)
    * @param {number} q - Hex q coordinate
    * @param {number} r - Hex r coordinate
-   * @param {string} itemType - Type of item: 'money' or 'movement_token'
-   * @param {number} value - Value for money items (amount of money), ignored for movement tokens
+   * @param {string} itemType - Type of item: 'money', 'movement_token', 'shield', 'upgrade_plans'
+   * @param {number} value - Value for money (amount), shield level (1-4), or 1 for movement_token/upgrade_plans
    * @returns {string|null} Item ID or null if spawn failed
    */
   spawnCurrencyItem(q, r, itemType = 'money', value = 1) {
@@ -41,8 +41,8 @@ export class CurrencyItemSystem {
       id: itemId,
       q,
       r,
-      itemType: itemType, // 'money' or 'movement_token'
-      value: itemType === 'money' ? (value || 1) : null, // Only money has a value
+      itemType: itemType, // 'money', 'movement_token', 'shield', 'upgrade_plans'
+      value: (itemType === 'money' ? (value || 1) : itemType === 'shield' ? (value || 1) : null),
       health: 20, // Same health as mystery boxes
       maxHealth: 20,
       isActive: true,
@@ -120,6 +120,10 @@ export class CurrencyItemSystem {
           const itemId = this.gameState.tempPowerUpItemSystem?.spawnTempPowerUpItem(q, r, powerUpId);
           didSpawn = !!itemId;
         }
+      } else if (selectedItem.type === 'shield') {
+        // Randomly choose one of the 4 shield levels when spawning from mystery box
+        const level = Math.floor(Math.random() * 4) + 1;
+        didSpawn = !!this.spawnCurrencyItem(q, r, 'shield', level);
       } else {
         // money, movement_token, upgrade_plans, etc. go through currency items
         let value = 1;
@@ -173,6 +177,9 @@ export class CurrencyItemSystem {
     const item = this.items.get(itemId);
     if (!item || !item.isActive) return false;
     
+    // Award score: 10 points per item collected
+    this.gameState.player.score = (this.gameState.player.score ?? 0) + 10;
+    
     // Play collect sound
     if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('collect');
     
@@ -195,6 +202,26 @@ export class CurrencyItemSystem {
       // Show floating movement token notification
       if (this.gameState.notificationSystem) {
         this.gameState.notificationSystem.addMovementTokenNotification(q, r);
+      }
+    } else if (item.itemType === 'shield') {
+      // Award shield (add to inventory like purchased shields)
+      if (!this.gameState.player.inventory.purchasedShields) {
+        this.gameState.player.inventory.purchasedShields = [];
+      }
+      const level = Math.min(4, Math.max(1, item.value || 1));
+      this.gameState.player.inventory.purchasedShields.push({ type: 'shield', level });
+      
+      // Show floating shield notification
+      if (this.gameState.notificationSystem) {
+        this.gameState.notificationSystem.addShieldNotification(q, r, level);
+      }
+    } else if (item.itemType === 'upgrade_plans') {
+      // Award upgrade plan
+      this.gameState.player.upgradePlans = (this.gameState.player.upgradePlans || 0) + 1;
+      
+      // Show floating upgrade plan notification
+      if (this.gameState.notificationSystem) {
+        this.gameState.notificationSystem.addUpgradePlanNotification(q, r);
       }
     }
     

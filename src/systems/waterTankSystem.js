@@ -11,6 +11,7 @@ export class WaterTankSystem {
     this.fireSystem = fireSystem;
     this.gameState = gameState;
     this.waterTanks = new Map(); // Map<tankId, WaterTankData>
+    this.onWaterTankExploded = null; // Callback(tankId) when tank explodes (e.g. for tutorial)
   }
 
   /**
@@ -168,7 +169,8 @@ export class WaterTankSystem {
     // Get all valid spawn locations
     const validLocations = this.getValidSpawnLocations();
     if (validLocations.length === 0) return;
-    
+    if (this.gameState.tutorialMode) return; // No water tanks during tutorial
+
     // Check spawn chance (per tick, so chance is per second)
     if (Math.random() > scaledChance) return;
     
@@ -306,6 +308,9 @@ export class WaterTankSystem {
     const tank = this.waterTanks.get(tankId);
     if (!tank) return;
     
+    // Award score: 10 points per item collected (water tank triggered by water)
+    this.gameState.player.score = (this.gameState.player.score ?? 0) + 10;
+    
     // Mark tank as inactive
     tank.isActive = false;
     
@@ -364,6 +369,11 @@ export class WaterTankSystem {
     // Remove the tank from the grid and map
     this.gridSystem.removeWaterTank(tank.q, tank.r);
     this.waterTanks.delete(tankId);
+
+    // Notify callback (e.g. for tutorial advancement)
+    if (this.onWaterTankExploded) {
+      this.onWaterTankExploded(tankId);
+    }
   }
 
   /**
@@ -386,10 +396,9 @@ export class WaterTankSystem {
     const hex = this.gridSystem.getHex(q, r);
     if (!hex) return false;
     
-    // Can't place on center town hex (0, 0)
-    if (q === 0 && r === 0) {
-      return false;
-    }
+    // Can't place on center town hex (0, 0) or fire spawners
+    if (q === 0 && r === 0) return false;
+    if (hex.hasFireSpawner) return false;
     
     // Can't place on town or existing towers
     if (hex.isTown || hex.hasTower) {

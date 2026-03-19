@@ -99,6 +99,7 @@ export class MysteryItemSystem {
    */
   trySpawnRandomItem() {
     if (!this.gameState.wave?.isActive) return; // Only spawn during active waves
+    if (this.gameState.tutorialMode) return; // No mystery items during tutorial
     
     // Check if any items are available at current wave group
     const currentWaveGroup = this.gameState.waveSystem?.currentWaveGroup || 1;
@@ -242,6 +243,9 @@ export class MysteryItemSystem {
     if (this.gameState.currencyItemSystem && itemConfig.dropPool) {
       this.gameState.currencyItemSystem.spawnCurrencyItemsInCluster(q, r, itemCount, itemConfig.dropPool);
     }
+    
+    // Award score: 10 points per item collected
+    this.gameState.player.score = (this.gameState.player.score ?? 0) + 10;
     
     // Play mystery box opened sound
     if (window.AudioManager) {

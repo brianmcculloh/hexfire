@@ -1,6 +1,8 @@
 // Wave System - Manages wave timing and progression
 
 import { CONFIG, getPulsingPower, getPulsingAttackInterval, getPathCountForWave, getFireSpawnProbabilities, getFireTypeConfig } from '../config.js';
+import { getScenarioByName } from '../scenarios.js';
+import { addScoreToLeaderboard } from '../utils/leaderboard.js';
 import { showConfirmModal, createModalFloatingText } from '../utils/modal.js';
 
 export class WaveSystem {
@@ -53,8 +55,8 @@ export class WaveSystem {
     }
     
     // Generate dig sites for this wave (they persist through the wave group)
-    // Each wave has a chance to spawn new dig sites based on spawnChance
-    if (this.gameState.digSiteSystem) {
+    // Each wave has a chance to spawn new dig sites based on spawnChance (skip during tutorial)
+    if (this.gameState.digSiteSystem && !this.gameState.tutorialMode) {
       this.gameState.digSiteSystem.generateDigSites(this.currentWaveGroup);
     }
     
@@ -281,7 +283,9 @@ export class WaveSystem {
     this.gameState.wave.isPlacementPhase = false;
     this.gameState.wave.isActive = true;
     // Use scenario duration if in scenario mode, otherwise use normal duration
-    const waveDuration = this.gameState.wave.isScenario ? CONFIG.SCENARIO_WAVE_DURATION : CONFIG.WAVE_DURATION;
+    const waveDuration = this.gameState.wave.isScenario
+      ? (this.gameState.wave.scenarioWaveDuration ?? CONFIG.SCENARIO_WAVE_DURATION)
+      : CONFIG.WAVE_DURATION;
     this.gameState.wave.timeRemaining = waveDuration;
     
     // Close sidebar when wave starts (only if mouse is not hovering over it)
@@ -348,11 +352,22 @@ export class WaveSystem {
       window.updateUI();
     }
     
+    // Boss speech bubble: show immediately when wave starts (boss waves only)
+    const isBossWave = this.waveInGroup === this.wavesPerGroup;
+    if (isBossWave) {
+      const bossPattern = CONFIG.BOSS_PATTERNS[this.currentWaveGroup] || CONFIG.BOSS_PATTERNS[1];
+      const speechBubbles = bossPattern?.speechBubbles || [];
+      const speechText = (speechBubbles[0] ?? speechBubbles) || ''; // [0] = wave start; support legacy single string
+      if (speechText) {
+        this.showBossSpeechBubbleForWave(speechText);
+      }
+    }
+
     // Spawn immediate starting fires when wave starts
     this.spawnImmediateFire();
     
     // Try to spawn temporary power-up items at wave start (they can also spawn during the wave)
-    if (this.gameState.tempPowerUpItemSystem) {
+    if (this.gameState.tempPowerUpItemSystem && !this.gameState.tutorialMode) {
       this.gameState.tempPowerUpItemSystem.trySpawnRandomItem();
     }
     
@@ -503,7 +518,18 @@ export class WaveSystem {
         // Clear all old content first to prevent stale data
         statsDiv.innerHTML = '';
         
-        // Remove any existing placement phase elements
+        // Within-group (waveInGroup > 1): keep hero, only update speech bubble. New group: remove and re-add hero.
+        // When jumping via debug, existing hero may be from a different group - always replace in that case.
+        const isWithinGroupTransition = this.waveInGroup > 1;
+        const existingHero = modal?.querySelector('.wave-complete-hero-graphic');
+        const existingHeroGroup = existingHero?.dataset?.heroGroup ? parseInt(existingHero.dataset.heroGroup, 10) : null;
+        const heroMatchesCurrentGroup = existingHeroGroup === this.currentWaveGroup;
+        const shouldKeepHero = isWithinGroupTransition && heroMatchesCurrentGroup;
+        if (shouldKeepHero) {
+          this.removeHeroSpeechBubbleOnly(modal);
+        } else {
+          this.removeWaveCompleteHeroGraphic(modal);
+        }
         const existingPlacementHeader = modal.querySelector('.placement-header-container');
         if (existingPlacementHeader) {
           existingPlacementHeader.remove();
@@ -520,6 +546,7 @@ export class WaveSystem {
         // Use same structure as wave complete modal - no frames, dark background
         modal.classList.add('active');
         modal.classList.add('upgrade-token-mask');
+        modal.classList.add('placement-phase');
         modal.style.pointerEvents = 'auto';
         
         const modalInner = modal.querySelector('.modal');
@@ -558,7 +585,43 @@ export class WaveSystem {
       // Use the actual wave we're placing for so the modal shows correct per-wave probabilities
       // (waveInGroup can be 0 when transitioning between groups; treat as 1 for first wave of new group)
       const waveWeArePlacingFor = (this.currentWaveGroup - 1) * this.wavesPerGroup + Math.max(1, this.waveInGroup);
-      const fireProbs = getFireSpawnProbabilities(waveWeArePlacingFor);
+      let fireProbs = getFireSpawnProbabilities(waveWeArePlacingFor);
+      
+      // For scenarios: derive fire types from scenario's fireSpawners (not wave progression)
+      const isScenario = this.gameState.wave?.isScenario === true;
+      let scenarioInventoryHtml = '';
+      if (isScenario && this.gameState.wave?.scenarioName) {
+        const scenario = getScenarioByName(this.gameState.wave.scenarioName);
+        if (scenario?.fireSpawners?.length) {
+          const counts = {};
+          scenario.fireSpawners.forEach(sp => {
+            const t = sp.spawnerType || 'cinder';
+            counts[t] = (counts[t] || 0) + 1;
+          });
+          const total = scenario.fireSpawners.length;
+          fireProbs = {};
+          Object.entries(counts).forEach(([type, count]) => {
+            fireProbs[type] = count / total;
+          });
+        }
+        // Placeholder for scenario inventory - will be populated by main.js
+        const scenarioCurrency = scenario?.currency ?? CONFIG.STARTING_CURRENCY;
+        scenarioInventoryHtml = `
+          <div class="placement-new-item">
+            <div class="placement-new-item-header">
+              <label class="label label-blue">
+                <span class="label-middle-bg"></span>
+                <span class="label-text">YOUR INVENTORY</span>
+              </label>
+            </div>
+            <div class="placement-scenario-currency">
+              <img src="assets/images/misc/total_earned.png" alt="" class="placement-scenario-currency-icon" />
+              <span>Starting currency: <span class="placement-scenario-currency-amount">$${scenarioCurrency}</span></span>
+            </div>
+            <div id="scenario-inventory-placeholder" class="placement-scenario-inventory inventory-grid"></div>
+          </div>
+        `;
+      }
       
       // Format fire type names
       const fireTypeNames = {
@@ -573,8 +636,9 @@ export class WaveSystem {
       // Detect new fire types (first time appearing with > 0 probability)
       // Show new fire type on the first wave of a wave group
       // For wave group 1, show cinder as the new fire type (first time player sees any fire type)
+      // Scenarios: skip "new fire type" box - only list fire types with probabilities
       const newFireTypes = [];
-      if (this.waveInGroup === 1) {
+      if (!isScenario && this.waveInGroup === 1) {
         if (this.currentWaveGroup === 1) {
           // Wave group 1: show cinder as new fire type
           if (fireProbs.cinder > 0) {
@@ -609,10 +673,12 @@ export class WaveSystem {
       }
       
       // Detect new items (water tank on wave 1, boosters becoming available, or dig sites becoming available)
+      // Scenarios: skip - items are scenario-specific, show inventory instead
       let hasNewItem = false;
       let newItemHtml = '';
       const newItems = []; // Array to collect all new items
       
+      if (!isScenario) {
       // Check for water tank (wave 1 only)
       if (waveNumber === 1) {
         hasNewItem = true;
@@ -623,7 +689,7 @@ export class WaveSystem {
               <img src="assets/images/items/water_tank.png" alt="Water Tank" class="placement-new-item-icon" />
               <div class="placement-new-item-content">
                 <div class="placement-new-item-name">WATER TANK</div>
-                <div class="placement-new-item-description">Extinguish with water to trigger powerful explosions that extinguish nearby fires.</div>
+                <div class="placement-new-item-description">Hit with water to trigger powerful explosions that extinguish nearby fires.</div>
               </div>
             </div>
           `
@@ -743,6 +809,7 @@ export class WaveSystem {
             </div>
           </div>
         `;
+      }
       }
       
       // Build boss reward section (only for boss waves) - define early so it's always available
@@ -976,11 +1043,28 @@ export class WaveSystem {
         headerImage.style.cssText = 'width: 800px; height: auto; image-rendering: crisp-edges; position: relative; z-index: 1;';
         headerContainer.appendChild(headerImage);
         
-        // Add "Wave [x-y] Placement Phase" text overlay
+        // Add "Wave [x-y] Placement Phase" or "[Scenario Name] Placement Phase" text overlay
+        // Include wave group name pill to the left (regular and boss waves only, not scenarios)
+        const scenarioName = this.gameState.wave?.scenarioName;
+        const headerContentWrapper = document.createElement('div');
+        headerContentWrapper.style.cssText = 'position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2; display: flex; align-items: center; gap: 12px; pointer-events: none;';
+        
+        if (!isScenario) {
+          const waveGroupPill = document.createElement('div');
+          waveGroupPill.className = 'placement-wave-group-pill';
+          const names = CONFIG.WAVE_GROUP_NAMES || [];
+          const groupName = names[Math.min(this.currentWaveGroup - 1, names.length - 1)] || `Group ${this.currentWaveGroup}`;
+          waveGroupPill.textContent = groupName;
+          headerContentWrapper.appendChild(waveGroupPill);
+        }
+        
         const headerText = document.createElement('div');
-        headerText.textContent = `WAVE ${this.currentWaveGroup}-${this.waveInGroup} PLACEMENT PHASE`;
-        headerText.style.cssText = 'position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2; color: #FFFFFF; font-size: 32px; font-weight: bold; font-family: "Exo 2", sans-serif; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8); pointer-events: none; white-space: nowrap;';
-        headerContainer.appendChild(headerText);
+        headerText.textContent = isScenario && scenarioName
+          ? `${scenarioName} Placement Phase`
+          : `WAVE ${this.currentWaveGroup}-${this.waveInGroup} PLACEMENT PHASE`;
+        headerText.style.cssText = 'color: #FFFFFF; font-size: 32px; font-weight: bold; font-family: "Exo 2", sans-serif; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8); white-space: nowrap;';
+        headerContentWrapper.appendChild(headerText);
+        headerContainer.appendChild(headerContentWrapper);
         
         // Add BOSS label for boss waves
         if (isBossWave) {
@@ -1003,13 +1087,14 @@ export class WaveSystem {
         let mainContentHtml = '';
         if (isBossWave && bossHtml) {
           // Boss wave: two-column layout
+          const middleSection = isScenario ? scenarioInventoryHtml : (hasNewItem ? newItemHtml : '');
           mainContentHtml = `
             <div class="placement-content-layout placement-content-boss">
               <div class="placement-left-column">
                 ${bossHtml}
               </div>
               <div class="placement-right-column">
-                ${hasNewItem ? newItemHtml : ''}
+                ${middleSection}
                 ${bossRewardHtml}
                 ${fireTypesHtml}
               </div>
@@ -1017,10 +1102,11 @@ export class WaveSystem {
           `;
         } else {
           // Non-boss wave: center the right column content
+          const middleSection = isScenario ? scenarioInventoryHtml : (hasNewItem ? newItemHtml : '');
           mainContentHtml = `
             <div class="placement-content-layout placement-content-centered">
               <div class="placement-center-column">
-                ${hasNewItem ? newItemHtml : ''}
+                ${middleSection}
                 ${fireTypesHtml}
               </div>
             </div>
@@ -1032,10 +1118,25 @@ export class WaveSystem {
           ${mainContentHtml}
         `;
         
+        // Populate scenario inventory placeholder (main.js provides this)
+        if (isScenario && typeof this.gameState.populateScenarioInventoryPlaceholder === 'function') {
+          this.gameState.populateScenarioInventoryPlaceholder();
+        }
+        
         // Play placement modal sound (standard vs boss)
         if (typeof window !== 'undefined' && window.AudioManager) {
           window.AudioManager.playSFX(isBossWave ? 'start_boss_placement' : 'start_placement', isBossWave ? { volume: 0.35 } : {});
         }
+
+        // Hero graphic: skip entirely for scenarios; within-group keeps existing hero and just updates speech bubble; new group adds fresh hero
+        if (!this.gameState.wave?.isScenario) {
+          if (shouldKeepHero) {
+            this.addHeroSpeechBubbleOnly(modal, this.currentWaveGroup, this.waveInGroup, 'placement', 100);
+          } else {
+            this.addHeroGraphic(modal, this.currentWaveGroup, this.waveInGroup, 'placement');
+          }
+        }
+
         
         // Mark all new items as introduced AFTER HTML is inserted into DOM
         newItems.forEach(item => {
@@ -1048,7 +1149,7 @@ export class WaveSystem {
           }
         });
       
-        // Setup continue button - find the button container within fire types
+        // Setup continue button - use fixed-position container so button stays visible when content scrolls
         const buttonContainer = modalFrameContent.querySelector('.placement-start-button-container');
         if (continueBtn && buttonContainer) {
           // Remove button from its current parent if it exists
@@ -1067,7 +1168,7 @@ export class WaveSystem {
           continueBtn.onclick = null;
           continueBtn.onclick = () => {
             // Clean up modal classes
-            modal.classList.remove('active', 'upgrade-token-mask');
+            modal.classList.remove('active', 'upgrade-token-mask', 'placement-phase');
             modal.style.pointerEvents = '';
             const modalInner = modal.querySelector('.modal');
             if (modalInner) {
@@ -1076,8 +1177,14 @@ export class WaveSystem {
             }
             this.enterPlacementMode();
           };
-          // Move button to the container
-          buttonContainer.appendChild(continueBtn);
+          // Append to fixed-position container (create if needed) so button stays at bottom of viewport
+          let fixedContainer = modal.querySelector('.placement-start-button-fixed');
+          if (!fixedContainer) {
+            fixedContainer = document.createElement('div');
+            fixedContainer.className = 'placement-start-button-fixed';
+            modal.appendChild(fixedContainer);
+          }
+          fixedContainer.appendChild(continueBtn);
         }
       }
     }
@@ -1168,6 +1275,11 @@ export class WaveSystem {
       return;
     }
     
+    // Tutorial: no random fires at wave start (fires come from spawners only)
+    if (this.gameState.tutorialMode) {
+      return;
+    }
+    
     // Check debug flag for all-hexes-on-fire mode
     if (CONFIG.DEBUG_ALL_HEXES_ON_FIRE) {
       // Set all hexes on fire (except town hexes and town ring hexes)
@@ -1251,10 +1363,11 @@ export class WaveSystem {
     // Decrement timer
     this.gameState.wave.timeRemaining = Math.max(0, this.gameState.wave.timeRemaining - deltaTime);
     
-    // Check wave completion: only when timer expires
+    // Check wave completion: only when timer expires (skip in tutorial - leave state as is)
     const timerExpired = this.gameState.wave.timeRemaining <= 0;
     
     if (timerExpired) {
+      if (this.gameState.tutorialMode) return; // Don't trigger wave complete modal during tutorial
       this.completeWave();
     }
   }
@@ -1895,6 +2008,7 @@ export class WaveSystem {
         // Remove any existing onclick handlers
         continueBtn.onclick = null;
         continueBtn.onclick = () => {
+          this.removeWaveCompleteHeroGraphic(modal);
           // Clean up modal classes
           modal.classList.remove('active', 'upgrade-token-mask', 'wave-group-complete');
           modal.style.pointerEvents = '';
@@ -1916,6 +2030,7 @@ export class WaveSystem {
         newContinueBtn.className = 'choice-btn cta-button';
         newContinueBtn.style.cssText = 'width: auto; min-width: auto; max-width: none; margin: 16px auto 0 auto; display: block; visibility: visible;';
         newContinueBtn.onclick = () => {
+          this.removeWaveCompleteHeroGraphic(modal);
           // Clean up modal classes
           modal.classList.remove('active', 'upgrade-token-mask', 'wave-group-complete');
           modal.style.pointerEvents = '';
@@ -1937,6 +2052,9 @@ export class WaveSystem {
       }
       
       modal.classList.add('active');
+      
+      this.addWaveCompleteHeroGraphic(modal, completedWaveGroupNumber, 5);
+      this.addBossDefeatGraphic(modal, completedWaveGroupNumber);
       
       // Add floating text for +1 upgrade token and total collected number
       setTimeout(() => {
@@ -2034,6 +2152,354 @@ export class WaveSystem {
       window.updateUI();
     }
     this.startPlacementPhase();
+  }
+
+  /**
+   * Show boss speech bubble when wave starts (boss drawn on canvas, no DOM wrapper).
+   * Positions above boss center to match hero speech bubble positioning.
+   * Continuously updates position so bubble stays attached to boss as sidebar opens/closes.
+   */
+  showBossSpeechBubbleForWave(text) {
+    const canvas = document.getElementById('gameCanvas');
+    if (!canvas) return;
+
+    const bubble = document.createElement('div');
+    bubble.className = 'character-speech-bubble character-speech-bubble-boss';
+    bubble.innerHTML = text;
+    bubble.style.cssText = 'position: fixed; opacity: 0; transition: opacity 0.3s ease-in-out; z-index: 99999;';
+    document.body.appendChild(bubble);
+
+    let widthLocked = false;
+    const positionBubble = () => {
+      const padding = 12;
+      const bubbleWidth = bubble.offsetWidth || 340;
+      const halfWidth = bubbleWidth / 2;
+      const minCenterX = halfWidth + padding;
+      const maxCenterX = window.innerWidth - halfWidth - padding;
+      let centerX, top;
+      const pos = this.gameState?.renderer?.getBossViewportPosition?.();
+      if (pos) {
+        centerX = Math.max(minCenterX, Math.min(maxCenterX, pos.centerX - 30));
+        top = pos.top - 10;
+      } else {
+        const rect = canvas.getBoundingClientRect();
+        centerX = Math.max(minCenterX, Math.min(maxCenterX, rect.right - 160));
+        top = rect.bottom - 200;
+      }
+      bubble.style.left = `${centerX}px`;
+      bubble.style.top = `${top}px`;
+      bubble.style.transform = 'translate(-50%, -100%)';
+      if (!widthLocked && bubbleWidth > 0) {
+        bubble.style.width = `${bubbleWidth}px`;
+        bubble.style.minWidth = `${bubbleWidth}px`;
+        bubble.style.maxWidth = `${bubbleWidth}px`;
+        widthLocked = true;
+      }
+    };
+
+    let rafId = null;
+    const updateLoop = () => {
+      if (!bubble.parentElement) return;
+      positionBubble();
+      rafId = requestAnimationFrame(updateLoop);
+    };
+
+    requestAnimationFrame(() => {
+      positionBubble();
+      bubble.style.opacity = '1';
+      rafId = requestAnimationFrame(updateLoop);
+    });
+
+    setTimeout(() => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      if (bubble.parentElement) {
+        bubble.style.opacity = '0';
+        setTimeout(() => bubble.remove(), 300);
+      }
+    }, 6300);
+  }
+
+  /**
+   * Show a speech bubble above a character (hero). Fades in after 500ms, stays visible (hero bubbles never disappear).
+   * Boss speech bubbles use showBossSpeechBubbleForWave and fade out after 6 seconds.
+   * @param {HTMLElement} modal - The modal overlay element
+   * @param {HTMLElement} characterWrapper - The hero wrapper element to position above
+   * @param {string} text - The speech bubble text (plain text or HTML; use text-* classes for effects, e.g. <span class="text-fire text-glow">FIRE</span>)
+   * @param {'hero'|'boss'} type - 'hero' for left-side character
+   */
+  showCharacterSpeechBubble(modal, characterWrapper, text, type) {
+    const bubble = document.createElement('div');
+    bubble.className = `character-speech-bubble character-speech-bubble-${type}`;
+    bubble.innerHTML = text;
+    bubble.style.cssText = 'position: fixed; opacity: 0; transition: opacity 0.3s ease-in-out;';
+    modal.appendChild(bubble);
+
+    const positionBubble = () => {
+      const rect = characterWrapper.getBoundingClientRect();
+      let centerX = rect.left + rect.width / 2;
+      let top = rect.top - 10;
+      const padding = 12;
+      const bubbleWidth = bubble.offsetWidth || 340;
+      const bubbleHeight = bubble.offsetHeight || 80;
+      const halfWidth = bubbleWidth / 2;
+      const minCenterX = halfWidth + padding;
+      const maxCenterX = window.innerWidth - halfWidth - padding;
+      const minTop = padding + bubbleHeight; // Keep bubble top within viewport
+      const maxTop = window.innerHeight - padding;
+      centerX = Math.max(minCenterX, Math.min(maxCenterX, centerX));
+      top = Math.max(minTop, Math.min(maxTop, top));
+      bubble.style.left = `${centerX}px`;
+      bubble.style.top = `${top}px`;
+      bubble.style.transform = 'translate(-50%, -100%)';
+    };
+
+    // Position after hero slide-in animation (400ms) so img has final position
+    requestAnimationFrame(() => positionBubble());
+    setTimeout(() => {
+      if (bubble.parentElement) {
+        positionBubble();
+        bubble.style.opacity = '1';
+      }
+    }, 450);
+
+    // Hero speech bubbles stay visible; removed when hero graphic is removed (removeWaveCompleteHeroGraphic)
+  }
+
+  /**
+   * Remove the hero graphic from the wave complete modal
+   */
+  removeWaveCompleteHeroGraphic(modal) {
+    const hero = modal?.querySelector('.wave-complete-hero-graphic');
+    if (hero) hero.remove();
+    modal?.querySelectorAll('.character-speech-bubble').forEach(b => b.remove());
+    this.removeBossDefeatGraphic(modal);
+  }
+
+  /**
+   * Remove the boss defeat graphic (appended to body, not modal)
+   */
+  removeBossDefeatGraphic(modal) {
+    const container = document.querySelector('.boss-defeat-graphic-container');
+    if (container) container.remove();
+  }
+
+  /**
+   * Add boss defeat graphic to wave group complete modal (bottom right).
+   * Shows boss at full size with defeat speech bubble, then fades out after 3 seconds.
+   */
+  addBossDefeatGraphic(modal, completedWaveGroupNumber) {
+    const bossPattern = CONFIG.BOSS_PATTERNS[completedWaveGroupNumber] || CONFIG.BOSS_PATTERNS[1];
+    if (!bossPattern) return;
+
+    const bossName = bossPattern.name || 'Unknown';
+    const bossTitle = bossPattern.title || '';
+    const speechBubbles = bossPattern.speechBubbles || [];
+    const defeatSpeech = (speechBubbles[1] ?? speechBubbles[0] ?? '[Defeat placeholder]');
+    const bossKey = this.gameState?.renderer?.getEffectiveBossGroupKey?.(completedWaveGroupNumber) ?? `group${Math.min(completedWaveGroupNumber, 22)}`;
+    const imagePath = `assets/images/creatures/${bossKey}.png`;
+    const fallbackPath = 'assets/images/creatures/group1.png';
+
+    const container = document.createElement('div');
+    container.className = 'boss-defeat-graphic-container';
+    container.style.cssText = 'position: fixed; bottom: 20px; right: 20px; z-index: 100000; display: flex; flex-direction: column; align-items: flex-end; opacity: 0; transition: opacity 0.4s ease-in-out; pointer-events: none; transform: translateY(150px);';
+
+    const imgWrapper = document.createElement('div');
+    imgWrapper.className = 'boss-defeat-image-wrapper';
+    imgWrapper.style.cssText = 'position: relative;';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'character-speech-bubble character-speech-bubble-boss boss-defeat-speech-bubble';
+    bubble.innerHTML = defeatSpeech;
+    imgWrapper.appendChild(bubble);
+    const img = document.createElement('img');
+    img.src = imagePath;
+    img.alt = '';
+    img.onerror = function () { this.onerror = null; this.src = fallbackPath; };
+    img.style.cssText = 'width: 100%; height: auto; image-rendering: pixelated; display: block; object-fit: contain; object-position: bottom right; transform: scaleX(-1);';
+    imgWrapper.appendChild(img);
+
+    const pill = document.createElement('div');
+    pill.className = 'boss-defeat-pill';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'boss-defeat-pill-name';
+    nameEl.textContent = bossName.toUpperCase();
+    pill.appendChild(nameEl);
+    if (bossTitle) {
+      const titleEl = document.createElement('div');
+      titleEl.className = 'boss-defeat-pill-title';
+      titleEl.textContent = bossTitle;
+      pill.appendChild(titleEl);
+    }
+    imgWrapper.appendChild(pill);
+
+    container.appendChild(imgWrapper);
+
+    // Append to body so it's not clipped by modal overlay (which can have overflow/stacking issues)
+    document.body.appendChild(container);
+
+    requestAnimationFrame(() => {
+      container.style.opacity = '1';
+    });
+
+    const TOTAL_MS = 6000; // entire boss display duration
+    const startTime = performance.now();
+    let rafId = null;
+
+    const runDeathAnimation = (now) => {
+      if (!container.parentElement) {
+        if (rafId) cancelAnimationFrame(rafId);
+        return;
+      }
+      const elapsed = now - startTime;
+      const progress = Math.min(elapsed / TOTAL_MS, 1);
+
+      // Ease-in: start slow, accelerate toward end (cubic: progress³)
+      const eased = progress * progress * progress;
+
+      // Gradual intensity: gentler curve, starts very subtle
+      const intensity = eased;
+      const maxJitter = 1 + intensity * 12; // 1px → 13px (much more gradual)
+      const jitterX = (Math.random() - 0.5) * 2 * maxJitter;
+      const jitterY = (Math.random() - 0.5) * 2 * maxJitter;
+      const jitterRotate = (Math.random() - 0.5) * intensity * 3; // subtle rotation
+
+      // Shrink and fade: slow at start, faster and faster toward end
+      const scale = 1 - eased;
+      const opacity = 1 - eased;
+
+      // Shimmer: subtle brightness flicker
+      const shimmer = 0.85 + Math.random() * 0.3;
+
+      // Graphic (including bubble) shifted up 100px; bubble fades with graphic
+      imgWrapper.style.transform = `translate(${jitterX}px, ${jitterY - 100}px) rotate(${jitterRotate}deg) scale(${scale})`;
+      imgWrapper.style.opacity = String(opacity);
+      img.style.filter = `brightness(${shimmer})`;
+
+      container.style.transition = 'none';
+
+      if (progress < 1) {
+        rafId = requestAnimationFrame(runDeathAnimation);
+      } else {
+        if (container.parentElement) container.remove();
+      }
+    };
+
+    rafId = requestAnimationFrame(runDeathAnimation);
+  }
+
+  /**
+   * Remove only the hero speech bubble(s), not the hero graphic
+   */
+  removeHeroSpeechBubbleOnly(modal) {
+    modal?.querySelectorAll('.character-speech-bubble').forEach(b => b.remove());
+  }
+
+  /**
+   * Fade out hero speech bubble, then run callback. Used for within-group Continue transition.
+   */
+  fadeOutHeroSpeechBubbleAndContinue(modal, callback) {
+    const bubbles = modal?.querySelectorAll('.character-speech-bubble') || [];
+    bubbles.forEach(b => {
+      b.style.transition = 'opacity 0.25s ease-out';
+      b.style.opacity = '0';
+    });
+    setTimeout(() => {
+      this.removeHeroSpeechBubbleOnly(modal);
+      if (callback) callback();
+    }, 280);
+  }
+
+  /**
+   * Add speech bubble only (hero graphic already present). Used when transitioning within group.
+   * @param {number} delayMs - Delay before fade-in
+   */
+  addHeroSpeechBubbleOnly(modal, waveGroup, waveInGroup, speechContext, delayMs = 350) {
+    const heroImg = modal?.querySelector('.wave-complete-hero-graphic img');
+    if (!heroImg) return;
+    const group = Math.max(1, Math.min(waveGroup || 1, 22));
+    const heroPattern = CONFIG.HERO_PATTERNS?.[group] || CONFIG.HERO_PATTERNS?.[1] || { name: 'Hero', title: '' };
+    const speechBubbles = heroPattern.speechBubbles || [];
+    const waveIndex = Math.max(0, Math.min((waveInGroup || 1) - 1, 4));
+    const waveSpeech = speechBubbles[waveIndex];
+    const speechText = (waveSpeech && typeof waveSpeech === 'object') ? (waveSpeech[speechContext] || '') : '';
+    if (!speechText) return;
+    setTimeout(() => {
+      this.showCharacterSpeechBubble(modal, heroImg, speechText, 'hero');
+    }, delayMs);
+  }
+
+  /**
+   * Add hero graphic to modal (bottom left). Used for both placement phase and wave complete.
+   * @param {HTMLElement} modal - The modal overlay element
+   * @param {number} waveGroup - Wave group (1-indexed)
+   * @param {number} waveInGroup - Wave number within group (1-5)
+   * @param {'placement'|'complete'} speechContext - Which speech text to show ('placement' or 'complete')
+   */
+  addHeroGraphic(modal, waveGroup, waveInGroup, speechContext) {
+    this.removeWaveCompleteHeroGraphic(modal);
+    const group = Math.max(1, Math.min(waveGroup || 1, 22));
+    const heroSrc = `assets/images/creatures/hero${group}.png?v=6`;
+    const heroPattern = CONFIG.HERO_PATTERNS?.[group] || CONFIG.HERO_PATTERNS?.[1] || { name: 'Hero', title: '' };
+    const heroName = heroPattern.name || 'Hero';
+    const heroTitle = heroPattern.title || '';
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'wave-complete-hero-graphic';
+    wrapper.dataset.heroGroup = String(group);
+    const sizeClass = { 1: 'hero-size-110', 3: 'hero-size-78.75', 6: 'hero-size-120', 7: 'hero-size-140.6', 11: 'hero-size-135', 12: 'hero-size-90', 14: 'hero-size-125', 15: 'hero-size-90', 17: 'hero-size-125', 18: 'hero-size-125', 19: 'hero-size-150', 20: 'hero-size-144', 21: 'hero-size-170', 22: 'hero-size-170' }[group];
+    const shiftClass = { 1: 'hero-shift-100', 11: 'hero-shift-150', 14: 'hero-shift-100', 16: 'hero-shift-100', 17: 'hero-shift-100', 18: 'hero-shift-100', 19: 'hero-shift-200', 20: 'hero-shift-150', 21: 'hero-shift-300', 22: 'hero-shift-200' }[group];
+    const shiftUpClass = { 3: 'hero-shift-up-100', 12: 'hero-shift-up-100', 15: 'hero-shift-up-100' }[group];
+    const shiftDownClass = { 4: 'hero-shift-down-75', 6: 'hero-shift-down-80', 7: 'hero-shift-down-200', 8: 'hero-shift-down-25', 13: 'hero-shift-down-25' }[group];
+    const shiftLeftClass = { 6: 'hero-shift-left-50', 11: 'hero-shift-left-50', 19: 'hero-shift-left-100', 20: 'hero-shift-left-50', 21: 'hero-shift-left-100', 22: 'hero-shift-left-100' }[group];
+    if (sizeClass) wrapper.classList.add(sizeClass);
+    if (shiftClass) wrapper.classList.add(shiftClass);
+    if (shiftUpClass) wrapper.classList.add(shiftUpClass);
+    if (shiftDownClass) wrapper.classList.add(shiftDownClass);
+    if (shiftLeftClass) wrapper.classList.add(shiftLeftClass);
+    wrapper.setAttribute('aria-hidden', 'true');
+    const img = document.createElement('img');
+    img.src = heroSrc;
+    img.alt = '';
+    img.onerror = () => { img.src = 'assets/images/creatures/hero1.png?v=6'; };
+    wrapper.appendChild(img);
+
+    const pill = document.createElement('div');
+    pill.className = 'wave-complete-hero-pill';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'wave-complete-hero-pill-name';
+    nameEl.textContent = heroName.toUpperCase();
+    pill.appendChild(nameEl);
+    if (heroTitle) {
+      const titleEl = document.createElement('div');
+      titleEl.className = 'wave-complete-hero-pill-title';
+      titleEl.textContent = heroTitle;
+      pill.appendChild(titleEl);
+    }
+    wrapper.appendChild(pill);
+
+    modal.appendChild(wrapper);
+    requestAnimationFrame(() => {
+      wrapper.classList.add('shifted-in');
+    });
+    setTimeout(() => {
+      if (img.parentElement) img.classList.add('pulsing');
+    }, 450);
+
+    // Speech bubble: placement vs complete text, fade in after 500ms, disappear after 5 seconds
+    const speechBubbles = heroPattern.speechBubbles || [];
+    const waveIndex = Math.max(0, Math.min((waveInGroup || 1) - 1, 4));
+    const waveSpeech = speechBubbles[waveIndex];
+    const speechText = (waveSpeech && typeof waveSpeech === 'object') ? (waveSpeech[speechContext] || '') : '';
+    if (speechText) {
+      this.showCharacterSpeechBubble(modal, img, speechText, 'hero');
+    }
+  }
+
+  /**
+   * Add hero graphic to wave complete modal (uses 'complete' speech).
+   */
+  addWaveCompleteHeroGraphic(modal, completedWaveGroup, completedWaveInGroup) {
+    this.addHeroGraphic(modal, completedWaveGroup, completedWaveInGroup, 'complete');
   }
 
   /**
@@ -2258,16 +2724,19 @@ export class WaveSystem {
         // Remove any existing onclick handlers
         continueBtn.onclick = null;
         continueBtn.onclick = () => {
-          // Clean up modal classes
-          modal.classList.remove('active', 'upgrade-token-mask', 'wave-group-complete');
-          modal.style.pointerEvents = '';
-          const modalInner = modal.querySelector('.modal');
-          if (modalInner) {
-            modalInner.classList.remove('modal-upgrade-token', 'modal-no-frame', 'wave-complete-modal', 'boss-wave-modal');
-            modalInner.style.pointerEvents = '';
-          }
-          // Start next wave (which will trigger placement phase)
-          this.startNextWave();
+          // Within-group: fade out speech bubble, keep hero, then transition
+          this.fadeOutHeroSpeechBubbleAndContinue(modal, () => {
+            // Clean up modal classes
+            modal.classList.remove('active', 'upgrade-token-mask', 'wave-group-complete');
+            modal.style.pointerEvents = '';
+            const modalInner = modal.querySelector('.modal');
+            if (modalInner) {
+              modalInner.classList.remove('modal-upgrade-token', 'modal-no-frame', 'wave-complete-modal', 'boss-wave-modal');
+              modalInner.style.pointerEvents = '';
+            }
+            // Start next wave (which will trigger placement phase)
+            this.startNextWave();
+          });
         };
         // Append button to stats container
         statsContainer.appendChild(continueBtn);
@@ -2279,16 +2748,19 @@ export class WaveSystem {
         newContinueBtn.className = 'choice-btn cta-button';
         newContinueBtn.style.cssText = 'width: auto; min-width: auto; max-width: none; margin: 16px auto 0 auto; display: block; visibility: visible;';
         newContinueBtn.onclick = () => {
-          // Clean up modal classes
-          modal.classList.remove('active', 'upgrade-token-mask', 'wave-group-complete');
-          modal.style.pointerEvents = '';
-          const modalInner = modal.querySelector('.modal');
-          if (modalInner) {
-            modalInner.classList.remove('modal-upgrade-token', 'modal-no-frame', 'wave-complete-modal', 'boss-wave-modal');
-            modalInner.style.pointerEvents = '';
-          }
-          // Start next wave group (which will trigger placement phase)
-          this.startNextWaveGroup();
+          // Within-group: fade out speech bubble, keep hero, then transition
+          this.fadeOutHeroSpeechBubbleAndContinue(modal, () => {
+            // Clean up modal classes
+            modal.classList.remove('active', 'upgrade-token-mask', 'wave-group-complete');
+            modal.style.pointerEvents = '';
+            const modalInner = modal.querySelector('.modal');
+            if (modalInner) {
+              modalInner.classList.remove('modal-upgrade-token', 'modal-no-frame', 'wave-complete-modal', 'boss-wave-modal');
+              modalInner.style.pointerEvents = '';
+            }
+            // Start next wave (which will trigger placement phase)
+            this.startNextWave();
+          });
         };
         statsContainer.appendChild(newContinueBtn);
       }
@@ -2300,7 +2772,9 @@ export class WaveSystem {
       }
       
       modal.classList.add('active');
-      
+
+      this.addWaveCompleteHeroGraphic(modal, completedWaveGroup, completedWaveInGroup);
+
       // Add floating text for total collected number
       setTimeout(() => {
         if (totalAmount && totalAmount.offsetParent !== null) {
@@ -2353,6 +2827,10 @@ export class WaveSystem {
         firesBreakdown += '</ul>';
       }
       
+      // Add score to leaderboard when scenario run ends
+      const finalScore = this.gameState.player.score ?? 0;
+      addScoreToLeaderboard(finalScore);
+
       statsDiv.innerHTML = `
         <p style="text-shadow: 0.5px 0.5px 1px rgba(0, 0, 0, 0.25), -0.5px -0.5px 1px rgba(0, 0, 0, 0.25), 0.5px -0.5px 1px rgba(0, 0, 0, 0.25), -0.5px 0.5px 1px rgba(0, 0, 0, 0.25);"><strong>Scenario Complete!</strong></p>
         <p style="display: flex; align-items: center; gap: 6px; text-shadow: 0.5px 0.5px 1px rgba(0, 0, 0, 0.25), -0.5px -0.5px 1px rgba(0, 0, 0, 0.25), 0.5px -0.5px 1px rgba(0, 0, 0, 0.25), -0.5px 0.5px 1px rgba(0, 0, 0, 0.25);"><img src="assets/images/misc/currency.png" style="width: 30px; height: auto; image-rendering: crisp-edges;" /> Currency earned: <span style="color: #00FF88;">$${totalCurrencyEarned}</span></p>

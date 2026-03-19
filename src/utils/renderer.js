@@ -108,6 +108,8 @@ export class Renderer {
     // Boss ability text animations (array of {text, startTime, duration, startY, element})
     this.bossAbilityTexts = [];
     this.bossTextContainer = null; // DOM container for boss ability text
+    this.bossPowerSpeechBubble = null; // DOM element for power activation speech
+    this.bossPowerSpeechBubbleFadeOutStart = null; // When fade-out started (for removal after transition)
     
     // Boss sidebar transition animation
     this.bossSidebarOffset = 0; // Current animated offset
@@ -482,7 +484,17 @@ export class Renderer {
     const waveInGroup = this.gameState.waveSystem.waveInGroup || 1;
     const isBossWave = waveInGroup === CONFIG.WAVES_PER_GROUP;
     
-    if (!isBossWave) return;
+    if (!isBossWave) {
+      this.updateBossPowerSpeechBubble(null);
+      return;
+    }
+    
+    // Don't show boss until placement phase for wave 5 - hide during wave complete modal (e.g. "Wave 2-4 Complete!")
+    const waveCompleteModal = document.getElementById('waveCompleteModal');
+    if (waveCompleteModal?.classList.contains('active')) {
+      this.updateBossPowerSpeechBubble(null);
+      return;
+    }
     
     const currentWaveGroup = this.gameState.waveSystem.currentWaveGroup || 1;
     this.ensureBossSpriteForGroup(currentWaveGroup);
@@ -650,6 +662,114 @@ export class Renderer {
     
     // Draw boss ability text animations (above the creature)
     this.drawBossAbilityTexts();
+    
+    // Update boss power activation speech bubble (fade in when entering, fade out when exiting)
+    this.updateBossPowerSpeechBubble(castingState);
+  }
+
+  /**
+   * Update boss power activation speech bubble. Show when entering/active, fade out when exiting.
+   * @param {string|null} castingState - 'entering'|'active'|'exiting'|'idle', or null to hide
+   */
+  updateBossPowerSpeechBubble(castingState) {
+    const bossSystem = this.gameState?.bossSystem;
+    const bossPattern = bossSystem?.bossPattern ?? (this.gameState?.waveSystem && CONFIG.BOSS_PATTERNS[this.gameState.waveSystem.currentWaveGroup]) ?? null;
+    const speeches = bossPattern?.powerActivationSpeech;
+    const hasSpeeches = Array.isArray(speeches) && speeches.length > 0;
+
+    const FADE_OUT_DURATION = 200;
+
+    // Handle fade-out completion: remove bubble after transition
+    if (this.bossPowerSpeechBubbleFadeOutStart !== null) {
+      const elapsed = Date.now() - this.bossPowerSpeechBubbleFadeOutStart;
+      if (elapsed >= FADE_OUT_DURATION && this.bossPowerSpeechBubble?.parentElement) {
+        this.bossPowerSpeechBubble.remove();
+        this.bossPowerSpeechBubble = null;
+        this.bossPowerSpeechBubbleFadeOutStart = null;
+      }
+    }
+
+    // Hide when not in boss wave or no speeches
+    if (!castingState || castingState === 'idle' || !hasSpeeches) {
+      if (this.bossPowerSpeechBubble) {
+        if (this.bossPowerSpeechBubbleFadeOutStart === null) {
+          this.bossPowerSpeechBubbleFadeOutStart = Date.now();
+          this.bossPowerSpeechBubble.style.transition = `opacity ${FADE_OUT_DURATION}ms ease-out`;
+          this.bossPowerSpeechBubble.style.opacity = '0';
+        }
+      }
+      return;
+    }
+
+    // Show when entering (pick random text)
+    if (castingState === 'entering' && !this.bossPowerSpeechBubble) {
+      const text = speeches[Math.floor(Math.random() * speeches.length)];
+      const bubble = document.createElement('div');
+      bubble.className = 'character-speech-bubble character-speech-bubble-boss boss-power-speech-bubble';
+      bubble.innerHTML = text;
+      bubble.style.cssText = 'margin: 0; padding: 15px 20px; font-size: 32px; transition: opacity 0.3s ease-in; opacity: 0;';
+      document.body.appendChild(bubble);
+      this.bossPowerSpeechBubble = bubble;
+      this.bossPowerSpeechBubbleFadeOutStart = null;
+      requestAnimationFrame(() => {
+        if (bubble.parentElement) bubble.style.opacity = '1';
+      });
+    }
+
+    // Update position when entering or active (use 0.75 visible - boss is larger when casting)
+    if ((castingState === 'entering' || castingState === 'active') && this.bossPowerSpeechBubble) {
+      const pos = this.getBossViewportPosition(0.75);
+      if (pos) {
+        const bubbleWidth = this.bossPowerSpeechBubble.offsetWidth || 340;
+        const gapAbove = 20;
+        this.bossPowerSpeechBubble.style.left = `${pos.centerX - bubbleWidth / 2}px`;
+        this.bossPowerSpeechBubble.style.bottom = `${window.innerHeight - pos.top + gapAbove}px`;
+      }
+    }
+
+    // Fade out when exiting
+    if (castingState === 'exiting' && this.bossPowerSpeechBubble && this.bossPowerSpeechBubbleFadeOutStart === null) {
+      this.bossPowerSpeechBubbleFadeOutStart = Date.now();
+      this.bossPowerSpeechBubble.style.transition = `opacity ${FADE_OUT_DURATION}ms ease-out`;
+      this.bossPowerSpeechBubble.style.opacity = '0';
+    }
+  }
+
+  /**
+   * Get boss viewport position for positioning UI (e.g. speech bubble) above the boss.
+   * Returns { centerX, top } in viewport pixels, or null if not a boss wave or boss not ready.
+   * @param {number} [visibleFraction=0.5] - Fraction of image height visible (0.75 when casting)
+   */
+  getBossViewportPosition(visibleFraction = 0.5) {
+    if (!this.gameState?.waveSystem) return null;
+    const waveInGroup = this.gameState.waveSystem.waveInGroup || 1;
+    const isBossWave = waveInGroup === CONFIG.WAVES_PER_GROUP;
+    if (!isBossWave) return null;
+    const waveCompleteModal = document.getElementById('waveCompleteModal');
+    if (waveCompleteModal?.classList.contains('active')) return null;
+
+    const currentWaveGroup = this.gameState.waveSystem.currentWaveGroup || 1;
+    const bossSpriteKey = this.getEffectiveBossGroupKey(currentWaveGroup);
+    const bossSprite = this.bossSprites.get(bossSpriteKey);
+    if (!bossSprite || !bossSprite.complete || bossSprite.naturalWidth === 0) return null;
+
+    const rect = this.canvas.getBoundingClientRect();
+    const canvasWidth = this.canvasCssWidth ?? this.canvas.clientWidth ?? (this.canvas.width / (this.dpr || 1));
+    const canvasHeight = this.canvasCssHeight ?? this.canvas.clientHeight ?? (this.canvas.height / (this.dpr || 1));
+    const imageAspectRatio = bossSprite.naturalWidth / bossSprite.naturalHeight;
+    const imageWidth = canvasWidth * 0.3;
+    const imageHeight = imageWidth / imageAspectRatio;
+    const visibleHeight = imageHeight * visibleFraction;
+    const overflowX = imageWidth * 0.2;
+    const sidebarOffset = this.bossSidebarOffset ?? 0;
+    const x = canvasWidth - imageWidth + overflowX + sidebarOffset;
+    const y = canvasHeight - visibleHeight;
+    const bossCenterX = x + imageWidth / 2;
+    const bossTopY = y;
+    return {
+      centerX: rect.left + bossCenterX,
+      top: rect.top + bossTopY
+    };
   }
   
   /**
@@ -788,7 +908,7 @@ export class Renderer {
       if (!textAnim.element) {
         textAnim.element = document.createElement('div');
         textAnim.element.textContent = textAnim.text;
-        textAnim.element.className = 'story-fire-word'; // Match "FIRE" text: color, glow, rapid fireFlicker jitter
+        textAnim.element.className = 'text-fire text-glow-pulse text-jitter';
         this.bossTextContainer.appendChild(textAnim.element);
       }
       
@@ -803,7 +923,7 @@ export class Renderer {
       const rightPos = canvasWidth - fixedX;
       const bottomPos = canvasHeight - y;
       
-      // Update element styles - match story "FIRE" text (story-fire-word) via class for color/glow/jitter
+      // Update element styles - text-fire text-glow-pulse text-jitter for color/glow/jitter
       // Keep large size and float-up-fade behavior; transform-origin so fireFlicker scale anchors at bottom-right
       textAnim.element.style.cssText = `
         position: absolute;
@@ -3102,10 +3222,18 @@ export class Renderer {
     const powerUpConfig = tempPowerUpConfig || CONFIG.POWER_UPS[powerUpId];
     if (!powerUpConfig) return;
     
+    const powerUpGraphicMap = {
+      'water_pressure': 'water_pressure.png',
+      'xp_boost': 'xp_boost.png',
+      'tower_health': 'tower_durability.png',
+      'fire_resistance': 'fire_resistance.png',
+      'temp_power_up_spawn_boost': 'power_up_magnet.png'
+    };
+    const graphicFilename = powerUpGraphicMap[powerUpId];
     const notificationData = {
       powerUpId,
       name: powerUpConfig.name,
-      icon: powerUpConfig.icon,
+      icon: graphicFilename ? `assets/images/power_ups/${graphicFilename}` : null,
       duration: duration,
     };
     
@@ -3617,7 +3745,8 @@ export class Renderer {
         const spriteWidth = spriteSize;
         const spriteHeight = (townSprite.naturalHeight / townSprite.naturalWidth) * spriteWidth;
         
-        this.ctx.imageSmoothingEnabled = false;
+        this.ctx.imageSmoothingEnabled = true;
+        this.ctx.imageSmoothingQuality = 'high';
         this.ctx.drawImage(
           townSprite,
           -spriteWidth / 2,
@@ -3625,7 +3754,8 @@ export class Renderer {
           spriteWidth,
           spriteHeight
         );
-        this.ctx.imageSmoothingEnabled = true;
+        this.ctx.imageSmoothingEnabled = false;
+        this.ctx.imageSmoothingQuality = 'low';
         this.ctx.restore();
       }
       
@@ -3702,7 +3832,8 @@ export class Renderer {
           
           this.ctx.save();
           this.ctx.globalAlpha = iconOpacity;
-          this.ctx.imageSmoothingEnabled = false; // Crisp pixel art rendering
+          this.ctx.imageSmoothingEnabled = true;
+          this.ctx.imageSmoothingQuality = 'high';
           
           // Calculate sprite dimensions maintaining aspect ratio
           const spriteAspectRatio = spawnerSprite.naturalWidth / spawnerSprite.naturalHeight;
@@ -3727,7 +3858,8 @@ export class Renderer {
             spriteHeight
           );
           
-          this.ctx.imageSmoothingEnabled = true;
+          this.ctx.imageSmoothingEnabled = false;
+          this.ctx.imageSmoothingQuality = 'low';
           this.ctx.restore();
         } else {
           // Fallback to emoji if sprite not loaded
@@ -4396,7 +4528,8 @@ export class Renderer {
       const spriteWidth = spriteSize;
       const spriteHeight = (townSprite.naturalHeight / townSprite.naturalWidth) * spriteWidth;
 
-      this.ctx.imageSmoothingEnabled = false;
+      this.ctx.imageSmoothingEnabled = true;
+      this.ctx.imageSmoothingQuality = 'high';
       this.ctx.drawImage(
         townSprite,
         -spriteWidth / 2,
@@ -4404,7 +4537,8 @@ export class Renderer {
         spriteWidth,
         spriteHeight
       );
-      this.ctx.imageSmoothingEnabled = true;
+      this.ctx.imageSmoothingEnabled = false;
+      this.ctx.imageSmoothingQuality = 'low';
       this.ctx.restore();
     }
 
@@ -6979,7 +7113,8 @@ export class Renderer {
         const spriteWidth = spriteSize;
         const spriteHeight = (waterTankSprite.naturalHeight / waterTankSprite.naturalWidth) * spriteWidth;
         
-        this.ctx.imageSmoothingEnabled = false;
+        this.ctx.imageSmoothingEnabled = true;
+        this.ctx.imageSmoothingQuality = 'high';
         this.ctx.drawImage(
           waterTankSprite,
           -spriteWidth / 2,
@@ -6987,7 +7122,8 @@ export class Renderer {
           spriteWidth,
           spriteHeight
         );
-        this.ctx.imageSmoothingEnabled = true;
+        this.ctx.imageSmoothingEnabled = false; // Restore default for other sprites
+        this.ctx.imageSmoothingQuality = 'low';
         
         if (isBeingHitByWater) {
           this.ctx.globalAlpha = 1.0;
@@ -7084,7 +7220,8 @@ export class Renderer {
         const spriteWidth = spriteSize;
         const spriteHeight = (digSiteSprite.naturalHeight / digSiteSprite.naturalWidth) * spriteWidth;
         
-        this.ctx.imageSmoothingEnabled = false;
+        this.ctx.imageSmoothingEnabled = true;
+        this.ctx.imageSmoothingQuality = 'high';
         this.ctx.drawImage(
           digSiteSprite,
           -spriteWidth / 2,
@@ -7092,7 +7229,8 @@ export class Renderer {
           spriteWidth,
           spriteHeight
         );
-        this.ctx.imageSmoothingEnabled = true;
+        this.ctx.imageSmoothingEnabled = false; // Restore default for other sprites
+        this.ctx.imageSmoothingQuality = 'low';
         
         if (isBeingHitByWater) {
           this.ctx.globalAlpha = 1.0;
@@ -7184,8 +7322,11 @@ export class Renderer {
         const spriteWidth = spriteSize;
         const spriteHeight = bombSprite.naturalHeight * (spriteWidth / bombSprite.naturalWidth);
         
-        // Center the sprite (imageSmoothingEnabled is already false from setupCanvas)
+        this.ctx.imageSmoothingEnabled = true;
+        this.ctx.imageSmoothingQuality = 'high';
         this.ctx.drawImage(bombSprite, -spriteWidth / 2, -spriteHeight / 2, spriteWidth, spriteHeight);
+        this.ctx.imageSmoothingEnabled = false;
+        this.ctx.imageSmoothingQuality = 'low';
       }
       
       // Level indicator removed - graphics visually indicate the level
@@ -7689,7 +7830,8 @@ export class Renderer {
           const spriteWidth = spriteSize;
           const spriteHeight = (powerUpSprite.naturalHeight / powerUpSprite.naturalWidth) * spriteWidth;
           
-          this.ctx.imageSmoothingEnabled = false;
+          this.ctx.imageSmoothingEnabled = true;
+          this.ctx.imageSmoothingQuality = 'high';
           this.ctx.drawImage(
             powerUpSprite,
             -spriteWidth / 2,
@@ -7697,14 +7839,15 @@ export class Renderer {
             spriteWidth,
             spriteHeight
           );
-          this.ctx.imageSmoothingEnabled = true;
+          this.ctx.imageSmoothingEnabled = false; // Restore default for other sprites
+          this.ctx.imageSmoothingQuality = 'low';
           
           if (isBeingHitByWater) {
             this.ctx.globalAlpha = 1.0;
           }
         }
       } else {
-        // Fallback to emoji if no graphic available
+        // Fallback when no graphic available
         // Flash icon color if being hit by water
         const baseIconColor = '#6BA6FF'; // Bright blue color for power-up items (closer to white)
         const iconColor = isBeingHitByWater ? this.getFlashingColor(baseIconColor, CONFIG.COLOR_TOWER, 3.0) : baseIconColor;
@@ -7718,13 +7861,13 @@ export class Renderer {
         this.ctx.fill();
         this.ctx.stroke();
         
-        // Draw power-up icon (emoji or symbol)
-        const icon = itemConfig?.icon || powerUpConfig?.icon || '✨';
+        // Draw power-up initial (first letter of name)
+        const fallbackChar = (itemConfig?.name || powerUpConfig?.name || '?').charAt(0);
         this.ctx.font = `bold ${CONFIG.HEX_RADIUS * 0.6}px Exo 2, sans-serif`;
         this.ctx.textAlign = 'center';
         this.ctx.textBaseline = 'middle';
-        this.ctx.fillStyle = '#000'; // Black text for emoji visibility
-        this.ctx.fillText(icon, 0, 0);
+        this.ctx.fillStyle = '#000';
+        this.ctx.fillText(fallbackChar, 0, 0);
       }
       
       // Draw health bar if damaged
@@ -7828,7 +7971,8 @@ export class Renderer {
         const spriteWidth = spriteSize;
         const spriteHeight = (mysterySprite.naturalHeight / mysterySprite.naturalWidth) * spriteWidth;
         
-        this.ctx.imageSmoothingEnabled = false;
+        this.ctx.imageSmoothingEnabled = true;
+        this.ctx.imageSmoothingQuality = 'high';
         this.ctx.drawImage(
           mysterySprite,
           -spriteWidth / 2,
@@ -7836,7 +7980,8 @@ export class Renderer {
           spriteWidth,
           spriteHeight
         );
-        this.ctx.imageSmoothingEnabled = true;
+        this.ctx.imageSmoothingEnabled = false; // Restore default for other sprites
+        this.ctx.imageSmoothingQuality = 'low';
         
         if (isBeingHitByWater) {
           this.ctx.globalAlpha = 1.0;
@@ -7906,7 +8051,15 @@ export class Renderer {
       this.ctx.translate(screenX, screenY);
       
       // Determine sprite filename based on item type
-      const spriteFilename = item.itemType === 'movement_token' ? 'movement_token.png' : 'currency.png';
+      let spriteFilename = 'currency.png';
+      if (item.itemType === 'movement_token') {
+        spriteFilename = 'movement_token.png';
+      } else if (item.itemType === 'shield') {
+        const level = Math.min(4, Math.max(1, item.value || 1));
+        spriteFilename = `shield_${level}.png`;
+      } else if (item.itemType === 'upgrade_plans') {
+        spriteFilename = 'upgrade_token.png';
+      }
       let currencySprite = this.itemSprites.get(spriteFilename);
       
       if (!currencySprite) {
@@ -7937,7 +8090,8 @@ export class Renderer {
         const spriteWidth = spriteSize;
         const spriteHeight = (currencySprite.naturalHeight / currencySprite.naturalWidth) * spriteWidth;
         
-        this.ctx.imageSmoothingEnabled = false;
+        this.ctx.imageSmoothingEnabled = true;
+        this.ctx.imageSmoothingQuality = 'high';
         this.ctx.drawImage(
           currencySprite,
           -spriteWidth / 2,
@@ -7945,7 +8099,8 @@ export class Renderer {
           spriteWidth,
           spriteHeight
         );
-        this.ctx.imageSmoothingEnabled = true;
+        this.ctx.imageSmoothingEnabled = false; // Restore default for other sprites
+        this.ctx.imageSmoothingQuality = 'low';
         
         if (isBeingHitByWater) {
           this.ctx.globalAlpha = 1.0;
@@ -8046,9 +8201,7 @@ export class Renderer {
       
       // Draw icon (large, above text)
       const iconSize = 80 * scale;
-      this.ctx.font = `bold ${iconSize}px Exo 2, sans-serif`;
-      this.ctx.textAlign = 'center';
-      this.ctx.textBaseline = 'middle';
+      const iconY = drawY - 80;
       
       // Draw icon with drop shadow
       this.ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
@@ -8056,7 +8209,24 @@ export class Renderer {
       this.ctx.shadowOffsetX = 0;
       this.ctx.shadowOffsetY = 4;
       
-      this.ctx.fillText(notif.icon, canvasCenterX, drawY - 80);
+      if (notif.icon && typeof notif.icon === 'string' && notif.icon.endsWith('.png')) {
+        const img = this.gameState?.imageCache?.get(notif.icon);
+        if (img && img.complete) {
+          const w = iconSize;
+          const h = (img.naturalHeight / img.naturalWidth) * w;
+          this.ctx.drawImage(img, canvasCenterX - w / 2, iconY - h / 2, w, h);
+        } else {
+          this.ctx.font = `bold ${iconSize}px Exo 2, sans-serif`;
+          this.ctx.textAlign = 'center';
+          this.ctx.textBaseline = 'middle';
+          this.ctx.fillText((notif.name || '?').charAt(0), canvasCenterX, iconY);
+        }
+      } else {
+        this.ctx.font = `bold ${iconSize}px Exo 2, sans-serif`;
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
+        this.ctx.fillText((notif.name || '?').charAt(0), canvasCenterX, iconY);
+      }
       
       // Reset shadow for text
       this.ctx.shadowBlur = 0;
@@ -8148,13 +8318,10 @@ export class Renderer {
       this.minimapSidebarOffset = targetOffset;
     }
     
-    // Apply offset to minimap canvas and blur background position via CSS transform
-    const minimapBlurBackground = document.querySelector('.minimap-blur-background');
-    if (minimapCanvas) {
-      minimapCanvas.style.transform = `translateX(${this.minimapSidebarOffset}px)`;
-    }
-    if (minimapBlurBackground) {
-      minimapBlurBackground.style.transform = `translateX(${this.minimapSidebarOffset}px)`;
+    // Apply offset to minimap container (pill + minimap move together)
+    const minimapContainer = document.getElementById('minimapContainer');
+    if (minimapContainer) {
+      minimapContainer.style.transform = `translateX(${this.minimapSidebarOffset}px)`;
     }
     
     const minimapCtx = minimapCanvas.getContext('2d');

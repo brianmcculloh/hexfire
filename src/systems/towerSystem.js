@@ -998,21 +998,29 @@ export class TowerSystem {
   }
 
   /**
-   * Apply a shield to a tower
+   * Apply a shield to a tower (stackable - adds to existing shield HP)
    * @param {string} towerId - Tower ID
    * @param {number} shieldLevel - Shield level (1-4)
    * @returns {boolean} True if shield was applied successfully
    */
   applyShield(towerId, shieldLevel) {
     const tower = this.towers.get(towerId);
-    if (!tower || tower.shield) return false; // Tower doesn't exist or already has shield
+    if (!tower) return false;
     
     const shieldHealth = getShieldHealth(shieldLevel);
-    tower.shield = {
-      level: shieldLevel,
-      health: shieldHealth,
-      maxHealth: shieldHealth
-    };
+    
+    if (tower.shield) {
+      // Stack: add to existing shield health and maxHealth
+      tower.shield.health += shieldHealth;
+      tower.shield.maxHealth += shieldHealth;
+      tower.shield.level = Math.max(tower.shield.level, shieldLevel); // Display highest level
+    } else {
+      tower.shield = {
+        level: shieldLevel,
+        health: shieldHealth,
+        maxHealth: shieldHealth
+      };
+    }
     
     return true;
   }

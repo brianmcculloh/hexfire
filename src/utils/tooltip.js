@@ -3,7 +3,8 @@
 import { CONFIG, getFireTypeConfig, getTowerPower, getPulsingPower, getPulsingAttackInterval, getRainPower, getBomberPower, getBomberAttackInterval, getPowerUpMultiplier, getTowerRange, getSpreadTowerRange, getRainRange } from '../config.js';
 
 export class TooltipSystem {
-  constructor() {
+  constructor(gameState = null) {
+    this.gameState = gameState;
     this.tooltip = null;
     this.currentContent = null;
     this.mouseX = 0;
@@ -47,6 +48,11 @@ export class TooltipSystem {
    */
   show(htmlContent, mouseX, mouseY) {
     if (!this.tooltip) return;
+    // Disable tooltips during tutorial to avoid cluttering the UI
+    if (this.gameState?.tutorialMode) {
+      this.hide();
+      return;
+    }
     
     // Handle both single tooltip and multiple tooltips
     const contents = Array.isArray(htmlContent) ? htmlContent : [htmlContent];
@@ -243,11 +249,11 @@ export class TooltipSystem {
       content += `<div style="color: #00D9FF; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">Power: <span style="display: inline-flex; align-items: center; gap: 2px;">${powerGraphics}</span> <span style="margin-left: 12px; display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_blue.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(extinguishingPowerPerSecond)} HP/second</span></div>`;
     }
     
-    // Show shield if present
+    // Show shield if present (icon uses highest level applied; label is "Shield:" since stacked shields combine levels)
     if (tower.shield && tower.shield.health > 0) {
       const shieldHealth = Math.round(tower.shield.health);
       const shieldMaxHealth = Math.round(tower.shield.maxHealth);
-      content += `<div style="color: #B794F6; margin-top: 8px; display: flex; align-items: center; gap: 6px;"><img src="assets/images/items/shield_${tower.shield.level}.png" style="width: 16px; height: 16px; image-rendering: pixelated;" /> Shield Level ${tower.shield.level}: <span style="display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /><span style="color: #FFFFFF;">${shieldHealth} / ${shieldMaxHealth}</span></span></div>`;
+      content += `<div style="color: #B794F6; margin-top: 8px; display: flex; align-items: center; gap: 6px;"><img src="assets/images/items/shield_${tower.shield.level}.png" style="width: 16px; height: 16px; image-rendering: pixelated;" /> Shield: <span style="display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /><span style="color: #FFFFFF;">${shieldHealth} / ${shieldMaxHealth}</span></span></div>`;
     }
     
     // Add placement-phase instruction (matches inventory style: non-italic, white, smaller)
@@ -270,12 +276,12 @@ export class TooltipSystem {
     let content = `<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">`;
     content += `<img src="assets/images/items/town.png" style="width: 48px; height: auto; image-rendering: crisp-edges;" />`;
     content += `<div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">`;
-    content += `<div style="font-weight: bold; color: #FFFFFF; font-size: 14px;">The Grove</div>`;
+    content += `<div style="font-weight: bold; color: #FFFFFF; font-size: 14px;">Ancient Grove</div>`;
     content += `<div style="color: #FFFFFF;">Level: ${townLevel}</div>`;
     content += `<div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${currentHealth} / ${maxHealth} (${healthPercent}%)</div>`;
     content += `</div></div>`;
-    content += `<div style="color: #FFFFFF; margin-top: 8px; font-size: 15px;">If The Grove burns down, it's game over!</div>`;
-    content += `<div style="color: #AAAAAA; margin-top: 6px; font-size: 12px;">The Grove includes the surrounding ring of trees. Make sure to protect all 7 hex tiles!</div>`;
+    content += `<div style="color: #FFFFFF; margin-top: 8px; font-size: 15px;">If the grove burns down, it's game over!</div>`;
+    content += `<div style="color: #AAAAAA; margin-top: 6px; font-size: 12px;">The grove includes the surrounding ring of trees. Make sure to protect all 7 hex tiles!</div>`;
     
     return content;
   }
@@ -298,7 +304,7 @@ export class TooltipSystem {
           <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${currentHealth} / ${maxHealth} (${healthPercent}%)</div>
         </div>
       </div>
-      <div style="font-size: 14px; color: #FFFFFF; line-height: 1.4;">Triggered by water to explode and extinguish nearby fires (will not explode if destroyed by fire).</div>
+      <div style="font-size: 14px; color: #FFFFFF; line-height: 1.4;">Hit with water to trigger powerful explosions that extinguish nearby fires (does nothing if destroyed by fire).</div>
     `;
   }
 
@@ -461,10 +467,10 @@ export class TooltipSystem {
         <div style="font-size: 12px; color: #AAAAAA; margin-top: 6px;">Collect with water</div>
       `;
     } else {
-      const icon = tempPowerUpConfig?.icon || permanentPowerUpConfig?.icon || '✨';
+      const fallbackChar = name?.charAt(0) || '?';
       return `
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-          <div style="font-size: 48px;">${icon}</div>
+          <div style="font-size: 48px;">${fallbackChar}</div>
           <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
             <div style="font-weight: bold; color: #FFFFFF; font-size: 14px;">${displayName}</div>
             <div style="font-size: 14px; color: #00E6CC;">${effectDurationLine}</div>

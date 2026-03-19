@@ -306,7 +306,7 @@ export class BossSystem {
     // Abilities with custom timing (distraction, provoked-burn, heat-seek, piercing-flame, surround) handle SFX in their cast methods
     const soundMode = ability.soundMode ?? 'once';
     const soundKey = (ability.type === 'stoke') ? 'hell-stoke' : ability.type;
-    if (soundMode === 'once' && !['distraction', 'heat-seek', 'piercing-flame', 'surround', 'collapsing-fire', 'barrage-of-flames'].includes(ability.type)) {
+    if (soundMode === 'once' && !['distraction', 'heat-seek', 'piercing-flame', 'surround', 'collapsing-fire', 'barrage-of-flames', 'purify'].includes(ability.type)) {
       if (ability.type === 'provoked-burn') {
         const delayMs = ability.params?.delayMs ?? 1000;
         if (typeof window !== 'undefined' && window.AudioManager) {
@@ -497,12 +497,26 @@ export class BossSystem {
     this.purifyActivationCount++;
     const tripleStaggerMs = params.tripleStaggerMs ?? 800;
 
+    const purifySounds = ['purify-a', 'purify-b', 'purify-c', 'purify-d', 'purify-e'];
+    const playRandomPurifySound = () => {
+      const key = purifySounds[Math.floor(Math.random() * purifySounds.length)];
+      if (typeof window !== 'undefined' && window.AudioManager) {
+        window.AudioManager.playSFX(key);
+      }
+    };
+
     if (this.purifyActivationCount % 3 === 0) {
+      playRandomPurifySound();
+      if (typeof window !== 'undefined') {
+        setTimeout(() => playRandomPurifySound(), tripleStaggerMs);
+        setTimeout(() => playRandomPurifySound(), tripleStaggerMs * 2);
+      }
       this.castScatterStrike(params, 0);
       this.castScatterStrike(params, tripleStaggerMs);
       this.castScatterStrike(params, tripleStaggerMs * 2);
       this.castingDuration = (tripleStaggerMs * 2) / 1000 + 0.5; // Cover all 3 strikes
     } else {
+      playRandomPurifySound();
       this.castScatterStrike(params, 0);
     }
   }
