@@ -33,7 +33,12 @@ export class MapScrollSystem {
     this.debugMode = false; // Disable debug flooding - issue identified
     this.debugLogs = [];
     this.lastDebugTime = 0;
-    
+
+    // Animated scroll (tutorial auto-scroll)
+    this.scrollAnimationTarget = null;
+    this.scrollAnimationStart = { x: 0, y: 0 };
+    this.scrollAnimationDuration = 0;
+    this.scrollAnimationElapsed = 0;
   }
 
   /**
@@ -255,9 +260,25 @@ export class MapScrollSystem {
 
   /**
    * Update scroll system (called each frame)
-   * @param {number} deltaTime - Time elapsed since last frame
+   * @param {number} deltaTime - Time elapsed since last frame (seconds)
    */
   update(deltaTime) {
+    // Animated scroll (tutorial auto-scroll) - lerp toward target
+    if (this.scrollAnimationTarget) {
+      this.scrollAnimationElapsed += (deltaTime * 1000); // Convert s to ms
+      const t = Math.min(1, this.scrollAnimationElapsed / this.scrollAnimationDuration);
+      // easeOutCubic: smooth deceleration at end
+      const eased = 1 - Math.pow(1 - t, 3);
+      this.renderer.offsetX = this.scrollAnimationStart.x + (this.scrollAnimationTarget.x - this.scrollAnimationStart.x) * eased;
+      this.renderer.offsetY = this.scrollAnimationStart.y + (this.scrollAnimationTarget.y - this.scrollAnimationStart.y) * eased;
+      if (t >= 1) {
+        this.renderer.offsetX = this.scrollAnimationTarget.x;
+        this.renderer.offsetY = this.scrollAnimationTarget.y;
+        this.scrollAnimationTarget = null;
+      }
+      return;
+    }
+
     // Smooth velocity interpolation
     const smoothing = CONFIG.SCROLL_SMOOTHING;
     this.scrollVelocity.x = this.scrollVelocity.x * smoothing + this.targetScrollVelocity.x * (1 - smoothing);
@@ -381,13 +402,13 @@ export class MapScrollSystem {
    * Used by tutorial to auto-scroll when step 3 or 4 target is off-screen.
    * @param {number} q - Hex q coordinate
    * @param {number} r - Hex r coordinate
-   * @param {Object} options - { horizontal: 'left'|'center'|'right', vertical: 'top'|'center'|'bottom', extraOffsetY?: number }
-   *   - 'left' = position hex in left third (room for bubble on right)
-   *   - 'right' = position hex in right third (room for bubble on left)
-   *   - 'top' = position hex in top third
-   *   - 'bottom' = position hex in bottom third
+   * @param {Object} options - { horizontal, vertical, extraOffsetY?, animated?, duration? }
+   *   - horizontal: 'left'|'center'|'right' = position hex in left/center/right third
+   *   - vertical: 'top'|'center'|'bottom' = position hex in top/center/bottom third
    *   - extraOffsetY = additional pixels to scroll up (positive = show more of top of map)
-   * @returns {boolean} True if scroll was applied
+   *   - animated = if true, smooth transition instead of instant snap (default false)
+   *   - duration = animation duration in ms when animated (default 400)
+   * @returns {boolean} True if scroll was applied (or animation started)
    */
   scrollToShowHex(q, r, options = {}) {
     this.updateMapBounds();
@@ -421,6 +442,14 @@ export class MapScrollSystem {
     const dy = Math.abs(this.renderer.offsetY - newOffsetY);
     if (dx < 1 && dy < 1) return false;
 
+    if (options.animated) {
+      this.scrollAnimationTarget = { x: newOffsetX, y: newOffsetY };
+      this.scrollAnimationStart = { x: this.renderer.offsetX, y: this.renderer.offsetY };
+      this.scrollAnimationDuration = options.duration ?? 400;
+      this.scrollAnimationElapsed = 0;
+      return true;
+    }
+
     this.renderer.offsetX = newOffsetX;
     this.renderer.offsetY = newOffsetY;
     return true;
@@ -437,7 +466,9 @@ export class MapScrollSystem {
     this.mousePos = { x: 0, y: 0 };
     this.mouseInCanvas = false;
     this.mouseOverUI = false;
-    
+    this.scrollAnimationTarget = null;
+    this.scrollAnimationElapsed = 0;
+
     this.debugLog('MapScrollSystem reset');
   }
 }

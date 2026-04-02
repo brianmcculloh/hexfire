@@ -409,7 +409,7 @@ function init() {
     if (gameState.tutorialMode && getTutorialProgress() === 11) {
       const mapScroll = gameState.inputHandler?.getMapScrollSystem?.();
       if (mapScroll) {
-        mapScroll.scrollToShowHex(TUTORIAL_TOWER_PLACEMENT_HEX.q, TUTORIAL_TOWER_PLACEMENT_HEX.r, { horizontal: 'center', vertical: 'center' });
+        mapScroll.scrollToShowHex(TUTORIAL_TOWER_PLACEMENT_HEX.q, TUTORIAL_TOWER_PLACEMENT_HEX.r, { horizontal: 'center', vertical: 'center', animated: true });
       }
     }
     // Reset min town health tracking for wave completion score
@@ -956,8 +956,13 @@ function init() {
           requestAnimationFrame(() => updateTutorialArrow());
           return; // Allow through - button will resume the game
         }
-        // Step 27 (Resume button): just allow through - step 28 advances when water tank explodes
+        // Step 27 (Resume button): hide arrow, show water tank bubble; step 28 advances when water tank explodes
         if (step.target === '#pauseBtn' && stepIndex === 26) {
+          setTimeout(() => {
+            const arrow = document.getElementById('tutorialArrow');
+            if (arrow) arrow.style.display = 'none';
+            showTutorialWaterTankBubble();
+          }, 0);
           return; // Allow through - button will resume the game; final step triggers on water tank explosion
         }
         setTutorialProgress(stepIndex + 1);
@@ -3687,6 +3692,9 @@ function resetGameStateForTutorial() {
     gameState.wave.waveInGroup = 1;
   }
 
+  const waterTankBubble = document.getElementById('tutorialWaterTankBubble');
+  if (waterTankBubble) waterTankBubble.style.display = 'none';
+
   if (gameState.gridSystem) gameState.gridSystem.reset();
   if (gameState.fireSystem) gameState.fireSystem.clearAllFires();
   if (gameState.towerSystem) gameState.towerSystem.clearAllTowers();
@@ -3887,20 +3895,47 @@ function updateTutorialAllowedElements(stepIndex, step) {
 }
 
 /**
+ * Show speech bubble near water tank (step 27 post-Resume) - no arrow
+ */
+function showTutorialWaterTankBubble() {
+  const bubble = document.getElementById('tutorialWaterTankBubble');
+  if (!bubble) return;
+  const canvas = document.getElementById('gameCanvas');
+  const renderer = gameState.renderer;
+  if (!canvas || !renderer) return;
+  const { x: worldX, y: worldY } = axialToPixel(TUTORIAL_WATER_TANK_HEX.q, TUTORIAL_WATER_TANK_HEX.r);
+  const canvasRect = canvas.getBoundingClientRect();
+  const tankScreenX = canvasRect.left + worldX + renderer.offsetX;
+  const tankScreenY = canvasRect.top + worldY + renderer.offsetY;
+  const BUBBLE_OFFSET_LEFT = 300; // Bubble to the left of water tank
+  bubble.style.left = `${tankScreenX - BUBBLE_OFFSET_LEFT}px`;
+  bubble.style.top = `${tankScreenY - 60}px`;
+  const textEl = bubble.querySelector('.tutorial-speech-bubble-text');
+  if (textEl) textEl.textContent = "Great job, your tower is doing its thing!";
+  bubble.style.display = 'block';
+}
+
+/**
  * Update tutorial UI - shows either centered bubble (intro steps) or arrow+target
  */
 function updateTutorialArrow() {
   const arrow = document.getElementById('tutorialArrow');
   const centeredBubble = document.getElementById('tutorialCenteredBubble');
+  const waterTankBubble = document.getElementById('tutorialWaterTankBubble');
   if (!arrow || !centeredBubble) return;
 
   if (!gameState.tutorialMode) {
     arrow.style.display = 'none';
     centeredBubble.style.display = 'none';
+    if (waterTankBubble) waterTankBubble.style.display = 'none';
     return;
   }
 
   const stepIndex = getTutorialProgress();
+  // Hide water tank bubble unless we're in step 27 post-Resume (stepIndex 26, bubble shown after click)
+  if (waterTankBubble && (stepIndex < 26 || stepIndex >= 27)) {
+    waterTankBubble.style.display = 'none';
+  }
   const step = getTutorialStep(stepIndex);
   updateTutorialAllowedElements(stepIndex, step);
 
@@ -3915,16 +3950,21 @@ function updateTutorialArrow() {
     }
   }
 
-  // Steps 19-22: ensure shop tab is active (when resuming mid-tutorial, inventory may be shown)
-  if (stepIndex >= 18 && stepIndex <= 21) {
+  // Step 19: show inventory tab (user clicks Shop tab to advance and switch to shop view)
+  if (stepIndex === 18) {
+    switchTab('inventory', true);
+  }
+  // Steps 20-22: ensure shop tab is active (when resuming mid-tutorial, inventory may be shown)
+  if (stepIndex >= 19 && stepIndex <= 21) {
     switchTab('shop', true);  // skipIfAlreadyActive: avoid rebuilding shop every frame (causes glitchy hover sounds)
   }
-  // Step 20: ensure Towers is active (visible), only Items disabled so Power-ups is clickable (Towers click blocked by handler)
+  // Step 20: ensure Towers is active (visible), Towers and Items disabled so Power-ups is clickable (red X on hover for blocked tabs)
   if (stepIndex === 19) {
     switchShopSubTab('towers', true);  // skipIfAlreadyActive: avoid rebuilding shop every frame
     const itemsBtn = document.querySelector('.shop-sub-tab-button[data-shop-sub-tab="items"]');
+    const towersBtn = document.querySelector('.shop-sub-tab-button[data-shop-sub-tab="towers"]');
     if (itemsBtn) itemsBtn.classList.add('tutorial-disabled');
-    // Don't add tutorial-disabled to Towers - it should look active; click handler blocks it
+    if (towersBtn) towersBtn.classList.add('tutorial-disabled');
   }
   // Step 21: ensure Power-ups is active (don't mute it - it's the selected tab), only Towers disabled
   if (stepIndex === 20) {
@@ -3964,7 +4004,7 @@ function updateTutorialArrow() {
     // Step 6: center on placement hex (avoid off-center; scrolling is locked during tutorial)
     const mapScroll6 = gameState.inputHandler?.getMapScrollSystem?.();
     if (mapScroll6) {
-      mapScroll6.scrollToShowHex(TUTORIAL_TOWER_PLACEMENT_HEX.q, TUTORIAL_TOWER_PLACEMENT_HEX.r, { horizontal: 'center', vertical: 'center' });
+      mapScroll6.scrollToShowHex(TUTORIAL_TOWER_PLACEMENT_HEX.q, TUTORIAL_TOWER_PLACEMENT_HEX.r, { horizontal: 'center', vertical: 'center', animated: true });
     }
   } else if (stepIndex === 8) {
     // Step 9: place at (5,0) only; disable movement until step 10 (move 2 right)
@@ -3974,7 +4014,7 @@ function updateTutorialArrow() {
     gameState.tutorialDisableTowerMovement = true;  // No moving until step 10
     const mapScroll9a = gameState.inputHandler?.getMapScrollSystem?.();
     if (mapScroll9a) {
-      mapScroll9a.scrollToShowHex(TUTORIAL_FIRE_SPAWNER_HEX.q, TUTORIAL_FIRE_SPAWNER_HEX.r, { horizontal: 'center', vertical: 'top', extraOffsetY: 100 });
+      mapScroll9a.scrollToShowHex(TUTORIAL_FIRE_SPAWNER_HEX.q, TUTORIAL_FIRE_SPAWNER_HEX.r, { horizontal: 'right', vertical: 'top', extraOffsetY: 100, animated: true });
     }
   } else if (stepIndex === 9) {
     // Step 10: move to (7,0) only
@@ -3984,7 +4024,7 @@ function updateTutorialArrow() {
     gameState.tutorialDisableTowerMovement = false;
     const mapScroll10 = gameState.inputHandler?.getMapScrollSystem?.();
     if (mapScroll10) {
-      mapScroll10.scrollToShowHex(TUTORIAL_STEP9_MOVE_TO_HEX.q, TUTORIAL_STEP9_MOVE_TO_HEX.r, { horizontal: 'center', vertical: 'center' });
+      mapScroll10.scrollToShowHex(TUTORIAL_STEP9_MOVE_TO_HEX.q, TUTORIAL_STEP9_MOVE_TO_HEX.r, { horizontal: 'center', vertical: 'center', animated: true });
     }
   } else if (stepIndex === 10) {
     // Step 11: rotate - disable tower movement (no repositioning)
@@ -3994,7 +4034,7 @@ function updateTutorialArrow() {
     gameState.tutorialDisableTowerMovement = true;
     const mapScroll11 = gameState.inputHandler?.getMapScrollSystem?.();
     if (mapScroll11) {
-      mapScroll11.scrollToShowHex(TUTORIAL_FIRE_SPAWNER_HEX.q, TUTORIAL_FIRE_SPAWNER_HEX.r, { horizontal: 'center', vertical: 'top', extraOffsetY: 100 });
+      mapScroll11.scrollToShowHex(TUTORIAL_FIRE_SPAWNER_HEX.q, TUTORIAL_FIRE_SPAWNER_HEX.r, { horizontal: 'right', vertical: 'top', extraOffsetY: 100, animated: true });
     }
   } else if (stepIndex === 24) {
     // Step 25: scroll to show tower on path for shield application; restrict to path tower only
@@ -4002,7 +4042,7 @@ function updateTutorialArrow() {
     gameState.tutorialShieldApplyPathTowerHex = TUTORIAL_STEP9_PLACEMENT_HEX;
     const mapScroll24 = gameState.inputHandler?.getMapScrollSystem?.();
     if (mapScroll24) {
-      mapScroll24.scrollToShowHex(TUTORIAL_STEP9_PLACEMENT_HEX.q, TUTORIAL_STEP9_PLACEMENT_HEX.r, { horizontal: 'center', vertical: 'center' });
+      mapScroll24.scrollToShowHex(TUTORIAL_STEP9_PLACEMENT_HEX.q, TUTORIAL_STEP9_PLACEMENT_HEX.r, { horizontal: 'center', vertical: 'center', animated: true });
     }
   } else if (stepIndex === 25) {
     // Step 26: spawn water tank adjacent to fire spawner, scroll to show it
@@ -4017,7 +4057,7 @@ function updateTutorialArrow() {
     gameState.tutorialShieldApplyOnlyPathTower = false;
     const mapScroll26 = gameState.inputHandler?.getMapScrollSystem?.();
     if (mapScroll26) {
-      mapScroll26.scrollToShowHex(TUTORIAL_WATER_TANK_HEX.q, TUTORIAL_WATER_TANK_HEX.r, { horizontal: 'center', vertical: 'center' });
+      mapScroll26.scrollToShowHex(TUTORIAL_WATER_TANK_HEX.q, TUTORIAL_WATER_TANK_HEX.r, { horizontal: 'center', vertical: 'center', animated: true });
     }
   } else {
     gameState.tutorialShieldApplyOnlyPathTower = false;
@@ -4026,7 +4066,7 @@ function updateTutorialArrow() {
     // Step 16: scroll up and right when resuming so tower + path hexes are visible
     const mapScroll13 = gameState.inputHandler?.getMapScrollSystem?.();
     if (mapScroll13) {
-      mapScroll13.scrollToShowHex(TUTORIAL_STEP13_PATH_HEX.q, TUTORIAL_STEP13_PATH_HEX.r, { horizontal: 'right', vertical: 'top', extraOffsetY: 120 });
+      mapScroll13.scrollToShowHex(TUTORIAL_STEP13_PATH_HEX.q, TUTORIAL_STEP13_PATH_HEX.r, { horizontal: 'right', vertical: 'top', extraOffsetY: 120, animated: true });
     }
   } else if (stepIndex !== 5 && stepIndex !== 6 && stepIndex !== 7 && stepIndex !== 8 && stepIndex !== 9 && stepIndex !== 10 && stepIndex !== 15 && stepIndex !== 25) {
     gameState.tutorialTowerPlacementHex = null;
@@ -4112,7 +4152,7 @@ function updateTutorialArrow() {
       if (!inView) {
         lastTutorialAutoScrollStep = stepIndex;
         // Center on target hex to keep view balanced (scrolling is locked during tutorial)
-        mapScroll.scrollToShowHex(step.targetHex?.q ?? 0, step.targetHex?.r ?? 0, { horizontal: 'center', vertical: 'center' });
+        mapScroll.scrollToShowHex(step.targetHex?.q ?? 0, step.targetHex?.r ?? 0, { horizontal: 'center', vertical: 'center', animated: true });
         rect = {
           left: canvasRect.left + x + renderer.offsetX,
           top: canvasRect.top + y + renderer.offsetY,
@@ -4300,6 +4340,8 @@ function exitTutorialMode() {
   if (centeredBubble) centeredBubble.style.display = 'none';
   const shieldOverlay = document.getElementById('tutorialShieldOverlay');
   if (shieldOverlay) shieldOverlay.style.display = 'none';
+  const waterTankBubble = document.getElementById('tutorialWaterTankBubble');
+  if (waterTankBubble) waterTankBubble.style.display = 'none';
 
   if (gameState.tutorialModeHadAutosave) {
     const loadedData = loadGame(null);

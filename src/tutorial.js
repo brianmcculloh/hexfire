@@ -185,7 +185,7 @@ export const TUTORIAL_STEPS = [
   // Step 12: Point at Start Wave button - explain and advance when clicked (starts tutorial wave)
   {
     target: '#startWaveBtn',
-    message: "Now le\'s start the wave. Note: once you do so, you can't reposition your towers until the next wave.",
+    message: "Now let\'s start the wave. Note: once you do so, you can't reposition your towers until the next wave.",
     arrowSide: 'top',
     offsetY: 22
   },
@@ -220,67 +220,67 @@ export const TUTORIAL_STEPS = [
   // Step 17: Point at pause button - tell user to pause (advance when they click Pause)
   {
     target: '#pauseBtn',
-    message: "Click Pause again so we can explore the shop.",
+    message: "Let\'s pause the wave again.",
     arrowSide: 'top',
     offsetY: 22
   },
   // Step 18: Point at sidebar toggle - open to access shop and spend $500 (advance on click)
   {
     target: '#sidePanelToggle',
-    message: "Great job! Click here to open the sidebar so we can check out the shop.",
+    message: "Click here to open the sidebar so we can check out the shop.",
     arrowSide: 'left',
     offsetX: -80
   },
   // Step 19: Point at shop button - describe shop purpose (advance on click)
   {
     target: '#shopTabBtn',
-    message: "This is the Shop. Here you can buy towers, items, and power-ups with the currency you earn from extinguishing fires. Click the Shop tab to take a look!",
+    message: "In the shop you can buy towers, items, and power-ups. Looks like we have a new item unlocked (denoted by the yellow alert badge). Click the Shop tab to explore!",
     arrowSide: 'left',
     offsetX: -70  // Shift 10px left from -60
   },
   // Step 20: Point at shop sub-tabs - navigate to Power-ups (advance when Power-ups clicked)
   {
     target: '.shop-sub-tabs',
-    message: "Click power-ups to explore.",
+    message: "The shop is organized into three sections. You\'re viewing towers right now. Let's click power-ups first to view what\'s available there.",
     arrowSide: 'left',
-    offsetX: 20  // Shift 30px left from 50
+    offsetX: 10  // Shift 30px right from -20
   },
   // Step 21: Point at shop sub-tabs - tell user to click Items (advance on Items click; then disable Towers and Power-ups)
   {
     target: '.shop-sub-tabs',
-    message: "Click the Items tab to see consumable items like shields.",
+    message: "Looks like these are all locked. They will become unlocked as you level up. Now let\'s check out the items section.",
     arrowSide: 'left',
     offsetX: 40  // Shift 10px left from 50
   },
   // Step 22: Point at shield level 1 - tell user to purchase it; when modal opens, point at confirm button
   {
     target: '#shield-1-shop',
-    message: "Purchase Shield Level 1 to add fire protection to your towers. Click it to buy!",
+    message: "We can afford this shield! Shields protect your towers from taking fire damage. Click it to purchase!",
     arrowSide: 'left',
     offsetX: -60,  // Shift 60px left from 0
     modalOverlayTarget: '#confirmOkBtn',
-    modalOverlayMessage: 'Confirm the purchase to add the shield to your inventory.',
+    modalOverlayMessage: 'Click purchase to confirm.',
     modalOverlayArrowSide: 'bottom',
     modalOverlayOffsetY: -30  // Shift step 22 (confirm modal) speech bubble and arrow up 30px
   },
   // Step 23: Point at inventory tab - shield is now in inventory
   {
     target: '.tab-button[data-tab="inventory"]',
-    message: "The shield is now in your inventory. Click the Inventory tab to switch to it.",
+    message: "You\'re the proud owner if a shiny new shield! Click the Inventory tab to see it.",
     arrowSide: 'left',
-    offsetX: -30  // Shift 60px left from 30
+    offsetX: 60  // Shift 60px right from 0
   },
   // Step 24: Point at shield in inventory - tell user to click it
   {
     target: '#shield-to-place-0',
-    message: "Click the shield in your inventory to select it for placement.",
+    message: "Click the shield to select it for placement.",
     arrowSide: 'left',
-    offsetX: -40  // Shift 80px left from 40
+    offsetX: 0  // Shift 40px right from -40
   },
   // Step 25: Point at tower on path - apply shield to it
   {
     targetHex: TUTORIAL_STEP9_PLACEMENT_HEX,
-    message: "Apply the shield to the tower on the path by clicking the tower.",
+    message: "Let\'s apply it to this tower.",
     arrowSide: 'bottom',
     bubbleBelowArrow: true,
     offsetX: 5
@@ -288,21 +288,21 @@ export const TUTORIAL_STEPS = [
   // Step 26: Water tank adjacent to fire spawner - rotate tower to hit it (advance when tank explodes)
   {
     targetHex: TUTORIAL_WATER_TANK_HEX,
-    message: "This is a water tank. Hit it with your tower's water to trigger a powerful explosion that extinguishes nearby fires. Rotate the tower on the path to point at it and hit it!",
+    message: "Nice job! This is a water tank. These can spawn randomly at any time. Rotate the tower on the path to point at it.",
     arrowSide: 'left',
     offsetX: -20  // Shift 40px right from -60
   },
   // Step 27: Point at Resume button - tell user to resume (advance when clicked; then 1s delay before step 28)
   {
     target: '#pauseBtn',
-    message: "Click Resume to continue.",
+    message: "Click Resume to continue the wave.",
     arrowSide: 'top',
     offsetY: 22
   },
   // Step 28: Tutorial complete
   {
     centered: true,
-    message: 'Tutorial complete! You\'re ready to defend the Grove. Good luck!',
+    message: 'Nice damage from that water tank, huh? Looks like you\'re ready to defend the Grove for real now! Good luck! (Remember, you can trigger the tutorial to display at any time in the main menu.)',
     buttonText: 'Finish'
   }
 ];

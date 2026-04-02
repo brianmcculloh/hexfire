@@ -45,15 +45,36 @@ body.tutorial-mode .modal-overlay.active * {
     pointer-events: auto;
     background: transparent;
 }
+/* Step 27 post-Resume: speech bubble near water tank (no arrow) */
+.tutorial-water-tank-bubble {
+    position: fixed;
+    z-index: 2147483646; /* Just below tutorial arrow */
+    background: #fff;
+    color: #000;
+    padding: 14px 18px 20px 22px;
+    border-radius: 12px;
+    pointer-events: none;
+    min-width: 220px;
+    max-width: 280px;
+    font-size: 19px;
+    font-weight: 400;
+    font-family: "Exo 2", sans-serif;
+    line-height: 1.35;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.6), 0 0 60px rgba(0, 0, 0, 0.8);
+}
+.tutorial-water-tank-bubble .tutorial-speech-bubble-text {
+    display: block;
+}
 /* Tutorial step 21: shield must be clickable with default cursor (override .inventory-item red X) */
 body.tutorial-mode.tutorial-step-21 #shield-1-shop,
 body.tutorial-mode.tutorial-step-21 #shield-1-shop * {
     cursor: var(--cursor-default) !important;
     pointer-events: auto !important;
 }
-/* Tutorial-disabled: shop sub-tabs that are blocked during step 21 */
+/* Tutorial-disabled: shop sub-tabs that are blocked (red X cursor on hover; click handler blocks action) */
 body.tutorial-mode .tutorial-disabled {
-    pointer-events: none !important;
+    cursor: var(--cursor-x) !important;
+    pointer-events: auto !important;
     opacity: 0.5;
 }
 /* Tutorial complete (past last step): default cursor everywhere */
@@ -750,7 +771,8 @@ body {
     font-weight: bold;
 }
 
-.tab-badge#shopBadge {
+.tab-badge#shopBadge,
+.shop-sub-tabs .tab-badge {
     background: #FFD700;
     color: #000;
 }
