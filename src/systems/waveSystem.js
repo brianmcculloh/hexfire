@@ -1917,22 +1917,28 @@ export class WaveSystem {
           valueSpan.textContent = reward.type === 'shield' ? `Shield Level ${reward.level}` : `Suppression Bomb Level ${reward.level}`;
           valueRow.appendChild(valueSpan);
           textContainer.appendChild(valueRow);
-        } else {
+        } else if (reward.type === 'movement_token' || reward.type === 'upgrade_plan') {
+          const valueRow = document.createElement('div');
+          valueRow.style.cssText = 'display: flex; align-items: center; gap: 8px; margin-bottom: 5px;';
+          const itemImg = document.createElement('img');
+          itemImg.src = reward.type === 'movement_token'
+            ? 'assets/images/items/movement_token.png'
+            : 'assets/images/items/upgrade_token.png';
+          itemImg.style.cssText = 'width: 32px; height: 32px; object-fit: contain; image-rendering: crisp-edges; flex-shrink: 0;';
+          valueRow.appendChild(itemImg);
+          const valueSpan = document.createElement('span');
+          valueSpan.style.cssText = 'font-size: 14px; font-weight: bold; font-family: "Exo 2", sans-serif; line-height: 1;';
+          valueSpan.style.color = reward.type === 'movement_token' ? '#4FC3F7' : '#ff67e7';
+          valueSpan.textContent = reward.type === 'movement_token' ? '+1 Movement Token' : '+1 Upgrade Plan';
+          valueRow.appendChild(valueSpan);
+          textContainer.appendChild(valueRow);
+        } else if (reward.type === 'currency') {
           const valueEl = document.createElement('div');
-          valueEl.style.cssText = 'font-size: 26px; font-weight: bold; font-family: "Exo 2", sans-serif; line-height: 1; margin-bottom: 5px;';
-          if (reward.type === 'currency') {
-            valueEl.textContent = `$${reward.amount}`;
-            valueEl.style.color = '#00FF88';
-          } else if (reward.type === 'upgrade_plan') {
-            valueEl.textContent = '+1';
-            valueEl.style.color = '#ff67e7';
-          } else if (reward.type === 'movement_token') {
-            valueEl.textContent = '+1';
-            valueEl.style.color = '#4FC3F7';
-          } else {
-            continue;
-          }
+          valueEl.style.cssText = 'font-size: 26px; font-weight: bold; font-family: "Exo 2", sans-serif; line-height: 1; margin-bottom: 5px; color: #00FF88;';
+          valueEl.textContent = `$${reward.amount}`;
           textContainer.appendChild(valueEl);
+        } else {
+          continue;
         }
 
         const labelEl = document.createElement('div');
@@ -2446,11 +2452,11 @@ export class WaveSystem {
     const wrapper = document.createElement('div');
     wrapper.className = 'wave-complete-hero-graphic';
     wrapper.dataset.heroGroup = String(group);
-    const sizeClass = { 1: 'hero-size-110', 3: 'hero-size-78.75', 6: 'hero-size-120', 7: 'hero-size-140.6', 11: 'hero-size-135', 12: 'hero-size-90', 14: 'hero-size-125', 15: 'hero-size-90', 17: 'hero-size-125', 18: 'hero-size-125', 19: 'hero-size-150', 20: 'hero-size-144', 21: 'hero-size-170', 22: 'hero-size-170' }[group];
-    const shiftClass = { 1: 'hero-shift-100', 11: 'hero-shift-150', 14: 'hero-shift-100', 16: 'hero-shift-100', 17: 'hero-shift-100', 18: 'hero-shift-100', 19: 'hero-shift-200', 20: 'hero-shift-150', 21: 'hero-shift-300', 22: 'hero-shift-200' }[group];
+    const sizeClass = { 1: 'hero-size-110', 3: 'hero-size-78.75', 6: 'hero-size-120', 7: 'hero-size-140.6', 11: 'hero-size-135', 12: 'hero-size-90', 14: 'hero-size-125', 15: 'hero-size-90', 17: 'hero-size-125', 18: 'hero-size-125', 19: 'hero-size-127.5', 20: 'hero-size-144', 21: 'hero-size-170', 22: 'hero-size-170' }[group];
+    const shiftClass = { 1: 'hero-shift-100', 11: 'hero-shift-150', 14: 'hero-shift-100', 16: 'hero-shift-100', 17: 'hero-shift-100', 18: 'hero-shift-100', 19: 'hero-shift-280', 20: 'hero-shift-150', 21: 'hero-shift-300', 22: 'hero-shift-200' }[group];
     const shiftUpClass = { 3: 'hero-shift-up-100', 12: 'hero-shift-up-100', 15: 'hero-shift-up-100' }[group];
     const shiftDownClass = { 4: 'hero-shift-down-75', 6: 'hero-shift-down-80', 7: 'hero-shift-down-200', 8: 'hero-shift-down-25', 13: 'hero-shift-down-25' }[group];
-    const shiftLeftClass = { 6: 'hero-shift-left-50', 11: 'hero-shift-left-50', 19: 'hero-shift-left-100', 20: 'hero-shift-left-50', 21: 'hero-shift-left-100', 22: 'hero-shift-left-100' }[group];
+    const shiftLeftClass = { 6: 'hero-shift-left-50', 11: 'hero-shift-left-50', 18: 'hero-shift-left-40', 19: 'hero-shift-left-250', 20: 'hero-shift-left-50', 21: 'hero-shift-left-100', 22: 'hero-shift-left-100' }[group];
     if (sizeClass) wrapper.classList.add(sizeClass);
     if (shiftClass) wrapper.classList.add(shiftClass);
     if (shiftUpClass) wrapper.classList.add(shiftUpClass);

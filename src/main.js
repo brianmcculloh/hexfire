@@ -72,6 +72,7 @@ const gameState = {
   totalFiresExtinguished: 0, // Track total fires extinguished across entire run
   tutorialMode: false, // When true, game is in tutorial mode until user exits
   tutorialModeHadAutosave: false, // True if we autosaved before entering tutorial (so we can restore on exit)
+  tutorialJustAdvancedFromCanvas: false, // Set when rotation/placement advances step; suppresses "follow tutorial" on the ensuing click
   
   // Player stats
   player: {
@@ -265,7 +266,7 @@ function init() {
   gameState.inputHandler = new InputHandler(canvas, gameState.renderer, gameState);
   gameState.tutorialCanvasInteractionAllowed = () => {
     const step = getTutorialProgress();
-    return step === 5 || step === 6 || step === 8 || step === 9 || step === 10 || step === 15 || step === 24 || step === 25; // Step 6, 7, 9 (place), 10 (move), 11 (rotate), 16 (rotate tower), 25 (shield apply), 26 (water tank - rotate to hit)
+    return step === 5 || step === 6 || step === 8 || step === 9 || step === 10 || step === 15 || step === 25 || step === 26 || step === 27; // Step 6, 7, 9 (place), 10 (move), 11 (rotate), 16 (rotate tower), 26 (shield apply), 27 (water tank - rotate to hit), 28 (Resume - allow rotation in case user needs to adjust)
   };
   gameState.getTutorialProgress = getTutorialProgress;
   gameState.tutorialTowerPlacementHex = TUTORIAL_TOWER_PLACEMENT_HEX; // Updated by updateTutorialArrow per step
@@ -381,11 +382,11 @@ function init() {
     gameState.notificationSystem.addXPNotification(q, r, boostedXP, fireType);
   });
 
-  // Tutorial step 27 -> 28: advance when water tank explodes (final step) - 1s delay before showing last step, then auto-pause
+  // Tutorial step 28 -> 29: advance when water tank explodes (final step) - 1s delay before showing last step, then auto-pause
   gameState.waterTankSystem.onWaterTankExploded = () => {
-    if (gameState.tutorialMode && getTutorialProgress() === 26) {
+    if (gameState.tutorialMode && getTutorialProgress() === 28) {
       setTimeout(() => {
-        setTutorialProgress(27);
+        setTutorialProgress(29);
         saveTutorialState(gameState);
         pauseGameWithAudio(); // Auto-pause when final step displays
         requestAnimationFrame(() => updateTutorialArrow());
@@ -755,6 +756,29 @@ function init() {
   // Setup UI
   setupUI();
   
+  // Tutorial mode: show floating notification when user clicks a blocked element (red X cursor)
+  function showTutorialBlockedNotification(clientX, clientY) {
+    const el = document.createElement('div');
+    el.className = 'tutorial-blocked-notification';
+    el.textContent = 'Please follow the next tutorial step';
+    document.body.appendChild(el);
+    const rect = el.getBoundingClientRect();
+    const edgePadding = 8;
+    const minCenterX = rect.width / 2 + edgePadding;
+    const maxCenterX = window.innerWidth - rect.width / 2 - edgePadding;
+    const clampedX = Math.max(minCenterX, Math.min(maxCenterX, clientX));
+    const topY = clientY - 80;
+    const clampedY = Math.max(edgePadding, Math.min(window.innerHeight - rect.height - edgePadding, topY));
+    el.style.left = `${clampedX}px`;
+    el.style.top = `${clampedY}px`;
+    requestAnimationFrame(() => el.classList.add('tutorial-blocked-notification-visible'));
+    setTimeout(() => {
+      el.classList.add('tutorial-blocked-notification-fade');
+      setTimeout(() => el.remove(), 1500); // Match fade transition duration
+    }, 1200); // Visible 3x longer before fade starts
+  }
+  gameState.showTutorialBlockedNotification = showTutorialBlockedNotification;
+
   // Tutorial mode: block all clicks and mousedowns except restart, exit, or current step target
   function handleTutorialInputBlock(e) {
     if (!gameState.tutorialMode) return;
@@ -767,18 +791,29 @@ function init() {
     if (target.closest('#tutorialStartOverBtn') || target.closest('#exitTutorialBtn')) {
       return; // Allow through
     }
+    // Step 24 (confirm button): advance when user clicks confirm (modal is open)
+    if (stepIndex === 23 && (target.id === 'confirmOkBtn' || target.closest('#confirmOkBtn'))) {
+      if (e.type === 'click') {
+        setTimeout(() => {
+          setTutorialProgress(24);
+          saveTutorialState(gameState);
+          requestAnimationFrame(() => updateTutorialArrow());
+        }, 0);
+      }
+      return; // Allow through - modal will process purchase
+    }
     // Allow buttons inside modals (e.g. Confirm/Cancel in confirm modal when restarting/exiting tutorial)
     if (target.closest('.modal-overlay.active')) {
       return; // Allow through
     }
-    // Step 21: overlay over shield - click opens purchase modal
-    if (stepIndex === 21 && (target.id === 'tutorialShieldOverlay' || target.closest('#tutorialShieldOverlay'))) {
+    // Step 23: overlay over shield - click opens modal, advance to step 24 (confirm button)
+    if (stepIndex === 22 && (target.id === 'tutorialShieldOverlay' || target.closest('#tutorialShieldOverlay'))) {
       if (e.type === 'click') {
         e.preventDefault();
         e.stopPropagation();
         (async () => {
           const cost = getShieldCost(1);
-          const confirmed = await showConfirmModal({
+          const confirmPromise = showConfirmModal({
             title: 'Purchase Shield?',
             message: '',
             confirmText: 'Purchase',
@@ -786,8 +821,16 @@ function init() {
             itemIcon: `<img src="assets/images/items/shield_1.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
             cost: cost,
           });
+          setTutorialProgress(23);
+          saveTutorialState(gameState);
+          requestAnimationFrame(() => updateTutorialArrow());
+          const confirmed = await confirmPromise;
           if (confirmed) {
             buyShield(1);
+          } else {
+            setTutorialProgress(22);
+            saveTutorialState(gameState);
+            requestAnimationFrame(() => updateTutorialArrow());
           }
         })();
       }
@@ -820,7 +863,7 @@ function init() {
           return; // Allow through - pause button will pause the game
         }
         // Step 17 (sidebar toggle): programmatically open sidebar and advance (prevent toggle's handler from running)
-        if (step.target === '#sidePanelToggle' && stepIndex === 17) {
+        if (step.target === '#sidePanelToggle' && stepIndex === 18) {
           e.preventDefault();
           e.stopPropagation();
           if (window.toggleSidebar) window.toggleSidebar(true);
@@ -830,7 +873,7 @@ function init() {
           return;
         }
         // Step 18 (shop tab): allow click to switch to shop, advance to step 19
-        if (step.target === '#shopTabBtn' && stepIndex === 18) {
+        if (step.target === '#shopTabBtn' && stepIndex === 19) {
           setTimeout(() => {
             setTutorialProgress(stepIndex + 1);
             saveTutorialState(gameState);
@@ -839,7 +882,7 @@ function init() {
           return; // Allow through - tab click will switch to shop
         }
         // Step 20 (shop sub-tabs): only Power-ups clickable; advance when Power-ups clicked
-        if (step.target === '.shop-sub-tabs' && stepIndex === 19) {
+        if (step.target === '.shop-sub-tabs' && stepIndex === 20) {
           const subTabBtn = target.closest('.shop-sub-tab-button');
           if (subTabBtn && subTabBtn.dataset.shopSubTab === 'powerups') {
             e.preventDefault();
@@ -857,8 +900,8 @@ function init() {
           e.stopPropagation();
           return;
         }
-        // Step 21 (shop sub-tabs): only Items click advances; switch to Items tab explicitly, then advance
-        if (step.target === '.shop-sub-tabs' && stepIndex === 20) {
+        // Step 22 (shop sub-tabs): only Items click advances; switch to Items tab explicitly, then advance
+        if (step.target === '.shop-sub-tabs' && stepIndex === 21) {
           const subTabBtn = target.closest('.shop-sub-tab-button');
           if (subTabBtn && subTabBtn.dataset.shopSubTab === 'items') {
             e.preventDefault();
@@ -867,7 +910,7 @@ function init() {
             setTimeout(() => {
               setTutorialProgress(stepIndex + 1);
               saveTutorialState(gameState);
-              // Disable Towers and Power-ups buttons for step 21
+              // Disable Towers and Power-ups buttons for step 23
               const towersBtn = document.querySelector('.shop-sub-tab-button[data-shop-sub-tab="towers"]');
               const powerupsBtn = document.querySelector('.shop-sub-tab-button[data-shop-sub-tab="powerups"]');
               if (towersBtn) towersBtn.classList.add('tutorial-disabled');
@@ -876,20 +919,20 @@ function init() {
             }, 0);
             return;
           }
-          // Block Towers and Power-ups clicks in step 20
+          // Block Towers and Power-ups clicks in step 22
           e.preventDefault();
           e.stopPropagation();
           return;
         }
-        // Step 21 (shield purchase): handle click - native handler may be blocked; open purchase modal ourselves
-        if (step.target === '#shield-1-shop' && stepIndex === 21) {
+        // Step 23 (shield purchase): advance when clicked, open modal first then advance
+        if (step.target === '#shield-1-shop' && stepIndex === 22) {
           const shieldEl = target.closest('#shield-1-shop');
           if (shieldEl) {
             e.preventDefault();
             e.stopPropagation();
             (async () => {
               const cost = getShieldCost(1);
-              const confirmed = await showConfirmModal({
+              const confirmPromise = showConfirmModal({
                 title: 'Purchase Shield?',
                 message: '',
                 confirmText: 'Purchase',
@@ -897,15 +940,23 @@ function init() {
                 itemIcon: `<img src="assets/images/items/shield_1.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
                 cost: cost,
               });
+              setTutorialProgress(23);
+              saveTutorialState(gameState);
+              requestAnimationFrame(() => updateTutorialArrow());
+              const confirmed = await confirmPromise;
               if (confirmed) {
                 buyShield(1);
+              } else {
+                setTutorialProgress(22);
+                saveTutorialState(gameState);
+                requestAnimationFrame(() => updateTutorialArrow());
               }
             })();
             return;
           }
         }
-        // Step 23 (inventory tab): advance when user clicks inventory tab
-        if (stepIndex === 22) {
+        // Step 25 (inventory tab): advance when user clicks inventory tab
+        if (stepIndex === 24) {
           setTimeout(() => {
             setTutorialProgress(stepIndex + 1);
             saveTutorialState(gameState);
@@ -913,8 +964,8 @@ function init() {
           }, 0);
           return; // Allow through - switchTab will run
         }
-        // Step 24 (shield in inventory): advance when user clicks shield
-        if (stepIndex === 23) {
+        // Step 26 (shield in inventory): advance when user clicks shield
+        if (stepIndex === 25) {
           setTimeout(() => {
             setTutorialProgress(stepIndex + 1);
             saveTutorialState(gameState);
@@ -956,8 +1007,9 @@ function init() {
           requestAnimationFrame(() => updateTutorialArrow());
           return; // Allow through - button will resume the game
         }
-        // Step 27 (Resume button): hide arrow, show water tank bubble; step 28 advances when water tank explodes
-        if (step.target === '#pauseBtn' && stepIndex === 26) {
+        // Step 28 (Resume button): hide arrow, show water tank bubble; step 29 advances when water tank explodes
+        if (step.target === '#pauseBtn' && stepIndex === 28) {
+          gameState.tutorialStep28ResumeClicked = true;
           setTimeout(() => {
             const arrow = document.getElementById('tutorialArrow');
             if (arrow) arrow.style.display = 'none';
@@ -972,7 +1024,8 @@ function init() {
       return; // Allow through
     }
     // Step 6, 7, 9, 10, 11: allow canvas for tower placement/move/rotation; Step 15: allow canvas for tower rotation; Step 24: allow canvas for shield apply
-    if ((stepIndex === 5 || stepIndex === 6 || stepIndex === 8 || stepIndex === 9 || stepIndex === 10 || stepIndex === 15 || stepIndex === 24 || stepIndex === 25) && target.id === 'gameCanvas') {
+    if ((stepIndex === 5 || stepIndex === 6 || stepIndex === 8 || stepIndex === 9 || stepIndex === 10 || stepIndex === 15 || stepIndex === 26 || stepIndex === 27) && target.id === 'gameCanvas') {
+      gameState.tutorialJustAdvancedFromCanvas = false; // Clear in case it was set by prior rotation/placement
       return; // Allow through - advancement handled by inputHandler
     }
     // Allow tutorial Continue button (centered-bubble steps)
@@ -1006,7 +1059,16 @@ function init() {
       }
       return; // Allow through
     }
-    // Block all other interactions
+    // Block all other interactions - show notification near click (only on click, not mousedown)
+    // Don't show when: (a) step allows canvas, or (b) canvas click just advanced the step (mousedown did rotation/placement,
+    // so the ensuing click would wrongly show "follow tutorial" - use flag set by checkTutorial*Advance)
+    const canvasAllowedSteps = [5, 6, 8, 9, 10, 15, 26, 27];
+    const suppressNotification = canvasAllowedSteps.includes(stepIndex) ||
+      (target.id === 'gameCanvas' && gameState.tutorialJustAdvancedFromCanvas);
+    if (target.id === 'gameCanvas' && gameState.tutorialJustAdvancedFromCanvas) {
+      gameState.tutorialJustAdvancedFromCanvas = false;
+    }
+    if (e.type === 'click' && !suppressNotification) showTutorialBlockedNotification(e.clientX, e.clientY);
     e.preventDefault();
     e.stopPropagation();
   }
@@ -3509,6 +3571,7 @@ function setTutorialProgress(step) {
 /** Called from inputHandler when a tower is placed - advance step 6 if placed on tutorial hex; step 9 part 2: show rotate instruction */
 function checkTutorialPlacementAdvance(q, r) {
   if (getTutorialProgress() === 5 && q === TUTORIAL_TOWER_PLACEMENT_HEX.q && r === TUTORIAL_TOWER_PLACEMENT_HEX.r) {
+    gameState.tutorialJustAdvancedFromCanvas = true;
     tutorialStep7HasRotated = false; // Reset for step 7
     setTutorialProgress(6);
     saveTutorialState(gameState);
@@ -3517,6 +3580,7 @@ function checkTutorialPlacementAdvance(q, r) {
   }
   // Step 9: tower placed at initial hex - advance to step 10 (move)
   if (getTutorialProgress() === 8 && q === TUTORIAL_STEP9_INITIAL_PLACEMENT_HEX.q && r === TUTORIAL_STEP9_INITIAL_PLACEMENT_HEX.r) {
+    gameState.tutorialJustAdvancedFromCanvas = true;
     setTutorialProgress(9);
     saveTutorialState(gameState);
     requestAnimationFrame(() => updateTutorialArrow());
@@ -3528,6 +3592,7 @@ function checkTutorialTowerMoveAdvance(fromQ, fromR, toQ, toR) {
   if (getTutorialProgress() !== 9) return;
   if (fromQ !== TUTORIAL_STEP9_INITIAL_PLACEMENT_HEX.q || fromR !== TUTORIAL_STEP9_INITIAL_PLACEMENT_HEX.r) return;
   if (toQ !== TUTORIAL_STEP9_MOVE_TO_HEX.q || toR !== TUTORIAL_STEP9_MOVE_TO_HEX.r) return;
+  gameState.tutorialJustAdvancedFromCanvas = true;
   setTutorialProgress(10);
   saveTutorialState(gameState);
   requestAnimationFrame(() => updateTutorialArrow());
@@ -3545,6 +3610,7 @@ function checkTutorialRotationAdvance(towerId) {
     if (tower.q !== TUTORIAL_TOWER_PLACEMENT_HEX.q || tower.r !== TUTORIAL_TOWER_PLACEMENT_HEX.r) return;
     tutorialStep7HasRotated = true;
     if (tower.direction === TUTORIAL_TOWER_DIRECTION_TOWARD_FIRE) {
+      gameState.tutorialJustAdvancedFromCanvas = true;
       setTutorialProgress(7);
       saveTutorialState(gameState);
       requestAnimationFrame(() => updateTutorialArrow());
@@ -3556,6 +3622,7 @@ function checkTutorialRotationAdvance(towerId) {
   if (progress === 10) {
     if (tower.q !== TUTORIAL_STEP9_PLACEMENT_HEX.q || tower.r !== TUTORIAL_STEP9_PLACEMENT_HEX.r) return;
     if (tower.direction === TUTORIAL_STEP9_DIRECTION_TOWARD_SPAWNER) {
+      gameState.tutorialJustAdvancedFromCanvas = true;
       setTutorialProgress(11);
       saveTutorialState(gameState);
       requestAnimationFrame(() => updateTutorialArrow());
@@ -3567,6 +3634,7 @@ function checkTutorialRotationAdvance(towerId) {
   if (progress === 15) {
     if (tower.q !== TUTORIAL_STEP9_PLACEMENT_HEX.q || tower.r !== TUTORIAL_STEP9_PLACEMENT_HEX.r) return;
     if (tower.direction === TUTORIAL_STEP13_DIRECTION_ALONG_PATH) {
+      gameState.tutorialJustAdvancedFromCanvas = true;
       setTutorialProgress(16);
       saveTutorialState(gameState);
       requestAnimationFrame(() => updateTutorialArrow());
@@ -3574,27 +3642,48 @@ function checkTutorialRotationAdvance(towerId) {
     return;
   }
 
-  // Step 26: tower at (7,0) faces NE toward water tank - advance to step 27 (Resume), pause game
-  if (progress === 25) {
+  // Step 27: tower at (7,0) faces NE toward water tank - advance to step 28 (Resume), pause game
+  if (progress === 26) {
     if (tower.q !== TUTORIAL_STEP9_PLACEMENT_HEX.q || tower.r !== TUTORIAL_STEP9_PLACEMENT_HEX.r) return;
     if (tower.direction === TUTORIAL_STEP26_DIRECTION_TOWARD_WATER_TANK) {
+      gameState.tutorialJustAdvancedFromCanvas = true;
       if (window.gameLoop && !window.gameLoop.isPaused) {
         window.gameLoop.pause();
       }
       if (window.syncPauseButton) window.syncPauseButton();
-      setTutorialProgress(26);
+      setTutorialProgress(27);
+      saveTutorialState(gameState);
+      requestAnimationFrame(() => updateTutorialArrow());
+    }
+    return;
+  }
+
+  // Step 28: tower at (7,0) faces NE toward water tank - advance to step 29 (tutorial complete)
+  if (progress === 27) {
+    if (tower.q !== TUTORIAL_STEP9_PLACEMENT_HEX.q || tower.r !== TUTORIAL_STEP9_PLACEMENT_HEX.r) return;
+    if (tower.direction === TUTORIAL_STEP26_DIRECTION_TOWARD_WATER_TANK) {
+      gameState.tutorialJustAdvancedFromCanvas = true;
+      setTutorialProgress(28);
       saveTutorialState(gameState);
       requestAnimationFrame(() => updateTutorialArrow());
     }
   }
 }
 
-/** Called from inputHandler when shield is applied to tower - advance step 25 to 26 */
+/** Called from inputHandler when shield is applied to tower - advance step 26 to 27, step 27 to 28 */
 function checkTutorialShieldApplyAdvance() {
-  if (gameState.tutorialMode && getTutorialProgress() === 24) {
+  if (!gameState.tutorialMode) return;
+  const progress = getTutorialProgress();
+  if (progress === 25) {
+    gameState.tutorialJustAdvancedFromCanvas = true;
     gameState.tutorialShieldApplyOnlyPathTower = false;
     gameState.tutorialShieldApplyPathTowerHex = null;
-    setTutorialProgress(25);
+    setTutorialProgress(26);
+    saveTutorialState(gameState);
+    requestAnimationFrame(() => updateTutorialArrow());
+  } else if (progress === 26) {
+    gameState.tutorialJustAdvancedFromCanvas = true;
+    setTutorialProgress(27);
     saveTutorialState(gameState);
     requestAnimationFrame(() => updateTutorialArrow());
   }
@@ -3694,6 +3783,7 @@ function resetGameStateForTutorial() {
 
   const waterTankBubble = document.getElementById('tutorialWaterTankBubble');
   if (waterTankBubble) waterTankBubble.style.display = 'none';
+  gameState.tutorialStep28ResumeClicked = false;
 
   if (gameState.gridSystem) gameState.gridSystem.reset();
   if (gameState.fireSystem) gameState.fireSystem.clearAllFires();
@@ -3850,7 +3940,7 @@ function enterTutorialMode(opts = {}) {
  */
 function updateTutorialAllowedElements(stepIndex, step) {
   document.querySelectorAll('.tutorial-allowed').forEach(el => el.classList.remove('tutorial-allowed'));
-  document.body.classList.remove('tutorial-steps-complete', 'tutorial-step-21');
+  document.body.classList.remove('tutorial-steps-complete', 'tutorial-step-20', 'tutorial-step-21');
   if (stepIndex >= TUTORIAL_STEPS.length) {
     document.body.classList.add('tutorial-steps-complete');
     return;
@@ -3863,20 +3953,20 @@ function updateTutorialAllowedElements(stepIndex, step) {
   // Steps 13, 15, 17: allow pause button. Step 26: only allow when paused (block after Resume clicked, while waiting for water tank)
   if (stepIndex === 12 || stepIndex === 14 || stepIndex === 16) {
     addAllowed(document.getElementById('pauseBtn'));
-  } else if (stepIndex === 26 && window.gameLoop?.isPaused) {
+  } else if (stepIndex === 28 && window.gameLoop?.isPaused) {
     addAllowed(document.getElementById('pauseBtn')); // Allow only when paused (before Resume click)
   }
   if (step?.target) {
     // Step 19: only allow Power-ups button (Towers and Items disabled)
-    if (stepIndex === 19) {
+    if (stepIndex === 20) {
       const powerupsBtn = document.querySelector('.shop-sub-tab-button[data-shop-sub-tab="powerups"]');
       if (powerupsBtn) powerupsBtn.classList.add('tutorial-allowed');
-    } else if (stepIndex === 20) {
+    } else if (stepIndex === 21) {
       // Step 20: only allow Items button (Towers and Power-ups disabled)
       const itemsBtn = document.querySelector('.shop-sub-tab-button[data-shop-sub-tab="items"]');
       if (itemsBtn) itemsBtn.classList.add('tutorial-allowed');
-    } else if (stepIndex === 21) {
-      // Step 22: overlay over shield is clickable; shield and overlay get default cursor
+    } else if (stepIndex === 22) {
+      // Step 23: overlay over shield is clickable; shield and overlay get default cursor
       document.body.classList.add('tutorial-step-21');
       const shieldOverlayEl = document.getElementById('tutorialShieldOverlay');
       if (shieldOverlayEl) shieldOverlayEl.classList.add('tutorial-allowed');
@@ -3888,7 +3978,7 @@ function updateTutorialAllowedElements(stepIndex, step) {
     }
   }
   // Step 6, 7, 9, 10, 11: allow canvas for tower placement/move/rotation; Step 16: allow canvas for tower rotation; Step 25: allow canvas for shield apply; Step 26: allow canvas for tower rotation to hit water tank
-  if (stepIndex === 5 || stepIndex === 6 || stepIndex === 8 || stepIndex === 9 || stepIndex === 10 || stepIndex === 15 || stepIndex === 24 || stepIndex === 25) {
+  if (stepIndex === 5 || stepIndex === 6 || stepIndex === 8 || stepIndex === 9 || stepIndex === 10 || stepIndex === 15 || stepIndex === 26 || stepIndex === 27) {
     const canvas = document.getElementById('gameCanvas');
     if (canvas) canvas.classList.add('tutorial-allowed');
   }
@@ -3907,11 +3997,11 @@ function showTutorialWaterTankBubble() {
   const canvasRect = canvas.getBoundingClientRect();
   const tankScreenX = canvasRect.left + worldX + renderer.offsetX;
   const tankScreenY = canvasRect.top + worldY + renderer.offsetY;
-  const BUBBLE_OFFSET_LEFT = 300; // Bubble to the left of water tank
+  const BUBBLE_OFFSET_LEFT = 400; // Bubble to the left of water tank (100px more than before to avoid covering it)
   bubble.style.left = `${tankScreenX - BUBBLE_OFFSET_LEFT}px`;
   bubble.style.top = `${tankScreenY - 60}px`;
   const textEl = bubble.querySelector('.tutorial-speech-bubble-text');
-  if (textEl) textEl.textContent = "Great job, your tower is doing its thing!";
+  if (textEl) textEl.textContent = "Check it out! Your tower is hitting the WATER TANK and it will soon explode to extinguish nearby fires.";
   bubble.style.display = 'block';
 }
 
@@ -3932,15 +4022,21 @@ function updateTutorialArrow() {
   }
 
   const stepIndex = getTutorialProgress();
-  // Hide water tank bubble unless we're in step 27 post-Resume (stepIndex 26, bubble shown after click)
-  if (waterTankBubble && (stepIndex < 26 || stepIndex >= 27)) {
+  // Hide water tank bubble unless we're in step 28 post-Resume (stepIndex 27, bubble shown after click)
+  if (waterTankBubble && (stepIndex < 28 || stepIndex >= 29)) {
     waterTankBubble.style.display = 'none';
+  }
+  // Step 28 part 2: after Resume clicked, hide arrow and show water tank bubble (don't re-show arrow)
+  if (stepIndex === 28 && gameState.tutorialStep28ResumeClicked) {
+    if (arrow) arrow.style.display = 'none';
+    showTutorialWaterTankBubble();
+    return;
   }
   const step = getTutorialStep(stepIndex);
   updateTutorialAllowedElements(stepIndex, step);
 
-  // Step 18: ensure sidebar is closed when entering (user will click toggle to open; game already paused from step 17)
-  if (stepIndex === 17) {
+  // Step 19: ensure sidebar is closed when entering (user will click toggle to open; game already paused from step 18)
+  if (stepIndex === 18) {
     const sidePanel = document.getElementById('sidePanel');
     const sidePanelToggle = document.getElementById('sidePanelToggle');
     if (sidePanel && sidePanelToggle) {
@@ -3950,33 +4046,34 @@ function updateTutorialArrow() {
     }
   }
 
-  // Step 19: show inventory tab (user clicks Shop tab to advance and switch to shop view)
-  if (stepIndex === 18) {
+  // Step 20: show inventory tab (user clicks Shop tab to advance and switch to shop view)
+  if (stepIndex === 19) {
     switchTab('inventory', true);
   }
-  // Steps 20-22: ensure shop tab is active (when resuming mid-tutorial, inventory may be shown)
-  if (stepIndex >= 19 && stepIndex <= 21) {
+  // Steps 21-23: ensure shop tab is active (when resuming mid-tutorial, inventory may be shown)
+  if (stepIndex >= 20 && stepIndex <= 22) {
     switchTab('shop', true);  // skipIfAlreadyActive: avoid rebuilding shop every frame (causes glitchy hover sounds)
   }
-  // Step 20: ensure Towers is active (visible), Towers and Items disabled so Power-ups is clickable (red X on hover for blocked tabs)
-  if (stepIndex === 19) {
+  // Step 21: ensure Towers is active (visible), Towers and Items disabled so Power-ups is clickable (red X on hover for blocked tabs)
+  if (stepIndex === 20) {
+    document.body.classList.add('tutorial-step-20');  // CSS: Towers button keeps full opacity so it looks active
     switchShopSubTab('towers', true);  // skipIfAlreadyActive: avoid rebuilding shop every frame
     const itemsBtn = document.querySelector('.shop-sub-tab-button[data-shop-sub-tab="items"]');
     const towersBtn = document.querySelector('.shop-sub-tab-button[data-shop-sub-tab="towers"]');
     if (itemsBtn) itemsBtn.classList.add('tutorial-disabled');
     if (towersBtn) towersBtn.classList.add('tutorial-disabled');
   }
-  // Step 21: ensure Power-ups is active (don't mute it - it's the selected tab), only Towers disabled
-  if (stepIndex === 20) {
+  // Step 22: ensure Power-ups is active (don't mute it - it's the selected tab), only Towers disabled
+  if (stepIndex === 21) {
     switchShopSubTab('powerups', true);  // skipIfAlreadyActive: avoid rebuilding shop every frame
     document.querySelectorAll('.shop-sub-tab-button.tutorial-disabled').forEach(el => el.classList.remove('tutorial-disabled'));
     const towersBtn = document.querySelector('.shop-sub-tab-button[data-shop-sub-tab="towers"]');
     if (towersBtn) towersBtn.classList.add('tutorial-disabled');
     // Don't add tutorial-disabled to Power-ups - it should look active; click handler blocks it
   }
-  // Step 22: ensure Items is active (shield purchase) - show clickable overlay over shield
+  // Step 23: ensure Items is active (shield purchase) - show clickable overlay over shield
   const shieldOverlay = document.getElementById('tutorialShieldOverlay');
-  if (stepIndex === 21) {
+  if (stepIndex === 22) {
     switchShopSubTab('items', true);  // skipIfAlreadyActive: avoid rebuilding shop every frame
     document.querySelectorAll('.shop-sub-tab-button.tutorial-disabled').forEach(el => el.classList.remove('tutorial-disabled'));
     const towersBtn = document.querySelector('.shop-sub-tab-button[data-shop-sub-tab="towers"]');
@@ -4014,7 +4111,8 @@ function updateTutorialArrow() {
     gameState.tutorialDisableTowerMovement = true;  // No moving until step 10
     const mapScroll9a = gameState.inputHandler?.getMapScrollSystem?.();
     if (mapScroll9a) {
-      mapScroll9a.scrollToShowHex(TUTORIAL_FIRE_SPAWNER_HEX.q, TUTORIAL_FIRE_SPAWNER_HEX.r, { horizontal: 'right', vertical: 'top', extraOffsetY: 100, animated: true });
+      // Use same scroll as step 10 - center on move-to hex (7,0) so we see more of right area, 100px padding before sidebar
+      mapScroll9a.scrollToShowHex(TUTORIAL_STEP9_MOVE_TO_HEX.q, TUTORIAL_STEP9_MOVE_TO_HEX.r, { horizontal: 'center', vertical: 'center', rightPadding: 100, animated: true });
     }
   } else if (stepIndex === 9) {
     // Step 10: move to (7,0) only
@@ -4036,16 +4134,16 @@ function updateTutorialArrow() {
     if (mapScroll11) {
       mapScroll11.scrollToShowHex(TUTORIAL_FIRE_SPAWNER_HEX.q, TUTORIAL_FIRE_SPAWNER_HEX.r, { horizontal: 'right', vertical: 'top', extraOffsetY: 100, animated: true });
     }
-  } else if (stepIndex === 24) {
-    // Step 25: scroll to show tower on path for shield application; restrict to path tower only
+  } else if (stepIndex === 25) {
+    // Step 26: scroll to show tower on path for shield application; restrict to path tower only
     gameState.tutorialShieldApplyOnlyPathTower = true;
     gameState.tutorialShieldApplyPathTowerHex = TUTORIAL_STEP9_PLACEMENT_HEX;
     const mapScroll24 = gameState.inputHandler?.getMapScrollSystem?.();
     if (mapScroll24) {
       mapScroll24.scrollToShowHex(TUTORIAL_STEP9_PLACEMENT_HEX.q, TUTORIAL_STEP9_PLACEMENT_HEX.r, { horizontal: 'center', vertical: 'center', animated: true });
     }
-  } else if (stepIndex === 25) {
-    // Step 26: spawn water tank adjacent to fire spawner, scroll to show it
+  } else if (stepIndex === 26) {
+    // Step 27: apply shield to path tower - keep restriction active so user can only apply to path tower
     const hex = gameState.gridSystem?.getHex(TUTORIAL_WATER_TANK_HEX.q, TUTORIAL_WATER_TANK_HEX.r);
     if (hex?.isBurning && gameState.fireSystem) {
       gameState.fireSystem.extinguishHex(TUTORIAL_WATER_TANK_HEX.q, TUTORIAL_WATER_TANK_HEX.r, 999);
@@ -4054,7 +4152,7 @@ function updateTutorialArrow() {
     if (!existingTank && gameState.waterTankSystem?.spawnWaterTank) {
       gameState.waterTankSystem.spawnWaterTank(TUTORIAL_WATER_TANK_HEX.q, TUTORIAL_WATER_TANK_HEX.r);
     }
-    gameState.tutorialShieldApplyOnlyPathTower = false;
+    // Keep tutorialShieldApplyOnlyPathTower true - user must apply to path tower before advancing
     const mapScroll26 = gameState.inputHandler?.getMapScrollSystem?.();
     if (mapScroll26) {
       mapScroll26.scrollToShowHex(TUTORIAL_WATER_TANK_HEX.q, TUTORIAL_WATER_TANK_HEX.r, { horizontal: 'center', vertical: 'center', animated: true });
@@ -4068,7 +4166,7 @@ function updateTutorialArrow() {
     if (mapScroll13) {
       mapScroll13.scrollToShowHex(TUTORIAL_STEP13_PATH_HEX.q, TUTORIAL_STEP13_PATH_HEX.r, { horizontal: 'right', vertical: 'top', extraOffsetY: 120, animated: true });
     }
-  } else if (stepIndex !== 5 && stepIndex !== 6 && stepIndex !== 7 && stepIndex !== 8 && stepIndex !== 9 && stepIndex !== 10 && stepIndex !== 15 && stepIndex !== 25) {
+  } else if (stepIndex !== 5 && stepIndex !== 6 && stepIndex !== 7 && stepIndex !== 8 && stepIndex !== 9 && stepIndex !== 10 && stepIndex !== 15 && stepIndex !== 25 && stepIndex !== 26) {
     gameState.tutorialTowerPlacementHex = null;
     gameState.tutorialTowerMoveToHex = null;
     gameState.tutorialTowerMoveFromHex = null;
@@ -4342,6 +4440,7 @@ function exitTutorialMode() {
   if (shieldOverlay) shieldOverlay.style.display = 'none';
   const waterTankBubble = document.getElementById('tutorialWaterTankBubble');
   if (waterTankBubble) waterTankBubble.style.display = 'none';
+  gameState.tutorialStep28ResumeClicked = false;
 
   if (gameState.tutorialModeHadAutosave) {
     const loadedData = loadGame(null);
@@ -6099,8 +6198,8 @@ function updateShopItems(currency, playerLevel) {
     if (!shieldStatus.unlocked) {
       item.classList.add('locked');
     }
-    // Tutorial step 22: shield level 1 must be clickable with default cursor
-    if (gameState.tutorialMode && getTutorialProgress() === 21 && level === 1) {
+    // Tutorial step 23: shield level 1 must be clickable with default cursor
+    if (gameState.tutorialMode && getTutorialProgress() === 22 && level === 1) {
       item.classList.add('tutorial-allowed');
     }
     shopGrid.appendChild(item);
@@ -6874,12 +6973,7 @@ function buyShield(level) {
       level: level
     });
     
-    // Tutorial step 23: advance when shield level 1 purchased (from step 22 confirm)
-    if (gameState.tutorialMode && getTutorialProgress() === 21 && level === 1) {
-      setTutorialProgress(22);
-      saveTutorialState(gameState);
-      requestAnimationFrame(() => updateTutorialArrow());
-    }
+    // Tutorial step 24: advance happens in confirm click handler; no advance needed here
     
     // Update UI
     updateInventory();

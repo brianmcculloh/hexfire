@@ -47,10 +47,6 @@ export const CONFIG = {
   // Example: { type: 'suppression_bomb', level: 1, count: 2 } or { type: 'shield', level: 2, count: 1 }
   DEBUG_STARTING_ITEMS: [
     // { type: 'suppression_bomb', level: 1, count: 6 },
-    { type: 'shield', level: 1, count: 2 },
-    { type: 'shield', level: 2, count: 2 },
-    { type: 'shield', level: 3, count: 2 },
-    { type: 'shield', level: 4, count: 2 },
     // { type: 'upgrade_plan', count: 99 },
   ],
   

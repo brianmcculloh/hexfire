@@ -54,8 +54,8 @@ export class MapScrollSystem {
     const mapWidth = mapSize * Math.sqrt(3) * hexRadius;
     const mapHeight = mapSize * 1.5 * hexRadius;
     
-    // Set boundaries with 400px padding to allow scrolling well beyond the map edges
-    const padding = 300;
+    // Set boundaries with padding to allow scrolling well beyond the map edges (extra 100px for tutorial step 9 sidebar gap)
+    const padding = 400;
     this.mapBounds = {
       minX: -mapWidth / 2 - padding,
       maxX: mapWidth / 2 + padding,
@@ -402,10 +402,12 @@ export class MapScrollSystem {
    * Used by tutorial to auto-scroll when step 3 or 4 target is off-screen.
    * @param {number} q - Hex q coordinate
    * @param {number} r - Hex r coordinate
-   * @param {Object} options - { horizontal, vertical, extraOffsetY?, animated?, duration? }
+   * @param {Object} options - { horizontal, vertical, extraOffsetX?, extraOffsetY?, rightPadding?, animated?, duration? }
    *   - horizontal: 'left'|'center'|'right' = position hex in left/center/right third
    *   - vertical: 'top'|'center'|'bottom' = position hex in top/center/bottom third
+   *   - extraOffsetX = additional pixels to scroll left (positive = show more of right edge of map)
    *   - extraOffsetY = additional pixels to scroll up (positive = show more of top of map)
+   *   - rightPadding = minimum pixels of empty space between rightmost map content and canvas edge (keeps map away from sidebar)
    *   - animated = if true, smooth transition instead of instant snap (default false)
    *   - duration = animation duration in ms when animated (default 400)
    * @returns {boolean} True if scroll was applied (or animation started)
@@ -425,12 +427,16 @@ export class MapScrollSystem {
 
     let newOffsetX = canvasWidth * targetX - worldX;
     let newOffsetY = canvasHeight * targetY - worldY;
+    if (options.extraOffsetX) {
+      newOffsetX += options.extraOffsetX; // Positive = scroll left (show more of right edge)
+    }
     if (options.extraOffsetY) {
       newOffsetY += options.extraOffsetY; // Positive = scroll up (show more of top)
     }
 
-    // Clamp to map bounds
-    const minOffsetX = canvasWidth - this.mapBounds.maxX;
+    // Clamp to map bounds (rightPadding keeps map content away from right edge / sidebar)
+    const effectiveRightEdge = canvasWidth - (options.rightPadding ?? 0);
+    const minOffsetX = effectiveRightEdge - this.mapBounds.maxX;
     const maxOffsetX = -this.mapBounds.minX;
     const minOffsetY = canvasHeight - this.mapBounds.maxY;
     const maxOffsetY = -this.mapBounds.minY;

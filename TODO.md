@@ -2,17 +2,15 @@
 
 Queue:
 
-finesse tutorial speech bubble wording (src/tutorial.js)
-
-hero/boss text and lore
-currently working on group 6
-
+make the game end by default at 22 but have an endless mode too
+Add feedback and bug reporting mechanic
+Add update log and version it
 test when new fire types are first introduced to make sure 1% chance is enough of a starting value
 
-Polish:
-tutorial overlay
-keyboard shortcuts (escape, enter)
 
+Polish:
+keyboard shortcuts (escape, enter)
+organize the settings screen better
 
 Future Ideas:
 

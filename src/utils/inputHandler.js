@@ -288,14 +288,7 @@ export class InputHandler {
         const tower = this.gameState.player.inventory.purchasedTowers?.[towerIndex];
         
         if (tower) {
-          // Tutorial step 6 or 9: click-to-place (select then click hex)
-          const progress = this.gameState.getTutorialProgress?.() ?? -1;
-          if (this.gameState.tutorialMode && (progress === 5 || progress === 8)) {
-            this.selectTowerForPlacement(tower, towerIndex);
-            this.setPlacingActiveItem(item);
-            e.preventDefault();
-            return;
-          }
+          // Same as normal: drag-and-drop (tutorial steps 6 and 9 restrict drop to placement hex via handleMouseUp)
           this.setPlacingActiveItem(item);
           this.startDraggingNewTower(e, tower.type, towerIndex);
           e.preventDefault();
@@ -897,7 +890,7 @@ export class InputHandler {
       // Check if we're in shield placement mode
       if (this.selectedShieldForPlacement) {
         // Apply shield to this tower
-        this.applyShieldToTower(tower.id);
+        this.applyShieldToTower(tower.id, e);
         return;
       }
       if (this.selectedTowerForPlacement) {
@@ -1057,6 +1050,13 @@ export class InputHandler {
     
     // Side panel drop detection is now handled globally
     
+    // Tutorial: show notification when dropping tower on wrong hex (red X)
+    if (this.gameState.tutorialMode && this.dragType === 'tower-new' && this.hoveredHex &&
+        this.gameState.placementPreview && !this.gameState.placementPreview.isValid &&
+        this.gameState.showTutorialBlockedNotification) {
+      this.gameState.showTutorialBlockedNotification(e.clientX, e.clientY);
+    }
+    
     if (this.hoveredHex && this.gameState.placementPreview?.isValid) {
       const { q, r } = this.hoveredHex;
       
@@ -1066,7 +1066,7 @@ export class InputHandler {
         const progress = this.gameState.getTutorialProgress?.() ?? -1;
         const isTutorialPlacementStep = this.gameState.tutorialMode && placementHex && (progress === 5 || progress === 8);
         if (isTutorialPlacementStep && (q !== placementHex.q || r !== placementHex.r)) {
-          // Don't place - wrong hex
+          // Don't place - wrong hex (notification shown above)
         } else {
         const towerType = this.dragData.towerType || 'jet';
         const towerIndex = this.dragData.towerIndex || 0;
@@ -1839,8 +1839,9 @@ export class InputHandler {
   /**
    * Apply selected shield to a tower
    * @param {string} towerId - Tower ID
+   * @param {MouseEvent} [e] - Mouse event for tutorial blocked notification position
    */
-  applyShieldToTower(towerId) {
+  applyShieldToTower(towerId, e) {
     if (!this.selectedShieldForPlacement) return;
     
     const tower = this.gameState.towerSystem?.getTower(towerId);
@@ -1849,7 +1850,12 @@ export class InputHandler {
     // Tutorial step 24: only allow applying to the path tower
     if (this.gameState.tutorialShieldApplyOnlyPathTower && this.gameState.tutorialShieldApplyPathTowerHex) {
       const ph = this.gameState.tutorialShieldApplyPathTowerHex;
-      if (tower.q !== ph.q || tower.r !== ph.r) return;
+      if (tower.q !== ph.q || tower.r !== ph.r) {
+        if (e && this.gameState.showTutorialBlockedNotification) {
+          this.gameState.showTutorialBlockedNotification(e.clientX, e.clientY);
+        }
+        return;
+      }
     }
     
     const shield = this.selectedShieldForPlacement.shield;

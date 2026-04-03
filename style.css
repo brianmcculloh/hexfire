@@ -77,6 +77,35 @@ body.tutorial-mode .tutorial-disabled {
     pointer-events: auto !important;
     opacity: 0.5;
 }
+/* Step 20: Towers is the active tab (viewing Towers content) but not clickable - keep full opacity so it looks active */
+body.tutorial-mode.tutorial-step-20 .shop-sub-tab-button[data-shop-sub-tab="towers"].tutorial-disabled {
+    opacity: 1 !important;
+}
+/* Tutorial blocked click notification - floats up and fades near click position */
+.tutorial-blocked-notification {
+    position: fixed;
+    transform: translate(-50%, 0);
+    padding: 8px 14px;
+    background: rgba(0, 0, 0, 0.85);
+    color: #fff;
+    font-size: 14px;
+    font-family: "Exo 2", sans-serif;
+    border-radius: 8px;
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 2147483645;
+    opacity: 0;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+    transition: opacity 0.2s ease-out, transform 1.5s ease-out;
+}
+.tutorial-blocked-notification.tutorial-blocked-notification-visible {
+    opacity: 1;
+}
+.tutorial-blocked-notification.tutorial-blocked-notification-fade {
+    transform: translate(-50%, -80px);
+    opacity: 0;
+}
+
 /* Tutorial complete (past last step): default cursor everywhere */
 body.tutorial-mode.tutorial-steps-complete button,
 body.tutorial-mode.tutorial-steps-complete a[href],
@@ -1482,6 +1511,15 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
     width: 600px;
 }
 
+/* Group 19: 85% of hero-size-150 (600×780 → 510×663) */
+.wave-complete-hero-graphic.hero-size-127\.5 {
+    width: 510px;
+    height: 663px;
+}
+.wave-complete-hero-graphic.hero-size-127\.5 img {
+    width: 510px;
+}
+
 .wave-complete-hero-graphic.hero-size-160 {
     width: 640px;
     height: 832px;
@@ -1521,6 +1559,10 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
 }
 .wave-complete-hero-graphic.hero-shift-300 img {
     top: 350px;
+}
+/* Group 19: vertical position (includes −50px up from prior) */
+.wave-complete-hero-graphic.hero-shift-280 img {
+    top: 210px;
 }
 
 /* Hero vertical shift - move img up (base top: 50px) */
@@ -1563,6 +1605,15 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
 }
 .wave-complete-hero-graphic.hero-shift-left-200 img {
     left: -200px;
+}
+/* Group 19: horizontal (includes −30px left from prior) */
+.wave-complete-hero-graphic.hero-shift-left-250 img {
+    left: -130px;
+}
+
+/* Group 18: 40px left */
+.wave-complete-hero-graphic.hero-shift-left-40 img {
+    left: -40px;
 }
 
 /* Hero name/title pill - black pill with white text, like boss overlay */
@@ -3849,6 +3900,8 @@ body.game-not-started .controls {
     gap: 5px;
     z-index: 50;
     transition: transform 0.2s ease-in-out;
+    /* Let clicks reach the game canvas under the minimap area (wrapper was still hit-testing). */
+    pointer-events: none;
 }
 
 /* Wave Group Name Pill - above minimap, white text on black (like boss/hero pills) */
@@ -3872,6 +3925,7 @@ body.game-not-started .controls {
     width: 200px;
     height: 200px;
     transform:translateY(-25px);
+    pointer-events: none;
 }
 
 /* Minimap Styles */
@@ -5481,7 +5535,11 @@ body.game-not-started .controls {
     width: 16px;
     height: 19px;
     clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
-    border: 2px solid rgba(255, 255, 255, 0.3);
+    border: none;
+    box-sizing: border-box;
+    /* Reduce clip-path anti-alias fringe on dark fills */
+    transform: translateZ(0);
+    backface-visibility: hidden;
     flex-shrink: 0;
 }
 

@@ -107,34 +107,35 @@ export const TUTORIAL_STEPS = [
   // Step 1: Centered intro bubble with "let's go!" button
   {
     centered: true,
-    message: 'Welcome to the Hexfire tutorial! Let\'s go over the basics of the game. You can exit the tutorial at any time and pick up where you left off in the main menu.',
+    message: 'Welcome to Hexfire! We\'ll cover the basics in this quick tutorial. Exit anytime and resume from the main menu.',
     buttonText: "let's go!"
   },
   // Step 2: Arrow points at the Ancient Grove from above, with Next button (arrow under bubble)
   {
     targetHex: { q: 0, r: 0 },
-    message: 'This is the Ancient Grove. It\'s the most important thing that exists. Use towers and items to protect it from burning down.',
+    message: 'The Ancient Grove—every map has one in the center. It\'s of utmost importance. Protect it with water at all costs!',
     buttonText: 'Next',
     arrowSide: 'top'
   },
   // Step 3: Arrow points at burning hex from right (lightning strikes on step 2 Next)
   {
     targetHex: TUTORIAL_LIGHTNING_HEX,
-    message: 'This hex tile is burning! Fires can spawn randomly at any time, and they can spread, too.',
+    message: 'This hex is burning! Fires spawn randomly and can spread.',
     buttonText: 'Next',
     arrowSide: 'right'
   },
   // Step 4: Arrow points at fire spawner from left
   {
     targetHex: TUTORIAL_FIRE_SPAWNER_HEX,
-    message: 'This is a fire spawner, and fires can spread out from them in all directions. They can\'t be extinguished, which means they\'re infinite sources of fire.',
+    message: 'A FIRE SPAWNER! These are indestructible, infinite sources of fire. Keep an eye on these!',
     buttonText: 'Next',
-    arrowSide: 'left'
+    arrowSide: 'left',
+    offsetX: -60  // Shift bubble left of spawner
   },
   // Step 5: Arrow points at sidebar toggle (clicking it advances to step 6)
   {
     target: '#sidePanelToggle',
-    message: 'Click here to open the sidebar. Inside, you\'ll find everything you need to fight the fires.',
+    message: 'Open the sidebar to access your INVENTORY.',
     arrowSide: 'left',
     offsetX: -80 // Extra shift left so bubble and arrow stay visible (toggle is at screen edge)
   },
@@ -142,20 +143,20 @@ export const TUTORIAL_STEPS = [
   {
     target: '#tower-to-place-0',
     placementHex: TUTORIAL_TOWER_PLACEMENT_HEX,
-    message: 'This is your inventory, which is everything you own. Click or drag this jet tower onto the map. Put it on the hex marked with an arrow.',
+    message: 'This is everything you own. Click or drag this jet tower onto the map tile marked with an arrow.',
     arrowSide: 'left',
     offsetX: -10 // Shift 50px right from -60
   },
   // Step 7: Arrow + bubble at newly placed tower - rotate it, then rotate back to face the burning hex
   {
     targetHex: TUTORIAL_TOWER_PLACEMENT_HEX,
-    message: 'Rotate this tower so it\'s pointing at the burning hex. Hover over the tower to see the rotation arrows.',
+    message: 'Rotate this tower toward the burning hex. Hover to see rotation arrows.',
     arrowSide: 'left'
   },
   // Step 8: Placement phase explanation
   {
     targetHex: TUTORIAL_TOWER_PLACEMENT_HEX,
-    message: 'Great job! Right now we\'re in the placement phase, but once the wave starts, this tower will extinguish this fire.',
+    message: 'Great job! We\'re currently in the placement phase. Once the wave starts, this tower will start extinguishing this fire.',
     buttonText: 'Next',
     arrowSide: 'right'
   },
@@ -163,14 +164,14 @@ export const TUTORIAL_STEPS = [
   {
     target: '#tower-to-place-0',
     placementHex: TUTORIAL_STEP9_INITIAL_PLACEMENT_HEX,
-    message: 'You have another tower. Let\'s place it on the path, on the hex marked with an arrow.',
+    message: 'You have another tower. Place it on the path tile marked with an arrow.',
     arrowSide: 'left',
     offsetX: -10 // Shift 10px right from -20
   },
   // Step 10: Move tower to (7,0) - drag and drop two hexes to the right
   {
     targetHex: TUTORIAL_STEP9_MOVE_TO_HEX,
-    message: "Whoops, we don't like where we placed our tower. Since we're in the placement phase we can move it around. Let's drag and drop it two hexes to the right.",
+    message: "Whoops, we don\'t like where we placed it. That\'s okay, we can move it since the wave hasn\'t started yet. Click and drag it two hexes to the right.",
     arrowSide: 'bottom',
     bubbleBelowArrow: true,
     offsetX: 5  // Shift right ~30px from default to center on destination hex (matches step 11 alignment)
@@ -178,131 +179,142 @@ export const TUTORIAL_STEPS = [
   // Step 11: Rotate tower at (7,0) toward fire spawner
   {
     targetHex: TUTORIAL_STEP9_PLACEMENT_HEX,
-    message: "Rotate it to point at the fire spawner. This will be a nice constant source of fire for us to fight.",
+    message: "Rotate it toward the fire spawner.",
     arrowSide: 'bottom',
     bubbleBelowArrow: true
   },
   // Step 12: Point at Start Wave button - explain and advance when clicked (starts tutorial wave)
   {
     target: '#startWaveBtn',
-    message: "Now let\'s start the wave. Note: once you do so, you can't reposition your towers until the next wave.",
+    message: "Perfect! Now click START WAVE. Towers lock in place until the next wave (you can always rotate them).",
     arrowSide: 'top',
     offsetY: 22
   },
   // Step 13: Point at pause button - tell user to pause (advance when they click Pause; no auto-pause on first fire)
   {
     target: '#pauseBtn',
-    message: "You can pause the wave at any time. Click Pause now.",
+    message: "Notice the wave countdown timer in the top left panel? We can pause the wave at any time. Click PAUSE.",
     arrowSide: 'top',
     offsetY: 22
   },
   // Step 14: XP bar - explain leveling up (shown after user pauses)
   {
     target: '#overlayLevelXpRow',
-    message: "This is your XP bar. Fill it by extinguishing fires. When you level up, you'll unlock new towers and upgrades.",
+    message: "Nice! You gained +2XP for extinguishing that fire. Level up to unlock towers and upgrades.",
     buttonText: 'Next',
     arrowSide: 'right'
   },
   // Step 15: Resume button - pause/resume at any time (require click Resume to advance)
   {
     target: '#pauseBtn',
-    message: "Click Resume to continue.",
+    message: "Let's continue this wave. Click RESUME.",
     arrowSide: 'top',
     offsetY: 22
   },
   // Step 16: Path - fires travel faster on path; rotate tower at (7,0) to point along path (advance on rotation)
   {
     targetHex: TUTORIAL_STEP9_PLACEMENT_HEX, // Point at tower hex, not path hex to the right
-    message: "Fires travel faster toward the grove when they're on the path. Rotate this tower to point along the path.",
+    message: "Fires move faster on path hexes. Rotate this tower to point along the path.",
     arrowSide: 'bottom',
     bubbleBelowArrow: true
   },
   // Step 17: Point at pause button - tell user to pause (advance when they click Pause)
   {
     target: '#pauseBtn',
-    message: "Let\'s pause the wave again.",
+    message: "Perfect! Click PAUSE again.",
     arrowSide: 'top',
     offsetY: 22
   },
-  // Step 18: Point at sidebar toggle - open to access shop and spend $500 (advance on click)
+  // Step 18: Point at currency - explain starting money and earning (Next button to advance)
+  {
+    target: '#overlayCurrencyRow',
+    message: "You start the game with $500, which you can spend at any time. Earn more by completing waves.",
+    buttonText: 'Next',
+    arrowSide: 'right'
+  },
+  // Step 19: Point at sidebar toggle - open to access shop and spend $500 (advance on click)
   {
     target: '#sidePanelToggle',
-    message: "Click here to open the sidebar so we can check out the shop.",
+    message: "Now let\'s take a look at the SHOP. Open the sidebar again.",
     arrowSide: 'left',
     offsetX: -80
   },
-  // Step 19: Point at shop button - describe shop purpose (advance on click)
+  // Step 20: Point at shop button - describe shop purpose (advance on click)
   {
     target: '#shopTabBtn',
-    message: "In the shop you can buy towers, items, and power-ups. Looks like we have a new item unlocked (denoted by the yellow alert badge). Click the Shop tab to explore!",
+    message: "Let\'s spend some of our money! Looks like we have a new item unlocked for purchase. Click SHOP to explore.",
     arrowSide: 'left',
     offsetX: -70  // Shift 10px left from -60
   },
-  // Step 20: Point at shop sub-tabs - navigate to Power-ups (advance when Power-ups clicked)
+  // Step 21: Point at shop sub-tabs - navigate to Power-ups (advance when Power-ups clicked)
   {
     target: '.shop-sub-tabs',
-    message: "The shop is organized into three sections. You\'re viewing towers right now. Let's click power-ups first to view what\'s available there.",
+    message: "The SHOP has three sections: TOWERS, ITEMS, and POWER-UPS. First, click POWER-UPS.",
     arrowSide: 'left',
-    offsetX: 10  // Shift 30px right from -20
+    offsetX: -10  // Shift 20px left from 10
   },
-  // Step 21: Point at shop sub-tabs - tell user to click Items (advance on Items click; then disable Towers and Power-ups)
+  // Step 22: Point at shop sub-tabs - tell user to click Items (advance on Items click; then disable Towers and Power-ups)
   {
     target: '.shop-sub-tabs',
-    message: "Looks like these are all locked. They will become unlocked as you level up. Now let\'s check out the items section.",
+    message: "We haven\'t unlocked any POWER-UPS yet. Now, click ITEMS, which is where we'll find our newly unlocked item.",
     arrowSide: 'left',
     offsetX: 40  // Shift 10px left from 50
   },
-  // Step 22: Point at shield level 1 - tell user to purchase it; when modal opens, point at confirm button
+  // Step 23: Point at shield level 1 - tell user to purchase it (advance when clicked; modal opens)
   {
     target: '#shield-1-shop',
-    message: "We can afford this shield! Shields protect your towers from taking fire damage. Click it to purchase!",
+    message: "Woot! We can easily afford this shield! Shields protect towers from fire damage. Click to purchase.",
     arrowSide: 'left',
-    offsetX: -60,  // Shift 60px left from 0
-    modalOverlayTarget: '#confirmOkBtn',
-    modalOverlayMessage: 'Click purchase to confirm.',
-    modalOverlayArrowSide: 'bottom',
-    modalOverlayOffsetY: -30  // Shift step 22 (confirm modal) speech bubble and arrow up 30px
+    offsetX: -60
   },
-  // Step 23: Point at inventory tab - shield is now in inventory
+  // Step 24: Point at confirm button - centered under Purchase button (modal is open)
+  {
+    target: '#confirmOkBtn',
+    message: 'Click PURCHASE to confirm.',
+    arrowSide: 'bottom',
+    offsetX: 0,
+    offsetY: -30
+  },
+  // Step 25: Point at inventory tab - shield is now in inventory
   {
     target: '.tab-button[data-tab="inventory"]',
-    message: "You\'re the proud owner if a shiny new shield! Click the Inventory tab to see it.",
+    message: "You're the owner of a shiny new shield! Click INVENTORY to see it.",
     arrowSide: 'left',
-    offsetX: 60  // Shift 60px right from 0
+    offsetX: 5  // Shift 20px left from 25
   },
-  // Step 24: Point at shield in inventory - tell user to click it
+  // Step 26: Point at shield in inventory - tell user to click it
   {
     target: '#shield-to-place-0',
-    message: "Click the shield to select it for placement.",
+    message: "Click the shield to select it.",
     arrowSide: 'left',
     offsetX: 0  // Shift 40px right from -40
   },
-  // Step 25: Point at tower on path - apply shield to it
+  // Step 26 (continued): Point at tower on path - apply shield to it
   {
     targetHex: TUTORIAL_STEP9_PLACEMENT_HEX,
-    message: "Let\'s apply it to this tower.",
+    message: "Click this tower to apply the shield.",
     arrowSide: 'bottom',
     bubbleBelowArrow: true,
     offsetX: 5
   },
-  // Step 26: Water tank adjacent to fire spawner - rotate tower to hit it (advance when tank explodes)
+  // Step 27: Water tank adjacent to fire spawner - rotate tower to hit it (advance when tank explodes)
   {
     targetHex: TUTORIAL_WATER_TANK_HEX,
-    message: "Nice job! This is a water tank. These can spawn randomly at any time. Rotate the tower on the path to point at it.",
+    message: "Nice job! Hey look, a WATER TANK randomly spawned! Rotate the tower on the path to target it.",
     arrowSide: 'left',
     offsetX: -20  // Shift 40px right from -60
   },
-  // Step 27: Point at Resume button - tell user to resume (advance when clicked; then 1s delay before step 28)
+  // Step 28: Point at Resume button - tell user to resume (advance when clicked; then 1s delay before step 29)
   {
     target: '#pauseBtn',
-    message: "Click Resume to continue the wave.",
+    message: "Click RESUME to see what happens when the tower hits the water tank!",
     arrowSide: 'top',
     offsetY: 22
   },
-  // Step 28: Tutorial complete
+  // Step 29: Tutorial complete
   {
     centered: true,
-    message: 'Nice damage from that water tank, huh? Looks like you\'re ready to defend the Grove for real now! Good luck! (Remember, you can trigger the tutorial to display at any time in the main menu.)',
+    message: 'Nice damage! You\'re ready to defend the Ancient Grove. There\'s so much more to discover. Good luck, water wielder!',
     buttonText: 'Finish'
   }
 ];
