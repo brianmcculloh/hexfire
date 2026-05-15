@@ -1,7 +1,7 @@
 // Fire System - Manages fire ignition, spreading, and extinguishing
 
 import { CONFIG, getFireTypeConfig, getFireTypeStrengthRank, getFireSpawnProbabilities, getBaseSpreadRate, getPowerUpMultiplier, getNextFireType } from '../config.js';
-import { getNeighbors, hexKey, hexDistance } from '../utils/hexMath.js';
+import { hexDistance, getHexesInRing } from '../utils/hexMath.js';
 
 export class FireSystem {
   constructor(gridSystem, pathSystem, gameState = null) {
@@ -58,7 +58,8 @@ export class FireSystem {
         CONFIG.FIRE_TYPE_BLAZE,
         CONFIG.FIRE_TYPE_FIRESTORM,
         CONFIG.FIRE_TYPE_INFERNO,
-        CONFIG.FIRE_TYPE_CATACLYSM
+        CONFIG.FIRE_TYPE_CATACLYSM,
+        CONFIG.FIRE_TYPE_BLACKFYRE,
       ];
       return allFireTypes[Math.floor(Math.random() * allFireTypes.length)];
     }
@@ -73,7 +74,8 @@ export class FireSystem {
       CONFIG.FIRE_TYPE_BLAZE,
       CONFIG.FIRE_TYPE_FIRESTORM,
       CONFIG.FIRE_TYPE_INFERNO,
-      CONFIG.FIRE_TYPE_CATACLYSM
+      CONFIG.FIRE_TYPE_CATACLYSM,
+      CONFIG.FIRE_TYPE_BLACKFYRE,
     ];
     
     const probValues = [
@@ -82,7 +84,8 @@ export class FireSystem {
       probs.blaze,
       probs.firestorm,
       probs.inferno,
-      probs.cataclysm
+      probs.cataclysm,
+      probs.blackfyre ?? 0,
     ];
     
     // Select fire type based on weighted probability
@@ -95,8 +98,7 @@ export class FireSystem {
       }
     }
     
-    // Fallback to cataclysm if something went wrong
-    return CONFIG.FIRE_TYPE_CATACLYSM;
+    return CONFIG.FIRE_TYPE_BLACKFYRE;
   }
 
   /**
@@ -207,6 +209,7 @@ export class FireSystem {
       CONFIG.FIRE_TYPE_FIRESTORM,
       CONFIG.FIRE_TYPE_INFERNO,
       CONFIG.FIRE_TYPE_CATACLYSM,
+      CONFIG.FIRE_TYPE_BLACKFYRE,
     ];
     return order.indexOf(typeA) > order.indexOf(typeB);
   }
@@ -245,122 +248,212 @@ export class FireSystem {
   }
 
   /**
-   * Spread fires from burning hexes to neighbors
+   * Six axial neighbor offsets used by spread (matches `getNeighbors` order).
+   * Inlining avoids the 6-object array allocation per source hex per tick.
+   * @private
+   */
+  static _NEIGHBOR_DELTAS = [
+    [1, 0],   // East
+    [1, -1],  // Northeast
+    [0, -1],  // Northwest
+    [-1, 0],  // West
+    [-1, 1],  // Southwest
+    [0, 1],   // Southeast
+  ];
+
+  /**
+   * Spread fires from burning hexes to neighbors.
+   *
+   * Called once per game tick (1 Hz) but does up to `burningCount × 6` work.
+   * To keep this cheap when most of the map is on fire we hoist values that
+   * don't change per-hex/per-neighbor:
+   *  - power-up multiplier + per-wave multiplier (game state, not hex state)
+   *  - base spread rate per source fire type (cached per call)
+   *  - spawner ring rates (Map<neighborKey,rate> for hexes within ring 3)
+   *  - path positions for source hexes (Map<sourceKey,{pathIndex,position}>)
+   *  - immutable CONFIG path multipliers
+   *
+   * Net: each inner-loop neighbor only needs lookups + a single Math.random.
    */
   spreadFires() {
     const burningHexes = this.gridSystem.getBurningHexes();
+    if (burningHexes.length === 0) return;
+
     const hexesToIgnite = []; // Collect hexes to ignite to avoid modifying during iteration
     const hexesToOvertake = []; // Collect burning hexes to replace with stronger fire
-    
-    burningHexes.forEach(hex => {
-      const neighbors = getNeighbors(hex.q, hex.r);
-      const isBeingExtinguished = !!hex.isBeingSprayed;
-      const fireConfig = getFireTypeConfig(hex.fireType);
-      const spreadMultiplier = fireConfig ? fireConfig.spreadMultiplier : 1.0;
-      
-      // Check if this hex is on a path
-      const pathInfo = hex.isPath ? this.getPathPosition(hex) : null;
-      
-      neighbors.forEach(neighbor => {
-        const neighborHex = this.gridSystem.getHex(neighbor.q, neighbor.r);
-        
-        // Skip if neighbor doesn't exist
-        // Allow spreading even if being sprayed (tower will extinguish it)
-        // Prevent fires from spreading to fire spawners (spawners are indestructible)
-        if (!neighborHex || neighborHex.hasFireSpawner) return;
-        
-        // Per-fire-type base spread rate from FIRE_SPAWN_PROBABILITIES[wave][type][1]
-        const waveNumber = this.gameState?.wave?.number || 1;
-        const baseSpreadRate = getBaseSpreadRate(hex.fireType, waveNumber);
-        const perWaveMultiplier = this.getSpawnerSpreadMultiplier();
 
-        // Situation multiplier (normal, to-path, path-to-path, path-to-town, spawner)
+    // ---- Hoisted values (per-call constants) ----
+    const waveNumber = this.gameState?.wave?.number || 1;
+    const perWaveMultiplier = this.getSpawnerSpreadMultiplier();
+    const powerUps = this.gameState?.player?.powerUps || {};
+    const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+    const fireSpreadMultiplier = getPowerUpMultiplier('fireSpread', powerUps, tempPowerUps);
+
+    // CONFIG situation multipliers (read once)
+    const M_TO_PATH = CONFIG.FIRE_SPREAD_MULTIPLIER_TO_PATH;
+    const M_PATH_TO_PATH = CONFIG.FIRE_SPREAD_MULTIPLIER_PATH_TO_PATH;
+    const M_PATH_TO_TOWN = CONFIG.FIRE_SPREAD_MULTIPLIER_PATH_TO_TOWN;
+    const M_NORMAL = CONFIG.FIRE_SPREAD_MULTIPLIER_NORMAL;
+    const SPAWNER_MULT = CONFIG.FIRE_SPREAD_MULTIPLIER_SPAWNER_TO_ADJACENT ?? (0.08 / 0.0015);
+    const SPAWNER_RING_REDUCTION = CONFIG.FIRE_SPAWNER_RING_REDUCTION_FACTOR || 0.4;
+
+    // Cache base spread rate per fire type (function call -> CONFIG row lookup)
+    /** @type {Object<string, number>} */
+    const baseSpreadRateByType = Object.create(null);
+    const getBaseRate = (fireType) => {
+      let r = baseSpreadRateByType[fireType];
+      if (r === undefined) {
+        r = getBaseSpreadRate(fireType, waveNumber);
+        baseSpreadRateByType[fireType] = r;
+      }
+      return r;
+    };
+
+    // ---- Precompute spawner ring distances ----
+    // Old code re-iterated all spawners for every non-path/non-town neighbor.
+    // We instead expand each spawner's rings 1..3 once into a Map<key,minDistance>.
+    const spawners = this.gameState?.fireSpawnerSystem?.getAllSpawners() || [];
+    /** @type {Map<string, number>} key -> minDistance (1..3) */
+    const spawnerRingDistByKey = spawners.length > 0 ? new Map() : null;
+    if (spawnerRingDistByKey) {
+      for (let s = 0; s < spawners.length; s++) {
+        const sp = spawners[s];
+        for (let ring = 1; ring <= 3; ring++) {
+          const ringHexes = getHexesInRing(sp.q, sp.r, ring);
+          for (let h = 0; h < ringHexes.length; h++) {
+            const rh = ringHexes[h];
+            const key = `${rh.q},${rh.r}`;
+            const existing = spawnerRingDistByKey.get(key);
+            if (existing === undefined || ring < existing) {
+              spawnerRingDistByKey.set(key, ring);
+            }
+          }
+        }
+      }
+    }
+
+    // ---- Precompute path positions (only for source hexes that are on paths) ----
+    // Old `getPathPosition` re-scanned every path/every hex per call.
+    /** @type {Map<string, {pathIndex:number, position:number}>} */
+    const pathPositionByKey = new Map();
+    const currentPaths = this.pathSystem?.currentPaths || [];
+    for (let pi = 0; pi < currentPaths.length; pi++) {
+      const path = currentPaths[pi];
+      for (let pos = 0; pos < path.length; pos++) {
+        const ph = path[pos];
+        pathPositionByKey.set(`${ph.q},${ph.r}`, { pathIndex: pi, position: pos });
+      }
+    }
+
+    // ---- Iterate burning hexes ----
+    const deltas = FireSystem._NEIGHBOR_DELTAS;
+    const debugAllTypes = CONFIG.DEBUG_ALL_FIRE_TYPES;
+    const ALL_TYPES = debugAllTypes ? [
+      CONFIG.FIRE_TYPE_CINDER,
+      CONFIG.FIRE_TYPE_FLAME,
+      CONFIG.FIRE_TYPE_BLAZE,
+      CONFIG.FIRE_TYPE_FIRESTORM,
+      CONFIG.FIRE_TYPE_INFERNO,
+      CONFIG.FIRE_TYPE_CATACLYSM,
+      CONFIG.FIRE_TYPE_BLACKFYRE,
+    ] : null;
+
+    for (let i = 0; i < burningHexes.length; i++) {
+      const hex = burningHexes[i];
+      const isBeingExtinguished = !!hex.isBeingSprayed;
+      const sourceFireType = hex.fireType;
+      const fireConfig = getFireTypeConfig(sourceFireType);
+      const sourceSpreadMultiplier = fireConfig ? fireConfig.spreadMultiplier : 1.0;
+      const baseSpreadRate = getBaseRate(sourceFireType);
+
+      const sourceIsPath = !!hex.isPath;
+      const pathInfo = sourceIsPath
+        ? pathPositionByKey.get(`${hex.q},${hex.r}`) || null
+        : null;
+      const pathPathArr = pathInfo ? currentPaths[pathInfo.pathIndex] : null;
+      const previousPathHex = (pathInfo && pathInfo.position > 0 && pathPathArr)
+        ? pathPathArr[pathInfo.position - 1]
+        : null;
+
+      // Per-source common factor; situation multiplier is layered in below
+      const sourceCommon = baseSpreadRate * perWaveMultiplier * sourceSpreadMultiplier * fireSpreadMultiplier
+        * (isBeingExtinguished ? 0.75 : 1);
+
+      for (let d = 0; d < 6; d++) {
+        const delta = deltas[d];
+        const nq = hex.q + delta[0];
+        const nr = hex.r + delta[1];
+        const neighborHex = this.gridSystem.getHex(nq, nr);
+        if (!neighborHex || neighborHex.hasFireSpawner) continue;
+
+        // Compute spread chance based on situation (path/town/spawner-ring/normal)
         let spreadChance;
         if (neighborHex.isPath) {
-          const situationMultiplier = hex.isPath && pathInfo
-            ? (this.isNeighborTowardHomebase(hex, neighborHex, pathInfo.pathIndex, pathInfo.position)
-                ? CONFIG.FIRE_SPREAD_MULTIPLIER_PATH_TO_TOWN
-                : CONFIG.FIRE_SPREAD_MULTIPLIER_PATH_TO_PATH)
-            : CONFIG.FIRE_SPREAD_MULTIPLIER_TO_PATH;
-          spreadChance = baseSpreadRate * situationMultiplier * perWaveMultiplier;
+          let situationMultiplier;
+          if (sourceIsPath && pathInfo) {
+            // Toward homebase = previous hex in current path
+            const towardTown = !!previousPathHex
+              && previousPathHex.q === nq
+              && previousPathHex.r === nr;
+            situationMultiplier = towardTown ? M_PATH_TO_TOWN : M_PATH_TO_PATH;
+          } else {
+            situationMultiplier = M_TO_PATH;
+          }
+          spreadChance = sourceCommon * situationMultiplier;
         } else if (neighborHex.isTown) {
-          const situationMultiplier = hex.isPath && pathInfo
-            ? CONFIG.FIRE_SPREAD_MULTIPLIER_PATH_TO_TOWN
-            : CONFIG.FIRE_SPREAD_MULTIPLIER_NORMAL;
-          spreadChance = baseSpreadRate * situationMultiplier * perWaveMultiplier;
+          const situationMultiplier = (sourceIsPath && pathInfo) ? M_PATH_TO_TOWN : M_NORMAL;
+          spreadChance = sourceCommon * situationMultiplier;
         } else {
-          const spawnerRingRate = this.getSpawnerRingRate(neighbor.q, neighbor.r, hex.fireType);
-          if (spawnerRingRate !== null) {
-            spreadChance = spawnerRingRate * perWaveMultiplier;
+          // Spawner ring rate uses a different base formula (not the per-source rate); we only
+          // multiply by perWaveMultiplier + the per-source spread/fireSpread/extinguishing factors.
+          let ringRate = null;
+          if (spawnerRingDistByKey) {
+            const ringDist = spawnerRingDistByKey.get(`${nq},${nr}`);
+            if (ringDist !== undefined) {
+              ringRate = baseSpreadRate * SPAWNER_MULT * Math.pow(SPAWNER_RING_REDUCTION, Math.max(0, ringDist - 1));
+            }
+          }
+          if (ringRate !== null) {
+            spreadChance = ringRate * perWaveMultiplier * sourceSpreadMultiplier * fireSpreadMultiplier
+              * (isBeingExtinguished ? 0.75 : 1);
           } else {
-            spreadChance = baseSpreadRate * CONFIG.FIRE_SPREAD_MULTIPLIER_NORMAL * perWaveMultiplier;
+            spreadChance = sourceCommon * M_NORMAL;
           }
         }
 
-        // Apply fire type multiplier
-        spreadChance *= spreadMultiplier;
-
-        // Apply fire resistance power-up
-        const powerUps = this.gameState?.player?.powerUps || {};
-        const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
-        const fireSpreadMultiplier = getPowerUpMultiplier('fireSpread', powerUps, tempPowerUps);
-        spreadChance *= fireSpreadMultiplier;
-
-        // Reduce spread chance if fire is being actively extinguished
-        if (isBeingExtinguished) {
-          spreadChance *= 0.75;
-        }
-        
-        // Determine if spread attempt is eligible (non-burning, or stronger overtakes weaker)
+        // Eligibility: empty hex, or stronger fire overtakes weaker fire
         const targetIsBurning = !!neighborHex.isBurning;
-        const canAttemptSpread = !targetIsBurning || this.isStrongerFireType(hex.fireType, neighborHex.fireType);
+        if (targetIsBurning && !this.isStrongerFireType(sourceFireType, neighborHex.fireType)) continue;
 
-        // Check if fire spreads
-        if (canAttemptSpread && Math.random() < spreadChance) {
-          // Determine resulting fire type
-          let resultType;
-          if (CONFIG.DEBUG_ALL_FIRE_TYPES) {
-            // Debug: choose any type with equal chance
-            const allTypes = [
-              CONFIG.FIRE_TYPE_CINDER,
-              CONFIG.FIRE_TYPE_FLAME,
-              CONFIG.FIRE_TYPE_BLAZE,
-              CONFIG.FIRE_TYPE_FIRESTORM,
-              CONFIG.FIRE_TYPE_INFERNO,
-              CONFIG.FIRE_TYPE_CATACLYSM,
-            ];
-            resultType = allTypes[Math.floor(Math.random() * allTypes.length)];
-          } else {
-            // Normal: fire type never changes when spreading
-            resultType = hex.fireType;
-          }
+        if (Math.random() >= spreadChance) continue;
 
-          if (!targetIsBurning) {
-            hexesToIgnite.push({ 
-              q: neighbor.q, 
-              r: neighbor.r, 
-              fireType: resultType
-            });
-          } else {
-            hexesToOvertake.push({ 
-              q: neighbor.q, 
-              r: neighbor.r, 
-              fireType: resultType
-            });
-          }
+        let resultType;
+        if (debugAllTypes) {
+          resultType = ALL_TYPES[Math.floor(Math.random() * ALL_TYPES.length)];
+        } else {
+          resultType = sourceFireType;
         }
-      });
-    });
-    
-    // Ignite collected hexes
-    hexesToIgnite.forEach(({ q, r, fireType }) => {
-      this.igniteHex(q, r, fireType);
-    });
 
-    // Overtake collected burning hexes
-    hexesToOvertake.forEach(({ q, r, fireType }) => {
+        if (!targetIsBurning) {
+          hexesToIgnite.push({ q: nq, r: nr, fireType: resultType });
+        } else {
+          hexesToOvertake.push({ q: nq, r: nr, fireType: resultType });
+        }
+      }
+    }
+
+    // Ignite collected hexes
+    for (let i = 0; i < hexesToIgnite.length; i++) {
+      const { q, r, fireType } = hexesToIgnite[i];
+      this.igniteHex(q, r, fireType);
+    }
+
+    // Overtake collected burning hexes (one coalesced UI refresh covers them all)
+    let overtookAny = false;
+    for (let i = 0; i < hexesToOvertake.length; i++) {
+      const { q, r, fireType } = hexesToOvertake[i];
       const fireConfig = getFireTypeConfig(fireType);
-      if (!fireConfig) return;
+      if (!fireConfig) continue;
       this.gridSystem.setHex(q, r, {
         isBurning: true,
         fireType,
@@ -368,11 +461,12 @@ export class FireSystem {
         extinguishProgress: fireConfig.extinguishTime,
         maxExtinguishTime: fireConfig.extinguishTime,
       });
-      if (window.updateUI) {
-        window.updateUI();
-      }
-    });
-    
+      overtookAny = true;
+    }
+    if (overtookAny && typeof window !== 'undefined') {
+      if (window.scheduleUIRefresh) window.scheduleUIRefresh();
+      else if (window.updateUI) window.updateUI();
+    }
   }
 
   /**
@@ -395,10 +489,14 @@ export class FireSystem {
       const newRank = getFireTypeStrengthRank(fireType);
       const existingRank = getFireTypeStrengthRank(existingType);
       if (newRank < existingRank) {
-        // New fire is weaker - refill existing fire (reset extinguish progress, keep type)
+        // New fire is weaker — refill existing fire (reset extinguish progress, keep type).
+        // None of these fields are structural and the hex is already in burningHexCache,
+        // so we can mutate in place and skip setHex's spread-copy + cache-pointer rewrites.
+        // Hot path during boss purify: a single cast can re-strike ~100 already-burning
+        // hexes and each one used to allocate a fresh hex object via setHex.
         const fireConfig = getFireTypeConfig(existingType);
         if (fireConfig) {
-          this.gridSystem.setHex(q, r, {
+          this.gridSystem.mutateHexFields(q, r, {
             extinguishProgress: fireConfig.extinguishTime,
             maxExtinguishTime: fireConfig.extinguishTime,
             burnDuration: 0,
@@ -417,6 +515,7 @@ export class FireSystem {
           if (typeof window !== 'undefined' && window.AudioManager) {
             const isOccupied = hex.hasTower || hex.hasWaterTank || hex.hasTempPowerUpItem ||
                                hex.hasMysteryItem || hex.hasCurrencyItem || hex.hasSuppressionBomb ||
+                               hex.hasBurningVault || hex.hasArtifactItem ||
                                hex.isPath;
             if (isOccupied) {
               const hitIndex = Math.floor(Math.random() * 3) + 1;
@@ -433,14 +532,29 @@ export class FireSystem {
     
     const fireConfig = getFireTypeConfig(fireType);
     if (!fireConfig) return;
-    
-    this.gridSystem.setHex(q, r, {
-      isBurning: true,
-      fireType: fireType,
-      burnDuration: 0,
-      extinguishProgress: fireConfig.extinguishTime,
-      maxExtinguishTime: fireConfig.extinguishTime,
-    });
+
+    // Same reasoning as the "weaker refill" branch above: if the hex is already
+    // burning, an upgrade to a stronger/equal fire type only mutates
+    // non-structural fields, and the hex stays in burningHexCache regardless.
+    // Mutating in place avoids the spread-copy + cache pointer update that
+    // setHex performs, which matters when boss casts re-strike dozens of
+    // already-burning hexes per second.
+    if (hex.isBurning) {
+      this.gridSystem.mutateHexFields(q, r, {
+        fireType: fireType,
+        burnDuration: 0,
+        extinguishProgress: fireConfig.extinguishTime,
+        maxExtinguishTime: fireConfig.extinguishTime,
+      });
+    } else {
+      this.gridSystem.setHex(q, r, {
+        isBurning: true,
+        fireType: fireType,
+        burnDuration: 0,
+        extinguishProgress: fireConfig.extinguishTime,
+        maxExtinguishTime: fireConfig.extinguishTime,
+      });
+    }
     
     // Spawn lightning effect for initial spawns (not spreads)
     if (isSpawn) {
@@ -457,6 +571,7 @@ export class FireSystem {
       if (typeof window !== 'undefined' && window.AudioManager) {
         const isOccupied = hex.hasTower || hex.hasWaterTank || hex.hasTempPowerUpItem || 
                            hex.hasMysteryItem || hex.hasCurrencyItem || hex.hasSuppressionBomb ||
+                           hex.hasBurningVault || hex.hasArtifactItem ||
                            hex.isPath;
         if (isOccupied) {
           const hitIndex = Math.floor(Math.random() * 3) + 1;
@@ -473,8 +588,10 @@ export class FireSystem {
       window.AudioManager.playSFXSegment('burning', 0.75, { maxConcurrent: 1 });
     }
     
-    // Update status panel when fire is created
-    if (window.updateUI) {
+    // Update status panel when fire is created (coalesced; many ignites/tick → one update/frame)
+    if (typeof window !== 'undefined' && window.scheduleUIRefresh) {
+      window.scheduleUIRefresh();
+    } else if (window.updateUI) {
       window.updateUI();
     }
   }
@@ -510,6 +627,7 @@ export class FireSystem {
       if (fireType && this.firesExtinguishedThisWave[fireType] !== undefined) {
         this.firesExtinguishedThisWave[fireType]++;
       }
+      this.gameState?.runStats?.recordFireExtinguished?.(fireType);
       
       // Trigger extinguish visual effect
       try {
@@ -521,17 +639,18 @@ export class FireSystem {
         // ignore render side errors
       }
       
-      // Update status panel when fire is extinguished
-      if (window.updateUI) {
+      // Update status panel when fire is extinguished (coalesced)
+      if (typeof window !== 'undefined' && window.scheduleUIRefresh) {
+        window.scheduleUIRefresh();
+      } else if (window.updateUI) {
         window.updateUI();
       }
       
       return true;
     } else {
-      // Fire is partially extinguished
-      this.gridSystem.setHex(q, r, {
-        extinguishProgress: newProgress,
-      });
+      // Fire is partially extinguished — mutate in place (non-structural; sees
+      // the same cached hex reference that getBurningHexes returns).
+      hex.extinguishProgress = newProgress;
       return false;
     }
   }
@@ -555,6 +674,7 @@ export class FireSystem {
       CONFIG.FIRE_TYPE_FIRESTORM,
       CONFIG.FIRE_TYPE_INFERNO,
       CONFIG.FIRE_TYPE_CATACLYSM,
+      CONFIG.FIRE_TYPE_BLACKFYRE,
     ];
     const maxIdx = hierarchy.indexOf(maxFireType);
     if (maxIdx < 0) return false;
@@ -585,7 +705,9 @@ export class FireSystem {
       // ignore render side errors
     }
 
-    if (window.updateUI) {
+    if (typeof window !== 'undefined' && window.scheduleUIRefresh) {
+      window.scheduleUIRefresh();
+    } else if (window.updateUI) {
       window.updateUI();
     }
     return true;
@@ -631,8 +753,10 @@ export class FireSystem {
           this.firesExtinguishedThisWave[fireType]++;
         }
         
-        // Update status panel when fire burns out
-        if (window.updateUI) {
+        // Update status panel when fire burns out (coalesced; updateBurnout currently disabled)
+        if (typeof window !== 'undefined' && window.scheduleUIRefresh) {
+          window.scheduleUIRefresh();
+        } else if (window.updateUI) {
           window.updateUI();
         }
       }
@@ -671,23 +795,28 @@ export class FireSystem {
 
   /**
    * Update fire regrowth (fires tick back up when not being extinguished)
+   *
+   * Hot path — runs every frame. We mutate `extinguishProgress` directly on the
+   * cached hex object instead of going through `setHex` (which spreads a new
+   * object + rewrites every cache slot for a non-structural change). At 200+
+   * burning hexes × 60fps this used to allocate ~12k hex objects/sec.
+   *
    * @param {number} deltaTime - Time elapsed in seconds
    */
   updateRegrowth(deltaTime) {
     const burningHexes = this.gridSystem.getBurningHexes();
-    
-    burningHexes.forEach(hex => {
-      // Only regrow if fire is partially extinguished and not currently being sprayed
-      // (Tower system will handle marking hexes as being sprayed)
-      if (hex.extinguishProgress < hex.maxExtinguishTime && !hex.isBeingSprayed) {
-        const regrowAmount = deltaTime * CONFIG.FIRE_REGROW_RATE;
-        const newProgress = Math.min(hex.maxExtinguishTime, hex.extinguishProgress + regrowAmount);
-        
-        this.gridSystem.setHex(hex.q, hex.r, {
-          extinguishProgress: newProgress,
-        });
-      }
-    });
+    if (burningHexes.length === 0) return;
+    const regrowRate = CONFIG.FIRE_REGROW_RATE;
+    const regrowAmount = deltaTime * regrowRate;
+    if (regrowAmount <= 0) return;
+
+    for (let i = 0; i < burningHexes.length; i++) {
+      const hex = burningHexes[i];
+      if (hex.isBeingSprayed) continue;
+      if (hex.extinguishProgress >= hex.maxExtinguishTime) continue;
+      const next = hex.extinguishProgress + regrowAmount;
+      hex.extinguishProgress = next < hex.maxExtinguishTime ? next : hex.maxExtinguishTime;
+    }
   }
 
   /**

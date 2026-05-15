@@ -1,6 +1,6 @@
 // Tooltip System - Displays hover information for game elements
 
-import { CONFIG, getFireTypeConfig, getTowerPower, getPulsingPower, getPulsingAttackInterval, getRainPower, getBomberPower, getBomberAttackInterval, getPowerUpMultiplier, getTowerRange, getSpreadTowerRange, getRainRange } from '../config.js';
+import { CONFIG, getFireTypeConfig, getFireTypeDisplayColor, getTowerPower, getSpreadTowerPower, getPulsingPower, getPulsingAttackInterval, getRainPower, getBomberPower, getBomberAttackInterval, getPowerUpMultiplier, getTowerRange, getSpreadTowerRange, getRainRange, getEffectiveDurationTowerAttackInterval, getPowerUpGraphicFilename, getPermanentPowerUpShopPurchaseCost, getBomberImpactZone, getTowerRangeHexBonusFromTemps, getArtifactById, getSuppressionBombTotalUses, formatWaterDamageRate, formatDisplayHundredths, getTowerMaxHealth, formatEveryInterval, formatDurationSeconds } from '../config.js';
 
 export class TooltipSystem {
   constructor(gameState = null) {
@@ -9,6 +9,10 @@ export class TooltipSystem {
     this.currentContent = null;
     this.mouseX = 0;
     this.mouseY = 0;
+    /** True if the last show() came from the map canvas (live refresh in game loop). */
+    this._fromCanvas = false;
+    /** Last HTML written to #game-tooltip; skipping duplicate writes keeps CSS animations running (canvas refreshes every frame). */
+    this._lastRenderedHtml = null;
     
     this.createTooltip();
   }
@@ -45,11 +49,17 @@ export class TooltipSystem {
    * @param {string|Array<string>} htmlContent - HTML content to display (single string or array of strings for multiple tooltips)
    * @param {number} mouseX - Mouse X position
    * @param {number} mouseY - Mouse Y position
+   * @param {{ allowInTutorial?: boolean, fromCanvas?: boolean }} [options] - allowInTutorial for UI during tutorial; fromCanvas when the map is the source (enables per-frame content refresh)
    */
-  show(htmlContent, mouseX, mouseY) {
+  show(htmlContent, mouseX, mouseY, options = {}) {
     if (!this.tooltip) return;
-    // Disable tooltips during tutorial to avoid cluttering the UI
-    if (this.gameState?.tutorialMode) {
+    if (CONFIG.DISABLE_GAME_TOOLTIPS) {
+      this.hide();
+      return;
+    }
+    this._fromCanvas = options.fromCanvas === true;
+    // Disable tooltips during tutorial to avoid cluttering the UI (exceptions via allowInTutorial)
+    if (this.gameState?.tutorialMode && !options.allowInTutorial) {
       this.hide();
       return;
     }
@@ -70,9 +80,21 @@ export class TooltipSystem {
     this.currentContent = combinedContent;
     this.mouseX = mouseX;
     this.mouseY = mouseY;
-    
+
+    const blackfyreSpawnerTooltip = combinedContent.includes('game-tooltip-blackfyre-spawner');
+    const tooltipMaxWidth = blackfyreSpawnerTooltip ? '310px' : '300px';
+
+    const alreadyVisible = this.tooltip.style.display === 'block';
+    if (alreadyVisible && combinedContent === this._lastRenderedHtml) {
+      this.tooltip.style.maxWidth = tooltipMaxWidth;
+      this.updatePosition();
+      return;
+    }
+
+    this._lastRenderedHtml = combinedContent;
     this.tooltip.innerHTML = combinedContent;
     this.tooltip.style.display = 'block';
+    this.tooltip.style.maxWidth = tooltipMaxWidth;
     this.updatePosition();
   }
 
@@ -83,7 +105,21 @@ export class TooltipSystem {
     if (!this.tooltip) return;
     
     this.tooltip.style.display = 'none';
+    this.tooltip.style.maxWidth = '300px';
     this.currentContent = null;
+    this._fromCanvas = false;
+    this._lastRenderedHtml = null;
+  }
+
+  /** True when a game canvas tooltip is currently shown (used to refresh live stats without mouse movement). */
+  isVisible() {
+    if (!this.tooltip) return false;
+    return this.tooltip.style.display !== 'none' && this.currentContent != null;
+  }
+
+  /** True if the visible tooltip was opened from the map canvas (not inventory / UI). */
+  isFromCanvas() {
+    return this._fromCanvas === true;
   }
 
   /**
@@ -144,17 +180,53 @@ export class TooltipSystem {
       'rain': 'Rain Tower',
       'bomber': 'Bomber Tower'
     };
+    const usageBlurbs = {
+      jet: 'Single stream of water with high power and range. Rotateable.',
+      spread: 'Multiple streams of water covering a directional area with standard power and range. Rotateable.',
+      rain: 'Constant water targeting a large area on the map with standard power.',
+      pulsing: 'Periodic water targeting a small area on the map with high power.',
+      bomber: 'Periodic water bombs targeting an area on the map between 5 and 10 hexes away with high power. Rotateable.',
+    };
     
     const towerName = typeNames[tower.type] || 'Tower';
-    
-    let content = `<div style="font-weight: bold; color: #FFD700; margin-bottom: 8px; font-size: 14px;">${towerName}</div>`;
-    
-    // Show health
-    const currentHealth = Math.round(Math.max(0, tower.health || 0));
-    const maxHealth = Math.round(Math.max(1, tower.maxHealth || 30));
+
+    const rangeLevel = tower.rangeLevel ?? 1;
+    const powerLevel = tower.powerLevel ?? 1;
+    let towerIconHtml = '';
+    if (typeof window !== 'undefined' && typeof window.createTowerIconHTML === 'function') {
+      towerIconHtml = window.createTowerIconHTML(tower.type, rangeLevel, powerLevel, false);
+    }
+
+    // Show health (includes Tower Durability and other towerHealth power-ups)
+    const powerUpsForHealth = gameState?.player?.powerUps || {};
+    const tempPowerUpsForHealth = gameState?.player?.tempPowerUps || [];
+    const maxHealth = getTowerMaxHealth(powerUpsForHealth, tempPowerUpsForHealth);
+    const storedMax = Math.max(1, tower.maxHealth || CONFIG.TOWER_HEALTH);
+    let currentHealth = Math.round(Math.max(0, tower.health || 0));
+    if (storedMax !== maxHealth && storedMax > 0) {
+      currentHealth = Math.min(maxHealth, Math.round((currentHealth / storedMax) * maxHealth));
+    } else {
+      currentHealth = Math.min(maxHealth, currentHealth);
+    }
     const healthPercent = Math.round((currentHealth / maxHealth) * 100);
-    content += `<div style="color: #FFFFFF; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${currentHealth} / ${maxHealth} (${healthPercent}%)</div>`;
-    
+    const healthLine = `<div style="color: #FFFFFF; display: flex; align-items: center; gap: 6px;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${currentHealth} / ${maxHealth} (${healthPercent}%)</div>`;
+
+    let content = '';
+    if (towerIconHtml && typeof towerIconHtml === 'string' && towerIconHtml.includes('<')) {
+      content += `<div style="display: flex; align-items: center; gap: 14px; padding-bottom: 10px; margin-bottom: 0;">
+        <div style="flex-shrink: 0; width: 76px; min-width: 76px; display: flex; align-items: center; justify-content: center; transform: translateX(-10px);">${towerIconHtml}</div>
+        <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0; padding-left: 2px;">
+          <div style="font-weight: bold; color: #FFD700; font-size: 14px;"><span class="tower-tooltip-name">${towerName}</span></div>
+          ${healthLine}
+        </div>
+      </div>`;
+    } else {
+      content += `<div style="font-weight: bold; color: #FFD700; margin-bottom: 8px; font-size: 14px;"><span class="tower-tooltip-name">${towerName}</span></div>`;
+      content += `<div style="color: #FFFFFF; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${currentHealth} / ${maxHealth} (${healthPercent}%)</div>`;
+    }
+
+    content += `<div class="tower-tooltip-details">`;
+
     // Show upgrade levels with correct labels based on tower type
     const isBomber = tower.type === 'bomber';
     const isPulsing = tower.type === 'pulsing';
@@ -183,70 +255,67 @@ export class TooltipSystem {
       // Bomber towers: Speed and Impact Zone
       const speedGraphics = createLevelGraphics(tower.rangeLevel, 4, 'assets/images/misc/speed.png', '#FFC41D');
       const impactGraphics = createLevelGraphics(tower.powerLevel, 4, 'assets/images/misc/impact.png', '#F7375C');
-      const attackInterval = getBomberAttackInterval(tower.rangeLevel);
+      const attackInterval = getEffectiveDurationTowerAttackInterval(
+        getBomberAttackInterval(tower.rangeLevel),
+        powerUps,
+        tempPowerUps
+      );
       const basePower = getBomberPower(tower.powerLevel);
-      // Calculate total extinguishing power per bomb (sum across all hexes in impact zone)
-      // Impact zone multipliers: center=1.0, ring1=0.85, ring2=0.70, ring3=0.55
       const impactLevel = tower.powerLevel;
-      let totalExtinguishingPower = 0;
+      const rangeHexBonus = getTowerRangeHexBonusFromTemps(tempPowerUps);
+      const impactHexes = getBomberImpactZone(0, 0, impactLevel, rangeHexBonus);
       const basePowerWithMultiplier = basePower * waterPowerMultiplier;
+      let totalExtinguishingPower = 0;
+      impactHexes.forEach((h) => {
+        totalExtinguishingPower += basePowerWithMultiplier * h.powerMultiplier;
+      });
+      const totalHexes = impactHexes.length;
       
-      // Center hex (always present)
-      totalExtinguishingPower += basePowerWithMultiplier * 1.0;
-      
-      // Ring 1 (6 hexes at 0.85)
-      if (impactLevel >= 2) {
-        totalExtinguishingPower += basePowerWithMultiplier * 0.85 * 6;
-      }
-      
-      // Ring 2 (12 hexes at 0.70)
-      if (impactLevel >= 3) {
-        totalExtinguishingPower += basePowerWithMultiplier * 0.70 * 12;
-      }
-      
-      // Ring 3 (18 hexes at 0.55)
-      if (impactLevel >= 4) {
-        totalExtinguishingPower += basePowerWithMultiplier * 0.55 * 18;
-      }
-      
-      // Calculate total hexes for display
-      let totalHexes = 1; // Center hex
-      for (let ring = 1; ring < impactLevel; ring++) {
-        totalHexes += 6 * ring; // Each ring has 6 * ring number hexes
-      }
-      
-      content += `<div style="color: #FFC41D; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">Speed: <span style="display: inline-flex; align-items: center; gap: 2px;">${speedGraphics}</span> <span style="margin-left: 12px; display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_orange.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> every ${attackInterval} seconds</span></div>`;
+      content += `<div style="color: #FFC41D; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">Speed: <span style="display: inline-flex; align-items: center; gap: 2px;">${speedGraphics}</span> <span style="margin-left: 12px; display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_orange.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${formatEveryInterval(attackInterval)}</span></div>`;
       content += `<div style="color: #F7375C; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">Impact: <span style="display: inline-flex; align-items: center; gap: 2px;">${impactGraphics}</span> <span style="margin-left: 12px; display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_red.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${totalHexes} hex${totalHexes !== 1 ? 'es' : ''}</span></div>`;
       // Show total extinguishing power per bomb
-      content += `<div style="color: #00D9FF; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;"><span style="display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_blue.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(totalExtinguishingPower)} HP/bomb</span></div>`;
+      content += `<div style="color: #00D9FF; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;"><span style="display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_blue.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${formatWaterDamageRate(totalExtinguishingPower)} HP/bomb</span></div>`;
     } else if (isPulsing) {
       // Pulsing towers: Speed and Power
       const speedGraphics = createLevelGraphics(tower.rangeLevel, 4, 'assets/images/misc/speed.png', '#FFC41D');
       const powerGraphics = createLevelGraphics(tower.powerLevel, 4, 'assets/images/misc/power.png', '#00D9FF');
-      const attackInterval = getPulsingAttackInterval(tower.rangeLevel);
+      const attackInterval = getEffectiveDurationTowerAttackInterval(
+        getPulsingAttackInterval(tower.rangeLevel),
+        powerUps,
+        tempPowerUps
+      );
       const basePower = getPulsingPower(tower.powerLevel);
-      const extinguishingPowerPerSecond = (basePower * waterPowerMultiplier) / attackInterval;
-      content += `<div style="color: #FFC41D; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">Speed: <span style="display: inline-flex; align-items: center; gap: 2px;">${speedGraphics}</span> <span style="margin-left: 12px; display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_orange.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> every ${attackInterval} seconds</span></div>`;
-      content += `<div style="color: #00D9FF; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">Power: <span style="display: inline-flex; align-items: center; gap: 2px;">${powerGraphics}</span> <span style="margin-left: 12px; display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_blue.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(extinguishingPowerPerSecond)} HP/second</span></div>`;
+      // Matches towerSystem: burst = power × interval, so long-run average DPS per hex in the AoE = power × water (not power/interval).
+      const extinguishingPowerPerSecond = basePower * waterPowerMultiplier;
+      const pulseRadius = 1 + getTowerRangeHexBonusFromTemps(tempPowerUps);
+      const pulseHexCount = 1 + 3 * pulseRadius * (pulseRadius + 1);
+      content += `<div style="color: #FFC41D; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">Speed: <span style="display: inline-flex; align-items: center; gap: 2px;">${speedGraphics}</span> <span style="margin-left: 12px; display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_orange.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${formatEveryInterval(attackInterval)}</span></div>`;
+      content += `<div style="color: #00D9FF; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">Power: <span style="display: inline-flex; align-items: center; gap: 2px;">${powerGraphics}</span> <span style="margin-left: 12px; display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_blue.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${formatWaterDamageRate(extinguishingPowerPerSecond)} HP/second</span></div>`;
+      content += `<div style="color: #88FF88; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;"><img src="assets/images/misc/range.png?v=2" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> AoE: ${pulseHexCount} hex${pulseHexCount !== 1 ? 'es' : ''} (radius ${pulseRadius})</div>`;
     } else {
       // Other towers: Range and Power (jet, spread, rain)
       const rangeGraphics = createLevelGraphics(tower.rangeLevel, 4, 'assets/images/misc/range.png?v=2', '#00FF00');
       const powerGraphics = createLevelGraphics(tower.powerLevel, 4, 'assets/images/misc/power.png', '#00D9FF');
       let basePower = 0;
       let rangeValue = 0;
+      const rangeHexBonus = getTowerRangeHexBonusFromTemps(tempPowerUps);
       if (tower.type === 'rain') {
         basePower = getRainPower(tower.powerLevel);
-        rangeValue = getRainRange(tower.rangeLevel);
+        rangeValue = getRainRange(tower.rangeLevel) + rangeHexBonus;
       } else if (tower.type === 'spread') {
-        basePower = getTowerPower(tower.powerLevel);
-        rangeValue = getSpreadTowerRange(tower.rangeLevel);
+        basePower = getSpreadTowerPower(tower.powerLevel);
+        rangeValue = getSpreadTowerRange(tower.rangeLevel) + rangeHexBonus;
       } else {
         basePower = getTowerPower(tower.powerLevel);
-        rangeValue = getTowerRange(tower.rangeLevel);
+        rangeValue = getTowerRange(tower.rangeLevel) + rangeHexBonus;
       }
       const extinguishingPowerPerSecond = basePower * waterPowerMultiplier;
-      content += `<div style="color: #00FF00; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">Range: <span style="display: inline-flex; align-items: center; gap: 2px;">${rangeGraphics}</span> <span style="margin-left: 12px; display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_green.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${rangeValue} hex${rangeValue !== 1 ? 'es' : ''}</span></div>`;
-      content += `<div style="color: #00D9FF; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">Power: <span style="display: inline-flex; align-items: center; gap: 2px;">${powerGraphics}</span> <span style="margin-left: 12px; display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_blue.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(extinguishingPowerPerSecond)} HP/second</span></div>`;
+      const rangeForLabel = Math.round(rangeValue * 100) / 100;
+      const rangeUnitLabel = tower.type === 'rain'
+        ? (rangeForLabel === 1 ? 'hex ring' : 'hex rings')
+        : (rangeForLabel === 1 ? 'hex' : 'hexes');
+      content += `<div style="color: #00FF00; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">Range: <span style="display: inline-flex; align-items: center; gap: 2px;">${rangeGraphics}</span> <span style="margin-left: 12px; display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_green.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${formatDisplayHundredths(rangeValue)} ${rangeUnitLabel}</span></div>`;
+      content += `<div style="color: #00D9FF; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">Power: <span style="display: inline-flex; align-items: center; gap: 2px;">${powerGraphics}</span> <span style="margin-left: 12px; display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_blue.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${formatWaterDamageRate(extinguishingPowerPerSecond)} HP/second</span></div>`;
     }
     
     // Show shield if present (icon uses highest level applied; label is "Shield:" since stacked shields combine levels)
@@ -255,10 +324,17 @@ export class TooltipSystem {
       const shieldMaxHealth = Math.round(tower.shield.maxHealth);
       content += `<div style="color: #B794F6; margin-top: 8px; display: flex; align-items: center; gap: 6px;"><img src="assets/images/items/shield_${tower.shield.level}.png" style="width: 16px; height: 16px; image-rendering: pixelated;" /> Shield: <span style="display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /><span style="color: #FFFFFF;">${shieldHealth} / ${shieldMaxHealth}</span></span></div>`;
     }
+
+    const usageBlurb = usageBlurbs[tower.type];
+    if (usageBlurb) {
+      content += `<div style="color: #FFFFFF; margin-top: 10px; font-size: 13px; line-height: 1.35;">${usageBlurb}</div>`;
+    }
     
     // Add placement-phase instruction (matches inventory style: non-italic, white, smaller)
-    content += `<div style="color: #FFFFFF; margin-top: 12px; font-size: 11px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">During placement phase, drag to move or right-click to store in inventory.</div>`;
-    
+    content += `<div style="color: #AAAAAA; margin-top: 12px; font-size: 11px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">During placement phase, drag or click to move, or right-click to store in inventory.</div>`;
+
+    content += `</div>`;
+
     return content;
   }
 
@@ -314,11 +390,13 @@ export class TooltipSystem {
    * @returns {string} HTML content
    */
   getSuppressionBombTooltipContent(bomb) {
-    const ringSizes = { 1: 7, 2: 19, 3: 37, 4: 61 };
-    const ringSize = ringSizes[bomb.level] || 7;
+    const totalUses = Number.isFinite(bomb.totalUses) ? bomb.totalUses : getSuppressionBombTotalUses(bomb.level);
+    const usesRemaining = Number.isFinite(bomb.usesRemaining) ? bomb.usesRemaining : totalUses;
+    const ringSize = 37;
     
     let content = `<div style="font-weight: bold; color: #FFFFFF; margin-bottom: 8px; font-size: 14px;">Suppression Bomb Level ${bomb.level}</div>`;
-    content += `<div style="color: #FFFFFF; margin-top: 8px; font-size: 15px; line-height: 1.5;">Triggered when adjacent to a burning hex. Explodes and extinguishes fire in a ${bomb.level}-ring area (${ringSize} hexes).</div>`;
+    content += `<div style="color: #00D9FF; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">Uses: <span style="display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${usesRemaining}/${totalUses}</span></div>`;
+    content += `<div style="color: #FFFFFF; margin-top: 8px; font-size: 15px; line-height: 1.5;">Triggered when adjacent to a burning hex. Explodes and extinguishes fire in a fixed 3-ring area (${ringSize} hexes).</div>`;
     content += `<div style="color: #FFFFFF; margin-top: 12px; font-size: 11px;">During placement phase, drag to move or right-click to store in inventory.</div>`;
     
     return content;
@@ -332,15 +410,40 @@ export class TooltipSystem {
    * @returns {string} HTML content
    */
   getTowerTooltipContentForInventory(towerData, gameState = null, options = {}) {
+    const powerUps = gameState?.player?.powerUps || {};
+    const tempPowerUps = gameState?.player?.tempPowerUps || [];
+    const maxHealth = getTowerMaxHealth(powerUps, tempPowerUps);
     const virtualTower = {
       type: towerData.type,
       rangeLevel: towerData.rangeLevel ?? 1,
       powerLevel: towerData.powerLevel ?? 1,
-      health: CONFIG.TOWER_HEALTH,
-      maxHealth: CONFIG.TOWER_HEALTH,
+      health: maxHealth,
+      maxHealth,
       shield: towerData.shield ?? null
     };
     let html = this.getTowerTooltipContent(virtualTower, gameState);
+    if (options.cost != null) {
+      html = html.replace(
+        /<span class="tower-tooltip-name">([^<]*)<\/span>/,
+        (_, name) =>
+          `<span class="tower-tooltip-name">${name}</span> - <span style="color: #00FF88;">$${options.cost}</span>`
+      );
+    }
+    return html;
+  }
+
+  /**
+   * Generate HTML content for a suppression bomb tooltip in inventory/shop (matches map tooltip; optional cost for shop).
+   * @param {Object} bombData - { level }
+   * @param {{ cost?: number }} options - Optional cost to show (shop only)
+   * @returns {string} HTML content
+   */
+  getSuppressionBombTooltipContentForInventory(bombData, options = {}) {
+    let html = this.getSuppressionBombTooltipContent({
+      level: bombData.level,
+      usesRemaining: bombData.usesRemaining,
+      totalUses: bombData.totalUses,
+    });
     if (options.cost != null) {
       const firstDivEnd = html.indexOf('</div>');
       if (firstDivEnd !== -1) {
@@ -353,22 +456,159 @@ export class TooltipSystem {
   }
 
   /**
-   * Generate HTML content for a suppression bomb tooltip in inventory/shop (matches map tooltip; optional cost for shop).
-   * @param {Object} bombData - { level }
-   * @param {{ cost?: number }} options - Optional cost to show (shop only)
-   * @returns {string} HTML content
+   * Tooltip HTML for an item on the level-up rewards / discoveries screen.
+   * Matches shop and inventory tab tooltips (same strings and structure as createShopItemWithTooltip).
+   * @param {{ towerType: string, unlockLevel?: number, level?: number }} unlock
+   * @param {Object|null} gameState
+   * @param {{ omitShopCost?: boolean }} [options] - If omitShopCost, do not show shop prices (e.g. artifact trader rewards, level-up unlock tooltips)
+   * @returns {string}
    */
-  getSuppressionBombTooltipContentForInventory(bombData, options = {}) {
-    let html = this.getSuppressionBombTooltipContent({ level: bombData.level });
-    if (options.cost != null) {
-      const firstDivEnd = html.indexOf('</div>');
-      if (firstDivEnd !== -1) {
-        html = html.slice(0, firstDivEnd) +
-          ` - <span style="color: #00FF88;">$${options.cost}</span>` +
-          html.slice(firstDivEnd);
-      }
+  getLevelUpRewardTooltipContent(unlock, gameState = null, options = {}) {
+    const omitCost = options.omitShopCost === true;
+    const towerType = unlock.towerType;
+    const level = unlock.level;
+
+    const towerIds = ['jet', 'spread', 'rain', 'pulsing', 'bomber'];
+    if (towerIds.includes(towerType)) {
+      const costMap = {
+        jet: CONFIG.TOWER_COST_JET,
+        spread: CONFIG.TOWER_COST_SPREAD,
+        rain: CONFIG.TOWER_COST_RAIN,
+        pulsing: CONFIG.TOWER_COST_PULSING,
+        bomber: CONFIG.TOWER_COST_BOMBER
+      };
+      return this.getTowerTooltipContentForInventory(
+        { type: towerType, rangeLevel: 1, powerLevel: 1 },
+        gameState,
+        omitCost ? {} : { cost: costMap[towerType] }
+      );
     }
-    return html;
+
+    if (towerType === 'suppression_bomb') {
+      const lvl = level ?? 1;
+      const cost = CONFIG[`SUPPRESSION_BOMB_COST_LEVEL_${lvl}`];
+      return this.getSuppressionBombTooltipContentForInventory(
+        { level: lvl },
+        omitCost ? {} : { cost }
+      );
+    }
+
+    if (towerType === 'suppression_bundle') {
+      const name = 'Suppression Bomb Bundle';
+      const description = 'Buy in bulk and save! A random assortment of 10 Suppression Bombs.';
+      const bundleCost = CONFIG.SUPPRESSION_BUNDLE_COST;
+      const title = omitCost
+        ? name
+        : `${name} - <span style="color: #00FF88;">$${bundleCost}</span>`;
+      return `
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+        <img src="assets/images/items/suppression_bundle.png" style="width: 32px; height: auto; image-rendering: pixelated;" alt="" />
+        <div style="flex: 1;">
+          <div style="font-weight: bold; margin-bottom: 2px; color: #FFFFFF; font-size: 14px;">${title}</div>
+        </div>
+      </div>
+      <div style="color: #FFFFFF; font-size: 15px; line-height: 1.5;">${description}</div>
+    `;
+    }
+
+    if (towerType === 'shield') {
+      const lvl = level ?? 1;
+      const cost = CONFIG[`SHIELD_COST_LEVEL_${lvl}`];
+      const hp = CONFIG[`SHIELD_HEALTH_LEVEL_${lvl}`];
+      const name = `Shield Level ${lvl}`;
+      const description = `Apply to any tower for +${hp} HP of fire protection`;
+      const title = omitCost
+        ? name
+        : `${name} - <span style="color: #00FF88;">$${cost}</span>`;
+      return `
+      <div style="font-weight: bold; color: #FFFFFF; margin-bottom: 8px; font-size: 14px;">${title}</div>
+      <div style="color: #FFFFFF; font-size: 15px; line-height: 1.5;">${description}</div>
+    `;
+    }
+
+    if (towerType === 'town_health') {
+      const title = omitCost
+        ? 'Tree Juice'
+        : `Tree Juice - <span style="color: #00FF88;">$${CONFIG.TOWN_UPGRADE_COST}</span>`;
+      return `
+      <div style="font-weight: bold; color: #FFFFFF; margin-bottom: 8px; font-size: 14px;">${title}</div>
+      <div style="color: #FFFFFF; font-size: 15px; line-height: 1.5;">This elixir of life permanently adds +${CONFIG.TOWN_HEALTH_PER_UPGRADE} health to the Ancient Grove</div>
+    `;
+    }
+
+    if (towerType === 'upgrade_token' || towerType === 'upgrade_plan') {
+      const title = omitCost
+        ? 'Upgrade Plans'
+        : `Upgrade Plans - <span style="color: #00FF88;">$${CONFIG.UPGRADE_PLAN_COST}</span>`;
+      return `
+      <div style="font-weight: bold; color: #FFFFFF; margin-bottom: 8px; font-size: 14px;">${title}</div>
+      <div style="color: #FFFFFF; font-size: 15px; line-height: 1.5;">Upgrade one tower at any time</div>
+    `;
+    }
+
+    if (towerType === 'movement_token') {
+      const title = omitCost
+        ? 'Movement Token'
+        : `Movement Token - <span style="color: #00FF88;">$${CONFIG.MOVEMENT_TOKEN_COST}</span>`;
+      return `
+      <div style="font-weight: bold; color: #FFFFFF; margin-bottom: 8px; font-size: 14px;">${title}</div>
+      <div style="color: #FFFFFF; font-size: 15px; line-height: 1.5;">Reposition one tower during a wave</div>
+    `;
+    }
+
+    if (towerType === 'tower_repair') {
+      const title = omitCost
+        ? 'Repair Supplies'
+        : `Repair Supplies - <span style="color: #00FF88;">$${CONFIG.TOWER_REPAIR_COST}</span>`;
+      return `
+      <div style="font-weight: bold; color: #FFFFFF; margin-bottom: 8px; font-size: 14px;">${title}</div>
+      <div style="color: #FFFFFF; font-size: 15px; line-height: 1.5;">Repair one broken tower.</div>
+      <div style="color: #AAAAAA; margin-top: 12px; font-size: 11px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">Towers can only be repaired between waves</div>
+    `;
+    }
+
+    if (towerType === 'parts_voucher') {
+      const title = omitCost
+        ? 'Parts Voucher'
+        : `Parts Voucher - <span style="color: #00FF88;">$${CONFIG.PARTS_VOUCHER_COST}</span>`;
+      return `
+      <div style="font-weight: bold; color: #FFFFFF; margin-bottom: 8px; font-size: 14px;">${title}</div>
+      <div style="color: #FFFFFF; font-size: 15px; line-height: 1.5;">Recycle one broken tower for its parts value.</div>
+      <div style="color: #AAAAAA; margin-top: 12px; font-size: 11px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">Towers can only be recycled between waves</div>
+    `;
+    }
+
+    if (['water_pressure', 'xp_boost', 'tower_health', 'spread_resistance', 'fire_resistance', 'tower_speed', 'temp_power_up_spawn_boost', 'increased_rares'].includes(towerType)) {
+      const powerUp = CONFIG.POWER_UPS[towerType];
+      if (!powerUp) {
+        return `<div style="color: #FFFFFF;">Unknown power-up</div>`;
+      }
+      const description = powerUp.description || 'Permanent power-up';
+      const graphicFilename = getPowerUpGraphicFilename(towerType);
+      const name = powerUp.name;
+      const owned = this.gameState?.player?.powerUps?.[towerType] ?? 0;
+      const cost = getPermanentPowerUpShopPurchaseCost(towerType, owned);
+      const nameLine = omitCost
+        ? name
+        : `${name} - <span style="color: #00FF88;">$${cost}</span>`;
+      if (graphicFilename) {
+        return `
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+          <img src="assets/images/power_ups/${graphicFilename}" style="width: 32px; height: auto; image-rendering: crisp-edges;" />
+          <div style="flex: 1;">
+            <div style="font-weight: bold; margin-bottom: 2px; color: #FFFFFF; font-size: 14px;">${nameLine}</div>
+          </div>
+        </div>
+        <div style="font-size: 14px; color: #FFFFFF; line-height: 1.4;">${description}</div>
+      `;
+      }
+      return `
+        <div style="font-weight: bold; color: #FFFFFF; margin-bottom: 8px; font-size: 14px;">${nameLine}</div>
+        <div style="color: #FFFFFF; font-size: 14px; line-height: 1.4;">${description}</div>
+      `;
+    }
+
+    return `<div style="color: #FFFFFF;">New item unlocked</div>`;
   }
 
   /**
@@ -397,6 +637,30 @@ export class TooltipSystem {
   }
 
   /**
+   * @param {Object} item - Burning vault item ({ q, r, health, maxHealth })
+   * @returns {string} HTML content
+   */
+  getBurningVaultTooltipContent(item) {
+    const cfg = CONFIG.BURNING_VAULT;
+    const name = cfg?.name || 'Burning Vault';
+    const sprite = cfg?.sprite || 'burning_vault.png';
+    const currentHealth = Math.round(item.health || 0);
+    const maxHealth = Math.round(item.maxHealth || cfg?.maxHealth || 1);
+    const healthPercent = Math.round((currentHealth / maxHealth) * 100);
+
+    let content = `<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">`;
+    content += `<img src="assets/images/items/${sprite}" style="width: 48px; height: auto; image-rendering: crisp-edges;" />`;
+    content += `<div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">`;
+    content += `<div style="font-weight: bold; color: #FFFFFF; font-size: 14px;">${name}</div>`;
+    content += `<div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${currentHealth} / ${maxHealth} (${healthPercent}%)</div>`;
+    content += `</div></div>`;
+    content += `<div style="font-size: 14px; color: #FFFFFF; line-height: 1.4; margin-bottom: 6px;">A smoldering treasure chest appears, holding a powerful reward inside.</div>`;
+    content += `<div style="font-size: 12px; color: #AAAAAA; margin-top: 6px;">Open with water before this wave group ends</div>`;
+
+    return content;
+  }
+
+  /**
    * Generate HTML content for a booster item tooltip
    * @param {Object} item - Booster item object
    * @returns {string} HTML content
@@ -408,43 +672,63 @@ export class TooltipSystem {
     if (!tempPowerUpConfig && !permanentPowerUpConfig) {
       return `<div style="color: #FFFFFF;">Unknown Power-up</div>`;
     }
+
+    if (item.grantPermanent && permanentPowerUpConfig) {
+      const graphicFilename = getPowerUpGraphicFilename(item.powerUpId);
+      const healthPercent = Math.round((item.health / item.maxHealth) * 100);
+      const displayName = permanentPowerUpConfig.name || item.powerUpId;
+      const badge =
+        '<div style="font-size: 11px; font-weight: bold; color: #FFD54F; margin-bottom: 6px; letter-spacing: 0.04em;">PERMANENT PICKUP</div>';
+      const body = `<div style="font-size: 14px; color: #FFFFFF; line-height: 1.45; margin-bottom: 6px;">${permanentPowerUpConfig.description || ''}</div>
+        <div style="font-size: 13px; color: #B8E986; line-height: 1.4;">Collecting this adds one permanent stack (same as buying this power-up in the shop). It does not time out.</div>`;
+      if (graphicFilename) {
+        return `
+        ${badge}
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+          <img src="assets/images/power_ups/${graphicFilename}" style="width: 48px; height: auto; image-rendering: crisp-edges;" />
+          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
+            <div style="font-weight: bold; color: #FFFFFF; font-size: 14px;">${displayName}</div>
+            <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)</div>
+          </div>
+        </div>
+        ${body}
+        <div style="font-size: 12px; color: #AAAAAA; margin-top: 6px;">Collect with water</div>`;
+      }
+      return `
+        ${badge}
+        <div style="font-weight: bold; color: #FFFFFF; font-size: 14px; margin-bottom: 6px;">${displayName}</div>
+        <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF; margin-bottom: 8px;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)</div>
+        ${body}
+        <div style="font-size: 12px; color: #AAAAAA; margin-top: 6px;">Collect with water</div>`;
+    }
     
     // Use temp power-up config for name/icon/effect/value, fall back to permanent config if needed
     const name = tempPowerUpConfig?.name || permanentPowerUpConfig?.name || 'Power-up';
-    const powerUpId = tempPowerUpConfig?.id || permanentPowerUpConfig?.id || item.powerUpId;
     const duration = tempPowerUpConfig?.duration || 10;
     
-    // Get power-up graphic filename
-    const powerUpGraphicMap = {
-      'water_pressure': 'water_pressure.png',
-      'xp_boost': 'xp_boost.png',
-      'tower_health': 'tower_durability.png',
-      'fire_resistance': 'fire_resistance.png',
-      'temp_power_up_spawn_boost': 'power_up_magnet.png'
-    };
-    const graphicFilename = powerUpGraphicMap[powerUpId];
+    // Get power-up graphic filename (key by runtime pickup id so art matches the hex item)
+    const graphicFilename = getPowerUpGraphicFilename(item.powerUpId);
     
     // Prefer temp power-up config values, fall back to permanent config
     const effectType = tempPowerUpConfig?.effect || permanentPowerUpConfig?.effect;
     const effectValue = tempPowerUpConfig?.value ?? permanentPowerUpConfig?.value ?? 0;
-    const effectPercent = Math.abs(effectValue * 100).toFixed(0);
     
-    // Calculate effect percentage and duration line (e.g. "+50% for 20 seconds")
-    let effectDurationLine = '';
-    if (effectType && effectValue !== 0) {
-      const sign = effectValue > 0 ? '+' : '-';
-      effectDurationLine = `${sign}${effectPercent}% for ${duration} seconds`;
+    /** Short summary for map pickup tooltip (e.g. "+50% for 20 seconds") */
+    let mainSummary = '';
+    if (effectType === 'towerAttackInterval') {
+      const per = tempPowerUpConfig?.intervalScalePerStack ?? permanentPowerUpConfig?.intervalScalePerStack ?? 0.9;
+      const pct = Math.round((1 - per) * 100);
+      mainSummary = `+${pct}% for ${formatDurationSeconds(duration)}`;
+    } else if (effectType === 'towerRangeHexBonus' && Number.isFinite(effectValue) && effectValue !== 0) {
+      const n = Math.round(effectValue);
+      const hexWord = Math.abs(n) === 1 ? 'hex' : 'hexes';
+      mainSummary = `+${n} ${hexWord} range for ${formatDurationSeconds(duration)}`;
+    } else if (effectType && effectValue !== 0) {
+      const effectPercent = Math.abs(effectValue * 100).toFixed(0);
+      const sign = effectValue > 0 ? '+' : '−';
+      mainSummary = `${sign}${effectPercent}% for ${formatDurationSeconds(duration)}`;
     } else {
-      effectDurationLine = `${duration} seconds`;
-    }
-    
-    // Use description from config file (booster config takes precedence, fall back to permanent)
-    let description = tempPowerUpConfig?.description || permanentPowerUpConfig?.description || 'Booster';
-    // Append stacking note for items on map
-    if (tempPowerUpConfig?.value !== undefined || permanentPowerUpConfig?.value !== undefined) {
-      description += '. Stacks additively when multiple are active.';
-    } else if (permanentPowerUpConfig?.multiplier !== undefined) {
-      description += '. Stacks multiplicatively when multiple are active.';
+      mainSummary = formatDurationSeconds(duration);
     }
     
     const healthPercent = Math.round((item.health / item.maxHealth) * 100);
@@ -459,11 +743,10 @@ export class TooltipSystem {
           <img src="assets/images/power_ups/${graphicFilename}" style="width: 48px; height: auto; image-rendering: crisp-edges;" />
           <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
             <div style="font-weight: bold; color: #FFFFFF; font-size: 14px;">${displayName}</div>
-            <div style="font-size: 14px; color: #00E6CC;">${effectDurationLine}</div>
             <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)</div>
           </div>
         </div>
-        <div style="font-size: 14px; color: #FFFFFF; line-height: 1.4; margin-bottom: 6px;">${description}</div>
+        <div style="font-size: 14px; color: #FFFFFF; line-height: 1.4; margin-bottom: 6px;">${mainSummary}</div>
         <div style="font-size: 12px; color: #AAAAAA; margin-top: 6px;">Collect with water</div>
       `;
     } else {
@@ -473,11 +756,10 @@ export class TooltipSystem {
           <div style="font-size: 48px;">${fallbackChar}</div>
           <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
             <div style="font-weight: bold; color: #FFFFFF; font-size: 14px;">${displayName}</div>
-            <div style="font-size: 14px; color: #00E6CC;">${effectDurationLine}</div>
             <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)</div>
           </div>
         </div>
-        <div style="font-size: 14px; color: #FFFFFF; line-height: 1.4; margin-bottom: 6px;">${description}</div>
+        <div style="font-size: 14px; color: #FFFFFF; line-height: 1.4; margin-bottom: 6px;">${mainSummary}</div>
         <div style="font-size: 12px; color: #AAAAAA; margin-top: 6px;">Collect with water</div>
       `;
     }
@@ -518,7 +800,73 @@ export class TooltipSystem {
   }
 
   /**
-   * Generate HTML content for a bonus item tooltip (money or movement token)
+   * Map artifact tooltip: name, health, time, config lore, footnote.
+   * @param {{ artifactId: string, health: number, maxHealth: number, timeLeftSeconds: number }} item
+   */
+  getArtifactItemTooltipContent(item) {
+    const def = getArtifactById(item.artifactId);
+    if (!def) return '';
+
+    const name = def.name || 'Artifact';
+    const healthPercent = item.maxHealth > 0 ? Math.round((item.health / item.maxHealth) * 100) : 0;
+    const timeLeft = Math.max(0, Math.ceil(item.timeLeftSeconds ?? 0));
+    const timeColor = timeLeft <= 3 ? '#FF3B30' : '#00E6CC';
+    const displayName = typeof name === 'string' && name === name.toUpperCase()
+      ? name.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
+      : name;
+    const lore = def.lore || '';
+    const artifactLabelColor = '#CCFF33';
+
+    return `
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+        <img src="assets/images/artifacts/${def.sprite}" style="width: 48px; height: auto; image-rendering: pixelated;" />
+        <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
+          <div style="font-weight: bold; color: #FFFFFF; font-size: 14px;">${displayName}</div>
+          <div style="font-size: 14px; color: ${artifactLabelColor};">Artifact</div>
+          <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px; color: #FFFFFF; font-size: 14px;">
+            <span style="display: inline-flex; align-items: center; gap: 6px;">
+              <img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)
+            </span>
+            <span style="display: inline-flex; align-items: center; gap: 6px; color: ${timeColor};">
+              <img src="assets/images/misc/clock.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${timeLeft}s
+            </span>
+          </div>
+        </div>
+      </div>
+      <div style="font-size: 14px; color: #CCCCCC; line-height: 1.4; margin-bottom: 6px;">${lore}</div>
+      <div style="font-size: 12px; color: #AAAAAA; margin-top: 6px;">Collect with water before it vanishes!</div>
+    `;
+  }
+
+  /**
+   * Owned artifact in collection / trader UI: image, name + taxonomy row, white lore, dim footnote with top border (no health / timer).
+   * @param {string} artifactId
+   */
+  getArtifactTooltipContentForInventory(artifactId) {
+    const def = getArtifactById(artifactId);
+    if (!def) return '';
+
+    const name = def.name || 'Artifact';
+    const displayName = typeof name === 'string' && name === name.toUpperCase()
+      ? name.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
+      : name;
+    const lore = def.lore || '';
+
+    return `
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+        <img src="assets/images/artifacts/${def.sprite}" style="width: 48px; height: auto; image-rendering: pixelated;" />
+        <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
+          <div style="font-weight: bold; color: #FFFFFF; font-size: 14px;">${displayName}</div>
+          <div style="font-size: 14px; color: #FF4444;">Artifact</div>
+        </div>
+      </div>
+      <div style="font-size: 14px; color: #FFFFFF; line-height: 1.4;">${lore}</div>
+      <div style="color: #AAAAAA; margin-top: 12px; font-size: 11px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">Claim rewards for artifacts at the merchant.</div>
+    `;
+  }
+
+  /**
+   * Generate HTML content for a map bonus pickup tooltip (currency, XP, shield token, etc.)
    * @param {Object} item - Bonus item object {id, q, r, itemType, value, health, maxHealth}
    * @returns {string} HTML content for the tooltip
    */
@@ -537,7 +885,63 @@ export class TooltipSystem {
         <div style="font-size: 14px; color: #FFFFFF; line-height: 1.4; margin-bottom: 6px;">Reposition one tower during a wave</div>
         <div style="font-size: 12px; color: #AAAAAA; margin-top: 6px;">Collect with water</div>
       `;
-    } else {
+    }
+    if (item.itemType === 'xp') {
+      return `
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+          <img src="assets/images/items/xp.png" style="width: 60px; height: auto; image-rendering: pixelated;" />
+          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
+            <div style="font-weight: bold; font-size: 14px; color: #FFFFFF;">Experience</div>
+            <div style="font-size: 14px; color: #FCD619;">+${Math.round(item.value)} XP</div>
+            <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)</div>
+          </div>
+        </div>
+        <div style="font-size: 12px; color: #AAAAAA; margin-top: 6px;">Collect with water</div>
+      `;
+    }
+    if (item.itemType === 'tree_juice') {
+      return `
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+          <img src="assets/images/items/town_defense.png" style="width: 56px; height: auto; image-rendering: pixelated;" />
+          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
+            <div style="font-weight: bold; font-size: 14px; color: #FFFFFF;">Tree Juice</div>
+            <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)</div>
+          </div>
+        </div>
+        <div style="font-size: 14px; color: #FFFFFF; line-height: 1.4; margin-bottom: 6px;">Permanently increases Ancient Grove town level and adds +${CONFIG.TOWN_HEALTH_PER_UPGRADE} HP to the grove (same as the shop Tree Juice upgrade, without spending currency).</div>
+        <div style="font-size: 12px; color: #AAAAAA; margin-top: 6px;">Collect with water</div>
+      `;
+    }
+    if (item.itemType === 'shield') {
+      const level = Math.min(4, Math.max(1, Math.round(Number(item.value) || 1)));
+      const hpKey = `SHIELD_HEALTH_LEVEL_${level}`;
+      const hp = CONFIG[hpKey] ?? CONFIG.SHIELD_HEALTH_LEVEL_1;
+      return `
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+          <img src="assets/images/items/shield_${level}.png" style="width: 48px; height: auto; image-rendering: pixelated;" />
+          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
+            <div style="font-weight: bold; font-size: 14px; color: #FFFFFF;">Shield Level ${level}</div>
+            <div style="font-size: 14px; color: #B794F6;">Apply to any tower for +${hp} HP of fire protection</div>
+            <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)</div>
+          </div>
+        </div>
+        <div style="font-size: 12px; color: #AAAAAA; margin-top: 6px;">Collect with water</div>
+      `;
+    }
+    if (item.itemType === 'upgrade_plans') {
+      return `
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+          <img src="assets/images/items/upgrade_token.png" style="width: 48px; height: auto; image-rendering: pixelated;" />
+          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
+            <div style="font-weight: bold; font-size: 14px; color: #FFFFFF;">Upgrade Plans</div>
+            <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)</div>
+          </div>
+        </div>
+        <div style="font-size: 14px; color: #FFFFFF; line-height: 1.4; margin-bottom: 6px;">Upgrade one tower at any time</div>
+        <div style="font-size: 12px; color: #AAAAAA; margin-top: 6px;">Collect with water</div>
+      `;
+    }
+    if (item.itemType === 'currency' || item.itemType === 'money' || item.itemType == null) {
       return `
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
           <img src="assets/images/items/currency.png" style="width: 60px; height: auto; image-rendering: pixelated;" />
@@ -550,6 +954,17 @@ export class TooltipSystem {
         <div style="font-size: 12px; color: #AAAAAA; margin-top: 6px;">Collect with water</div>
       `;
     }
+    return `
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+          <img src="assets/images/items/currency.png" style="width: 48px; height: auto; image-rendering: pixelated;" />
+          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
+            <div style="font-weight: bold; font-size: 14px; color: #FFFFFF;">Bonus pickup</div>
+            <div style="font-size: 13px; color: #CCCCCC;">Type: ${String(item.itemType)}</div>
+            <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)</div>
+          </div>
+        </div>
+        <div style="font-size: 12px; color: #AAAAAA; margin-top: 6px;">Collect with water</div>
+      `;
   }
 
   /**
@@ -565,45 +980,65 @@ export class TooltipSystem {
       [CONFIG.FIRE_TYPE_BLAZE]: 'Blaze',
       [CONFIG.FIRE_TYPE_FIRESTORM]: 'Firestorm',
       [CONFIG.FIRE_TYPE_INFERNO]: 'Inferno',
-      [CONFIG.FIRE_TYPE_CATACLYSM]: 'Cataclysm'
+      [CONFIG.FIRE_TYPE_CATACLYSM]: 'Cataclysm',
+      [CONFIG.FIRE_TYPE_BLACKFYRE]: 'Blackfyre',
     };
     
     const spawnerTypeName = fireTypeNames[spawner.spawnerType] || spawner.spawnerType;
+    const isBlackfyre = spawner.spawnerType === CONFIG.FIRE_TYPE_BLACKFYRE;
     
     // Get fire type color for the spawner
     const fireConfig = getFireTypeConfig(spawner.spawnerType);
-    const spawnerColor = fireConfig?.color || '#FF6B35'; // Fallback to orange if config not found
+    const spawnerColor = getFireTypeDisplayColor(spawner.spawnerType) || '#FF6B35';
     
-    // Get spawner graphic filename
+    // Get spawner graphic filename (matches assets/images/items/{type}_spawner.png)
     const spawnerGraphicFilename = `${spawner.spawnerType}_spawner.png`;
     
     // Use type name + "Spawner" as the title (e.g., "Cinder Spawner", "Flame Spawner")
     const spawnerTitle = `${spawnerTypeName} Spawner`;
     
     // Description: explain that fires spawn outward in all directions and that spawners are indestructible
-    const description = `Spawns ${spawnerTypeName.toLowerCase()} fires that spread outward in all directions from the spawner. Spawners are indestructible and will continue spawning fires.`;
+    const description = `Spawns ${spawnerTypeName.toLowerCase()} fires that spread outwards in all directions. Fire spawners are indestructible.`;
     
     // Get fire type stats for display
     const extinguishTime = fireConfig ? fireConfig.extinguishTime : 0;
     const damagePerSecond = fireConfig ? fireConfig.damagePerSecond : 0;
     
+    const titleInner = isBlackfyre
+      ? `<div class="placement-fire-type-entry--dark-fire" style="flex: 1; min-width: 0;"><div class="placement-fire-type-name placement-blackfyre-name-color-anim" style="font-weight: bold; font-size: 14px; line-height: 1.25; white-space: normal; padding-right: 0;">${spawnerTitle}</div></div>`
+      : `<div style="flex: 1;"><div style="font-weight: bold; color: ${spawnerColor}; font-size: 14px;">${spawnerTitle}</div></div>`;
+    
     let content = `<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">`;
     content += `<img src="assets/images/items/${spawnerGraphicFilename}" style="width: 32px; height: auto; image-rendering: crisp-edges;" />`;
-    content += `<div style="flex: 1;"><div style="font-weight: bold; color: ${spawnerColor}; font-size: 14px;">${spawnerTitle}</div></div>`;
+    content += titleInner;
     content += `</div>`;
     content += `<div style="font-size: 14px; color: #FFFFFF; line-height: 1.4; margin-bottom: 12px;">${description}</div>`;
     
-    // Add fire type info (using same format as wave placement modal)
-    content += `<div style="margin-top: 12px; padding: 8px; background: rgba(0, 0, 0, 0.2); border-left: 3px solid ${spawnerColor}; border-radius: 4px;">`;
-    content += `<p style="color: #eee; margin: 0; font-size: 13px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">`;
-    content += `<span style="display: inline-flex; align-items: center; gap: 6px; color: ${spawnerColor}; font-weight: bold;">`;
-    content += `<span style="display: inline-block; width: 16px; height: 19px; background: ${spawnerColor}; clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%); border: 2px solid rgba(255, 255, 255, 0.3);"></span>`;
-    content += `${spawnerTypeName}</span>`;
-    content += `<span style="display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${extinguishTime} HP</span>`;
-    content += `<span style="display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/damage.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${damagePerSecond} HP/sec</span>`;
+    const statsBarBorder = isBlackfyre ? 'rgba(255, 255, 255, 0.35)' : spawnerColor;
+    const statsPAttrs = isBlackfyre
+      ? ' class="game-tooltip-blackfyre-stats-row" style="color: #eee; margin: 0; font-size: 13px; display: flex; align-items: center; gap: 10px; flex-wrap: nowrap;"'
+      : ' style="color: #eee; margin: 0; font-size: 13px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;"';
+    // Add fire type info (Blackfyre: same hex stack + name glow as wave placement modal)
+    content += `<div style="margin-top: 12px; padding: 8px; background: rgba(0, 0, 0, 0.2); border-left: 3px solid ${statsBarBorder}; border-radius: 4px;">`;
+    content += `<p${statsPAttrs}>`;
+    if (isBlackfyre) {
+      content += `<span class="placement-fire-type-hex-stack" aria-hidden="true">`;
+      content += `<span class="placement-fire-type-hex placement-fire-type-hex--rim"></span>`;
+      content += `<span class="placement-fire-type-hex placement-fire-type-hex--fill placement-blackfyre-color-anim"></span>`;
+      content += `</span>`;
+      content += `<span class="placement-fire-type-entry--dark-fire" style="display: inline-flex; align-items: center; flex-shrink: 0;">`;
+      content += `<span class="placement-fire-type-name placement-blackfyre-name-color-anim" style="padding-right: 0;">${spawnerTypeName}</span>`;
+      content += `</span>`;
+    } else {
+      content += `<span style="display: inline-flex; align-items: center; gap: 6px; color: ${spawnerColor}; font-weight: bold;">`;
+      content += `<span style="display: inline-block; width: 16px; height: 19px; background: ${spawnerColor}; clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%); border: 2px solid rgba(255, 255, 255, 0.3);"></span>`;
+      content += `${spawnerTypeName}</span>`;
+    }
+    content += `<span style="display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${formatDisplayHundredths(extinguishTime)} HP</span>`;
+    content += `<span style="display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;"><img src="assets/images/misc/damage.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${formatDisplayHundredths(damagePerSecond)} HP/sec</span>`;
     content += `</p></div>`;
     
-    return content;
+    return isBlackfyre ? `<div class="game-tooltip-blackfyre-spawner">${content}</div>` : content;
   }
 }
 

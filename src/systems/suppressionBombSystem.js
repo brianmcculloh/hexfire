@@ -1,6 +1,6 @@
 // Suppression Bomb System - Manages suppression bomb placement, detection, and explosions
 
-import { CONFIG, getSuppressionBombRadius, getSuppressionBombCost, getSuppressionBombImpactZone } from '../config.js';
+import { CONFIG, getSuppressionBombRadius, getSuppressionBombCost, getSuppressionBombImpactZone, getSuppressionBombTotalUses } from '../config.js';
 import { getNeighbors } from '../utils/hexMath.js';
 
 let suppressionBombIdCounter = 0;
@@ -21,7 +21,7 @@ export class SuppressionBombSystem {
    * @param {number} level - Bomb level (1-4)
    * @returns {string|null} Bomb ID or null if placement failed
    */
-  placeSuppressionBomb(q, r, level = 1) {
+  placeSuppressionBomb(q, r, level = 1, options = {}) {
     // Check if placement is valid
     if (!this.canPlaceSuppressionBomb(q, r)) {
       return null;
@@ -35,6 +35,8 @@ export class SuppressionBombSystem {
       r,
       level,
       radius: getSuppressionBombRadius(level),
+      totalUses: Math.max(1, Math.floor(options.totalUses ?? getSuppressionBombTotalUses(level))),
+      usesRemaining: Math.max(1, Math.floor(options.usesRemaining ?? getSuppressionBombTotalUses(level))),
       isActive: true,
       triggered: false,
       explosionTime: 0,
@@ -53,20 +55,7 @@ export class SuppressionBombSystem {
    * @returns {boolean} True if placement is valid
    */
   canPlaceSuppressionBomb(q, r) {
-    const hex = this.gridSystem.getHex(q, r);
-    if (!hex) return false;
-    
-    // Can't place on center town hex (0, 0)
-    if (q === 0 && r === 0) {
-      return false;
-    }
-    
-    // Can't place on town, existing towers, or existing suppression bombs
-    if (hex.isTown || hex.hasTower || hex.hasSuppressionBomb) {
-      return false;
-    }
-    
-    return true;
+    return this.gridSystem.canPlaceSuppressionBomb(q, r);
   }
 
   /**
@@ -79,6 +68,47 @@ export class SuppressionBombSystem {
     
     this.gridSystem.removeSuppressionBomb(bomb.q, bomb.r);
     this.suppressionBombs.delete(bombId);
+    this.explodingBombs.delete(bombId);
+  }
+
+  /**
+   * Store a placed suppression bomb back into player inventory.
+   * @param {string} bombId - Bomb ID
+   * @returns {boolean} True if the bomb was stored
+   */
+  storeSuppressionBombInInventory(bombId) {
+    const bomb = this.getSuppressionBomb(bombId);
+    if (!bomb) return false;
+
+    this.removeSuppressionBomb(bombId);
+
+    if (!this.gameState?.player?.inventory?.purchasedSuppressionBombs) {
+      this.gameState.player.inventory.purchasedSuppressionBombs = [];
+    }
+
+    this.gameState.player.inventory.purchasedSuppressionBombs.push({
+      type: 'suppression_bomb',
+      level: bomb.level,
+      totalUses: bomb.totalUses,
+      usesRemaining: bomb.usesRemaining,
+    });
+
+    return true;
+  }
+
+  /**
+   * Store all currently placed suppression bombs into player inventory.
+   * @returns {number} Number of bombs stored
+   */
+  storeAllSuppressionBombsInInventory() {
+    const bombIds = Array.from(this.suppressionBombs.keys());
+    let storedCount = 0;
+    bombIds.forEach((bombId) => {
+      if (this.storeSuppressionBombInInventory(bombId)) {
+        storedCount++;
+      }
+    });
+    return storedCount;
   }
 
   /**
@@ -115,6 +145,8 @@ export class SuppressionBombSystem {
    * @param {number} deltaTime - Time elapsed in seconds
    */
   update(deltaTime) {
+    if (!this.gameState?.wave?.isActive) return;
+
     // Check each suppression bomb for fire triggers
     this.suppressionBombs.forEach(bomb => {
       if (!bomb.isActive || bomb.triggered) return;
@@ -160,7 +192,7 @@ export class SuppressionBombSystem {
    * @param {Object} bomb - Suppression bomb data
    */
   triggerExplosion(bomb) {
-    if (bomb.triggered) return;
+    if (bomb.triggered || (bomb.usesRemaining || 0) <= 0) return;
     
     bomb.triggered = true;
     
@@ -172,10 +204,26 @@ export class SuppressionBombSystem {
   }
 
   /**
-   * Explode a suppression bomb and extinguish all fires in radius
+   * Cancel any armed countdowns without consuming bomb uses.
+   * Called when a wave ends before triggered bombs detonate.
+   */
+  resetPendingExplosions() {
+    this.explodingBombs.forEach((explodingBomb) => {
+      if (explodingBomb?.bomb) {
+        explodingBomb.bomb.triggered = false;
+        explodingBomb.bomb.explosionTime = 0;
+      }
+    });
+    this.explodingBombs.clear();
+  }
+
+  /**
+   * Explode a suppression bomb: extinguish fires in radius and apply water to map items (tanks, temp pickups, mystery, currency, dig sites), matching tower/bomber water behavior.
+   * Damage uses {@link CONFIG.SUPPRESSION_BOMB_POWER} only (not affected by Water Pressure / temp water multipliers).
    * @param {Object} bomb - Suppression bomb data
    */
   explodeSuppressionBomb(bomb) {
+    this.gameState.runStats?.recordSuppressionBombDetonated?.();
     // Get all hexes in explosion radius
     const impactHexes = getSuppressionBombImpactZone(bomb.q, bomb.r, bomb.level);
     
@@ -190,26 +238,66 @@ export class SuppressionBombSystem {
     if (window.AudioManager) {
       window.AudioManager.playSFX('suppression_bomb_explodes', { volume: 0.7, dedupeMs: 50 });
     }
-    
-    // Extinguish all fires in the impact zone
+
+    const finalPower = CONFIG.SUPPRESSION_BOMB_POWER;
+
+    // Fires + anything tower water can hit (same idea as bomber explosion / jet spray)
     impactHexes.forEach(impactHex => {
       const hex = this.gridSystem.getHex(impactHex.q, impactHex.r);
-      if (hex && hex.isBurning) {
-        // Instantly extinguish the fire
+      if (!hex) return;
+
+      if (hex.isBurning) {
         const extinguished = this.fireSystem.extinguishHex(
           impactHex.q,
           impactHex.r,
-          CONFIG.SUPPRESSION_BOMB_POWER
+          finalPower
         );
-        
         if (extinguished && this.onFireExtinguished) {
           this.onFireExtinguished(hex.fireType, impactHex.q, impactHex.r);
         }
       }
+
+      if (hex.hasWaterTank) {
+        hex.isBeingSprayed = true;
+        this.gameState.waterTankSystem?.damageWaterTank(impactHex.q, impactHex.r, finalPower);
+      }
+      if (hex.hasTempPowerUpItem) {
+        hex.isBeingSprayed = true;
+        this.gameState.tempPowerUpItemSystem?.damageItem(impactHex.q, impactHex.r, finalPower);
+        this.gameState.tempPowerUpItemSystem?.checkCollection(impactHex.q, impactHex.r);
+      }
+      if (hex.hasMysteryItem) {
+        hex.isBeingSprayed = true;
+        this.gameState.mysteryItemSystem?.damageItem(impactHex.q, impactHex.r, finalPower);
+        this.gameState.mysteryItemSystem?.checkCollection(impactHex.q, impactHex.r);
+      }
+      if (hex.hasArtifactItem) {
+        hex.isBeingSprayed = true;
+        this.gameState.artifactSystem?.damageItem(impactHex.q, impactHex.r, finalPower);
+        this.gameState.artifactSystem?.checkCollection(impactHex.q, impactHex.r);
+      }
+      if (hex.hasCurrencyItem) {
+        hex.isBeingSprayed = true;
+        this.gameState.currencyItemSystem?.damageItem(impactHex.q, impactHex.r, finalPower);
+        this.gameState.currencyItemSystem?.checkCollection(impactHex.q, impactHex.r);
+      }
+      if (hex.hasDigSite) {
+        hex.isBeingSprayed = true;
+        this.gameState.digSiteSystem?.addWaterPower(impactHex.q, impactHex.r, finalPower);
+      }
+      if (hex.hasBurningVault) {
+        hex.isBeingSprayed = true;
+        this.gameState.burningVaultSystem?.addWaterPower(impactHex.q, impactHex.r, finalPower);
+      }
     });
     
-    // Remove the bomb
-    this.removeSuppressionBomb(bomb.id);
+    bomb.usesRemaining = Math.max(0, (bomb.usesRemaining || 0) - 1);
+    bomb.triggered = false;
+
+    // Remove only when all uses are consumed; otherwise the bomb stays on-map for reuse.
+    if (bomb.usesRemaining <= 0) {
+      this.removeSuppressionBomb(bomb.id);
+    }
   }
 
   /**

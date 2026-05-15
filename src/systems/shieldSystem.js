@@ -9,7 +9,7 @@ export class ShieldSystem {
   }
 
   /**
-   * Apply a shield to a tower (stackable - adds HP to existing shield)
+   * Apply a shield to a tower (stackable). New HP fills existing max first; max rises only on overflow.
    * @param {string} towerId - Tower ID
    * @param {number} shieldLevel - Shield level (1-4)
    * @returns {boolean} True if shield was applied successfully
@@ -19,6 +19,15 @@ export class ShieldSystem {
     if (!tower) return false;
     
     return this.towerSystem.applyShield(towerId, shieldLevel);
+  }
+
+  /**
+   * @param {'stored'|'purchased'} kind
+   * @param {number} index
+   * @param {number} shieldLevel
+   */
+  applyShieldToInventoryTower(kind, index, shieldLevel) {
+    return this.towerSystem.applyShieldToInventoryTower(kind, index, shieldLevel);
   }
 
   /**

@@ -1,6 +1,6 @@
 // Mystery Item System - Manages mystery items that spawn on the map
 
-import { CONFIG, getFireTypeConfig } from '../config.js';
+import { CONFIG, getFireTypeConfig, addPlayerScore, getPowerUpMultiplier } from '../config.js';
 import { getNeighbors } from '../utils/hexMath.js';
 
 let mysteryItemIdCounter = 0;
@@ -18,15 +18,16 @@ export class MysteryItemSystem {
    * @param {number} q - Hex q coordinate
    * @param {number} r - Hex r coordinate
    * @param {string} itemId - Mystery item ID
+   * @param {{ skipSpawnBounce?: boolean }} [options]
    * @returns {string|null} Item ID or null if spawn failed
    */
-  spawnMysteryItem(q, r, itemId) {
+  spawnMysteryItem(q, r, itemId, options = {}) {
     const hex = this.gridSystem.getHex(q, r);
     if (!hex) return null;
     
     // Can't spawn on town, path, fire spawners, or if hex already has something
     if (hex.isTown || hex.isPath || hex.hasTower || hex.hasWaterTank || hex.isBurning || hex.hasFireSpawner ||
-        hex.hasTempPowerUpItem || hex.hasMysteryItem || hex.hasCurrencyItem) {
+        hex.hasTempPowerUpItem || hex.hasMysteryItem || hex.hasCurrencyItem || hex.hasBurningVault || hex.hasArtifactItem) {
       return null;
     }
     
@@ -47,6 +48,8 @@ export class MysteryItemSystem {
       health: itemConfig.health,
       maxHealth: itemConfig.health,
       isActive: true,
+      mysteryLandDropAtMs:
+        options.skipSpawnBounce || typeof performance === 'undefined' ? undefined : performance.now(),
     };
     
     this.items.set(spawnedItemId, item);
@@ -123,11 +126,19 @@ export class MysteryItemSystem {
     const validLocations = this.getValidSpawnLocations();
     if (validLocations.length === 0) return;
     
+    const powerUps = this.gameState?.player?.powerUps || {};
+    const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+    const rareChanceMult = getPowerUpMultiplier('rareChanceBonus', powerUps, tempPowerUps);
+    
     // Check each available item type for random spawn
     let anySpawned = false;
     availableItems.forEach(itemConfig => {
-      // Calculate scaled chance for this item type
-      let scaledChance = itemConfig.randomSpawnChance * (1 + wavesSinceMin * scalingFactor);
+      // Rare mystery box: base spawn chance scales with increased rares (same multiplier as rare temp power-up weights)
+      let baseChance = itemConfig.randomSpawnChance;
+      if (itemConfig.id === 'mystery_rare') {
+        baseChance *= rareChanceMult;
+      }
+      let scaledChance = baseChance * (1 + wavesSinceMin * scalingFactor);
       
       // Check if we should spawn this item type
       if (Math.random() < scaledChance) {
@@ -163,6 +174,7 @@ export class MysteryItemSystem {
         // Can't spawn on town, path, fire spawners, towers, water tanks, fires, or existing items
         if (hex.isTown || hex.isPath || hex.hasTower || hex.hasWaterTank || hex.hasFireSpawner ||
             hex.isBurning || hex.hasTempPowerUpItem || hex.hasMysteryItem || hex.hasCurrencyItem ||
+            hex.hasBurningVault || hex.hasArtifactItem ||
             this.gridSystem.isTownRingHex(q, r)) {
           continue;
         }
@@ -226,7 +238,7 @@ export class MysteryItemSystem {
       
       // Can't spawn on town, path, or if hex already has something
       if (hexData.isTown || hexData.isPath || hexData.hasTower || hexData.hasWaterTank || 
-          hexData.hasTempPowerUpItem || hexData.hasMysteryItem || hexData.hasCurrencyItem) {
+          hexData.hasTempPowerUpItem || hexData.hasMysteryItem || hexData.hasCurrencyItem || hexData.hasArtifactItem) {
         return false;
       }
       
@@ -245,7 +257,7 @@ export class MysteryItemSystem {
     }
     
     // Award score: 10 points per item collected
-    this.gameState.player.score = (this.gameState.player.score ?? 0) + 10;
+    addPlayerScore(this.gameState, 10);
     
     // Play mystery box opened sound
     if (window.AudioManager) {
@@ -262,6 +274,14 @@ export class MysteryItemSystem {
     
     // Clear the isBeingSprayed flag from the hex to prevent visual glitch
     this.gridSystem.setHex(q, r, { isBeingSprayed: false });
+
+    this.gameState.runStats?.recordMapItemCollection?.('mystery_box', {
+      mysteryItemId: item.itemId,
+      q,
+      r,
+    });
+
+    this.gameState.bossSystem?.notifyMapItemCollected?.();
     
     return true;
   }
@@ -321,7 +341,10 @@ export class MysteryItemSystem {
       if (itemHex && itemHex.isBurning) {
         // Get fire type damage per second
         const fireConfig = getFireTypeConfig(itemHex.fireType);
-        const damagePerSecond = fireConfig ? fireConfig.damagePerSecond : 1;
+        const powerUps = this.gameState?.player?.powerUps || {};
+        const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+        const fireDamageMult = getPowerUpMultiplier('fireDamage', powerUps, tempPowerUps);
+        const damagePerSecond = (fireConfig ? fireConfig.damagePerSecond : 1) * fireDamageMult;
         const damageThisTick = deltaTime * damagePerSecond;
         
         // Damage the item

@@ -1,8 +1,16 @@
 // Progression System - Manages XP, leveling, and upgrades
 
-import { CONFIG, getFireTypeConfig, getLevelThreshold, getTowerUnlockStatus, getPowerUpMultiplier, getBomberPower, getTowerRange, getSpreadTowerRange, getRainRange, getTowerPower, getPulsingPower, getRainPower, getPulsingAttackInterval, getBomberAttackInterval } from '../config.js';
+import { CONFIG, getFireTypeConfig, getLevelThreshold, getTowerUnlockStatus, getPowerUpMultiplier, getTowerRange, getSpreadTowerRange, getRainRange, getTowerPower, getSpreadTowerPower, getPulsingPower, getRainPower, getPulsingAttackInterval, getBomberAttackInterval, getPowerUpGraphicFilename, getBomberImpactZone, formatWaterDamageRate, formatEveryInterval } from '../config.js';
+import { isMetaItemUnlocked } from '../utils/metaProgression.js';
 import { pixelToAxial, axialToPixel } from '../utils/hexMath.js';
 import { createModalFloatingText } from '../utils/modal.js';
+
+/** Human-readable bomber impact area for upgrade modals (base zone, no temp range bonus). */
+function getBomberImpactHexDisplayLabel(impactLevel) {
+  const level = Math.min(4, Math.max(1, Math.floor(impactLevel)));
+  const count = getBomberImpactZone(0, 0, level, 0).length;
+  return count === 1 ? '1 hex' : `${count} hexes`;
+}
 
 export class ProgressionSystem {
   constructor(gameState) {
@@ -54,6 +62,29 @@ export class ProgressionSystem {
   }
 
   /**
+   * Award XP from a map pickup (mystery box XP orb). Applies XP boost power-ups; no fire-type color hook.
+   * @param {number} baseXp - Raw XP before boost
+   * @returns {number} Boosted XP actually added
+   */
+  awardBonusMapXP(baseXp) {
+    const n = Math.max(0, Math.round(Number(baseXp)) || 0);
+    if (n <= 0) return 0;
+    const powerUps = this.gameState?.player?.powerUps || {};
+    const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+    const xpMultiplier = getPowerUpMultiplier('xpGain', powerUps, tempPowerUps);
+    const xp = Math.round(n * xpMultiplier);
+    this.gameState.player.xp += xp;
+    if (window.updateUI) {
+      window.updateUI();
+    }
+    this.checkLevelUp();
+    if (this.callbacks.onXPGained) {
+      this.callbacks.onXPGained(xp, null);
+    }
+    return xp;
+  }
+
+  /**
    * Trigger upgrade phase manually (when clicking upgrade plans)
    */
   triggerManualUpgradePhase() {
@@ -82,6 +113,7 @@ export class ProgressionSystem {
 
     // Clear any tower graphics from previous modals
     const modalFrameContent = modal.querySelector('.modal-frame-content');
+    this.removeLevelUpPulseGraphic(modal);
     if (modalFrameContent) {
       const existingTitleContainer = modalFrameContent.querySelector('.confirm-upgrade-title-container');
       if (existingTitleContainer) {
@@ -197,71 +229,60 @@ export class ProgressionSystem {
       }
     }
     
-    if (levelsGained > 0) {
-      // Calculate the new level after leveling up
-      const newLevel = currentLevel + levelsGained;
-      
-      // Only show modal if we haven't already shown it for this level
-      // This prevents duplicate modals if checkLevelUp is called multiple times
-      if (this.lastLevelShownInModal < newLevel) {
-        // Award upgrade plans equal to levels gained
-        if (!this.gameState.player.upgradePlans) {
-          this.gameState.player.upgradePlans = 0;
-        }
-        this.gameState.player.upgradePlans += levelsGained;
-        
-        // Update player level
-        this.gameState.player.level = newLevel;
-        
-        // Track that we've shown the modal for this level
-        this.lastLevelShownInModal = newLevel;
-        
-        // Update UI to reflect new token count
-        if (window.updateUI) {
-          window.updateUI();
-        }
-        
-        // Pause game IMMEDIATELY when level up happens (before any other checks)
-        // This ensures the game is paused even if a wave is active
-        if (typeof window !== 'undefined' && window.pauseGameWithAudio) {
-          window.pauseGameWithAudio();
-        }
-        
-        // Update pause button to show correct state
-        this.updatePauseButtonState();
-        
-        // Check for new tower unlocks IMMEDIATELY when leveling up
-        // Store unlock info to show in the level up modal
-        // This ensures unlock modals show right away, even during waves
-        const previousLevel = currentLevel;
-        this.pendingUnlockCheck = { previousLevel, newLevel };
-        this.unlocksCheckedDuringLevelUp = true; // Mark that unlocks will be checked from level up
-        
-        // Show level up modal IMMEDIATELY - don't wait for wave to complete
-        // This ensures level up modals show right away, even during waves
-        // The modal will now include unlock information
-        if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('level_up');
-        this.inLevelUpFlow = true;
-        this.showLevelUpModal();
-        
-        // Call callback
-        if (this.callbacks.onLevelUp) {
-          this.callbacks.onLevelUp(newLevel);
-        }
-      } else {
-        // Level up already shown, but still update the level and tokens
-        // This handles the case where checkLevelUp is called again after modal was shown
-        if (!this.gameState.player.upgradePlans) {
-          this.gameState.player.upgradePlans = 0;
-        }
-        this.gameState.player.upgradePlans += levelsGained;
-        this.gameState.player.level = newLevel;
-        
-        // Update UI
-        if (window.updateUI) {
-          window.updateUI();
-        }
-      }
+    if (levelsGained <= 0) return;
+
+    const newLevel = currentLevel + levelsGained;
+
+    // Dedupe: if we've already opened the level-up modal for this newLevel (e.g. checkLevelUp ran
+    // twice in the same tick before player.level was updated), bail without re-applying rewards or
+    // re-showing the modal. The original implementation here silently re-added upgrade plans AND
+    // left unlocksCheckedDuringLevelUp=false — which gave the player phantom plans on the dupe and
+    // also let waveSystem.completeWave() re-fire the (legacy emoji) unlock modal at wave-end.
+    if (this.lastLevelShownInModal >= newLevel) return;
+
+    // Award upgrade plans equal to levels gained
+    if (!this.gameState.player.upgradePlans) {
+      this.gameState.player.upgradePlans = 0;
+    }
+    this.gameState.player.upgradePlans += levelsGained;
+
+    // Update player level
+    this.gameState.player.level = newLevel;
+
+    // Track that we've shown the modal for this level
+    this.lastLevelShownInModal = newLevel;
+
+    // Update UI to reflect new token count
+    if (window.updateUI) {
+      window.updateUI();
+    }
+
+    // Pause game IMMEDIATELY when level up happens (before any other checks)
+    // This ensures the game is paused even if a wave is active
+    if (typeof window !== 'undefined' && window.pauseGameWithAudio) {
+      window.pauseGameWithAudio();
+    }
+
+    // Update pause button to show correct state
+    this.updatePauseButtonState();
+
+    // Check for new tower unlocks IMMEDIATELY when leveling up
+    // Store unlock info to show in the level up modal
+    // This ensures unlock modals show right away, even during waves
+    const previousLevel = currentLevel;
+    this.pendingUnlockCheck = { previousLevel, newLevel };
+    this.unlocksCheckedDuringLevelUp = true; // Mark that unlocks will be checked from level up
+
+    // Show level up modal IMMEDIATELY - don't wait for wave to complete
+    // This ensures level up modals show right away, even during waves
+    // The modal will now include unlock information
+    if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('level_up');
+    this.inLevelUpFlow = true;
+    this.showLevelUpModal();
+
+    // Call callback
+    if (this.callbacks.onLevelUp) {
+      this.callbacks.onLevelUp(newLevel);
     }
   }
 
@@ -273,6 +294,7 @@ export class ProgressionSystem {
     const modal = document.getElementById('modalOverlay');
     if (modal) {
       modal.classList.remove('active');
+      this.removeLevelUpPulseGraphic(modal);
       
       // Remove skip button if it exists
       const skipBtn = modal.querySelector('#levelUpSkipBtn');
@@ -287,13 +309,27 @@ export class ProgressionSystem {
   }
 
   /**
+   * Remove the pulsing level-up crest graphic if present.
+   * This ensures non-level-up upgrade screens never reuse stale level-up DOM.
+   * @param {HTMLElement} modal
+   */
+  removeLevelUpPulseGraphic(modal) {
+    if (!modal) return;
+    const frame = modal.querySelector('.modal-frame-content');
+    const inFrame = frame?.querySelector('.level-up-pulse-container');
+    if (inFrame) inFrame.remove();
+    const inModal = modal.querySelector('.level-up-pulse-container');
+    if (inModal && inModal !== inFrame) inModal.remove();
+  }
+
+  /**
    * Get newly unlocked items without showing modals
    * @param {number} previousLevel
    * @param {number} newLevel
    * @returns {Array} Array of unlock objects with towerType, unlockLevel, and optional level
    */
   getNewlyUnlockedItems(previousLevel, newLevel) {
-    const allUnlockTypes = ['jet', 'rain', 'shield', 'spread', 'suppression_bomb', 'town_health', 'upgrade_token', 'pulsing', 'bomber'];
+    const allUnlockTypes = ['jet', 'rain', 'shield', 'spread', 'suppression_bomb', 'suppression_bundle', 'town_health', 'upgrade_token', 'pulsing', 'bomber'];
     const newlyUnlocked = [];
     
     // Initialize newlyUnlockedItems if it doesn't exist
@@ -302,6 +338,8 @@ export class ProgressionSystem {
     }
     
     for (const towerType of allUnlockTypes) {
+      if (!isMetaItemUnlocked(this.gameState, towerType)) continue;
+
       // For suppression_bomb and shield, check each level individually
       if (towerType === 'suppression_bomb' || towerType === 'shield') {
         for (let level = 1; level <= 4; level++) {
@@ -319,7 +357,7 @@ export class ProgressionSystem {
             newlyUnlocked.push({ towerType, unlockLevel: currentStatus.unlockLevel, level });
             const itemName = this.getItemDisplayName(towerType, level);
             if (this.gameState.notificationSystem) {
-              this.gameState.notificationSystem.showToast(`New item unlocked in the shop: ${itemName}`);
+              this.gameState.notificationSystem.showToast(`${itemName} unlocked in the shop!`, 3000, 'positive');
             }
           } else if (wasMissed) {
             this.gameState.player.seenShopItems.delete(towerType);
@@ -344,7 +382,7 @@ export class ProgressionSystem {
             newlyUnlocked.push({ towerType, unlockLevel: currentStatus.unlockLevel });
             const itemName = this.getItemDisplayName(towerType);
             if (this.gameState.notificationSystem) {
-              this.gameState.notificationSystem.showToast(`New item unlocked in the shop: ${itemName}`);
+              this.gameState.notificationSystem.showToast(`${itemName} unlocked in the shop!`, 3000, 'positive');
             }
           } else if (wasMissed) {
             this.gameState.player.seenShopItems.delete(towerType);
@@ -368,59 +406,51 @@ export class ProgressionSystem {
   }
 
   /**
-   * Get unlock info for display in modal
+   * Get unlock info for display in modals (no emojis — image assets are rendered by the modal).
    * @param {string} towerType
    * @param {number} unlockLevel
    * @param {number} [level] - Optional level for suppression_bomb and shield
-   * @returns {Object} Object with icon, name, description, stats
+   * @returns {Object} Object with name, description, stats (icon kept blank for back-compat).
    */
   getUnlockInfo(towerType, unlockLevel, level = null) {
-    let icon, name, description, stats;
+    let name, description, stats;
     switch (towerType) {
       case 'jet':
-        icon = '🚿';
         name = 'Jet Tower';
         description = 'Single direction jet tower';
         stats = `Range: 3 hexes | Power: 1.0`;
         break;
       case 'spread':
-        icon = '📐';
         name = 'Spread Tower';
         description = '3 jets, upgradable range';
         stats = `Range: 2 hexes | Power: 1.0`;
         break;
       case 'pulsing':
-        icon = '🌋';
         name = 'Pulsing Tower';
         description = 'Periodic AOE to adjacent hexes';
         stats = `Range: Adjacent | Power: 4/sec`;
         break;
       case 'rain':
-        icon = '🌧️';
         name = 'Rain Tower';
         description = 'Constant AOE with range upgrades';
-        stats = `Range: 1 hex | Power: 0.5/sec`;
+        stats = `Range: 1 hex ring | Power: 0.5/sec`;
         break;
       case 'bomber':
-        icon = '💣';
         name = 'Bomber Tower';
         description = 'Water bombs with long range';
         stats = `Range: 2-10 hexes | Power: 6`;
         break;
       case 'suppression_bomb':
-        icon = '💨';
         name = 'Suppression Bombs';
         description = 'Instant fire suppression devices';
         if (level !== null) {
-          const radius = CONFIG[`SUPPRESSION_BOMB_RADIUS_LEVEL_${level}`];
-          const hexes = level === 1 ? 7 : level === 2 ? 19 : level === 3 ? 37 : 61;
-          stats = `Level ${level} unlocked: ${radius} ring${radius > 1 ? 's' : ''} (${hexes} hexes)`;
+          const uses = CONFIG[`SUPPRESSION_BOMB_USES_LEVEL_${level}`] || 1;
+          stats = `Level ${level} unlocked: 3 rings (37 hexes), ${uses} use${uses > 1 ? 's' : ''}`;
         } else {
-          stats = 'Level 1-4 available';
+          stats = 'Level 1-4 available (3 rings, 1/2/4/8 uses)';
         }
         break;
       case 'shield':
-        icon = '🛡️';
         name = 'Shields';
         description = 'Protect your towers from fire damage';
         if (level !== null) {
@@ -431,24 +461,189 @@ export class ProgressionSystem {
         }
         break;
       case 'town_health':
-        icon = '🏰';
         name = 'Tree Juice';
         description = 'Upgrade your tree juice';
         stats = `+${CONFIG.TOWN_HEALTH_PER_UPGRADE} HP per upgrade`;
         break;
+      case 'suppression_bundle':
+        name = 'Suppression Bomb Bundle';
+        description = 'Buy in bulk and save! A random assortment of 10 Suppression Bombs.';
+        stats = `Shop bundle — $${CONFIG.SUPPRESSION_BUNDLE_COST}`;
+        break;
       case 'upgrade_plan':
-        icon = '🪙';
+      case 'upgrade_token':
         name = 'Upgrade Plans';
         description = 'Purchase upgrade plans to upgrade your towers';
         stats = 'Adds 1 upgrade plan';
         break;
       default:
-        icon = '🚿';
         name = 'Tower';
         description = 'New tower unlocked';
         stats = '';
     }
-    return { icon, name, description, stats };
+    return { icon: '', name, description, stats };
+  }
+
+  /**
+   * Build the icon DOM for a single discovered/unlocked item using actual game art assets.
+   * Shared between {@link #showLevelUpModal} (DISCOVERIES section) and {@link #showUnlockModal}
+   * so both routes look identical and remain emoji-free.
+   * @param {{ towerType: string, unlockLevel?: number, level?: number }} unlock
+   * @param {{ name?: string }} [unlockInfo]
+   * @returns {HTMLElement} The icon element to insert into the discovery card.
+   */
+  _buildUnlockIconElement(unlock, unlockInfo = null) {
+    const iconDiv = document.createElement('div');
+    const towerIconScale = 75 / 48;
+    const safeName = unlockInfo?.name || '?';
+
+    if (['jet', 'spread', 'rain', 'pulsing', 'bomber'].includes(unlock.towerType) && window.createTowerIconHTML) {
+      // Tower: 48px intrinsic icon scaled to ~75px to match item PNG width so labels align.
+      iconDiv.innerHTML = window.createTowerIconHTML(unlock.towerType, 1, 1, false);
+      iconDiv.style.cssText = `display: flex; justify-content: center; align-items: center; transform: scale(${towerIconScale}); transform-origin: center center; overflow: visible;`;
+      return iconDiv;
+    }
+
+    if (unlock.towerType === 'shield') {
+      const shieldLevel = unlock.level || 1;
+      const img = document.createElement('img');
+      img.src = `assets/images/items/shield_${shieldLevel}.png`;
+      img.style.cssText = 'width: 75px; height: auto; image-rendering: pixelated;';
+      iconDiv.appendChild(img);
+      iconDiv.style.cssText = 'display: flex; justify-content: center; align-items: center;';
+      return iconDiv;
+    }
+
+    if (unlock.towerType === 'suppression_bomb') {
+      const bombLevel = unlock.level || 1;
+      const img = document.createElement('img');
+      img.src = `assets/images/items/suppression_${bombLevel}.png`;
+      img.style.cssText = 'width: 75px; height: auto; image-rendering: pixelated;';
+      iconDiv.appendChild(img);
+      iconDiv.style.cssText = 'display: flex; justify-content: center; align-items: center;';
+      return iconDiv;
+    }
+
+    if (unlock.towerType === 'suppression_bundle') {
+      const img = document.createElement('img');
+      img.src = 'assets/images/items/suppression_bundle.png';
+      img.style.cssText = 'width: 75px; height: auto; image-rendering: pixelated;';
+      iconDiv.appendChild(img);
+      iconDiv.style.cssText = 'display: flex; justify-content: center; align-items: center;';
+      return iconDiv;
+    }
+
+    if (unlock.towerType === 'town_health') {
+      const img = document.createElement('img');
+      img.src = 'assets/images/items/town_defense.png';
+      img.style.cssText = 'width: 75px; height: auto; image-rendering: pixelated;';
+      iconDiv.appendChild(img);
+      iconDiv.style.cssText = 'display: flex; justify-content: center; align-items: center;';
+      return iconDiv;
+    }
+
+    if (unlock.towerType === 'upgrade_plan' || unlock.towerType === 'upgrade_token') {
+      const img = document.createElement('img');
+      img.src = 'assets/images/items/upgrade_token.png';
+      img.style.cssText = 'width: 75px; height: auto; image-rendering: pixelated;';
+      iconDiv.appendChild(img);
+      iconDiv.style.cssText = 'display: flex; justify-content: center; align-items: center;';
+      return iconDiv;
+    }
+
+    if (['water_pressure', 'xp_boost', 'tower_health', 'spread_resistance', 'fire_resistance', 'tower_speed', 'temp_power_up_spawn_boost', 'increased_rares'].includes(unlock.towerType)) {
+      const graphicFilename = getPowerUpGraphicFilename(unlock.towerType);
+      if (graphicFilename) {
+        const img = document.createElement('img');
+        img.src = `assets/images/power_ups/${graphicFilename}`;
+        img.style.cssText = 'width: 75px; height: auto; image-rendering: crisp-edges;';
+        iconDiv.appendChild(img);
+        iconDiv.style.cssText = 'display: flex; justify-content: center; align-items: center;';
+        return iconDiv;
+      }
+    }
+
+    iconDiv.style.cssText = 'font-size: 32px; font-weight: bold; display: flex; justify-content: center;';
+    iconDiv.textContent = safeName.charAt(0);
+    return iconDiv;
+  }
+
+  /**
+   * Build a single yellow-framed "discovery" card for an unlock, with art icon, label, and tooltip.
+   * Used by both the level-up modal's DISCOVERIES section and the standalone unlock modal so the two
+   * paths are visually identical and free of emoji-era styling.
+   * @param {{ towerType: string, unlockLevel?: number, level?: number }} unlock
+   * @returns {HTMLElement}
+   */
+  _buildDiscoveryCard(unlock) {
+    const unlockInfo = this.getUnlockInfo(unlock.towerType, unlock.unlockLevel, unlock.level);
+
+    const discoveriesFrame = document.createElement('div');
+    discoveriesFrame.style.cssText = 'width: 150px; height: 150px; background-image: url(assets/images/ui/frame-yellow.png); background-size: 100% 100%; background-position: center; background-repeat: no-repeat; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 10px; box-sizing: border-box; position: relative;';
+
+    const unlockedText = document.createElement('div');
+    unlockedText.textContent = 'UNLOCKED';
+    unlockedText.style.cssText = 'position: absolute; top: 13px; right: -8px; font-size: 16px; font-weight: bold; color: #FFD700; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5); transform: rotate(40deg); z-index: 2; pointer-events: none; letter-spacing: 0px; white-space: nowrap;';
+    discoveriesFrame.appendChild(unlockedText);
+
+    const unlockIconContainer = document.createElement('div');
+    unlockIconContainer.style.cssText = 'display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; width: 100%;';
+
+    const iconDiv = this._buildUnlockIconElement(unlock, unlockInfo);
+    const iconSlot = document.createElement('div');
+    iconSlot.style.cssText = 'display: flex; align-items: center; justify-content: center; width: 100%; min-height: 80px; flex-shrink: 0; box-sizing: border-box; overflow: visible;';
+    iconSlot.appendChild(iconDiv);
+    unlockIconContainer.appendChild(iconSlot);
+
+    const unlockName = document.createElement('div');
+    let displayName = (unlockInfo.name || '').toUpperCase();
+    if (unlock.towerType === 'shield' && unlock.level) {
+      displayName = `SHIELDS (LEVEL ${unlock.level})`;
+    } else if (unlock.towerType === 'suppression_bomb' && unlock.level) {
+      displayName = `SUPPRESSION BOMBS (LEVEL ${unlock.level})`;
+    } else if (unlock.towerType === 'upgrade_plan' || unlock.towerType === 'upgrade_token') {
+      displayName = 'PURCHASABLE UPGRADE PLANS';
+    }
+    unlockName.textContent = displayName;
+    unlockName.style.cssText = 'color: #FFD700; font-size: 12px; font-weight: normal; text-align: center; margin-top: 0; line-height: 1.2; padding: 0 12px; box-sizing: border-box;';
+    unlockIconContainer.appendChild(unlockName);
+
+    discoveriesFrame.appendChild(unlockIconContainer);
+
+    const ts = this.gameState?.inputHandler?.tooltipSystem;
+    let tooltipContent = ts?.getLevelUpRewardTooltipContent(unlock, this.gameState, { omitShopCost: true });
+    if (!tooltipContent) {
+      tooltipContent = `
+        <div style="font-weight: bold; color: #FFFFFF; margin-bottom: 8px; font-size: 14px;">${unlockInfo.name}</div>
+        <div style="color: #FFFFFF; font-size: 15px; line-height: 1.5;">${unlockInfo.description}</div>
+        ${unlockInfo.stats ? `<div style="color: #4CAF50; margin-top: 8px; font-size: 12px;">${unlockInfo.stats}</div>` : ''}
+      `;
+    }
+
+    discoveriesFrame.style.cursor = 'var(--cursor-default)';
+    discoveriesFrame.addEventListener('mouseenter', () => {
+      const rect = discoveriesFrame.getBoundingClientRect();
+      const mouseX = rect.left + rect.width / 2;
+      const mouseY = rect.top - 20;
+      if (this.gameState?.inputHandler?.tooltipSystem) {
+        this.gameState.inputHandler.tooltipSystem.show(tooltipContent, mouseX, mouseY);
+      }
+    });
+    discoveriesFrame.addEventListener('mouseleave', () => {
+      if (this.gameState?.inputHandler?.tooltipSystem) {
+        this.gameState.inputHandler.tooltipSystem.hide();
+      }
+    });
+    discoveriesFrame.addEventListener('mousemove', (e) => {
+      const rect = discoveriesFrame.getBoundingClientRect();
+      const mouseX = rect.left + rect.width / 2;
+      const mouseY = e.clientY - 20;
+      if (this.gameState?.inputHandler?.tooltipSystem) {
+        this.gameState.inputHandler.tooltipSystem.updateMousePosition(mouseX, mouseY);
+      }
+    });
+
+    return discoveriesFrame;
   }
 
   /**
@@ -584,12 +779,23 @@ export class ProgressionSystem {
       tokenQuantity.style.cssText = 'color: #ff67e7; font-size: 28px; font-weight: bold; margin-top: 0; line-height: 26px;';
       tokenContainer.appendChild(tokenQuantity);
       
-      // Make the rewards frame tooltip-enabled (similar to inventory items)
-      const tooltipContent = `
+      // Make the rewards frame tooltip-enabled (no shop cost / no x1 — same info is on the card)
+      const tsReward = this.gameState?.inputHandler?.tooltipSystem;
+      let rewardTooltipHtml = tsReward?.getLevelUpRewardTooltipContent(
+        { towerType: 'upgrade_plan' },
+        this.gameState,
+        { omitShopCost: true }
+      ) || '';
+      if (rewardTooltipHtml) {
+        rewardTooltipHtml += `<div style="font-size: 11px; color: #FFFFFF; margin-top: 8px;">Click to upgrade towers</div>`;
+      } else {
+        rewardTooltipHtml = `
         <div style="font-weight: bold; color: #FFFFFF; margin-bottom: 8px; font-size: 14px;">Upgrade Plans</div>
-        <div style="font-size: 18px; color: #ff67e7; margin-top: 2px; font-weight: bold;">x1</div>
+        <div style="color: #FFFFFF; font-size: 15px; line-height: 1.5;">Upgrade one tower at any time</div>
         <div style="font-size: 11px; color: #FFFFFF; margin-top: 8px;">Click to upgrade towers</div>
       `;
+      }
+      const tooltipContent = rewardTooltipHtml;
       
       rewardsFrame.addEventListener('mouseenter', (e) => {
         const rect = rewardsFrame.getBoundingClientRect();
@@ -644,162 +850,10 @@ export class ProgressionSystem {
           : 'display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; justify-items: center; width: 100%; max-width: 424px;';
         discoveriesGrid.style.cssText = gridStyle;
         
-        // Show all unlocked items
+        // Render each discovered item using the shared discovery card builder so the level-up
+        // and standalone "missed unlock" modals look identical.
         newlyUnlocked.forEach((unlock) => {
-          const unlockInfo = this.getUnlockInfo(unlock.towerType, unlock.unlockLevel, unlock.level);
-          
-          // Create frame container for each item - fixed 150px x 150px
-          const discoveriesFrame = document.createElement('div');
-          discoveriesFrame.style.cssText = 'width: 150px; height: 150px; background-image: url(assets/images/ui/frame-yellow.png); background-size: 100% 100%; background-position: center; background-repeat: no-repeat; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 10px; box-sizing: border-box; position: relative;';
-          
-          // Add "UNLOCKED" text overlay (like shop items) - specific styling for level-up modal
-          const unlockedText = document.createElement('div');
-          unlockedText.textContent = 'UNLOCKED';
-          unlockedText.style.cssText = 'position: absolute; top: 13px; right: -8px; font-size: 16px; font-weight: bold; color: #FFD700; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5); transform: rotate(40deg); z-index: 2; pointer-events: none; letter-spacing: 0px; white-space: nowrap;';
-          discoveriesFrame.appendChild(unlockedText);
-          
-          // Unlock icon/icon container
-          const unlockIconContainer = document.createElement('div');
-          unlockIconContainer.style.cssText = 'display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; width: 100%;';
-          
-          // Icon (tower graphic or item image) - 75px size (scaled from 100px)
-          const iconDiv = document.createElement('div');
-          if (['jet', 'spread', 'rain', 'pulsing', 'bomber'].includes(unlock.towerType) && window.createTowerIconHTML) {
-            // Tower: use tower icon HTML
-            const towerIconHTML = window.createTowerIconHTML(unlock.towerType, 1, 1, false);
-            iconDiv.innerHTML = towerIconHTML;
-            // Scale to 75px width - base tower icons are ~80px, so scale to ~0.94 (75/80)
-            iconDiv.style.cssText = 'display: flex; justify-content: center; transform: scale(0.94);';
-          } else if (unlock.towerType === 'shield') {
-            // Shield: use shield image (level-specific, default to level 1 if not specified)
-            const shieldLevel = unlock.level || 1;
-            const shieldImg = document.createElement('img');
-            shieldImg.src = `assets/images/items/shield_${shieldLevel}.png`;
-            shieldImg.style.cssText = 'width: 75px; height: auto; image-rendering: pixelated;'; // Scaled from 100px to 75px
-            iconDiv.appendChild(shieldImg);
-            iconDiv.style.cssText = 'display: flex; justify-content: center; align-items: center;';
-          } else if (unlock.towerType === 'suppression_bomb') {
-            // Suppression bomb: use suppression bomb image (level-specific, default to level 1 if not specified)
-            const bombLevel = unlock.level || 1;
-            const bombImg = document.createElement('img');
-            bombImg.src = `assets/images/items/suppression_${bombLevel}.png`;
-            bombImg.style.cssText = 'width: 75px; height: auto; image-rendering: pixelated;'; // Scaled from 100px to 75px
-            iconDiv.appendChild(bombImg);
-            iconDiv.style.cssText = 'display: flex; justify-content: center; align-items: center;';
-          } else if (unlock.towerType === 'town_health') {
-            // Town health: use town defense image
-            const townImg = document.createElement('img');
-            townImg.src = 'assets/images/items/town_defense.png';
-            townImg.style.cssText = 'width: 75px; height: auto; image-rendering: pixelated;'; // Scaled from 100px to 75px
-            iconDiv.appendChild(townImg);
-            iconDiv.style.cssText = 'display: flex; justify-content: center; align-items: center;';
-          } else if (unlock.towerType === 'upgrade_plan') {
-            // Upgrade token: use upgrade token image
-            const tokenImg = document.createElement('img');
-            tokenImg.src = 'assets/images/items/upgrade_token.png';
-            tokenImg.style.cssText = 'width: 75px; height: auto; image-rendering: pixelated;'; // Scaled from 100px to 75px
-            iconDiv.appendChild(tokenImg);
-            iconDiv.style.cssText = 'display: flex; justify-content: center; align-items: center;';
-          } else if (['water_pressure', 'xp_boost', 'tower_health', 'fire_resistance', 'temp_power_up_spawn_boost'].includes(unlock.towerType)) {
-            // Power-up: use power-up image
-            const powerUpGraphicMap = {
-              'water_pressure': 'water_pressure.png',
-              'xp_boost': 'xp_boost.png',
-              'tower_health': 'tower_durability.png',
-              'fire_resistance': 'fire_resistance.png',
-              'temp_power_up_spawn_boost': 'power_up_magnet.png'
-            };
-            const graphicFilename = powerUpGraphicMap[unlock.towerType];
-            if (graphicFilename) {
-              const powerUpImg = document.createElement('img');
-              powerUpImg.src = `assets/images/power_ups/${graphicFilename}`;
-              powerUpImg.style.cssText = 'width: 75px; height: auto; image-rendering: crisp-edges;';
-              iconDiv.appendChild(powerUpImg);
-              iconDiv.style.cssText = 'display: flex; justify-content: center; align-items: center;';
-            } else {
-              iconDiv.style.cssText = 'font-size: 32px; font-weight: bold; display: flex; justify-content: center;';
-              iconDiv.textContent = (unlockInfo.name || '?').charAt(0);
-            }
-          } else {
-            // Fallback for unknown items
-            iconDiv.style.cssText = 'font-size: 32px; font-weight: bold; display: flex; justify-content: center;';
-            iconDiv.textContent = (unlockInfo.name || '?').charAt(0);
-          }
-          unlockIconContainer.appendChild(iconDiv);
-          
-          // Item name (yellow, not white)
-          const unlockName = document.createElement('div');
-          let displayName = unlockInfo.name.toUpperCase();
-          
-          // Add level information for multi-level items
-          if (unlock.towerType === 'shield' && unlock.level) {
-            displayName = `SHIELDS (LEVEL ${unlock.level})`;
-          } else if (unlock.towerType === 'suppression_bomb' && unlock.level) {
-            displayName = `SUPPRESSION BOMBS (LEVEL ${unlock.level})`;
-          } else if (unlock.towerType === 'upgrade_plan') {
-            displayName = 'PURCHASABLE UPGRADE PLANS';
-          }
-          
-          unlockName.textContent = displayName;
-          unlockName.style.cssText = 'color: #FFD700; font-size: 12px; font-weight: normal; text-align: center; margin-top: 0; line-height: 1.2; padding: 0 12px; box-sizing: border-box;';
-          unlockIconContainer.appendChild(unlockName);
-          
-          // Generate tooltip content (same format as shop items)
-          let tooltipContent = '';
-          if (['jet', 'spread', 'rain', 'pulsing', 'bomber'].includes(unlock.towerType)) {
-            // Tower tooltip - use same format as shop items (name, cost, description, stats)
-            const towerCostMap = {
-              'jet': CONFIG.TOWER_COST_JET,
-              'spread': CONFIG.TOWER_COST_SPREAD,
-              'rain': CONFIG.TOWER_COST_RAIN,
-              'pulsing': CONFIG.TOWER_COST_PULSING,
-              'bomber': CONFIG.TOWER_COST_BOMBER
-            };
-            const towerCost = towerCostMap[unlock.towerType] || 0;
-            tooltipContent = `
-              <div style="font-weight: bold; color: #FFFFFF; margin-bottom: 8px; font-size: 14px;">${unlockInfo.name}</div>
-              <div style="color: #FFFFFF; margin-bottom: 8px;"><span style="color: #00FF88;">$${towerCost}</span></div>
-              <div style="color: #FFFFFF; font-size: 15px; line-height: 1.5;">${unlockInfo.description}</div>
-              ${unlockInfo.stats ? `<div style="color: #4CAF50; margin-top: 8px; font-size: 12px;">${unlockInfo.stats}</div>` : ''}
-            `;
-          } else {
-            // Non-tower tooltip (items, power-ups, etc.)
-            tooltipContent = `
-              <div style="font-weight: bold; color: #FFFFFF; margin-bottom: 8px; font-size: 14px;">${unlockInfo.name}</div>
-              <div style="color: #FFFFFF; font-size: 15px; line-height: 1.5;">${unlockInfo.description}</div>
-              ${unlockInfo.stats ? `<div style="color: #4CAF50; margin-top: 8px; font-size: 12px;">${unlockInfo.stats}</div>` : ''}
-            `;
-          }
-          
-          discoveriesFrame.appendChild(unlockIconContainer);
-          
-          // Add tooltip on hover to the entire frame container (same as shop items)
-          discoveriesFrame.style.cursor = 'var(--cursor-default)';
-          discoveriesFrame.addEventListener('mouseenter', (e) => {
-            const rect = discoveriesFrame.getBoundingClientRect();
-            const mouseX = rect.left + rect.width / 2;
-            const mouseY = rect.top - 20; // Show above the item
-            if (this.gameState?.inputHandler?.tooltipSystem) {
-              this.gameState.inputHandler.tooltipSystem.show(tooltipContent, mouseX, mouseY);
-            }
-          });
-          
-          discoveriesFrame.addEventListener('mouseleave', () => {
-            if (this.gameState?.inputHandler?.tooltipSystem) {
-              this.gameState.inputHandler.tooltipSystem.hide();
-            }
-          });
-          
-          discoveriesFrame.addEventListener('mousemove', (e) => {
-            const rect = discoveriesFrame.getBoundingClientRect();
-            const mouseX = rect.left + rect.width / 2;
-            const mouseY = e.clientY - 20;
-            if (this.gameState?.inputHandler?.tooltipSystem) {
-              this.gameState.inputHandler.tooltipSystem.updateMousePosition(mouseX, mouseY);
-            }
-          });
-          
-          discoveriesGrid.appendChild(discoveriesFrame);
+          discoveriesGrid.appendChild(this._buildDiscoveryCard(unlock));
         });
         
         discoveriesSection.appendChild(discoveriesGrid);
@@ -1168,6 +1222,7 @@ export class ProgressionSystem {
   enableTowerSelectionMode() {
     // Set a flag to indicate we're in upgrade selection mode
     this.gameState.isUpgradeSelectionMode = true;
+    document.body.classList.add('upgrade-selection-mode');
     
     // Refresh inventory to show pulse animations on upgradeable towers
     if (window.updateInventory) {
@@ -1205,6 +1260,88 @@ export class ProgressionSystem {
   }
 
   /**
+   * Base tower stats for upgrade modal previews (ignores active permanent/temp power-ups).
+   * @returns {{ currentValue: string, upgradedValue: string, suffix: string }}
+   */
+  getTowerUpgradePreviewValues(upgradeType, currentLevel, upgradedLevel, towerType) {
+    const isPulsing = towerType === CONFIG.TOWER_TYPE_PULSING;
+    const isBomber = towerType === CONFIG.TOWER_TYPE_BOMBER;
+    const isRain = towerType === CONFIG.TOWER_TYPE_RAIN;
+
+    if (upgradeType === 'range') {
+      if (isPulsing) {
+        const currentInterval = getPulsingAttackInterval(currentLevel);
+        const upgradedInterval = getPulsingAttackInterval(upgradedLevel);
+        return {
+          currentValue: formatEveryInterval(currentInterval),
+          upgradedValue: formatEveryInterval(upgradedInterval),
+          suffix: '',
+        };
+      }
+      if (isBomber) {
+        const currentInterval = getBomberAttackInterval(currentLevel);
+        const upgradedInterval = getBomberAttackInterval(upgradedLevel);
+        return {
+          currentValue: formatEveryInterval(currentInterval),
+          upgradedValue: formatEveryInterval(upgradedInterval),
+          suffix: '',
+        };
+      }
+      let currentRange = 0;
+      let upgradedRange = 0;
+      if (isRain) {
+        currentRange = getRainRange(currentLevel);
+        upgradedRange = getRainRange(upgradedLevel);
+      } else if (towerType === 'spread') {
+        currentRange = getSpreadTowerRange(currentLevel);
+        upgradedRange = getSpreadTowerRange(upgradedLevel);
+      } else {
+        currentRange = getTowerRange(currentLevel);
+        upgradedRange = getTowerRange(upgradedLevel);
+      }
+      return {
+        currentValue: `${currentRange}`,
+        upgradedValue: `${upgradedRange}`,
+        suffix: isRain
+          ? (upgradedRange === 1 ? ' hex ring' : ' hex rings')
+          : (upgradedRange === 1 ? ' hex' : ' hexes'),
+      };
+    }
+
+    if (upgradeType === 'power') {
+      if (isBomber) {
+        return {
+          currentValue: getBomberImpactHexDisplayLabel(currentLevel),
+          upgradedValue: getBomberImpactHexDisplayLabel(upgradedLevel),
+          suffix: '',
+        };
+      }
+      let currentPower = 0;
+      let upgradedPower = 0;
+      if (isPulsing) {
+        currentPower = getPulsingPower(currentLevel);
+        upgradedPower = getPulsingPower(upgradedLevel);
+      } else if (isRain) {
+        currentPower = getRainPower(currentLevel);
+        upgradedPower = getRainPower(upgradedLevel);
+      } else if (towerType === 'spread') {
+        currentPower = getSpreadTowerPower(currentLevel);
+        upgradedPower = getSpreadTowerPower(upgradedLevel);
+      } else {
+        currentPower = getTowerPower(currentLevel);
+        upgradedPower = getTowerPower(upgradedLevel);
+      }
+      return {
+        currentValue: `${formatWaterDamageRate(currentPower)}`,
+        upgradedValue: `${formatWaterDamageRate(upgradedPower)}`,
+        suffix: ' HP/second',
+      };
+    }
+
+    return { currentValue: '', upgradedValue: '', suffix: '' };
+  }
+
+  /**
    * Show upgrade popup next to a tower on the map or for inventory towers
    * @param {string} towerId - Tower ID or 'stored-X' for stored towers
    * @param {boolean} isInventory - Whether this is for an inventory tower
@@ -1219,6 +1356,7 @@ export class ProgressionSystem {
     // Clear any tower graphics from confirm-upgrade-title-container in the main modal
     const modal = document.getElementById('modalOverlay');
     if (modal) {
+      this.removeLevelUpPulseGraphic(modal);
       const modalFrameContent = modal.querySelector('.modal-frame-content');
       if (modalFrameContent) {
         const existingTitleContainer = modalFrameContent.querySelector('.confirm-upgrade-title-container');
@@ -1286,6 +1424,9 @@ export class ProgressionSystem {
       const index = parseInt(towerId.split('-')[1]);
       const storedTower = this.gameState.player.inventory.storedTowers[index];
       if (storedTower) {
+        if (storedTower.broken) {
+          return;
+        }
         tower = {
           id: towerId,
           rangeLevel: storedTower.rangeLevel,
@@ -1602,8 +1743,8 @@ export class ProgressionSystem {
       levelsRow.style.justifyContent = 'center';
       levelsRow.style.gap = '6px';
 
-      // If unavailable or maxed, show only 4 icons (full upgrade state) without arrow/progression
-      if (unavailable || isMaxed) {
+      // Maxed: show full 4 icons. Otherwise show current → next (even when unaffordable).
+      if (isMaxed) {
         const fullLevelContainer = createLevelGraphicsContainer(4, 4, upgradeImage);
         levelsRow.appendChild(fullLevelContainer);
       } else {
@@ -1624,94 +1765,13 @@ export class ProgressionSystem {
 
       // Add value display row for all upgrade types (only when not maxed)
       if (!isMaxed) {
-        const powerUps = this.gameState?.player?.powerUps || {};
-        const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
-        const waterPowerMultiplier = getPowerUpMultiplier('waterTowerPower', powerUps, tempPowerUps);
-        
-        let currentValue = '';
-        let upgradedValue = '';
-        let suffix = '';
-        
-        if (upgradeType === 'range') {
-          // Range or Speed upgrade
-          if (isPulsingTower) {
-            // Speed upgrade: attack interval
-            const currentInterval = getPulsingAttackInterval(currentLevel);
-            const upgradedInterval = getPulsingAttackInterval(currentLevel + 1);
-            currentValue = `every ${currentInterval}`;
-            upgradedValue = `every ${upgradedInterval}`;
-            suffix = ' seconds';
-          } else if (isBomberTower) {
-            // Speed upgrade: attack interval
-            const currentInterval = getBomberAttackInterval(currentLevel);
-            const upgradedInterval = getBomberAttackInterval(currentLevel + 1);
-            currentValue = `every ${currentInterval}`;
-            upgradedValue = `every ${upgradedInterval}`;
-            suffix = ' seconds';
-          } else {
-            // Range upgrade
-            let currentRange = 0;
-            let upgradedRange = 0;
-            if (isRainTower) {
-              currentRange = getRainRange(currentLevel);
-              upgradedRange = getRainRange(currentLevel + 1);
-            } else if (towerType === 'spread') {
-              currentRange = getSpreadTowerRange(currentLevel);
-              upgradedRange = getSpreadTowerRange(currentLevel + 1);
-            } else {
-              currentRange = getTowerRange(currentLevel);
-              upgradedRange = getTowerRange(currentLevel + 1);
-            }
-            currentValue = `${currentRange}`;
-            upgradedValue = `${upgradedRange}`;
-            suffix = upgradedRange === 1 ? ' hex' : ' hexes';
-          }
-        } else if (upgradeType === 'power') {
-          if (isBomberTower) {
-            // Bomber Impact: total extinguishing power per bomb
-            const calculateTotalExtinguishingPower = (impactLevel) => {
-              const basePower = getBomberPower(impactLevel);
-              const basePowerWithMultiplier = basePower * waterPowerMultiplier;
-              
-              let totalPower = 0;
-              totalPower += basePowerWithMultiplier * 1.0; // Center hex
-              if (impactLevel >= 2) {
-                totalPower += basePowerWithMultiplier * 0.85 * 6; // Ring 1
-              }
-              if (impactLevel >= 3) {
-                totalPower += basePowerWithMultiplier * 0.70 * 12; // Ring 2
-              }
-              if (impactLevel >= 4) {
-                totalPower += basePowerWithMultiplier * 0.55 * 18; // Ring 3
-              }
-              return totalPower;
-            };
-            currentValue = `${Math.round(calculateTotalExtinguishingPower(currentLevel))}`;
-            upgradedValue = `${Math.round(calculateTotalExtinguishingPower(currentLevel + 1))}`;
-            suffix = ' HP/bomb';
-          } else {
-            // Power upgrade: extinguishing power per second
-            let currentPower = 0;
-            let upgradedPower = 0;
-            if (isPulsingTower) {
-              // For pulsing, rangeLevel controls speed (attack interval), powerLevel controls power per attack
-              // When upgrading power, speed stays the same, so use current towerRangeLevel for interval
-              const attackInterval = getPulsingAttackInterval(towerRangeLevel);
-              currentPower = (getPulsingPower(currentLevel) * waterPowerMultiplier) / attackInterval;
-              upgradedPower = (getPulsingPower(currentLevel + 1) * waterPowerMultiplier) / attackInterval;
-            } else if (isRainTower) {
-              currentPower = getRainPower(currentLevel) * waterPowerMultiplier;
-              upgradedPower = getRainPower(currentLevel + 1) * waterPowerMultiplier;
-            } else {
-              currentPower = getTowerPower(currentLevel) * waterPowerMultiplier;
-              upgradedPower = getTowerPower(currentLevel + 1) * waterPowerMultiplier;
-            }
-            currentValue = `${Math.round(currentPower)}`;
-            upgradedValue = `${Math.round(upgradedPower)}`;
-            suffix = ' HP/second';
-          }
-        }
-        
+        const { currentValue, upgradedValue, suffix } = this.getTowerUpgradePreviewValues(
+          upgradeType,
+          currentLevel,
+          currentLevel + 1,
+          towerType
+        );
+
         const valueRow = document.createElement('div');
         valueRow.style.cssText = 'display: flex; align-items: center; justify-content: center; gap: 3px; margin-bottom: 5px;';
         
@@ -1733,12 +1793,14 @@ export class ProgressionSystem {
         upgradedValueSpan.style.fontSize = '14px';
         valueRow.appendChild(upgradedValueSpan);
         
-        const suffixSpan = document.createElement('span');
-        suffixSpan.textContent = suffix;
-        suffixSpan.style.color = '#FFFFFF';
-        suffixSpan.style.fontSize = '12px';
-        suffixSpan.style.marginLeft = '4px';
-        valueRow.appendChild(suffixSpan);
+        if (suffix) {
+          const suffixSpan = document.createElement('span');
+          suffixSpan.textContent = suffix;
+          suffixSpan.style.color = '#FFFFFF';
+          suffixSpan.style.fontSize = '12px';
+          suffixSpan.style.marginLeft = '4px';
+          valueRow.appendChild(suffixSpan);
+        }
         
         btn.appendChild(valueRow);
       }
@@ -2240,95 +2302,14 @@ export class ProgressionSystem {
 
       hexagonContainer.appendChild(levelsRow);
 
-      // Add value display row for all upgrade types
-      const powerUps = this.gameState?.player?.powerUps || {};
-      const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
-      const waterPowerMultiplier = getPowerUpMultiplier('waterTowerPower', powerUps, tempPowerUps);
-      
-      let currentValue = '';
-      let upgradedValue = '';
-      let suffix = '';
-      
-      if (upgradeType === 'range') {
-        // Range or Speed upgrade
-        if (isPulsing) {
-          // Speed upgrade: attack interval
-          const currentInterval = getPulsingAttackInterval(currentLevel);
-          const upgradedInterval = getPulsingAttackInterval(newLevel);
-          currentValue = `every ${currentInterval}`;
-          upgradedValue = `every ${upgradedInterval}`;
-          suffix = ' seconds';
-        } else if (isBomber) {
-          // Speed upgrade: attack interval
-          const currentInterval = getBomberAttackInterval(currentLevel);
-          const upgradedInterval = getBomberAttackInterval(newLevel);
-          currentValue = `every ${currentInterval}`;
-          upgradedValue = `every ${upgradedInterval}`;
-          suffix = ' seconds';
-        } else {
-          // Range upgrade
-          let currentRange = 0;
-          let upgradedRange = 0;
-          if (towerType === 'rain') {
-            currentRange = getRainRange(currentLevel);
-            upgradedRange = getRainRange(newLevel);
-          } else if (towerType === 'spread') {
-            currentRange = getSpreadTowerRange(currentLevel);
-            upgradedRange = getSpreadTowerRange(newLevel);
-          } else {
-            currentRange = getTowerRange(currentLevel);
-            upgradedRange = getTowerRange(newLevel);
-          }
-          currentValue = `${currentRange}`;
-          upgradedValue = `${upgradedRange}`;
-          suffix = upgradedRange === 1 ? ' hex' : ' hexes';
-        }
-      } else if (upgradeType === 'power') {
-        if (isBomber) {
-          // Bomber Impact: total extinguishing power per bomb
-          const calculateTotalExtinguishingPower = (impactLevel) => {
-            const basePower = getBomberPower(impactLevel);
-            const basePowerWithMultiplier = basePower * waterPowerMultiplier;
-            
-            let totalPower = 0;
-            totalPower += basePowerWithMultiplier * 1.0; // Center hex
-            if (impactLevel >= 2) {
-              totalPower += basePowerWithMultiplier * 0.85 * 6; // Ring 1
-            }
-            if (impactLevel >= 3) {
-              totalPower += basePowerWithMultiplier * 0.70 * 12; // Ring 2
-            }
-            if (impactLevel >= 4) {
-              totalPower += basePowerWithMultiplier * 0.55 * 18; // Ring 3
-            }
-            return totalPower;
-          };
-          currentValue = `${Math.round(calculateTotalExtinguishingPower(currentLevel))}`;
-          upgradedValue = `${Math.round(calculateTotalExtinguishingPower(newLevel))}`;
-          suffix = ' HP/bomb';
-        } else {
-          // Power upgrade: extinguishing power per second
-          let currentPower = 0;
-          let upgradedPower = 0;
-          if (isPulsing) {
-            // For pulsing, rangeLevel controls speed (attack interval), powerLevel controls power per attack
-            // When upgrading power, speed stays the same, so use current rangeLevel for interval
-            const attackInterval = getPulsingAttackInterval(rangeLevel);
-            currentPower = (getPulsingPower(currentLevel) * waterPowerMultiplier) / attackInterval;
-            upgradedPower = (getPulsingPower(newLevel) * waterPowerMultiplier) / attackInterval;
-          } else if (towerType === 'rain') {
-            currentPower = getRainPower(currentLevel) * waterPowerMultiplier;
-            upgradedPower = getRainPower(newLevel) * waterPowerMultiplier;
-          } else {
-            currentPower = getTowerPower(currentLevel) * waterPowerMultiplier;
-            upgradedPower = getTowerPower(newLevel) * waterPowerMultiplier;
-          }
-          currentValue = `${Math.round(currentPower)}`;
-          upgradedValue = `${Math.round(upgradedPower)}`;
-          suffix = ' HP/second';
-        }
-      }
-      
+      // Add value display row for all upgrade types (base stats only)
+      const { currentValue, upgradedValue, suffix } = this.getTowerUpgradePreviewValues(
+        upgradeType,
+        currentLevel,
+        newLevel,
+        towerType
+      );
+
       if (currentValue && upgradedValue) {
         const valueRow = document.createElement('div');
         valueRow.style.cssText = 'display: flex; align-items: center; justify-content: center; gap: 3px; margin-bottom: 5px;';
@@ -2351,12 +2332,14 @@ export class ProgressionSystem {
         upgradedValueSpan.style.fontSize = '14px';
         valueRow.appendChild(upgradedValueSpan);
         
-        const suffixSpan = document.createElement('span');
-        suffixSpan.textContent = suffix;
-        suffixSpan.style.color = '#FFFFFF';
-        suffixSpan.style.fontSize = '12px';
-        suffixSpan.style.marginLeft = '4px';
-        valueRow.appendChild(suffixSpan);
+        if (suffix) {
+          const suffixSpan = document.createElement('span');
+          suffixSpan.textContent = suffix;
+          suffixSpan.style.color = '#FFFFFF';
+          suffixSpan.style.fontSize = '12px';
+          suffixSpan.style.marginLeft = '4px';
+          valueRow.appendChild(suffixSpan);
+        }
         
         hexagonContainer.appendChild(valueRow);
       }
@@ -2500,10 +2483,36 @@ export class ProgressionSystem {
     const plansToConsume = Math.min(requiredTokens, this.gameState.player.upgradePlans);
     if (plansToConsume > 0) {
       this.gameState.player.upgradePlans -= plansToConsume;
+      this.gameState.runStats?.recordUpgradePlansUsed?.(plansToConsume);
       
       // Update UI to show new token count
       if (window.updateUI) {
         window.updateUI();
+      }
+    }
+
+    const rs = this.gameState.runStats;
+    if (rs && plansToConsume > 0) {
+      if (towerId && towerId.startsWith('purchased-')) {
+        const index = parseInt(towerId.split('-')[1], 10);
+        const t = (this.gameState.player.inventory.purchasedTowers || [])[index];
+        if (t) {
+          const newLevel = upgradeType === 'range' ? t.rangeLevel : t.powerLevel;
+          rs.recordInventoryTowerUpgraded(t.type, upgradeType, newLevel, t.runStatsInstanceId ?? null, plansToConsume);
+        }
+      } else if (towerId && towerId.startsWith('stored-')) {
+        const index = parseInt(towerId.split('-')[1], 10);
+        const t = (this.gameState.player.inventory.storedTowers || [])[index];
+        if (t) {
+          const newLevel = upgradeType === 'range' ? t.rangeLevel : t.powerLevel;
+          rs.recordInventoryTowerUpgraded(t.type, upgradeType, newLevel, t.runStatsInstanceId ?? null, plansToConsume);
+        }
+      } else if (towerId) {
+        const t = this.gameState.towerSystem.getTower(towerId);
+        if (t) {
+          const newLevel = upgradeType === 'range' ? t.rangeLevel : t.powerLevel;
+          rs.recordMapTowerUpgraded(towerId, t.type, upgradeType, newLevel, t.runStatsInstanceId ?? null, plansToConsume);
+        }
       }
     }
     
@@ -2540,6 +2549,9 @@ export class ProgressionSystem {
   closeUpgradeModal() {
     const modal = document.getElementById('modalOverlay');
     modal?.classList.remove('active');
+    // Always strip the level-up crest graphic so any subsequent modal that reuses #modalOverlay
+    // (e.g. the missed-unlock modal) doesn't render on top of a stale "LEVEL N" badge.
+    if (modal) this.removeLevelUpPulseGraphic(modal);
     
     // Hide map selection instructions
     this.hideMapSelectionInstructions();
@@ -2585,8 +2597,9 @@ export class ProgressionSystem {
     // During a wave, always resume (unlock modals will pause again if needed)
     // Between waves, only resume if no unlock modals will show
     if (isWaveActive || !hasPendingUnlocks) {
-      if (window.gameLoop?.isPaused && window.resumeGameWithAudio) {
-        window.resumeGameWithAudio();
+      if (window.gameLoop?.isPaused) {
+        if (window.resumeGameSilently) window.resumeGameSilently();
+        else if (window.resumeGameWithAudio) window.resumeGameWithAudio();
       }
       
       // Hide sidebar when wave resumes after upgrading (only if mouse is not hovering)
@@ -2608,6 +2621,7 @@ export class ProgressionSystem {
    */
   disableTowerSelectionMode() {
     this.gameState.isUpgradeSelectionMode = false;
+    document.body.classList.remove('upgrade-selection-mode');
   }
 
   /**
@@ -2657,16 +2671,27 @@ export class ProgressionSystem {
         return level ? `Shield Level ${level}` : 'Shield';
       case 'town_health':
         return 'Tree Juice';
+      case 'suppression_bundle':
+        return 'Suppression Bomb Bundle';
       case 'upgrade_plan':
         return 'Upgrade Plans';
-      default:
+      case 'tower_speed':
+        return CONFIG.POWER_UPS?.tower_speed?.name || 'Tower Speed';
+      case 'spread_resistance':
+        return CONFIG.POWER_UPS?.spread_resistance?.name || 'Spread Resistance';
+      case 'fire_resistance':
+        return CONFIG.POWER_UPS?.fire_resistance?.name || 'Fire Resistance';
+      default: {
+        const fromConfig = CONFIG.POWER_UPS?.[towerType]?.name;
+        if (fromConfig) return fromConfig;
         return 'Item';
+      }
     }
   }
 
   checkAndShowUnlocks(previousLevel, newLevel) {
     // Check all tower types to see if any unlocked
-    const allUnlockTypes = ['jet', 'rain', 'shield', 'spread', 'suppression_bomb', 'town_health', 'upgrade_token', 'pulsing', 'bomber'];
+    const allUnlockTypes = ['jet', 'rain', 'shield', 'spread', 'suppression_bomb', 'suppression_bundle', 'town_health', 'upgrade_token', 'pulsing', 'bomber'];
     
     // Initialize newlyUnlockedItems if it doesn't exist
     if (!this.gameState.player.newlyUnlockedItems) {
@@ -2677,6 +2702,11 @@ export class ProgressionSystem {
     const newlyUnlocked = [];
     
     for (const towerType of allUnlockTypes) {
+      // Mirror getNewlyUnlockedItems(): items still gated behind meta-progression must not surface
+      // here either, otherwise the post-wave fallback can resurrect items the level-up modal
+      // (correctly) suppressed — producing the "duplicate / stale" unlock modal.
+      if (!isMetaItemUnlocked(this.gameState, towerType)) continue;
+
       // For suppression_bomb and shield, check each level individually
       if (towerType === 'suppression_bomb' || towerType === 'shield') {
         for (let level = 1; level <= 4; level++) {
@@ -2713,7 +2743,7 @@ export class ProgressionSystem {
               // Show toast notification
               const itemName = this.getItemDisplayName(towerType, level);
               if (this.gameState.notificationSystem) {
-                this.gameState.notificationSystem.showToast(`New item unlocked in the shop: ${itemName}`);
+                this.gameState.notificationSystem.showToast(`${itemName} unlocked in the shop!`, 3000, 'positive');
               }
             } else if (wasMissed) {
               // Item was missed (e.g., player jumped multiple levels) - mark as unseen for shop highlighting
@@ -2760,7 +2790,7 @@ export class ProgressionSystem {
             // Show toast notification
             const itemName = this.getItemDisplayName(towerType);
             if (this.gameState.notificationSystem) {
-              this.gameState.notificationSystem.showToast(`New item unlocked in the shop: ${itemName}`);
+              this.gameState.notificationSystem.showToast(`${itemName} unlocked in the shop!`, 3000, 'positive');
             }
           } else if (wasMissed) {
             // Item was missed (e.g., player jumped multiple levels) - mark as unseen for shop highlighting
@@ -2798,144 +2828,128 @@ export class ProgressionSystem {
   }
 
   /**
-   * Show unlock modal for a newly unlocked tower/item
+   * Show the "missed unlock" modal for items that crossed their unlock threshold outside of a normal
+   * level-up flow (e.g., wave-end fallback when {@link #checkLevelUp} didn't fire, or post-upgrade
+   * resolution of a deferred {@link #pendingUnlockCheck}). Renders the same yellow-framed discovery
+   * card pattern as {@link #showLevelUpModal}, with no emojis.
+   *
+   * Subsequent items in the unlock queue ({@link #gameState.player.pendingUnlocks}) are shown one at
+   * a time when the player presses Continue.
+   *
    * @param {string} towerType
    * @param {number} unlockLevel
-   * @param {number} [level] - Optional level for suppression_bomb and shield
+   * @param {number} [level] - Optional sub-level for suppression_bomb / shield
    */
   showUnlockModal(towerType, unlockLevel, level = null) {
-    // Pause game (if not already paused)
     if (window.pauseGameWithAudio) {
       window.pauseGameWithAudio();
     }
-    
-    // Update pause button
     this.updatePauseButtonState();
-    
-    // Show unlock modal
+
     const modal = document.getElementById('modalOverlay');
     const choicesDiv = document.getElementById('modalChoices');
-    
-    if (modal && choicesDiv) {
-      modal.classList.add('active');
-      
-      // Get tower info
-      let icon, name, description, stats;
-      switch (towerType) {
-        case 'jet':
-          icon = '🚿';
-          name = 'Jet Tower';
-          description = 'Single direction jet tower';
-          stats = `Range: 3 hexes | Power: 1.0`;
-          break;
-        case 'spread':
-          icon = '📐';
-          name = 'Spread Tower';
-          description = '3 jets, upgradable range';
-          stats = `Range: 2 hexes | Power: 1.0`;
-          break;
-        case 'pulsing':
-          icon = '🌋';
-          name = 'Pulsing Tower';
-          description = 'Periodic AOE to adjacent hexes';
-          stats = `Range: Adjacent | Power: 4/sec`;
-          break;
-        case 'rain':
-          icon = '🌧️';
-          name = 'Rain Tower';
-          description = 'Constant AOE with range upgrades';
-          stats = `Range: 1 hex | Power: 0.5/sec`;
-          break;
-        case 'bomber':
-          icon = '💣';
-          name = 'Bomber Tower';
-          description = 'Water bombs with long range';
-          stats = `Range: 2-10 hexes | Power: 6`;
-          break;
-        case 'suppression_bomb':
-          icon = '💨';
-          name = 'Suppression Bombs';
-          description = 'Instant fire suppression devices';
-          if (level !== null) {
-            const radius = CONFIG[`SUPPRESSION_BOMB_RADIUS_LEVEL_${level}`];
-            const hexes = level === 1 ? 7 : level === 2 ? 19 : level === 3 ? 37 : 61;
-            stats = `Level ${level} unlocked: ${radius} ring${radius > 1 ? 's' : ''} (${hexes} hexes)`;
-          } else {
-            stats = 'Level 1-4 available';
-          }
-          break;
-        case 'shield':
-          icon = '🛡️';
-          name = 'Shields';
-          description = 'Protect your towers from fire damage';
-          if (level !== null) {
-            const hp = CONFIG[`SHIELD_HEALTH_LEVEL_${level}`];
-            stats = `Level ${level} unlocked: ${hp} HP protection`;
-          } else {
-            stats = 'Level 1-4 available (50-500 HP)';
-          }
-          break;
-        case 'town_health':
-          icon = '🏰';
-          name = 'Tree Juice';
-          description = 'Upgrade your tree juice';
-          stats = `+${CONFIG.TOWN_HEALTH_PER_UPGRADE} HP per upgrade`;
-          break;
-        case 'upgrade_plan':
-          icon = '🪙';
-          name = 'Upgrade Plans';
-          description = 'Purchase upgrade plans to upgrade your towers';
-          stats = 'Adds 1 upgrade plan';
-          break;
-        default:
-          icon = '🚿';
-          name = 'Tower';
-          description = 'New tower unlocked';
-          stats = '';
-      }
-      
-      choicesDiv.innerHTML = `
-        <div style="text-align: center; margin-bottom: 20px;">
-          <h3 style="color: #4CAF50; margin-bottom: 10px;">🔓 Unlocked!</h3>
-          <div style="font-size: 48px; margin-bottom: 16px;">${icon}</div>
-          <p style="color: #FFD700; font-weight: bold; margin-bottom: 8px; font-size: 18px;">${name}</p>
-          <p style="color: #FFFFFF; margin-bottom: 8px; font-size: 17px;">${description}</p>
-          <p style="color: #4CAF50; margin-bottom: 8px; font-size: 12px;">${stats}</p>
-          <p style="color: #FFFFFF; font-size: 14px; margin-top: 16px;">Unlocked at Level ${unlockLevel}</p>
-        </div>
-      `;
-      
-      // Add continue button
-      const continueBtn = document.createElement('button');
-      continueBtn.className = 'choice-btn cta-button';
-      continueBtn.textContent = 'Continue';
-      continueBtn.style.marginTop = '20px';
-      continueBtn.onclick = () => {
-        modal.classList.remove('active');
-        // Update shop to show unlocked items
-        if (window.updateInventory) {
-          window.updateInventory();
-        }
-        
-        // Check if there are more pending unlocks to show
-        if (this.gameState.player.pendingUnlocks && this.gameState.player.pendingUnlocks.length > 0) {
-          const nextUnlock = this.gameState.player.pendingUnlocks.shift();
-          this.showUnlockModal(nextUnlock.towerType, nextUnlock.unlockLevel, nextUnlock.level);
-        } else {
-          // All unlock modals are done, resume game
-          // NOTE: Don't reset unlocksCheckedDuringLevelUp here - keep it true until wave ends
-          // This prevents completeWave() from checking unlocks again
-          if (window.gameLoop?.isPaused && window.resumeGameWithAudio) {
-            window.resumeGameWithAudio();
-          }
-          // Sync pause button state
-          if (window.syncPauseButton) {
-            window.syncPauseButton();
-          }
-        }
-      };
-      choicesDiv.appendChild(continueBtn);
+    if (!modal || !choicesDiv) return;
+
+    // Strip any leftover level-up badge graphic so the missed-unlock modal isn't showing a
+    // stale "LEVEL N" crest from a previous showLevelUpModal call.
+    this.removeLevelUpPulseGraphic(modal);
+
+    // Reuse the upgrade-token modal styling (no 9-patch frame, dark mask) so this modal matches
+    // the rest of the modern progression UI rather than the legacy emoji popup.
+    modal.classList.add('active');
+    modal.classList.add('upgrade-token-mask');
+    modal.classList.remove('skip-upgrade-mask');
+    modal.style.pointerEvents = 'auto';
+    const modalInner = modal.querySelector('.modal');
+    if (modalInner) {
+      modalInner.style.pointerEvents = 'auto';
+      modalInner.classList.add('modal-upgrade-token');
+      modalInner.classList.add('modal-no-frame');
+      modalInner.classList.remove('skip-upgrade-modal');
     }
+
+    // Replace any existing h2 title (defensively — leftover modals can leave one behind).
+    const modalFrameContent = modal.querySelector('.modal-frame-content');
+    const existingTitle = modal.querySelector('h2');
+    if (existingTitle) existingTitle.remove();
+
+    const unlock = { towerType, unlockLevel, level };
+    const card = this._buildDiscoveryCard(unlock);
+
+    choicesDiv.innerHTML = '';
+    choicesDiv.style.display = 'flex';
+    choicesDiv.style.flexDirection = 'column';
+    choicesDiv.style.alignItems = 'center';
+    choicesDiv.style.width = '100%';
+
+    // Header label, matching the level-up modal's "DISCOVERIES" treatment.
+    const headerSection = document.createElement('div');
+    headerSection.style.cssText = 'display: flex; flex-direction: column; align-items: center; margin-bottom: 16px;';
+
+    const headerLabel = document.createElement('div');
+    headerLabel.textContent = 'NEW DISCOVERY';
+    headerLabel.style.cssText = 'color: #FFD700; font-size: 16px; font-weight: bold; margin-bottom: 8px; text-transform: uppercase;';
+    headerSection.appendChild(headerLabel);
+
+    const headerDivider = document.createElement('img');
+    headerDivider.src = 'assets/images/ui/divider-yellow.png';
+    headerDivider.style.cssText = 'width: 220px; height: auto; image-rendering: crisp-edges; margin-bottom: 16px;';
+    headerSection.appendChild(headerDivider);
+
+    const cardWrapper = document.createElement('div');
+    cardWrapper.style.cssText = 'display: flex; justify-content: center; margin-bottom: 12px;';
+    cardWrapper.appendChild(card);
+    headerSection.appendChild(cardWrapper);
+
+    const unlockedAtLabel = document.createElement('div');
+    unlockedAtLabel.textContent = `Unlocked at Level ${unlockLevel}`;
+    unlockedAtLabel.style.cssText = 'color: #FFFFFF; font-size: 14px; margin-top: 8px;';
+    headerSection.appendChild(unlockedAtLabel);
+
+    choicesDiv.appendChild(headerSection);
+
+    if (modalFrameContent && modalFrameContent.contains(choicesDiv) === false) {
+      modalFrameContent.appendChild(choicesDiv);
+    }
+
+    const continueBtn = document.createElement('button');
+    continueBtn.className = 'choice-btn cta-button cta-purple';
+    continueBtn.textContent = 'Continue';
+    continueBtn.style.whiteSpace = 'nowrap';
+    continueBtn.style.width = 'auto';
+    continueBtn.style.marginTop = '8px';
+    continueBtn.onclick = () => {
+      modal.classList.remove('active', 'upgrade-token-mask');
+      if (modalInner) {
+        modalInner.classList.remove('modal-upgrade-token', 'modal-no-frame');
+      }
+      this.removeLevelUpPulseGraphic(modal);
+      if (window.updateInventory) {
+        window.updateInventory();
+      }
+
+      // Chain: show next pending unlock if any are queued.
+      const queue = this.gameState.player.pendingUnlocks;
+      if (Array.isArray(queue) && queue.length > 0) {
+        const next = queue.shift();
+        this.showUnlockModal(next.towerType, next.unlockLevel, next.level);
+        return;
+      }
+
+      // No more queued unlocks — resume game. Don't reset unlocksCheckedDuringLevelUp here; that
+      // flag is cleared at the next wave boundary in waveSystem.completeWave().
+      if (window.gameLoop?.isPaused && window.resumeGameWithAudio) {
+        window.resumeGameWithAudio();
+      }
+      if (window.syncPauseButton) {
+        window.syncPauseButton();
+      }
+    };
+
+    const buttonWrapper = document.createElement('div');
+    buttonWrapper.style.cssText = 'display: flex; justify-content: center; align-items: center; width: 100%; margin-top: 8px;';
+    buttonWrapper.appendChild(continueBtn);
+    choicesDiv.appendChild(buttonWrapper);
   }
 
   /**

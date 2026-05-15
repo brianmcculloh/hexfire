@@ -58,3 +58,14 @@ export function formatLeaderboardDate(timestamp) {
     return '';
   }
 }
+
+/**
+ * Remove all leaderboard entries from storage.
+ */
+export function clearLeaderboard() {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch (e) {
+    console.warn('Leaderboard clear failed:', e);
+  }
+}

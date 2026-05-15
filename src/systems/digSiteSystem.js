@@ -1,6 +1,7 @@
 // Dig Site System - Manages dig site spawning, health, and water vs fire damage
 
-import { CONFIG, getFireTypeConfig } from '../config.js';
+import { CONFIG, getFireTypeConfig, getPowerUpMultiplier } from '../config.js';
+import { isMetaItemUnlocked } from '../utils/metaProgression.js';
 import { hexDistance } from '../utils/hexMath.js';
 
 let digSiteIdCounter = 0;
@@ -54,6 +55,10 @@ export class DigSiteSystem {
         
         // Can't spawn on existing mystery items
         if (hex.hasMysteryItem) continue;
+
+        if (hex.hasArtifactItem) continue;
+
+        if (hex.hasBurningVault) continue;
         
         // Can't spawn on existing currency items
         if (hex.hasCurrencyItem) continue;
@@ -86,11 +91,17 @@ export class DigSiteSystem {
    * @param {number} waveGroup - Current wave group number (1-indexed)
    */
   generateDigSites(waveGroup) {
+    if (!isMetaItemUnlocked(this.gameState, 'dig_sites')) return;
+
     // Don't clear existing dig sites - they persist through the wave group
     // Only clear at wave group boundaries (handled in completeWaveGroup)
     
     const validLocations = this.getValidSpawnLocations();
     if (validLocations.length === 0) return;
+    
+    const powerUps = this.gameState?.player?.powerUps || {};
+    const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+    const rareChanceMult = getPowerUpMultiplier('rareChanceBonus', powerUps, tempPowerUps);
     
     // Process each dig site type
     Object.keys(CONFIG.DIG_SITE_TYPES).forEach(siteTypeKey => {
@@ -100,9 +111,15 @@ export class DigSiteSystem {
       // Check if this type can spawn at this wave group
       if (waveGroup < siteConfig.startWaveGroup) return;
       
+      // Ancient dig site (type 3): base spawn chance scales with increased rares (same M as mystery_rare / rare temp weights)
+      let spawnChance = siteConfig.spawnChance;
+      if (siteType === 3) {
+        spawnChance *= rareChanceMult;
+      }
+      
       // Check spawn chance once per wave for this dig site type
       // If chance succeeds, spawn 1 new dig site of this type
-      if (Math.random() <= siteConfig.spawnChance) {
+      if (Math.random() <= spawnChance) {
         // Find a valid location
         if (validLocations.length > 0) {
           const randomIndex = Math.floor(Math.random() * validLocations.length);
@@ -125,9 +142,12 @@ export class DigSiteSystem {
    * @param {number} q - Hex q coordinate
    * @param {number} r - Hex r coordinate
    * @param {number} type - Dig site type (1, 2, or 3)
+   * @param {{ skipSpawnBounce?: boolean }} [options]
    * @returns {string|null} Site ID or null if spawn failed
    */
-  spawnDigSite(q, r, type) {
+  spawnDigSite(q, r, type, options = {}) {
+    if (!isMetaItemUnlocked(this.gameState, 'dig_sites')) return null;
+
     const hex = this.gridSystem.getHex(q, r);
     if (!hex) return null;
     
@@ -136,7 +156,9 @@ export class DigSiteSystem {
     
     // Double-check validity
     if (hex.isTown || hex.isPath || hex.hasTower || hex.isBurning || 
-        hex.hasWaterTank || hex.hasSuppressionBomb || hex.hasDigSite || hex.hasFireSpawner) {
+        hex.hasWaterTank || hex.hasSuppressionBomb || hex.hasDigSite || hex.hasFireSpawner ||
+        hex.hasTempPowerUpItem || hex.hasMysteryItem || hex.hasCurrencyItem || hex.hasBurningVault ||
+        hex.hasArtifactItem) {
       return null;
     }
     
@@ -154,11 +176,21 @@ export class DigSiteSystem {
       health: siteConfig.health,
       maxHealth: siteConfig.health,
       isActive: true,
+      mysteryLandDropAtMs:
+        options.skipSpawnBounce || typeof performance === 'undefined' ? undefined : performance.now(),
     };
     
     this.digSites.set(siteId, site);
     this.waterPowerOnSites.set(siteId, 0); // Initialize water power tracking
     this.gridSystem.placeDigSite(q, r, siteId);
+    if (!this.gameState.suppressRunStatsHooks) {
+      this.gameState.runStats?.recordDigSiteSpawn?.(
+        siteId,
+        type,
+        q,
+        r
+      );
+    }
     
     return siteId;
   }
@@ -185,7 +217,11 @@ export class DigSiteSystem {
       let fireDamagePerSecond = 0;
       if (hex.isBurning) {
         const fireConfig = getFireTypeConfig(hex.fireType);
-        fireDamagePerSecond = fireConfig ? fireConfig.damagePerSecond : 0;
+        const powerUps = this.gameState?.player?.powerUps || {};
+        const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+        const fireDamageMult = getPowerUpMultiplier('fireDamage', powerUps, tempPowerUps);
+        const baseDps = fireConfig ? fireConfig.damagePerSecond : 0;
+        fireDamagePerSecond = baseDps * fireDamageMult;
       }
       
       // Calculate net damage: fire damage - water power
@@ -195,6 +231,7 @@ export class DigSiteSystem {
       if (netDamagePerSecond > 0) {
         // Fire is stronger - take damage
         const damageThisTick = deltaTime * netDamagePerSecond;
+        this.gameState.runStats?.addDigSiteDamage?.(site.id, site.type, damageThisTick);
         site.health -= damageThisTick;
         site.health = Math.max(0, site.health);
         
@@ -253,6 +290,8 @@ export class DigSiteSystem {
       // ignore render side errors
     }
     
+    this.gameState.runStats?.recordDigSiteDestroyed?.(siteId, site.type, site.q, site.r);
+
     // Remove the site from the grid and map
     this.gridSystem.removeDigSite(site.q, site.r);
     this.digSites.delete(siteId);

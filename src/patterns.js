@@ -2,6 +2,7 @@
  * Boss and hero character patterns.
  * BOSS_PATTERNS: boss waves (5th wave of each group)
  * HERO_PATTERNS: wave complete modal heroes
+ * Endless (wave group > final campaign): use the next numeric row for speech only (e.g. 23); assets stay on the final group.
  */
 
 // TEXT EFFECTS
@@ -70,7 +71,7 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'holy-fire',
-          name: 'Holy Fire',
+          name: 'Blasphemous Fire',
           description: 'Ignites a cross-shaped hex pattern across the map every 15 seconds',
           interval: 15,
           soundMode: 'once',
@@ -137,7 +138,7 @@ export const BOSS_PATTERNS = {
         {
           type: 'cursefire',
           name: 'Cursefire',
-          description: 'Targets all spawned items, power-ups, and dig sites every 10 seconds',
+          description: 'Targets all spawned items on the map and a random tower every 10 seconds',
           interval: 10,
           soundMode: 'once',
           params: {
@@ -197,28 +198,18 @@ export const BOSS_PATTERNS = {
         'I\'ve seen you rummaging about the gates. You\'re no threat to me.',
         'Your strength gain is my peril! Blast you to the depths of Hexalon!'
       ],
-      powerActivationSpeech: ['<span class="text-fire-firestorm text-jitter text-glow text-uppercase">Level up? Burn!</span>', '<span class="text-fire-inferno text-jitter text-glow text-uppercase">Your ambition fuels me!</span>', '<span class="text-fire-cataclysm text-jitter text-glow text-uppercase">I\'ll show you who\'s in charge!</span>'],
+      powerActivationSpeech: ['<span class="text-fire-firestorm text-jitter text-glow text-uppercase">Pick that up? Burn!</span>', '<span class="text-fire-inferno text-jitter text-glow text-uppercase">Your ambition fuels me!</span>', '<span class="text-fire-cataclysm text-jitter text-glow text-uppercase">I\'ll show you who\'s in charge!</span>'],
       abilities: [
         {
           type: 'provoked-burn',
           name: 'Provoked Burn',
-          description: 'If you level up, ignites a straight line through the Ancient Grove',
-          trigger: 'level up',
+          description: 'Ignites a straight line through the Ancient Grove whenever you collect a map item or destroy a water tank with water.',
+          trigger: 'map item collected',
           soundMode: 'once',
           params: {
             delayMs: 1000,
-            staggerPerHex: 50
-          }
-        },
-        {
-          type: 'scatter-strike',
-          name: 'Scatter Strike',
-          description: 'Ignites 20 random hexes across the map every 15 seconds',
-          interval: 15,
-          soundMode: 'once',
-          params: {
-            hexCount: 20,
-            staggerRange: { min: 50, max: 200 }
+            staggerPerHex: 50,
+            strikeGapMs: 450
           }
         },
       ]
@@ -278,8 +269,8 @@ export const BOSS_PATTERNS = {
         {
           type: 'piercing-flame',
           name: 'Piercing Flame',
-          description: 'Ignites all player-placed items on the map every 15 seconds',
-          interval: 15,
+          description: 'Ignites all player-placed items on the map every 20 seconds',
+          interval: 20,
           soundMode: 'multiple',
           params: {
             staggerPerTarget: 200 // Milliseconds between each strike
@@ -433,12 +424,12 @@ export const BOSS_PATTERNS = {
         {
           type: 'doomfire',
           name: 'Doomfire',
-          description: 'Amplifies the strongest burning fire type (or ignites 4 hexes with that fire type) every 15 seconds',
-          interval: 15,
+          description: 'Increases area of the strongest burning fire type (or ignites 10 hexes with that fire type) every 10 seconds',
+          interval: 10,
           soundMode: 'once',
           params: {
             staggerPerHex: 50,
-            fallbackHexCount: 4, // Random hexes struck when no strongest-type hexes are burning
+            fallbackHexCount: 10, // Random hexes struck when no strongest-type hexes are burning
           }
         },
       ]
@@ -544,7 +535,29 @@ export const BOSS_PATTERNS = {
         },
       ]
     },
-    // Future wave groups will be added here
+    23: { 
+      name: 'King of Flame',
+      title: 'The Uncreated',
+      speechBubbles: [
+        'You\'re still here!? You think you are powerful. You have faced nothing yet. Prepare to understand the <span class="text-fire-cataclysm text-glow-pulse text-uppercase">true power</span> seated at the core of Hexalon. <br /><span class="text-fire text-breathe text-glow text-uppercase">My power</span>.',
+        'Wretched alien filth... this is not the last you will see of me. I\'m eternal, uncreated, unstoppable...........<span class="text-fire-inferno text-glow text-uppercase">FOREVER!!!!</span>'
+      ],
+      powerActivationSpeech: ['<span class="text-fire-cataclysm text-jitter text-glow text-uppercase">Be purified</span>', '<span class="text-fire-cataclysm text-jitter text-glow text-uppercase">There is no escape</span>', '<span class="text-fire-cataclysm text-jitter text-glow text-uppercase">Receive your punishment</span>'],
+      abilities: [
+        {
+          type: 'purify',
+          name: 'Purify',
+          description: 'Ignites 100 random hexes every 5 seconds, with a 3-strike pattern every 3rd activation',
+          interval: 5,
+          soundMode: 'once',
+          params: {
+            hexCount: 100,
+            staggerRange: { min: 50, max: 100 },
+            tripleStaggerMs: 500, // Stagger between the 3 strikes when it fires the triple (every 3rd activation)
+          }
+        },
+      ]
+    },
   };
 
 // Hero patterns by wave group (hero1.png, hero2.png, etc. in creatures folder)
@@ -611,7 +624,7 @@ export const HERO_PATTERNS = {
         complete: 'I don\'t know how to repay you for your kindness! I mean, other than this <span class="text-grove text-glow-pulse">money</span>.' 
       },
       { 
-        placement: '<span class="text-fire text-jitter-fast">Faelith</span> approaches! No one has ever withstood her <span class="text-fire-cinder text-jitter text-glow">holy fire</span>. Should we flee??', 
+        placement: '<span class="text-fire text-jitter-fast">Faelith</span> approaches! No one has ever withstood her <span class="text-fire-cinder text-jitter text-glow">blasphemous fire</span>. Should we flee??', 
         complete: 'Gods of the <span class="text-grove text-glow">Ancient Grove</span> be praised, you have survived the mighty <span class="text-fire text-jitter-fast">Faelith</span>! You are truly a hero. My friends and I can once again fly untethered throughout the mesa!!!' 
       },
     ]},
@@ -665,7 +678,7 @@ export const HERO_PATTERNS = {
         complete: 'I planted 17 trees while you bravely fought off the flames. And I have many more seeds to sow!' 
       },
       { 
-        placement: 'You seem to be handling the <span class="text-fire-blaze text-jitter text-glow">blazes</span> quite well. Have you come across any <span class="text-gradient-upgrade">fire resistance</span> power ups yet?', 
+        placement: 'You seem to be handling the <span class="text-fire-blaze text-jitter text-glow">blazes</span> quite well. Have you come across any <span class="text-gradient-upgrade">spread resistance</span> or <span class="text-gradient-upgrade">fire resistance</span> power ups yet?', 
         complete: 'The <span class="text-glow-pulse">Silver City</span> may be saved after all! But I still have many more seeds to sow...' 
       },
       { 
@@ -920,7 +933,7 @@ export const HERO_PATTERNS = {
       },
       { 
         placement: '<span class="text-fire text-jitter-fast text-glow">Crug</span> doesn\'t like <span class="text-gradient-upgrade">Sprigget</span>! He probably doesn\'t like you either! Watch out for his <span class="text-fire-firestorm text-jitter text-glow text-uppercase">Meteor Strikes!</span>', 
-        complete: '<span class="text-gradient-upgrade">Sprigget</span> will alwyas be your friend! <span class="text-gradient-upgrade">Sprigget</span> can live safely in <span class="text-gradient-grove">The Grove</span> now without any fear of pesky meteors!!' 
+        complete: '<span class="text-gradient-upgrade">Sprigget</span> will always be your friend! <span class="text-gradient-upgrade">Sprigget</span> can live safely in <span class="text-gradient-grove">The Grove</span> now without any fear of pesky meteors!!' 
       },
     ]},
     17: { name: 'Shalinara', title: 'The Princess', speechBubbles: [
@@ -1055,4 +1068,52 @@ export const HERO_PATTERNS = {
         complete: 'It... it cannot be... the <span class="text-fire-inferno text-glow text-jitter-fast text-uppercase">King of Flame</span> was thought to be impervious to any devices, natural or magic. How could you have possibly defeated him? Rejoice, all of Hexalon, for the great <span class="text-cycle-water text-glow text-wave">Water Wielder</span> has saved us all!' 
       },
     ]},
+    23: { name: 'Grove Incarnate', title: 'The Living', speechBubbles: [
+      { 
+        placement: 'I have been waiting for you. I am the <span class="text-gradient-grove text-glow">Spirit of the Grove</span>, the first living being, and the defender of Hexalon. Every Ancient Grove comes from me, and returns to me. <span class="text-fire-inferno text-glow text-uppercase text-shimmer">Eternalfire</span> burns day and night. Save <span class="text-cycle-grove text-glow">The Last Grove</span> from destruction, and take your place among the pantheon of the gods.', 
+        complete: 'Every enemy you have defeated now watches from the ether, waiting for you to join them.' 
+      },
+      { 
+        placement: 'Use everything you have learned, everything you have built, everything you have achieved, to save <span class="text-cycle-grove text-glow">The Last Grove</span> from certain doom.', 
+        complete: 'You are a wily one. The rumors are true. Indeed, you are the chosen one.' 
+      },
+      { 
+        placement: 'I already feel my branches beginning to grow, my canapy of leaves beginning to spread, my roots beginning to take hold in the deep earth of Hexalon.', 
+        complete: '<span class="text-fire-inferno text-glow text-uppercase text-shimmer">Eternalfire</span> may never fully cease to burn, but with your help we can assure that <span class="text-cycle-grove text-glow">The Last Grove</span> will live on.' 
+      },
+      { 
+        placement: 'Many creatures, large and small, have come to <span class="text-cycle-grove text-glow">The Last Grove</span> to seek refuge from the flames. They are our responsibility now. They watch in eager anticipation of your victory, soon to come.', 
+        complete: 'It is as I have feared. The <span class="text-fire text-glow text-uppercase">ultimate evil</span> has awakened, stirred by our mettling. Take hold of your destiny, and save <span class="text-cycle-grove text-glow">The Last Grove</span> from certain doom.' 
+      },
+      { 
+        placement: 'It is upon us, the <span class="text-fire-inferno text-glow text-jitter-fast text-uppercase">King of Flame</span>, the <span class="text-fire-cataclysm text-glow-pulse text-uppercase">Uncreated</span>. There is no escape. Goodbye, my friend. You will always be remembered.', 
+        complete: 'It... it cannot be... the <span class="text-fire-inferno text-glow text-jitter-fast text-uppercase">King of Flame</span> was thought to be impervious to any devices, natural or magic. How could you have possibly defeated him? Rejoice, all of Hexalon, for the great <span class="text-cycle-water text-glow text-wave">Water Wielder</span> has saved us all!' 
+      },
+    ]},
   };
+
+/** Short victory-line placeholders (tone matches each hero’s in-game voice). */
+export const VICTORY_SPEECH_PLACEHOLDERS = {
+  1: 'Placeholder: Splendid work, champion! The Ancient Grove sings of your valor—well met indeed!',
+  2: 'Placeholder: You did it you did it!! I… I can barely look, but—thank you, thank you!',
+  3: 'Placeholder: Impressive. Methodical. I shall note this in my journal—perhaps you are trustworthy after all.',
+  4: 'Placeholder: A triumph worthy of verse! The chorus practically writes itself—bravo, bravo!',
+  5: 'Placeholder: The seeds of hope take root! The Silver City may yet bloom again because of you.',
+  6: 'Placeholder: A dance of victory! The dunes themselves whirl in celebration—what a performance!',
+  7: 'Placeholder: Cloudband stands a little taller today. You have proven your worth in the thin air.',
+  8: 'Placeholder: The wilds are safer tonight. My bow and I salute you, ranger of the flame.',
+  9: 'Placeholder: *strums* That’ll be a ballad for the ages—encore when you’re ready, hero!',
+  10: 'Placeholder: Fascinating! Your results exceed every hypothesis—pure alchemy of the battlefield!',
+  11: 'Placeholder: Order is restored. The upright path was hard, but you walked it with honor.',
+  12: 'Placeholder: …Thank you. Maybe the path home is a little clearer now. Maybe.',
+  13: 'Placeholder: The elfkind owe you a debt—spoken softly, but deeply, among the leaves.',
+  14: 'Placeholder: Grr-ateful! The forest feels cozy again. Hugs? …Maybe just a small one.',
+  15: 'Placeholder: Another thread re-spun. The Lost find hope when you hold the line.',
+  16: 'Placeholder: The gems shine brighter tonight! Sparkle on, defender of the caverns!',
+  17: 'Placeholder: Royal words fail—so let this suffice: you have earned the court’s eternal thanks.',
+  18: 'Placeholder: Unshakable you were, and unbroken we stand. The forge still burns—for peace.',
+  19: 'Placeholder: Highborn or low, today we bow to you. The realm remembers its champion.',
+  20: 'Placeholder: The throne’s fires cool at last. Rule yourself wisely—you’ve earned that much.',
+  21: 'Placeholder: Even frost thaws before such resolve. Fly well, hero—the cold remembers kindness.',
+  22: 'Placeholder: The Spirit of the Grove whispers: you did what gods could not—Hexalon lives on.',
+};

@@ -1,6 +1,6 @@
 // Notification System - Floating XP text and visual effects
 
-import { getFireTypeConfig } from '../config.js';
+import { getFireTypeDisplayColor } from '../config.js';
 
 export class NotificationSystem {
   constructor() {
@@ -23,43 +23,49 @@ export class NotificationSystem {
    * Initialize the toast notification container
    */
   initializeToastContainer() {
-    // Create container if it doesn't exist
-    if (!document.getElementById('toast-notification-container')) {
-      const canvasContainer = document.querySelector('.canvas-container');
-      if (canvasContainer) {
-        const container = document.createElement('div');
-        container.id = 'toast-notification-container';
-        container.className = 'toast-notification-container';
-        canvasContainer.appendChild(container);
-        this.toastContainer = container;
-      }
-    } else {
-      this.toastContainer = document.getElementById('toast-notification-container');
+    let el = document.getElementById('toast-notification-container');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'toast-notification-container';
+      el.className = 'toast-notification-container';
+      el.setAttribute('aria-live', 'polite');
+      document.body.appendChild(el);
+    } else if (el.parentNode !== document.body) {
+      document.body.appendChild(el);
     }
+    this.toastContainer = el;
   }
 
   /**
    * Show a toast notification message
    * @param {string} message - The message to display
+   * @param {number} [displayDurationMs=3000] - How long the toast stays visible before fading
+   * @param {'negative'|'positive'|'neutral'|'warning'} [tone='neutral'] - Visual theme: bad / good / info / caution (yellow)
    */
-  showToast(message) {
+  showToast(message, displayDurationMs = 3000, tone = 'neutral') {
     if (!this.toastContainer) {
       this.initializeToastContainer();
     }
+
+    const safeTone =
+      tone === 'negative' || tone === 'positive' || tone === 'neutral' || tone === 'warning'
+        ? tone
+        : 'neutral';
     
     const toastId = this.nextId++;
     const toast = {
       id: toastId,
       message,
       startTime: Date.now(),
-      displayDuration: 3000, // 3 seconds
+      displayDuration: displayDurationMs,
       fadeInDuration: 300, // 300ms fade in
       fadeOutDuration: 300, // 300ms fade out
+      tone: safeTone,
     };
     
     // Create toast element
     const toastElement = document.createElement('div');
-    toastElement.className = 'toast-notification';
+    toastElement.className = `toast-notification toast-tone-${safeTone}`;
     toastElement.id = `toast-${toastId}`;
     toastElement.textContent = message;
     
@@ -108,8 +114,7 @@ export class NotificationSystem {
    */
   addXPNotification(q, r, xp, fireType) {
     // Get fire color based on fire type
-    const fireConfig = getFireTypeConfig(fireType);
-    const color = fireConfig ? fireConfig.color : '#FF00FF'; // Fallback to fuschia if unknown
+    const color = getFireTypeDisplayColor(fireType) || '#FF00FF';
     
     this.notifications.push({
       id: this.nextId++,
@@ -137,6 +142,24 @@ export class NotificationSystem {
       color: '#00FF88', // Green color for currency
       life: 0, // Time alive in seconds
       maxLife: 1.5, // Total duration
+    });
+  }
+
+  /**
+   * Floating text for XP picked up from the map (mystery box drops)
+   * @param {number} q - Hex q
+   * @param {number} r - Hex r
+   * @param {number} amount - Boosted XP shown (should match what was added)
+   */
+  addMapBonusXpNotification(q, r, amount) {
+    this.notifications.push({
+      id: this.nextId++,
+      q,
+      r,
+      text: `+${amount} XP`,
+      color: '#7DD3FC',
+      life: 0,
+      maxLife: 1.5,
     });
   }
 
@@ -190,6 +213,62 @@ export class NotificationSystem {
       life: 0,
       maxLife: 1.5,
     });
+  }
+
+  /**
+   * Floating item graphic at a hex when a Burning Vault reward appears (spawn only; not used for other drops or collection).
+   * @param {number} q
+   * @param {number} r
+   * @param {{ spriteCategory: 'items' | 'power_ups', spriteFilename: string }} spec
+   */
+  addBurningVaultRewardSpawnPreview(q, r, spec) {
+    if (!spec?.spriteFilename) return;
+    const cat = spec.spriteCategory === 'power_ups' ? 'power_ups' : 'items';
+    this.notifications.push({
+      id: this.nextId++,
+      q,
+      r,
+      text: '',
+      color: '#ffffff',
+      life: 0,
+      maxLife: 1.5,
+      isBurningVaultSpawnPreview: true,
+      spriteCategory: cat,
+      spriteFilename: spec.spriteFilename,
+    });
+  }
+
+  /**
+   * Floating pickup sprite when a map item is collected (same motion as burning vault preview / XP text).
+   * @param {number} q
+   * @param {number} r
+   * @param {{ spriteCategory: 'items' | 'power_ups' | 'artifacts', spriteFilename: string, valueText?: string, valueColor?: string }} spec
+   */
+  addMapCollectedSpriteFloat(q, r, spec) {
+    if (!spec?.spriteFilename) return;
+    const cat =
+      spec.spriteCategory === 'power_ups'
+        ? 'power_ups'
+        : spec.spriteCategory === 'artifacts'
+          ? 'artifacts'
+          : 'items';
+    const notif = {
+      id: this.nextId++,
+      q,
+      r,
+      text: '',
+      color: '#ffffff',
+      life: 0,
+      maxLife: 1.5,
+      isMapCollectSpriteFloat: true,
+      spriteCategory: cat,
+      spriteFilename: spec.spriteFilename,
+    };
+    if (spec.valueText) {
+      notif.valueText = String(spec.valueText);
+      notif.valueColor = spec.valueColor || '#ffffff';
+    }
+    this.notifications.push(notif);
   }
 
   /**

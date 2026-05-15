@@ -1,11 +1,29 @@
 // Simple reusable confirm modal helper
-export function showConfirmModal({ title = 'Confirm', message = 'Are you sure?', confirmText = 'Confirm', cancelText = 'Cancel', confirmButtonClass = 'cta-lime', itemIcon = null, cost = null, confirmButtonIcon = null, aboveTutorial = false } = {}) {
+export function showConfirmModal({
+  title = 'Confirm',
+  message = 'Are you sure?',
+  confirmText = 'Confirm',
+  cancelText = 'Cancel',
+  confirmButtonClass = 'cta-lime',
+  itemIcon = null,
+  cost = null,
+  confirmButtonIcon = null,
+  aboveTutorial = false,
+  muteCancelClickSfx = false,
+  /** When true, `message` is set as `innerHTML` (caller must supply safe HTML). */
+  messageIsHtml = false,
+  /** Hide cancel; backdrop and Escape dismiss like OK (informational dialogs). */
+  hideCancel = false,
+  /** Pin dialog toward the right (same layout as shop purchase confirms). */
+  pinDialogRight = false,
+} = {}) {
   return new Promise((resolve) => {
     const overlay = document.getElementById('confirmModal');
     const titleEl = document.getElementById('confirmTitle');
     const msgEl = document.getElementById('confirmMessage');
     const okBtn = document.getElementById('confirmOkBtn');
     const cancelBtn = document.getElementById('confirmCancelBtn');
+    const choicesRow = okBtn?.parentElement;
 
     if (!overlay || !titleEl || !msgEl || !okBtn || !cancelBtn) {
       // Fallback: resolve false if modal elements are missing
@@ -45,14 +63,19 @@ export function showConfirmModal({ title = 'Confirm', message = 'Are you sure?',
     
     // Show message (description) for all modals
     msgEl.style.display = 'block';
-    msgEl.textContent = message;
+    if (messageIsHtml) {
+      msgEl.innerHTML = message;
+    } else {
+      msgEl.textContent = message;
+    }
     msgEl.style.color = '#FFFFFF';
     
     // Check if this is a purchase or upgrade that should show cost
     const isPurchase = confirmText === 'Purchase';
     const isUpgrade = confirmText === 'Upgrade';
+    const isCostedAction = cost !== null;
     
-    if (cost !== null && (isPurchase || isUpgrade)) {
+    if (isCostedAction) {
       // Create cost display element with currency icon
       const costContainer = document.createElement('div');
       costContainer.className = 'modal-cost-display';
@@ -97,6 +120,18 @@ export function showConfirmModal({ title = 'Confirm', message = 'Are you sure?',
     }
     
     cancelBtn.textContent = cancelText;
+    if (hideCancel) {
+      cancelBtn.style.display = 'none';
+      if (choicesRow) choicesRow.classList.add('modal-choices-single');
+    } else {
+      cancelBtn.style.display = '';
+      if (choicesRow) choicesRow.classList.remove('modal-choices-single');
+    }
+    if (muteCancelClickSfx) {
+      cancelBtn.setAttribute('data-no-click-sfx', '1');
+    } else {
+      cancelBtn.removeAttribute('data-no-click-sfx');
+    }
     
     // Update confirm button class
     okBtn.className = `choice-btn cta-button ${confirmButtonClass}`;
@@ -109,6 +144,18 @@ export function showConfirmModal({ title = 'Confirm', message = 'Are you sure?',
       modalInner.style.pointerEvents = 'auto';
     }
 
+    // Shop purchase/upgrade confirms — pin dialog toward viewport right (CSS .confirm-modal-purchase)
+    const useRightPinLayout = isPurchase || isUpgrade || isCostedAction || pinDialogRight;
+    if (useRightPinLayout) {
+      overlay.classList.add('confirm-modal-purchase');
+      if (isPurchase) overlay.dataset.confirmModalKind = 'purchase';
+      else if (isUpgrade) overlay.dataset.confirmModalKind = 'upgrade';
+      else if (isCostedAction) overlay.dataset.confirmModalKind = 'costed';
+      else delete overlay.dataset.confirmModalKind;
+    } else {
+      delete overlay.dataset.confirmModalKind;
+    }
+
     // Show modal (CSS centers via flex when 'active')
     overlay.classList.add('active');
     if (aboveTutorial) overlay.classList.add('confirm-modal-above-tutorial');
@@ -117,6 +164,14 @@ export function showConfirmModal({ title = 'Confirm', message = 'Are you sure?',
     const cleanup = () => {
       overlay.classList.remove('active');
       overlay.classList.remove('confirm-modal-above-tutorial');
+      overlay.classList.remove('confirm-modal-purchase');
+      delete overlay.dataset.confirmModalKind;
+      cancelBtn.removeAttribute('data-no-click-sfx');
+      cancelBtn.style.display = '';
+      if (choicesRow) choicesRow.classList.remove('modal-choices-single');
+      if (messageIsHtml) {
+        msgEl.innerHTML = '';
+      }
       okBtn.removeEventListener('click', onOk);
       cancelBtn.removeEventListener('click', onCancel);
       overlay.removeEventListener('click', onBackdrop);
@@ -129,13 +184,17 @@ export function showConfirmModal({ title = 'Confirm', message = 'Are you sure?',
         onOk();
       } else if (e.key === 'Escape') {
         e.preventDefault();
-        onCancel();
+        if (hideCancel) {
+          onOk();
+        } else {
+          onCancel();
+        }
       }
     };
 
     const onOk = () => {
       if (typeof window !== 'undefined' && window.AudioManager) {
-        if (isPurchase) {
+        if (isPurchase || isCostedAction) {
           window.AudioManager.playSFX('purchase');
         } else {
           window.AudioManager.playSFX('confirm');
@@ -143,7 +202,7 @@ export function showConfirmModal({ title = 'Confirm', message = 'Are you sure?',
       }
       
       // Show red floating text for currency spent if cost is provided
-      if (cost !== null && (isPurchase || isUpgrade)) {
+      if (isCostedAction) {
         // Create floating text showing currency spent (red, negative)
         const costContainer = msgEl.parentNode.querySelector('.modal-cost-display');
         if (costContainer) {
@@ -156,7 +215,13 @@ export function showConfirmModal({ title = 'Confirm', message = 'Are you sure?',
     };
     const onCancel = () => { cleanup(); resolve(false); };
     const onBackdrop = (e) => {
-      if (e.target === overlay) { onCancel(); }
+      if (e.target === overlay) {
+        if (hideCancel) {
+          onOk();
+        } else {
+          onCancel();
+        }
+      }
     };
 
     okBtn.addEventListener('click', onOk);
@@ -288,7 +353,7 @@ export function createModalFloatingText(targetElement, text, color, fontSize = 1
     text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
     pointer-events: none;
     white-space: nowrap;
-    z-index: 10000;
+    z-index: 100500;
     opacity: 1;
     transform: translate(-50%, 0);
     transition: transform ${duration}s ease-out, opacity ${fadeDuration}s ease-out ${fadeStartDelay}s;
@@ -309,6 +374,67 @@ export function createModalFloatingText(targetElement, text, color, fontSize = 1
       floatingText.parentNode.removeChild(floatingText);
     }
   }, duration * 1000 + 100); // Add small buffer
+}
+
+/**
+ * Floating image up + fade (same timing/feel as createModalFloatingText for wave-complete rewards).
+ * @param {HTMLElement} targetElement - Element used to anchor the start position (center-top)
+ * @param {string} imageSrc - URL for the floating image
+ * @param {number} imageHeightPx
+ * @param {number} duration - Total seconds (default matches typical wave-complete text)
+ * @param {number} floatDistance - Pixels to float upward
+ * @param {number} startOffsetY - Extra Y offset from target top (negative = higher)
+ */
+export function createModalFloatingImage(
+  targetElement,
+  imageSrc,
+  imageHeightPx = 52,
+  duration = 1.6875,
+  floatDistance = 40,
+  startOffsetY = -45
+) {
+  if (!targetElement) return;
+
+  const img = document.createElement('img');
+  img.src = imageSrc;
+  img.alt = '';
+  img.setAttribute('aria-hidden', 'true');
+
+  const targetRect = targetElement.getBoundingClientRect();
+  const startX = targetRect.left + targetRect.width / 2;
+  const startY = targetRect.top + startOffsetY;
+
+  const fadeStartDelay = duration / 2;
+  const fadeDuration = duration / 2;
+
+  img.style.cssText = `
+    position: fixed;
+    left: ${startX}px;
+    top: ${startY}px;
+    height: ${imageHeightPx}px;
+    width: auto;
+    max-width: 90vw;
+    object-fit: contain;
+    image-rendering: pixelated;
+    pointer-events: none;
+    z-index: 100500;
+    opacity: 1;
+    transform: translate(-50%, 0);
+    transition: transform ${duration}s ease-out, opacity ${fadeDuration}s ease-out ${fadeStartDelay}s;
+  `;
+
+  document.body.appendChild(img);
+
+  requestAnimationFrame(() => {
+    img.style.transform = `translate(-50%, -${floatDistance}px)`;
+    img.style.opacity = '0';
+  });
+
+  setTimeout(() => {
+    if (img.parentNode) {
+      img.parentNode.removeChild(img);
+    }
+  }, duration * 1000 + 100);
 }
 
 

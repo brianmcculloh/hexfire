@@ -304,8 +304,8 @@ export const CONFIG = {
   FIRE_BURNOUT_TIME_INFERNO: 240,
   FIRE_BURNOUT_TIME_CATACLYSM: 999999, // Never burns out
   
-  // Fire spread modifiers
-  FIRE_SPREAD_MULTIPLIER_CATACLYSM: 2.0, // 2x all spread rates
+  // Cataclysm-only: multiplier on spread chance when a cataclysm hex is the source (see fireSystem.spreadFires)
+  FIRE_SPREAD_MULTIPLIER_CATACLYSM: 1.0,
   
   // Tower Base Stats (Level 1)
   TOWER_RANGE_LEVEL_1: 2,

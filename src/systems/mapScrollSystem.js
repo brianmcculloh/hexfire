@@ -54,13 +54,19 @@ export class MapScrollSystem {
     const mapWidth = mapSize * Math.sqrt(3) * hexRadius;
     const mapHeight = mapSize * 1.5 * hexRadius;
     
-    // Set boundaries with padding to allow scrolling well beyond the map edges (extra 100px for tutorial step 9 sidebar gap)
-    const padding = 400;
+    // Padding beyond nominal map extents so the camera can center edge hexes on large viewports.
+    // Fixed 400px was too small when canvasWidth/2 > 400: scrollToShowHex clamps before true center.
+    const cssW = this.renderer?.canvasCssWidth || this.canvas?.clientWidth || this.canvas?.width || 800;
+    const cssH = this.renderer?.canvasCssHeight || this.canvas?.clientHeight || this.canvas?.height || 600;
+    const BASE_PAD = 400;
+    const EXTRA = 120; // tower art / outer ring slack beyond half-viewport math
+    const padX = Math.max(BASE_PAD, Math.ceil(cssW / 2) + EXTRA);
+    const padY = Math.max(BASE_PAD, Math.ceil(cssH / 2) + EXTRA);
     this.mapBounds = {
-      minX: -mapWidth / 2 - padding,
-      maxX: mapWidth / 2 + padding,
-      minY: -mapHeight / 2 - padding,
-      maxY: mapHeight / 2 + padding
+      minX: -mapWidth / 2 - padX,
+      maxX: mapWidth / 2 + padX,
+      minY: -mapHeight / 2 - padY,
+      maxY: mapHeight / 2 + padY
     };
     
   }
@@ -300,9 +306,9 @@ export class MapScrollSystem {
     const newOffsetX = this.renderer.offsetX - this.scrollVelocity.x;
     const newOffsetY = this.renderer.offsetY - this.scrollVelocity.y;
     
-    // Check boundaries and calculate current visible map bounds (use canvas dimensions for renderer calculations)
-    const canvasWidth = this.canvas.width;
-    const canvasHeight = this.canvas.height;
+    // Match wheel scroll: use CSS layout size (not DPR-scaled backing store) for boundary checks
+    const canvasWidth = this.renderer.canvasCssWidth || this.canvas.width;
+    const canvasHeight = this.renderer.canvasCssHeight || this.canvas.height;
     const visibleLeft = -this.renderer.offsetX;
     const visibleRight = canvasWidth - this.renderer.offsetX;
     const visibleTop = -this.renderer.offsetY;

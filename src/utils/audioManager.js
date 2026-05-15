@@ -25,6 +25,9 @@ const sfxBuffers = new Map();
 /** @type {Map<string, number>} */
 const sfxPlayCount = new Map();
 
+/** @type {Map<string, Set<AudioBufferSourceNode>>} */
+const activeSfxSourcesByKey = new Map();
+
 /** @type {Map<string, number>} Track last play time per key for deduplication */
 const sfxLastPlayTime = new Map();
 
@@ -82,6 +85,9 @@ let ambientStartOffset = 0;
 /** @type {boolean} Game pause state - prevents async music loads from starting when paused */
 let gamePaused = false;
 
+/** Looping SFX handle when game-over music file fails but game-over SFX buffer exists */
+let gameOverMusicFallbackHandle = null;
+
 /** @type {number} Invalidates in-flight ambient loads when pauseAmbient is called */
 let ambientPlaySeq = 0;
 
@@ -94,8 +100,63 @@ let ambientGainNode = null;
 /** Max effective music volume (0.5 = slider at 100% gives 50% volume) */
 const MUSIC_VOLUME_SCALE = 0.5;
 
-/** Max wave group with dedicated music; groups beyond this use group 22's music */
-const MAX_MUSIC_GROUP = 22;
+/** Last wave group with its own loop track (1–28). */
+const LAST_UNIQUE_WAVE_GROUP_MUSIC = 28;
+/** Loop for wave groups beyond {@link LAST_UNIQUE_WAVE_GROUP_MUSIC} (endless). */
+const ENDLESS_WAVE_GROUP_MUSIC = 28;
+/** Extra gain on group28-loop (wave group 28+ endless track): 2× base, +20% = 2.4×. */
+const GROUP_28_LOOP_VOLUME_MULTIPLIER = 2.4;
+
+/**
+ * Map gameplay wave group → music file index (groupN-loop.wav).
+ * @param {number} groupNum
+ * @returns {number}
+ */
+function resolveWaveGroupMusicIndex(groupNum) {
+  const g = Math.max(1, Math.floor(Number(groupNum)) || 1);
+  if (g > LAST_UNIQUE_WAVE_GROUP_MUSIC) return ENDLESS_WAVE_GROUP_MUSIC;
+  return g;
+}
+
+function getBaseMusicEffectiveGain() {
+  const config = window.__audioConfig || {};
+  if (config.musicEnabled === false) return 0;
+  return (config.musicVolume ?? 0.2) * MUSIC_VOLUME_SCALE;
+}
+
+/** Effective music gain for a track key (group28-loop is 2× louder). */
+function getMusicGainForKey(musicKey) {
+  const base = getBaseMusicEffectiveGain();
+  const mult = musicKey === 'group28' ? GROUP_28_LOOP_VOLUME_MULTIPLIER : 1;
+  return Math.min(1, base * mult);
+}
+
+/** Apply music gain from slider + current track (wave group 28 boost). */
+function syncMusicGain() {
+  const config = window.__audioConfig || {};
+  const gain = getMusicGainForKey(currentMusicKey);
+  if (config.musicUseWebApi && musicGainNode) {
+    musicGainNode.gain.value = gain;
+  } else if (musicElement && currentMusicKey?.startsWith('group')) {
+    musicElement.volume = gain;
+  }
+}
+
+/**
+ * Effective volume for one SFX key after boss-ability multipliers (paths in `/bosses/`).
+ * @param {string} key
+ * @param {number} baseVol
+ * @returns {number}
+ */
+function applyBossAbilitySfxVolume(key, baseVol) {
+  const cfg = window.__audioConfig || {};
+  const keys = cfg.bossAbilitySfxKeys;
+  if (!keys || typeof keys.has !== 'function' || !keys.has(key)) return baseVol;
+  const globalMul = cfg.bossAbilitySfxVolumeMultiplier ?? 1;
+  const perKey = cfg.bossAbilitySfxVolumeByKey?.[key];
+  const perKeyMul = typeof perKey === 'number' ? perKey : 1;
+  return baseVol * globalMul * perKeyMul;
+}
 
 /**
  * Unlock AudioContext on first user gesture (required by browsers).
@@ -215,7 +276,8 @@ function stopWebApiMusic() {
 function playSFX(key, options = {}) {
   const config = window.__audioConfig || {};
   if (config.sfxEnabled === false) return;
-  const vol = options.volume ?? config.sfxVolume ?? 1;
+  let vol = options.volume ?? config.sfxVolume ?? 1;
+  vol = applyBossAbilitySfxVolume(key, vol);
   if (vol <= 0) return;
 
   const buffer = sfxBuffers.get(key);
@@ -246,11 +308,33 @@ function playSFX(key, options = {}) {
   gain.connect(sfxGainNode);
 
   sfxPlayCount.set(key, count + 1);
+  if (!activeSfxSourcesByKey.has(key)) activeSfxSourcesByKey.set(key, new Set());
+  activeSfxSourcesByKey.get(key).add(source);
   source.onended = () => {
+    activeSfxSourcesByKey.get(key)?.delete(source);
     sfxPlayCount.set(key, Math.max(0, (sfxPlayCount.get(key) ?? 1) - 1));
   };
 
   source.start(0);
+}
+
+/**
+ * Stop all currently playing SFX for a key (e.g. long stingers like game_over).
+ * @param {string} key - Key from AUDIO_SFX_PATHS
+ */
+function stopSFXKey(key) {
+  const set = activeSfxSourcesByKey.get(key);
+  if (set) {
+    for (const s of set) {
+      try {
+        s.stop();
+      } catch (_e) {
+        // Already stopped
+      }
+    }
+    set.clear();
+  }
+  sfxPlayCount.set(key, 0);
 }
 
 /**
@@ -264,7 +348,8 @@ function playSFX(key, options = {}) {
 function playSFXSegment(key, duration, options = {}) {
   const config = window.__audioConfig || {};
   if (config.sfxEnabled === false) return;
-  const vol = options.volume ?? config.sfxVolume ?? 1;
+  let vol = options.volume ?? config.sfxVolume ?? 1;
+  vol = applyBossAbilitySfxVolume(key, vol);
   if (vol <= 0) return;
 
   const buffer = sfxBuffers.get(key);
@@ -313,7 +398,10 @@ function playSFXSegment(key, duration, options = {}) {
   gain.connect(sfxGainNode);
 
   sfxPlayCount.set(key, count + 1);
+  if (!activeSfxSourcesByKey.has(key)) activeSfxSourcesByKey.set(key, new Set());
+  activeSfxSourcesByKey.get(key).add(source);
   source.onended = () => {
+    activeSfxSourcesByKey.get(key)?.delete(source);
     sfxPlayCount.set(key, Math.max(0, (sfxPlayCount.get(key) ?? 1) - 1));
   };
 
@@ -361,7 +449,8 @@ let reverbTailOnlyImpulseBuffer = null;
 function playSFXStinger(key, options = {}) {
   const config = window.__audioConfig || {};
   if (config.sfxEnabled === false) return;
-  const vol = (options.volume ?? config.sfxVolume ?? 1) * (options.volumeMultiplier ?? 1);
+  let vol = (options.volume ?? config.sfxVolume ?? 1) * (options.volumeMultiplier ?? 1);
+  vol = applyBossAbilitySfxVolume(key, vol);
   if (vol <= 0) return;
 
   const buffer = sfxBuffers.get(key);
@@ -461,7 +550,8 @@ function playSFXStinger(key, options = {}) {
 function playLoopingSFX(key, options = {}) {
   const config = window.__audioConfig || {};
   if (config.sfxEnabled === false) return null;
-  const vol = options.volume ?? config.sfxVolume ?? 1;
+  let vol = options.volume ?? config.sfxVolume ?? 1;
+  vol = applyBossAbilitySfxVolume(key, vol);
   if (vol <= 0) return null;
 
   const buffer = sfxBuffers.get(key);
@@ -492,6 +582,28 @@ function playLoopingSFX(key, options = {}) {
   };
 }
 
+function stopGameOverMusicFallback() {
+  if (gameOverMusicFallbackHandle) {
+    try {
+      gameOverMusicFallbackHandle.stop();
+    } catch (_e) {}
+    gameOverMusicFallbackHandle = null;
+  }
+}
+
+/** When game_over.mp3 is missing or decode fails, loop game-over SFX (preload buffer). */
+function startGameOverMusicFallback(options = {}) {
+  const config = window.__audioConfig || {};
+  stopGameOverMusicFallback();
+  if (config.sfxEnabled === false) return;
+  unlockAudio();
+  const rawMusic = config.musicVolume ?? 0.2;
+  const approxVol = Math.min(1, rawMusic * MUSIC_VOLUME_SCALE * 2.5);
+  gameOverMusicFallbackHandle = playLoopingSFX('game_over', {
+    volume: options.volume ?? approxVol,
+  });
+}
+
 /**
  * Set global SFX volume (0-1). Affects future playSFX calls. Effective volume is 0 when SFX disabled.
  * @param {number} value
@@ -516,13 +628,11 @@ function setMusicVolume(value) {
   const v = Math.max(0, Math.min(1, value));
   if (window.__audioConfig) {
     window.__audioConfig.musicVolume = v;
-    const effective = window.__audioConfig.musicEnabled !== false ? v * MUSIC_VOLUME_SCALE : 0;
-    const useWebApi = window.__audioConfig.musicUseWebApi === true;
-    if (useWebApi && musicGainNode) {
-      musicGainNode.gain.value = effective;
-    } else {
-      if (musicElement) musicElement.volume = effective;
-      if (ambientElement) ambientElement.volume = effective;
+    syncMusicGain();
+    const base = getBaseMusicEffectiveGain();
+    if (ambientElement) ambientElement.volume = base;
+    if (musicElement && !currentMusicKey?.startsWith('group')) {
+      musicElement.volume = base;
     }
   } else {
     const effective = v * MUSIC_VOLUME_SCALE;
@@ -548,14 +658,11 @@ function setSFXEnabled(enabled) {
  */
 function setMusicEnabled(enabled) {
   if (window.__audioConfig) window.__audioConfig.musicEnabled = enabled;
-  const config = window.__audioConfig || {};
-  const vol = (config.musicVolume ?? 0.2) * MUSIC_VOLUME_SCALE;
-  const useWebApi = config.musicUseWebApi === true;
-  if (useWebApi && musicGainNode) {
-    musicGainNode.gain.value = enabled ? vol : 0;
-  } else {
-    if (musicElement) musicElement.volume = enabled ? vol : 0;
-    if (ambientElement) ambientElement.volume = enabled ? vol : 0;
+  syncMusicGain();
+  const base = getBaseMusicEffectiveGain();
+  if (ambientElement) ambientElement.volume = base;
+  if (musicElement && !currentMusicKey?.startsWith('group')) {
+    musicElement.volume = base;
   }
 }
 
@@ -571,11 +678,23 @@ function playMusic(key, options = {}) {
   if (!path) return;
 
   if (config.musicUseWebApi) {
+    // Same stale pause guard as playMusicForWaveGroup — otherwise async decode callbacks no-op.
+    gamePaused = false;
+    unlockAudio();
     waveGroupLoopPath = null;
+    stopGameOverMusicFallback();
     stopWebApiMusic();
     const seq = ++musicLoadSeq;
     loadMusicBuffer(key, path).then((buffer) => {
-      if (!buffer || seq !== musicLoadSeq || gamePaused) return;
+      unlockAudio();
+      if (seq !== musicLoadSeq) return;
+      if (!buffer) {
+        if (key === 'game_over') {
+          startGameOverMusicFallback(options);
+        }
+        return;
+      }
+      if (gamePaused && key !== 'game_over') return;
       const ctx = getContext();
       if (!ctx || !musicGainNode) return;
       const source = ctx.createBufferSource();
@@ -584,6 +703,7 @@ function playMusic(key, options = {}) {
       source.connect(musicGainNode);
       musicSourceNode = source;
       currentMusicKey = key;
+      syncMusicGain();
       musicStartedAt = ctx.currentTime;
       musicStartOffset = 0;
       musicPerformanceStartedAt = performance.now();
@@ -591,6 +711,9 @@ function playMusic(key, options = {}) {
     });
     return;
   }
+
+  stopGameOverMusicFallback();
+  unlockAudio();
 
   const vol = options.volume ?? config.musicVolume ?? 0.2;
   const loop = options.loop !== false;
@@ -620,13 +743,16 @@ function playMusic(key, options = {}) {
   musicElement.volume = musicVol;
   musicElement.src = path;
   currentMusicKey = key;
-  musicElement.play().catch(() => {}); // load/play failure (e.g. missing file) – no throw
+  musicElement.play().catch(() => {
+    if (key === 'game_over') startGameOverMusicFallback(options);
+  }); // load/play failure (e.g. missing file)
 }
 
 /**
  * Stop music.
  */
 function stopMusic() {
+  stopGameOverMusicFallback();
   const config = window.__audioConfig || {};
   if (config.musicUseWebApi) {
     musicLoadSeq++; // invalidate any in-flight loads
@@ -678,8 +804,10 @@ function pauseWaveGroupMusic() {
  */
 function resumeWaveGroupMusic(groupNum) {
   const config = window.__audioConfig || {};
-  const n = Math.min(MAX_MUSIC_GROUP, Math.max(1, groupNum));
+  const n = resolveWaveGroupMusicIndex(groupNum);
   const key = `group${n}`;
+  currentMusicKey = key;
+  syncMusicGain();
 
   if (config.musicUseWebApi) {
     gamePaused = false; // clear pause state when explicitly resuming wave music
@@ -777,16 +905,23 @@ function playMusicForWaveGroup(groupNum, options = {}) {
   const config = window.__audioConfig || {};
   const paths = config.musicPaths || {};
   const basePath = config.waveGroupMusicBase || 'assets/sounds/music';
-  const n = Math.min(MAX_MUSIC_GROUP, Math.max(1, groupNum));
+  const n = resolveWaveGroupMusicIndex(groupNum);
 
   const introPath = paths[`group${n}-intro`] || `${basePath}/group${n}-intro.wav`;
   const loopPath = paths[`group${n}-loop`] || `${basePath}/group${n}-loop.wav`;
   const hasIntro = paths[`group${n}-intro`] != null;
 
+  // Wave group track is starting — clear stale gamePaused so Web Audio decode callbacks can start.
+  // Otherwise playLoopBuffer / intro branches no-op (same guard resumeWaveGroupMusic clears).
+  // Typical case: load → startPlacementPhase pauses loop first → pauseGameWithAudio skips audio,
+  // leaving gamePaused true from an earlier pause while the loop was still running.
+  gamePaused = false;
+
   const key = `group${n}`;
   currentMusicKey = key;
   waveGroupMusicInLoopPhase = false;
   waveGroupLoopPath = loopPath;
+  syncMusicGain();
 
   if (config.musicUseWebApi) {
     stopWebApiMusic();
@@ -870,8 +1005,7 @@ function playMusicForWaveGroup(groupNum, options = {}) {
     });
   }
 
-  const cfg = window.__audioConfig || {};
-  musicElement.volume = cfg.musicEnabled !== false ? (cfg.musicVolume ?? 0.2) * MUSIC_VOLUME_SCALE : 0;
+  musicElement.volume = getMusicGainForKey(key);
 
   const playLoop = () => {
     musicElement.onended = null;
@@ -928,6 +1062,7 @@ function setMusicPaused(paused, options = {}) {
       }
     } else if (options.resumeWaveMusic !== false && currentMusicKey) {
       unlockAudio(); // ensure context is running (may have been suspended)
+      syncMusicGain();
       const paths = config.musicPaths || {};
       const basePath = config.waveGroupMusicBase || 'assets/sounds/music';
       let loadPath, bufKey, loop;
@@ -975,7 +1110,7 @@ function setMusicPaused(paused, options = {}) {
  * Play ambient loop. Uses separate HTMLAudioElement or Web API so it can coexist/swap with music.
  * Uses music volume setting. Won't play if music is already playing.
  * Resumes from current position when unpausing (never restarts).
- * @param {object} [options] - { fadeInSec: number } to fade in over N seconds
+ * @param {object} [options] - { fadeInSec: number, volumeMultiplier: number } fade in over N seconds; multiplier 0–1 on top of music volume (default 1)
  */
 function playAmbient(options = {}) {
   const config = window.__audioConfig || {};
@@ -987,6 +1122,7 @@ function playAmbient(options = {}) {
   if (ambientDelayedTimeoutId !== null) return;
 
   const fadeInSec = options.fadeInSec ?? 0;
+  const volumeMultiplier = Math.max(0, options.volumeMultiplier ?? 1);
 
   if (config.musicUseWebApi) {
     if (musicSourceNode && currentMusicKey) return; // music playing
@@ -1000,7 +1136,9 @@ function playAmbient(options = {}) {
       source.buffer = buffer;
       source.loop = true;
       const gainNode = ctx.createGain();
-      gainNode.gain.setValueAtTime(fadeInSec > 0 ? 0 : 1, ctx.currentTime);
+      const enabled = config.musicEnabled !== false;
+      const steadyGain = enabled ? volumeMultiplier : 0;
+      gainNode.gain.setValueAtTime(fadeInSec > 0 ? 0 : steadyGain, ctx.currentTime);
       gainNode.connect(musicGainNode);
       source.connect(gainNode);
       ambientGainNode = gainNode;
@@ -1011,7 +1149,7 @@ function playAmbient(options = {}) {
       ambientStartOffset = offset;
       source.start(0, offset);
       if (fadeInSec > 0) {
-        const target = config.musicEnabled !== false ? 1 : 0;
+        const target = enabled ? volumeMultiplier : 0;
         gainNode.gain.linearRampToValueAtTime(target, ctx.currentTime + fadeInSec);
       }
     });
@@ -1022,6 +1160,7 @@ function playAmbient(options = {}) {
 
   const vol = (config.musicVolume ?? 0.2) * MUSIC_VOLUME_SCALE;
   const musicVol = config.musicEnabled !== false ? vol : 0;
+  const targetVol = musicVol * volumeMultiplier;
 
   if (!ambientElement) {
     ambientElement = new Audio();
@@ -1033,19 +1172,19 @@ function playAmbient(options = {}) {
 
   if (ambientPlaying && !ambientElement.paused) return;
 
-  ambientElement.volume = fadeInSec > 0 ? 0 : musicVol;
+  ambientElement.volume = fadeInSec > 0 ? 0 : targetVol;
   const isResuming = ambientElement.src && ambientElement.paused;
   if (!isResuming) {
     ambientElement.src = path;
   }
   ambientPlaying = true;
   ambientElement.play().catch(() => { ambientPlaying = false; });
-  if (fadeInSec > 0 && musicVol > 0) {
+  if (fadeInSec > 0 && targetVol > 0) {
     const start = performance.now();
     const step = () => {
       const elapsed = (performance.now() - start) / 1000;
       const t = Math.min(1, elapsed / fadeInSec);
-      ambientElement.volume = musicVol * t;
+      ambientElement.volume = targetVol * t;
       if (t < 1) requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
@@ -1056,11 +1195,12 @@ function playAmbient(options = {}) {
  * Schedule ambient to play after a delay, and fade in when it starts.
  * Use when a wave/group completes so the wave-complete/group-complete stingers can be heard clearly.
  * Cancels any pending delayed ambient. Cleared when pauseAmbient is called (e.g. wave start).
- * @param {object} [options] - { delayMs: 5000, fadeInSec: 2 }
+ * @param {object} [options] - { delayMs: 5000, fadeInSec: 2, volumeMultiplier: 1 }
  */
 function playAmbientDelayed(options = {}) {
   const delayMs = options.delayMs ?? 5000;
   const fadeInSec = options.fadeInSec ?? 2;
+  const volumeMultiplier = options.volumeMultiplier ?? 1;
 
   if (ambientDelayedTimeoutId !== null) {
     clearTimeout(ambientDelayedTimeoutId);
@@ -1069,7 +1209,7 @@ function playAmbientDelayed(options = {}) {
 
   ambientDelayedTimeoutId = setTimeout(() => {
     ambientDelayedTimeoutId = null;
-    playAmbient({ fadeInSec });
+    playAmbient({ fadeInSec, volumeMultiplier });
   }, delayMs);
 }
 
@@ -1154,16 +1294,26 @@ function setAmbientVolume(value) {
  * @param {object} config - { sfxVolume, musicVolume, sfxPaths, musicPaths, sfxMaxConcurrent }
  */
 function init(config = {}) {
+  const sfxPaths = config.sfxPaths || {};
+  /** @type {Set<string>} */
+  const bossAbilitySfxKeys = new Set();
+  for (const [k, p] of Object.entries(sfxPaths)) {
+    if (typeof p === 'string' && p.includes('/bosses/')) bossAbilitySfxKeys.add(k);
+  }
+
   window.__audioConfig = {
     sfxEnabled: config.sfxEnabled !== false,
     musicEnabled: config.musicEnabled !== false,
     sfxVolume: config.sfxVolume ?? 0.8,
     musicVolume: config.musicVolume ?? 0.2,
-    sfxPaths: config.sfxPaths || {},
+    sfxPaths,
     musicPaths: config.musicPaths || {},
     sfxMaxConcurrent: config.sfxMaxConcurrent ?? 4,
     waveGroupMusicBase: config.waveGroupMusicBase || 'assets/sounds/music',
     musicUseWebApi: config.musicUseWebApi === true,
+    bossAbilitySfxKeys,
+    bossAbilitySfxVolumeMultiplier: config.bossAbilitySfxVolumeMultiplier ?? 1,
+    bossAbilitySfxVolumeByKey: config.bossAbilitySfxVolumeByKey || {},
   };
 
   getContext();
@@ -1181,6 +1331,7 @@ export const AudioManager = {
   preloadSFX,
   preloadAllSFX,
   playSFX,
+  stopSFXKey,
   playSFXSegment,
   playSFXStinger,
   playLoopingSFX,

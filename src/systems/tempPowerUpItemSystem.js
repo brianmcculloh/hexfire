@@ -1,7 +1,8 @@
 // Temporary Power-up Item System - Manages temporary power-up items that spawn on the map
 
-import { CONFIG, getFireTypeConfig } from '../config.js';
+import { CONFIG, getFireTypeConfig, addPlayerScore, getPowerUpMultiplier, getPowerUpGraphicFilename, getTowerUnlockStatus } from '../config.js';
 import { getNeighbors } from '../utils/hexMath.js';
+import { isMetaItemUnlocked } from '../utils/metaProgression.js';
 
 let tempPowerUpItemIdCounter = 0;
 
@@ -18,14 +19,21 @@ export class TempPowerUpItemSystem {
    * @param {number} q - Hex q coordinate
    * @param {number} r - Hex r coordinate
    * @param {string} powerUpId - Power-up ID to grant when collected
+   * @param {{ grantPermanent?: boolean, fromMystery?: boolean, skipSpawnBounce?: boolean }} [options] - fromMystery reserved for callers (e.g. mystery cluster); all spawns use the same drop-in bounce unless skipSpawnBounce
    * @returns {string|null} Item ID or null if spawn failed
    */
-  spawnTempPowerUpItem(q, r, powerUpId) {
+  spawnTempPowerUpItem(q, r, powerUpId, options = {}) {
+    const grantPermanent = options.grantPermanent === true;
+    const skipSpawnBounce = options.skipSpawnBounce === true;
+    if (!isMetaItemUnlocked(this.gameState, powerUpId)) return null;
+
     const hex = this.gridSystem.getHex(q, r);
     if (!hex) return null;
     
     // Can't spawn on town, path, fire spawners, or if hex already has something
-    if (hex.isTown || hex.isPath || hex.hasTower || hex.hasWaterTank || hex.isBurning || hex.hasFireSpawner) {
+    if (hex.isTown || hex.isPath || hex.hasTower || hex.hasWaterTank || hex.isBurning || hex.hasFireSpawner ||
+        hex.hasTempPowerUpItem || hex.hasMysteryItem || hex.hasCurrencyItem || hex.hasDigSite || hex.hasBurningVault ||
+        hex.hasArtifactItem) {
       return null;
     }
     
@@ -34,18 +42,27 @@ export class TempPowerUpItemSystem {
     if (existingItem) return null;
     
     const itemConfig = CONFIG.TEMP_POWER_UP_ITEMS[powerUpId];
-    if (!itemConfig) return null;
+    const permanentConfig = CONFIG.POWER_UPS[powerUpId];
+    if (grantPermanent) {
+      if (!permanentConfig) return null;
+    } else if (!itemConfig) {
+      return null;
+    }
     
     const itemId = `temp_powerup_${tempPowerUpItemIdCounter++}`;
+    const maxHealth = grantPermanent ? (itemConfig?.health ?? 20) : itemConfig.health;
     
     const item = {
       id: itemId,
       q,
       r,
       powerUpId,
-      health: itemConfig.health,
-      maxHealth: itemConfig.health,
+      health: maxHealth,
+      maxHealth,
       isActive: true,
+      grantPermanent,
+      mysteryLandDropAtMs:
+        skipSpawnBounce || typeof performance === 'undefined' ? undefined : performance.now(),
     };
     
     this.items.set(itemId, item);
@@ -60,21 +77,35 @@ export class TempPowerUpItemSystem {
    */
   getRandomPowerUpId() {
     const currentWaveGroup = this.gameState.waveSystem?.currentWaveGroup || 1;
+    const playerLevel = Math.max(1, Math.floor(Number(this.gameState?.player?.level) || 1));
+    const waveActive = !!(this.gameState?.wave?.isActive);
     
-    // Filter to only available boosters
+    // Filter to only available boosters (wave group + meta + shop level for this run)
     const availableItems = Object.values(CONFIG.TEMP_POWER_UP_ITEMS).filter(item => {
       const availableAtWaveGroup = item.availableAtWaveGroup || 999;
-      return currentWaveGroup >= availableAtWaveGroup;
+      return (
+        currentWaveGroup >= availableAtWaveGroup &&
+        isMetaItemUnlocked(this.gameState, item.id) &&
+        getTowerUnlockStatus(item.id, playerLevel, null, waveActive).unlocked
+      );
     });
     
     if (availableItems.length === 0) return null; // No boosters available yet
     
     const weights = CONFIG.TEMP_POWER_UP_RARITY_WEIGHTS;
+    const powerUps = this.gameState?.player?.powerUps || {};
+    const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+    const rareChanceMult = getPowerUpMultiplier('rareChanceBonus', powerUps, tempPowerUps);
+    
+    const weightForItem = (item) => {
+      const base = weights[item.rarity] || 1;
+      return item.rarity === 'rare' ? base * rareChanceMult : base;
+    };
     
     // Calculate total weight
     let totalWeight = 0;
     availableItems.forEach(item => {
-      totalWeight += weights[item.rarity] || 1;
+      totalWeight += weightForItem(item);
     });
     
     // Random roll
@@ -82,7 +113,7 @@ export class TempPowerUpItemSystem {
     
     // Find which item this roll corresponds to
     for (const item of availableItems) {
-      const weight = weights[item.rarity] || 1;
+      const weight = weightForItem(item);
       roll -= weight;
       if (roll <= 0) {
         return item.id;
@@ -102,9 +133,15 @@ export class TempPowerUpItemSystem {
     
     // Check if any boosters are available at current wave group
     const currentWaveGroup = this.gameState.waveSystem?.currentWaveGroup || 1;
+    const playerLevel = Math.max(1, Math.floor(Number(this.gameState?.player?.level) || 1));
+    const waveActive = !!(this.gameState?.wave?.isActive);
     const availableBoosters = Object.values(CONFIG.TEMP_POWER_UP_ITEMS).filter(item => {
       const availableAtWaveGroup = item.availableAtWaveGroup || 999;
-      return currentWaveGroup >= availableAtWaveGroup;
+      return (
+        currentWaveGroup >= availableAtWaveGroup &&
+        isMetaItemUnlocked(this.gameState, item.id) &&
+        getTowerUnlockStatus(item.id, playerLevel, null, waveActive).unlocked
+      );
     });
     if (availableBoosters.length === 0) return; // No boosters available yet
     
@@ -123,18 +160,9 @@ export class TempPowerUpItemSystem {
     // Scale chance: base chance increases by scalingFactor (15%) for each wave
     let scaledChance = baseChance * (1 + wavesSinceMin * scalingFactor);
     
-    // Apply permanent power-up multiplier for temp power-up spawn chance (stacks multiplicatively)
+    // Power-Up Magnet: same additive rule as Water Pressure on this multiplier (see getPowerUpMultiplier)
     const powerUps = this.gameState?.player?.powerUps || {};
-    const spawnBoostPowerUp = CONFIG.POWER_UPS.temp_power_up_spawn_boost;
-    if (spawnBoostPowerUp && powerUps[spawnBoostPowerUp.id]) {
-      const stackCount = powerUps[spawnBoostPowerUp.id] || 0;
-      if (stackCount > 0) {
-        const multiplier = spawnBoostPowerUp.multiplier || 1.5;
-        // Apply multiplier multiplicatively for each stack (1.5^stackCount)
-        const totalMultiplier = Math.pow(multiplier, stackCount);
-        scaledChance *= totalMultiplier;
-      }
-    }
+    scaledChance *= getPowerUpMultiplier('tempPowerUpSpawnChance', powerUps, []);
     
     // Get all valid spawn locations
     const validLocations = this.getValidSpawnLocations();
@@ -202,6 +230,7 @@ export class TempPowerUpItemSystem {
         // Can't spawn on town, path, fire spawners, towers, water tanks, fires, or existing items
         if (hex.isTown || hex.isPath || hex.hasTower || hex.hasWaterTank || hex.hasFireSpawner ||
             hex.isBurning || hex.hasTempPowerUpItem || hex.hasMysteryItem || hex.hasCurrencyItem ||
+            hex.hasBurningVault || hex.hasArtifactItem ||
             this.gridSystem.isTownRingHex(q, r)) {
           continue;
         }
@@ -250,10 +279,86 @@ export class TempPowerUpItemSystem {
     const item = this.items.get(itemId);
     if (!item || !item.isActive) return false;
     
-    // Grant temporary power-up
     const itemConfig = CONFIG.TEMP_POWER_UP_ITEMS[item.powerUpId];
+    const permanentConfig = CONFIG.POWER_UPS[item.powerUpId];
+
+    if (item.grantPermanent) {
+      if (!permanentConfig) return false;
+      const collectGfx = getPowerUpGraphicFilename(item.powerUpId);
+      if (collectGfx && this.gameState.notificationSystem) {
+        this.gameState.notificationSystem.addMapCollectedSpriteFloat(q, r, {
+          spriteCategory: 'power_ups',
+          spriteFilename: collectGfx,
+        });
+      }
+      if (!this.gameState.player.powerUps) {
+        this.gameState.player.powerUps = {};
+      }
+      this.gameState.player.powerUps[item.powerUpId] = (this.gameState.player.powerUps[item.powerUpId] || 0) + 1;
+
+      if (item.powerUpId === 'tower_speed') {
+        this.gameState.towerSystem?.refreshAllTowerAffectedHexes?.();
+      }
+      if (item.powerUpId === 'tower_health') {
+        this.gameState.towerSystem?.refreshAllTowerMaxHealth?.();
+      }
+
+      addPlayerScore(this.gameState, 10);
+
+      if (window.AudioManager) {
+        window.AudioManager.playSFX('power_up_active');
+      }
+
+      if (this.gameState.renderer) {
+        this.gameState.renderer.triggerPowerUpActivation(q, r, item.powerUpId);
+        this.gameState.renderer.spawnBonusItemCollectionParticles(q, r);
+      }
+
+      if (this.gameState.notificationSystem) {
+        const count = this.gameState.player.powerUps[item.powerUpId];
+        this.gameState.notificationSystem.showToast(
+          `${permanentConfig.name} gained permanently! (×${count})`,
+          3000,
+          'positive'
+        );
+      }
+
+      this.destroyItem(itemId);
+      this.gridSystem.setHex(q, r, { isBeingSprayed: false });
+
+      if (window.updatePowerUpPanel) {
+        window.updatePowerUpPanel();
+      }
+      if (window.updateTempPowerUpPanel) {
+        window.updateTempPowerUpPanel();
+      }
+      if (window.updateBottomEdgePowerUps) {
+        window.updateBottomEdgePowerUps();
+      }
+      if (window.updateUI) {
+        window.updateUI();
+      }
+
+      this.gameState.runStats?.recordMapItemCollection?.('permanent_power_up', {
+        powerUpId: item.powerUpId,
+        q,
+        r,
+      });
+      this.gameState.bossSystem?.notifyMapItemCollected?.();
+      return true;
+    }
+
+    // Grant temporary power-up
     if (!itemConfig) return false;
-    
+
+    const collectGfx = getPowerUpGraphicFilename(item.powerUpId);
+    if (collectGfx && this.gameState.notificationSystem) {
+      this.gameState.notificationSystem.addMapCollectedSpriteFloat(q, r, {
+        spriteCategory: 'power_ups',
+        spriteFilename: collectGfx,
+      });
+    }
+
     const duration = itemConfig.duration;
     const expiresAt = Date.now() + (duration * 1000);
     
@@ -266,9 +371,12 @@ export class TempPowerUpItemSystem {
       powerUpId: item.powerUpId,
       expiresAt: expiresAt,
     });
+
+    // Range Extender (and any future temp that changes reach) needs immediate recompute of all tower AOEs
+    this.gameState.towerSystem?.refreshAllTowerAffectedHexes?.();
     
     // Award score: 10 points per item collected
-    this.gameState.player.score = (this.gameState.player.score ?? 0) + 10;
+    addPlayerScore(this.gameState, 10);
     
     // Play power-up active sound
     if (window.AudioManager) {
@@ -288,7 +396,7 @@ export class TempPowerUpItemSystem {
     if (this.gameState.notificationSystem) {
       const powerUpConfig = CONFIG.POWER_UPS[item.powerUpId];
       const name = powerUpConfig ? powerUpConfig.name : item.powerUpId;
-      this.gameState.notificationSystem.showToast(`${name} +${duration}s!`);
+      this.gameState.notificationSystem.showToast(`${name} +${duration}s!`, 3000, 'positive');
     }
     
     // Remove item from map
@@ -305,6 +413,14 @@ export class TempPowerUpItemSystem {
     if (window.updateBottomEdgePowerUps) {
       window.updateBottomEdgePowerUps(true); // Only update temp section, preserve permanent power-ups
     }
+
+    this.gameState.runStats?.recordMapItemCollection?.('temp_power_up', {
+      powerUpId: item.powerUpId,
+      q,
+      r,
+    });
+
+    this.gameState.bossSystem?.notifyMapItemCollected?.();
     
     return true;
   }
@@ -367,7 +483,10 @@ export class TempPowerUpItemSystem {
       if (itemHex && itemHex.isBurning) {
         // Get fire type damage per second
         const fireConfig = getFireTypeConfig(itemHex.fireType);
-        const damagePerSecond = fireConfig ? fireConfig.damagePerSecond : 1;
+        const powerUps = this.gameState?.player?.powerUps || {};
+        const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+        const fireDamageMult = getPowerUpMultiplier('fireDamage', powerUps, tempPowerUps);
+        const damagePerSecond = (fireConfig ? fireConfig.damagePerSecond : 1) * fireDamageMult;
         const damageThisTick = deltaTime * damagePerSecond;
         
         // Damage the item

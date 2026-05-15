@@ -1,7 +1,15 @@
 // Renderer - Handles all canvas drawing operations
 
-import { CONFIG, getFireTypeConfig, getTowerRange, getSpreadTowerRange, getSuppressionBombImpactZone, getRainRange } from '../config.js';
+import { CONFIG, getFireTypeDisplayColor, getTowerRange, getSpreadTowerRange, getSuppressionBombImpactZone, getRainRange, getPowerUpGraphicFilename, getTowerRangeHexBonusFromTemps, getArtifactById, getBomberMinDistance, getBossPatternForWaveGroup, getBossPatternForSpeech } from '../config.js';
+import { getTempPowerUpTimeReference } from './tempPowerUpClock.js';
 import { axialToPixel, pixelToAxial, getHexVertices, getDirectionAngle, getDirectionAngle12, getHexInDirection, getHexLineFromAngle, getSpreadTowerTargets, getSpreadTowerSprayEndpoints, getNeighbors, getHexesInRadius, isInBounds } from './hexMath.js';
+
+function getSpawnerDrawColor(hex) {
+  if (hex.fireSpawnerType === CONFIG.FIRE_TYPE_BLACKFYRE) {
+    return getFireTypeDisplayColor(hex.fireSpawnerType);
+  }
+  return hex.fireSpawnerColor || CONFIG.COLOR_FIRE_CINDER;
+}
 
 export class Renderer {
   constructor(canvas, gameState = null) {
@@ -23,6 +31,11 @@ export class Renderer {
     this.gridRenderCache = null;
     // Cache for darkened tower base sprites (avoids per-frame pixel ops)
     this.darkenedTowerSpriteCache = new Map();
+    // Cache for brightened tower turret sprites (avoids per-frame getImageData/putImageData).
+    // drawAllTowerTurrets used to brighten every turret pixel by 1.35x on every frame for
+    // every tower (~30+ towers × 60fps = mega-allocations + pixel work). Now cached by
+    // (towerType, rangeLevel, sizeBucket, brightness).
+    this.brightenedTurretSpriteCache = new Map();
     // Static grid cache (offscreen canvas)
     this.gridStaticCache = null;
     this.isBuildingGridCache = false;
@@ -66,6 +79,9 @@ export class Renderer {
     
     // Expanding ring animations for upgradeable towers (keyed by tower ID)
     this.upgradeRings = new Map(); // Map<towerId, {rings: Array<{startTime, scale, alpha}>, lastSpawnTime: number}>
+    
+    /** Tower Status panel focus pulse — same hex rings as upgrade mode, white, finite duration */
+    this.towerFocusPulseRings = new Map();
     
     // Expanding ring animations for fire spawners (keyed by hex coord string)
     this.spawnerRings = new Map(); // Map<"q,r", {rings: Array<{startTime, scale, alpha}>, lastSpawnTime: number}>
@@ -136,6 +152,47 @@ export class Renderer {
     this.loadHexBackgrounds();
     this.loadBackgroundImages();
     this.loadBossSprites();
+  }
+
+  /**
+   * Flashing "being hit by water" borders use hex.isBeingSprayed, which is only updated while
+   * towerSystem runs. During placement phase the game is paused so flags can go stale — only
+   * show spray-hit visuals when the wave is actively running.
+   */
+  isWaveActiveForSprayHitVisuals() {
+    return this.gameState?.wave?.isActive === true;
+  }
+
+  /**
+   * Whether "Simplified water visuals" is on — checks `gameState.simplifiedWaterVisuals` first, then CONFIG.
+   * Handles strict booleans and occasional localStorage string quirks.
+   * @returns {boolean}
+   */
+  isSimplifiedWaterVisualsEnabled() {
+    if (this.gameState?.simplifiedWaterVisuals === true) return true;
+    const v = CONFIG.SIMPLIFIED_WATER_VISUALS;
+    return v === true || v === 1 || v === 'true';
+  }
+
+  /**
+   * Canvas alpha multiplier for tower water streams/beams/bombs/particles.
+   * Uses `WATER_VISUAL_BASE_ALPHA_SCALE`; simplified mode multiplies by `SIMPLIFIED_WATER_VISUALS_ALPHA_SCALE`.
+   * Full visuals (simplified off) multiply by `WATER_VISUAL_FULL_OPACITY_BOOST` — simplified tier unchanged.
+   * @returns {number}
+   */
+  getWaterVisualAlphaScale() {
+    const b = CONFIG.WATER_VISUAL_BASE_ALPHA_SCALE;
+    let m = typeof b === 'number' && b >= 0 && b <= 1 ? b : 0.5625;
+    if (this.isSimplifiedWaterVisualsEnabled()) {
+      const s = CONFIG.SIMPLIFIED_WATER_VISUALS_ALPHA_SCALE;
+      const extra = typeof s === 'number' && s >= 0 && s <= 1 ? s : 0.25;
+      m *= extra;
+    } else {
+      const boost = CONFIG.WATER_VISUAL_FULL_OPACITY_BOOST;
+      const k = typeof boost === 'number' && boost > 0 ? boost : 1.25;
+      m *= k;
+    }
+    return Math.min(1, m);
   }
 
   /**
@@ -261,7 +318,8 @@ export class Renderer {
       CONFIG.FIRE_TYPE_BLAZE,
       CONFIG.FIRE_TYPE_FIRESTORM,
       CONFIG.FIRE_TYPE_INFERNO,
-      CONFIG.FIRE_TYPE_CATACLYSM
+      CONFIG.FIRE_TYPE_CATACLYSM,
+      CONFIG.FIRE_TYPE_BLACKFYRE,
     ];
     
     spawnerTypes.forEach(spawnerType => {
@@ -365,7 +423,8 @@ export class Renderer {
    */
   ensureBackgroundForGroup(groupNum) {
     if (groupNum < 1) return;
-    const groupKey = `group${groupNum}`;
+    const g = this.clampBossPortraitGroup(groupNum);
+    const groupKey = `group${g}`;
     if (this.backgroundImages.has(groupKey)) return;
 
     const img = new Image();
@@ -406,7 +465,11 @@ export class Renderer {
   updateBackgroundImage() {
     if (!this.gameState?.waveSystem) return;
 
-    const currentWaveGroup = this.gameState.waveSystem.currentWaveGroup || 1;
+    const ws = this.gameState.waveSystem;
+    const currentWaveGroup =
+      typeof ws.getDisplayWaveGroupForEnvironment === 'function'
+        ? ws.getDisplayWaveGroupForEnvironment()
+        : ws.currentWaveGroup || 1;
     this.ensureBackgroundForGroup(currentWaveGroup);
 
     const groupKey = this.getEffectiveBackgroundGroupKey(currentWaveGroup);
@@ -438,18 +501,44 @@ export class Renderer {
   }
 
   /**
-   * Get the effective boss group key for a wave group: the highest loaded group number <= waveGroup.
-   * When beyond available creatures (e.g. group 14 but only 1–10 exist), use the highest available instead of group1.
+   * Shipped boss portraits are group1 … group{CONFIG.FINAL_WAVE_GROUP}; endless runs reuse the last file.
+   * @param {number} waveGroup
+   * @returns {number}
+   */
+  clampBossPortraitGroup(waveGroup) {
+    const cap = Math.max(1, Math.floor(Number(CONFIG.FINAL_WAVE_GROUP)) || 22);
+    const g = Math.max(1, Math.floor(Number(waveGroup)) || 1);
+    return Math.min(g, cap);
+  }
+
+  /**
+   * Resolve which creatures/groupN.png boss art to use for a wave group.
+   * Prefer the exact group once its image has decoded; while that image is still loading, keep the exact
+   * key so callers skip drawing or load the correct URL — never substitute another boss's sprite (e.g. vuul)
+   * just because group13 hasn't finished loading yet (fixes autosave / refresh races vs CONFIG boss names).
+   * If the exact file is missing or broken after load, fall back to the highest fully loaded group ≤ waveGroup.
    * @param {number} waveGroup - Current wave group (1-indexed)
-   * @returns {string} Key e.g. "group10"
+   * @returns {string} Key e.g. "group13"
    */
   getEffectiveBossGroupKey(waveGroup) {
+    const g = this.clampBossPortraitGroup(waveGroup);
+    this.ensureBossSpriteForGroup(waveGroup);
+    const exactKey = `group${g}`;
+    const exactImg = this.bossSprites.get(exactKey);
+    if (exactImg) {
+      if (exactImg.complete && exactImg.naturalWidth > 0) {
+        return exactKey;
+      }
+      if (!exactImg.complete) {
+        return exactKey;
+      }
+    }
     let maxN = 0;
     this.bossSprites.forEach((img, key) => {
       const m = key.match(/^group(\d+)$/);
       if (m && img.complete && img.naturalWidth > 0) {
         const n = parseInt(m[1], 10);
-        if (n <= waveGroup && n > maxN) maxN = n;
+        if (n <= g && n > maxN) maxN = n;
       }
     });
     return maxN > 0 ? `group${maxN}` : 'group1';
@@ -457,12 +546,13 @@ export class Renderer {
 
   /**
    * Ensure a boss sprite for the given wave group is loaded (groupN.png in creatures folder).
-   * Starts an on-demand load if not cached; display uses highest available group when missing or still loading.
+   * On-demand for groups beyond the startup preload; {@link getEffectiveBossGroupKey} prefers this file, then lower groups if missing.
    * @param {number} groupNum - Wave group number (1-indexed)
    */
   ensureBossSpriteForGroup(groupNum) {
     if (groupNum < 1) return;
-    const groupKey = `group${groupNum}`;
+    const g = this.clampBossPortraitGroup(groupNum);
+    const groupKey = `group${g}`;
     if (this.bossSprites.has(groupKey)) return;
 
     const img = new Image();
@@ -479,12 +569,16 @@ export class Renderer {
    */
   drawBossImage() {
     // Check if it's a boss wave (5th wave of group)
-    if (!this.gameState?.waveSystem) return;
+    if (!this.gameState?.waveSystem) {
+      this.clearBossVisualRelics();
+      return;
+    }
     
     const waveInGroup = this.gameState.waveSystem.waveInGroup || 1;
     const isBossWave = waveInGroup === CONFIG.WAVES_PER_GROUP;
     
     if (!isBossWave) {
+      this.clearBossVisualRelics();
       this.updateBossPowerSpeechBubble(null);
       return;
     }
@@ -492,6 +586,7 @@ export class Renderer {
     // Don't show boss until placement phase for wave 5 - hide during wave complete modal (e.g. "Wave 2-4 Complete!")
     const waveCompleteModal = document.getElementById('waveCompleteModal');
     if (waveCompleteModal?.classList.contains('active')) {
+      this.clearBossVisualRelics();
       this.updateBossPowerSpeechBubble(null);
       return;
     }
@@ -503,6 +598,8 @@ export class Renderer {
     const bossSprite = this.bossSprites.get(bossSpriteKey);
 
     if (!bossSprite || !bossSprite.complete || bossSprite.naturalWidth === 0) {
+      // Still a boss wave: tick ability text animations so they can finish while sprite loads
+      this.drawBossAbilityTexts();
       return; // No boss sprite loaded yet
     }
     
@@ -672,9 +769,9 @@ export class Renderer {
    * @param {string|null} castingState - 'entering'|'active'|'exiting'|'idle', or null to hide
    */
   updateBossPowerSpeechBubble(castingState) {
-    const bossSystem = this.gameState?.bossSystem;
-    const bossPattern = bossSystem?.bossPattern ?? (this.gameState?.waveSystem && CONFIG.BOSS_PATTERNS[this.gameState.waveSystem.currentWaveGroup]) ?? null;
-    const speeches = bossPattern?.powerActivationSpeech;
+    const wg = this.gameState?.waveSystem?.currentWaveGroup ?? 1;
+    const speechPattern = getBossPatternForSpeech(wg);
+    const speeches = speechPattern?.powerActivationSpeech;
     const hasSpeeches = Array.isArray(speeches) && speeches.length > 0;
 
     const FADE_OUT_DURATION = 200;
@@ -707,23 +804,41 @@ export class Renderer {
       const bubble = document.createElement('div');
       bubble.className = 'character-speech-bubble character-speech-bubble-boss boss-power-speech-bubble';
       bubble.innerHTML = text;
-      bubble.style.cssText = 'margin: 0; padding: 15px 20px; font-size: 32px; transition: opacity 0.3s ease-in; opacity: 0;';
+      bubble.style.cssText = 'margin: 0; padding: 15px 20px; font-size: 32px; transition: opacity 0.3s ease-in; opacity: 0; transform-origin: bottom center;';
       document.body.appendChild(bubble);
       this.bossPowerSpeechBubble = bubble;
       this.bossPowerSpeechBubbleFadeOutStart = null;
       requestAnimationFrame(() => {
         if (bubble.parentElement) bubble.style.opacity = '1';
       });
+      // Lock width once after layout so text cannot reflow as the bubble is repositioned / scaled
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (!bubble.parentElement) return;
+          const w = Math.ceil(bubble.getBoundingClientRect().width);
+          if (w <= 0) return;
+          bubble.style.boxSizing = 'border-box';
+          bubble.style.width = `${w}px`;
+          bubble.style.minWidth = `${w}px`;
+          bubble.style.maxWidth = `${w}px`;
+        });
+      });
     }
 
-    // Update position when entering or active (use 0.75 visible - boss is larger when casting)
-    if ((castingState === 'entering' || castingState === 'active') && this.bossPowerSpeechBubble) {
-      const pos = this.getBossViewportPosition(0.75);
+    // Update position + scale (match canvas boss animation so DOM bubble and portrait stay visually in sync)
+    if (
+      (castingState === 'entering' || castingState === 'active' || castingState === 'exiting') &&
+      this.bossPowerSpeechBubble
+    ) {
+      const pos = this.getBossViewportPosition(0.5, { syncCasting: true });
       if (pos) {
         const bubbleWidth = this.bossPowerSpeechBubble.offsetWidth || 340;
         const gapAbove = 20;
+        const scale = pos.castingScale ?? 1;
         this.bossPowerSpeechBubble.style.left = `${pos.centerX - bubbleWidth / 2}px`;
         this.bossPowerSpeechBubble.style.bottom = `${window.innerHeight - pos.top + gapAbove}px`;
+        this.bossPowerSpeechBubble.style.transform = `scale(${scale})`;
+        this.bossPowerSpeechBubble.style.transformOrigin = 'bottom center';
       }
     }
 
@@ -736,11 +851,54 @@ export class Renderer {
   }
 
   /**
+   * Same interpolation as drawBossImage() for casting — keeps DOM overlays aligned with the canvas boss.
+   * @param {number} imageHeight - Boss sprite draw height in CSS pixels
+   */
+  _getBossCastingAnimationValues(imageHeight) {
+    const bossSystem = this.gameState?.bossSystem;
+    const castingState = bossSystem?.castingState || 'idle';
+    const animationStart = bossSystem?.castingAnimationStart || 0;
+    const entryDuration = 0.4;
+    const exitDuration = 0.2;
+
+    let visibleHeight = imageHeight * 0.5;
+    let xOffset = 0;
+    let scale = 1.0;
+
+    if (castingState === 'entering') {
+      const elapsed = (Date.now() - animationStart) / 1000;
+      const progress = Math.min(elapsed / entryDuration, 1);
+      const easedProgress = progress * progress;
+      const startVisible = imageHeight * 0.5;
+      const endVisible = imageHeight * 0.75;
+      visibleHeight = startVisible + (endVisible - startVisible) * easedProgress;
+      xOffset = -25 * easedProgress;
+      scale = 1.0 + 0.2 * easedProgress;
+    } else if (castingState === 'active') {
+      visibleHeight = imageHeight * 0.75;
+      xOffset = -25;
+      scale = 1.2;
+    } else if (castingState === 'exiting') {
+      const elapsed = (Date.now() - animationStart) / 1000;
+      const progress = Math.min(elapsed / exitDuration, 1);
+      const easedProgress = 1 - (1 - progress) * (1 - progress);
+      const startVisible = imageHeight * 0.75;
+      const endVisible = imageHeight * 0.5;
+      visibleHeight = startVisible + (endVisible - startVisible) * easedProgress;
+      xOffset = -25 * (1 - easedProgress);
+      scale = 1.2 - 0.2 * easedProgress;
+    }
+
+    return { visibleHeight, xOffset, scale };
+  }
+
+  /**
    * Get boss viewport position for positioning UI (e.g. speech bubble) above the boss.
    * Returns { centerX, top } in viewport pixels, or null if not a boss wave or boss not ready.
-   * @param {number} [visibleFraction=0.5] - Fraction of image height visible (0.75 when casting)
+   * @param {number} [visibleFraction=0.5] - Fraction of image height visible (ignored when options.syncCasting)
+   * @param {{ syncCasting?: boolean }} [options] - If syncCasting, match drawBossImage() casting animation (adds castingScale)
    */
-  getBossViewportPosition(visibleFraction = 0.5) {
+  getBossViewportPosition(visibleFraction = 0.5, options = {}) {
     if (!this.gameState?.waveSystem) return null;
     const waveInGroup = this.gameState.waveSystem.waveInGroup || 1;
     const isBossWave = waveInGroup === CONFIG.WAVES_PER_GROUP;
@@ -759,17 +917,33 @@ export class Renderer {
     const imageAspectRatio = bossSprite.naturalWidth / bossSprite.naturalHeight;
     const imageWidth = canvasWidth * 0.3;
     const imageHeight = imageWidth / imageAspectRatio;
-    const visibleHeight = imageHeight * visibleFraction;
+
+    let visibleHeight;
+    let xOffset = 0;
+    let castingScale = 1;
+    if (options.syncCasting) {
+      const anim = this._getBossCastingAnimationValues(imageHeight);
+      visibleHeight = anim.visibleHeight;
+      xOffset = anim.xOffset;
+      castingScale = anim.scale;
+    } else {
+      visibleHeight = imageHeight * visibleFraction;
+    }
+
     const overflowX = imageWidth * 0.2;
     const sidebarOffset = this.bossSidebarOffset ?? 0;
-    const x = canvasWidth - imageWidth + overflowX + sidebarOffset;
+    const x = canvasWidth - imageWidth + overflowX + sidebarOffset + xOffset;
     const y = canvasHeight - visibleHeight;
     const bossCenterX = x + imageWidth / 2;
     const bossTopY = y;
-    return {
+    const out = {
       centerX: rect.left + bossCenterX,
-      top: rect.top + bossTopY
+      top: rect.top + bossTopY,
     };
+    if (options.syncCasting) {
+      out.castingScale = castingScale;
+    }
+    return out;
   }
   
   /**
@@ -780,7 +954,7 @@ export class Renderer {
   drawBossNameLabel() {
     // Get boss pattern from bossSystem or CONFIG (bossSystem may not have it during placement)
     const bossPattern = (this.gameState?.bossSystem?.bossPattern ??
-      (this.gameState?.waveSystem && CONFIG.BOSS_PATTERNS[this.gameState.waveSystem.currentWaveGroup])) ?? null;
+      (this.gameState?.waveSystem && getBossPatternForWaveGroup(this.gameState.waveSystem.currentWaveGroup))) ?? null;
     if (!bossPattern) return;
     const bossName = bossPattern.name || 'Unknown';
     const bossTitle = bossPattern.title || '';
@@ -967,6 +1141,24 @@ export class Renderer {
       duration: 3.75, // 3.75 seconds to float up and fade
       startY: 0 // Not used anymore, but keeping for compatibility
     });
+  }
+
+  /**
+   * Remove boss ability name overlays and power speech (DOM). Used when the boss portrait is hidden:
+   * `drawBossAbilityTexts()` only runs inside `drawBossImage()`, so otherwise queued labels never expire.
+   */
+  clearBossVisualRelics() {
+    this.bossAbilityTexts.forEach((t) => {
+      if (t.element?.parentNode) {
+        t.element.parentNode.removeChild(t.element);
+      }
+    });
+    this.bossAbilityTexts = [];
+    if (this.bossPowerSpeechBubble?.parentElement) {
+      this.bossPowerSpeechBubble.remove();
+      this.bossPowerSpeechBubble = null;
+      this.bossPowerSpeechBubbleFadeOutStart = null;
+    }
   }
 
   /**
@@ -1612,22 +1804,13 @@ export class Renderer {
         // DEBUG: Verify all spread tower beams use same multipliers
         // (This should be identical for all 5 beams since isSpreadTower is the same for all)
         
-        // Distance constraint - allow particles to travel slightly beyond the target
-        // This creates a natural fade-out effect instead of hard clustering
-        const targetTerminationDistance = distance * 1.1; // Slightly beyond target for smooth fade
-      const currentDistanceFromStart = distance * progress;
+        // Distance constraint — jet towers get a slight overshoot for fade; spread endpoints
+        // already match hit hexes in hexMath, so 10% extra reads as ~1 hex past damage range.
+        const targetTerminationDistance = distance * (isSpreadTower ? 1.0 : 1.1);
+        const currentDistanceFromStart = distance * progress;
         const remainingDistance = targetTerminationDistance - currentDistanceFromStart;
-      
-        // For spread towers: use a percentage-based maxDistance to ensure consistent behavior
-        // regardless of beam length - this makes all beams look identical
-        if (isSpreadTower) {
-          // Particles can travel up to 15% of the remaining distance, with some variation
-          const travelPercent = 0.12 + Math.random() * 0.06; // 12-18% of remaining distance
-          particle.maxDistance = Math.max(0, remainingDistance * travelPercent);
-        } else {
-          // Jet towers: use absolute distance
-          particle.maxDistance = Math.max(0, remainingDistance);
-        }
+
+        particle.maxDistance = Math.max(0, remainingDistance);
       particle.startOffsetX = particle.offsetX;
       particle.startOffsetY = particle.offsetY;
       
@@ -1706,86 +1889,83 @@ export class Renderer {
    * @param {number} deltaTime - Time elapsed since last frame
    */
   updateWaterParticles(towerId, deltaTime) {
-    const particles = this.waterParticles.get(towerId) || [];
-    
-    // Update existing particles
+    const particles = this.waterParticles.get(towerId);
+    if (!particles || particles.length === 0) {
+      if (particles) this.waterParticles.delete(towerId);
+      return 0;
+    }
+
+    // Hoist values that are constant across the group / frame. Per-particle reads on
+    // CONFIG.* and Map.has add up at hundreds of particles per frame; cache once here.
+    const dt60 = deltaTime * 60;
+    const useGravity = CONFIG.USE_PARTICLE_GRAVITY;
+    const lifeDecayBase = CONFIG.WATER_PARTICLE_LIFE_DECAY_MULTIPLIER || 1;
+    const explosionBoost = this.explosionParticles.has(towerId) ? 2 : 1;
+    const lifeDecay = deltaTime * lifeDecayBase * explosionBoost;
+    const particlePool = this.particlePool;
+
+    // Determine coord space from the first particle. All particles in a group share
+    // coord space (tower spray = hex+offset, explosion = absolute x/y).
+    const usesHex = particles[0].offsetX !== null && particles[0].offsetY !== null;
+
+    // Iterate backwards so splice doesn't disturb the index, and so removal is O(1)
+    // when dead particles are concentrated at the tail (the common case for sprays).
     for (let i = particles.length - 1; i >= 0; i--) {
       const particle = particles[i];
-      
-      // Update physics - update relative offset if particle has hex coordinates
-      if (particle.offsetX !== null && particle.offsetY !== null) {
-        // Update relative position
-        particle.offsetX += particle.velocityX * deltaTime * 60;
-        particle.offsetY += particle.velocityY * deltaTime * 60;
+
+      if (usesHex) {
+        particle.offsetX += particle.velocityX * dt60;
+        particle.offsetY += particle.velocityY * dt60;
       } else {
-        // Update absolute position (for explosion particles without hex coords)
-        particle.x += particle.velocityX * deltaTime * 60;
-        particle.y += particle.velocityY * deltaTime * 60;
+        particle.x += particle.velocityX * dt60;
+        particle.y += particle.velocityY * dt60;
       }
-      
-      // Apply gravity only if enabled in config (top-down view can ignore it)
-      if (CONFIG.USE_PARTICLE_GRAVITY) {
-        particle.velocityY += particle.gravity * deltaTime * 60;
+
+      if (useGravity) {
+        particle.velocityY += particle.gravity * dt60;
       }
-      particle.velocityX *= particle.friction; // Apply friction
+      particle.velocityX *= particle.friction;
       particle.velocityY *= particle.friction;
-      
-      // Check distance constraint (if particle has maxDistance)
-      if (particle.maxDistance !== undefined) {
-        let currentDistance;
-        if (particle.offsetX !== null && particle.offsetY !== null) {
-          // Use relative offsets for distance calculation
-          currentDistance = Math.sqrt(
-            (particle.offsetX - particle.startOffsetX) ** 2 + 
-            (particle.offsetY - particle.startOffsetY) ** 2
-          );
+
+      // Distance clamp (only when the particle was tagged with a maxDistance budget).
+      const maxDist = particle.maxDistance;
+      if (maxDist !== undefined) {
+        let dx, dy;
+        if (usesHex) {
+          dx = particle.offsetX - particle.startOffsetX;
+          dy = particle.offsetY - particle.startOffsetY;
         } else {
-          // Use absolute positions
-          currentDistance = Math.sqrt(
-            (particle.x - particle.startX) ** 2 + 
-            (particle.y - particle.startY) ** 2
-          );
+          dx = particle.x - particle.startX;
+          dy = particle.y - particle.startY;
         }
-        
-        // If particle has traveled too far, clamp it to the boundary
-        if (currentDistance > particle.maxDistance) {
-          if (particle.offsetX !== null && particle.offsetY !== null) {
-            // Calculate the direction from start to current position (relative)
-            const dirX = (particle.offsetX - particle.startOffsetX) / currentDistance;
-            const dirY = (particle.offsetY - particle.startOffsetY) / currentDistance;
-            
-            // Clamp relative position to the maximum allowed distance
-            particle.offsetX = particle.startOffsetX + dirX * particle.maxDistance;
-            particle.offsetY = particle.startOffsetY + dirY * particle.maxDistance;
+        const distSq = dx * dx + dy * dy;
+        if (distSq > maxDist * maxDist) {
+          const currentDistance = Math.sqrt(distSq);
+          const scale = maxDist / currentDistance;
+          if (usesHex) {
+            particle.offsetX = particle.startOffsetX + dx * scale;
+            particle.offsetY = particle.startOffsetY + dy * scale;
           } else {
-            // Calculate the direction from start to current position (absolute)
-            const dirX = (particle.x - particle.startX) / currentDistance;
-            const dirY = (particle.y - particle.startY) / currentDistance;
-            
-            // Clamp position to the maximum allowed distance
-            particle.x = particle.startX + dirX * particle.maxDistance;
-            particle.y = particle.startY + dirY * particle.maxDistance;
+            particle.x = particle.startX + dx * scale;
+            particle.y = particle.startY + dy * scale;
           }
-          
-          // Stop the particle completely
           particle.velocityX = 0;
           particle.velocityY = 0;
         }
       }
-      
-      // Update life (scaled to keep particle counts similar after removing double-updates)
-      const lifeDecayMultiplier = CONFIG.WATER_PARTICLE_LIFE_DECAY_MULTIPLIER || 1;
-      particle.life -= deltaTime * lifeDecayMultiplier;
-      
-      // Remove dead particles
+
+      particle.life -= lifeDecay;
+
       if (particle.life <= 0) {
         particles.splice(i, 1);
-        this.particlePool.push(particle); // Return to pool
+        particlePool.push(particle);
       }
     }
-    
-    // Store updated particles
-    this.waterParticles.set(towerId, particles);
+
+    // Drop empty groups so waterParticles iteration doesn't grow with every tower that ever sprayed.
+    if (particles.length === 0) {
+      this.waterParticles.delete(towerId);
+    }
     return particles.length;
   }
 
@@ -1804,15 +1984,16 @@ export class Renderer {
       this.particleMetrics.frameDrawnTowers += 1;
     }
     
-    // Get viewport bounds for culling (with margin for smooth entry/exit)
+    // Viewport bounds for culling. ctx is in CSS-pixel space (scaled by DPR), but
+    // canvas.width is in device pixels — on Retina that bug made culling permissive,
+    // so particles past the visible edge were still drawn. Use CSS dimensions.
     const cullMargin = CONFIG.PARTICLE_CULL_MARGIN;
+    const cssW = this.canvasCssWidth ?? (this.canvas.width / (this.dpr || 1));
+    const cssH = this.canvasCssHeight ?? (this.canvas.height / (this.dpr || 1));
     const minX = -cullMargin;
-    const maxX = this.canvas.width + cullMargin;
+    const maxX = cssW + cullMargin;
     const minY = -cullMargin;
-    const maxY = this.canvas.height + cullMargin;
-    
-    // Render glow on every frame (removed frame skipping for consistent glow effect)
-    // Glow rendering is relatively cheap (just drawing circles), so we can afford to do it every frame
+    const maxY = cssH + cullMargin;
     
     particles.forEach(particle => {
       // Recalculate screen position if particle has hex coordinates
@@ -1967,7 +2148,35 @@ export class Renderer {
     particle.isSmoke = isSmoke;
     particle.isSpark = isSpark;
     particle.maxDistance = maxDistance; // Constrain particles to hex area
-    
+
+    // Pre-parse RGB(A) once at spawn so drawFireParticles avoids regex matching every frame
+    // for every particle (hot path: 100s of particles × 60fps × multiple explosions).
+    if (color) {
+      const m = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+      if (m) {
+        particle.colorR = parseInt(m[1], 10);
+        particle.colorG = parseInt(m[2], 10);
+        particle.colorB = parseInt(m[3], 10);
+        particle.colorA = m[4] ? parseFloat(m[4]) : 1.0;
+      } else {
+        particle.colorR = 255; particle.colorG = 100; particle.colorB = 0; particle.colorA = 0.9;
+      }
+    } else {
+      particle.colorR = 255; particle.colorG = 100; particle.colorB = 0; particle.colorA = 0.9;
+    }
+
+    // Reset transient flags that may be set later in spawn helpers (centerFire/quickFade/etc.)
+    // so a recycled particle from the pool doesn't inherit stale animation state.
+    particle.isCenterFire = false;
+    particle.baseSize = undefined;
+    particle.sizePulseSpeed = undefined;
+    particle.sizePulseAmount = undefined;
+    particle.quickFade = false;
+    particle.initialAngle = undefined;
+    particle.scatterAmount = undefined;
+    particle.maxScatterSpeed = undefined;
+    particle.scatterDirection = undefined;
+
     return particle;
   }
 
@@ -2164,36 +2373,30 @@ export class Renderer {
         finalSize = particle.size * (0.5 + alpha * 0.5); // Slightly fade size for other particles
       }
       
-      // Use particle's individual color
-      const particleColor = particle.color || 'rgba(255, 100, 0, 0.9)';
-      
-      // Extract RGB values and apply alpha
-      const rgbaMatch = particleColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
-      if (rgbaMatch) {
-        const r = parseInt(rgbaMatch[1]);
-        const g = parseInt(rgbaMatch[2]);
-        const b = parseInt(rgbaMatch[3]);
-        let baseAlpha = rgbaMatch[4] ? parseFloat(rgbaMatch[4]) : 1.0;
-        
-        // Center fire particles are more visible (higher alpha)
-        if (particle.isCenterFire) {
-          baseAlpha = Math.min(1.0, baseAlpha * 1.1); // 10% brighter
-        }
-        
-        // Draw particle with alpha fade
-        this.ctx.beginPath();
-        this.ctx.arc(screenX, screenY, finalSize, 0, 2 * Math.PI);
-        this.ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha * baseAlpha * (particle.isCenterFire ? 1.0 : 0.9)})`;
-        this.ctx.fill();
-        
-        // Add glow effect (stronger for fire, softer for smoke)
-        const glowSize = particle.isSmoke ? finalSize * 1.8 : finalSize * 2.0;
-        const glowAlpha = particle.isSmoke ? alpha * baseAlpha * 0.2 : alpha * baseAlpha * 0.4;
-        this.ctx.beginPath();
-        this.ctx.arc(screenX, screenY, glowSize, 0, 2 * Math.PI);
-        this.ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${glowAlpha})`;
-        this.ctx.fill();
+      // Use cached RGB(A) (parsed once at spawn) instead of per-frame regex on `particle.color`.
+      const r = particle.colorR ?? 255;
+      const g = particle.colorG ?? 100;
+      const b = particle.colorB ?? 0;
+      let baseAlpha = particle.colorA ?? 0.9;
+
+      // Center fire particles are more visible (higher alpha)
+      if (particle.isCenterFire) {
+        baseAlpha = Math.min(1.0, baseAlpha * 1.1); // 10% brighter
       }
+
+      // Draw particle with alpha fade
+      this.ctx.beginPath();
+      this.ctx.arc(screenX, screenY, finalSize, 0, 2 * Math.PI);
+      this.ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha * baseAlpha * (particle.isCenterFire ? 1.0 : 0.9)})`;
+      this.ctx.fill();
+
+      // Add glow effect (stronger for fire, softer for smoke)
+      const glowSize = particle.isSmoke ? finalSize * 1.8 : finalSize * 2.0;
+      const glowAlpha = particle.isSmoke ? alpha * baseAlpha * 0.2 : alpha * baseAlpha * 0.4;
+      this.ctx.beginPath();
+      this.ctx.arc(screenX, screenY, glowSize, 0, 2 * Math.PI);
+      this.ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${glowAlpha})`;
+      this.ctx.fill();
     });
     
     this.ctx.restore();
@@ -2469,21 +2672,20 @@ export class Renderer {
    * @returns {number} The current animated value
    */
   getAnimatedValue(key, targetValue, deltaTime) {
-    if (!this.animatedValues.has(key)) {
-      this.animatedValues.set(key, targetValue);
-      return targetValue;
-    }
-    
+    // Single map.get covers both presence + value lookup (cheaper than has + get).
     const currentValue = this.animatedValues.get(key);
-    const difference = targetValue - currentValue;
-    
-    if (Math.abs(difference) < 0.001) {
-      // Close enough, snap to target
+    if (currentValue === undefined) {
       this.animatedValues.set(key, targetValue);
       return targetValue;
     }
-    
-    // Interpolate towards target
+
+    const difference = targetValue - currentValue;
+    if (Math.abs(difference) < 0.001) {
+      // Already at target: skip the Map write entirely. With hundreds of burning hexes
+      // this avoids ~hex-count Map writes per frame once fires stabilize.
+      return targetValue;
+    }
+
     const newValue = currentValue + (difference * this.animationSpeed * deltaTime);
     this.animatedValues.set(key, newValue);
     return newValue;
@@ -2582,6 +2784,10 @@ export class Renderer {
    */
   render(deltaTime = 0.016) { // Default to ~60fps
     this.deltaTime = deltaTime;
+    // Refresh once per frame: viewport bounds, hot constants used by per-hex draws.
+    // Without this the per-call recompute showed up disproportionately at late waves
+    // where isHexInViewport is hit hundreds of times per frame.
+    this._refreshViewportBounds();
     if (this.particleMetrics.enabled) {
       this.particleMetrics.frameUpdateMs = 0;
       this.particleMetrics.frameDrawMs = 0;
@@ -2612,19 +2818,23 @@ export class Renderer {
       this.bossPulseTime = this.bossPulseTime % 1000;
     }
     
-    // Update all water particles
+    // Update all water particles once per frame (tower spray + explosion/bonus groups).
+    // Draw is only in drawAllWaterParticles(). updateWaterParticles is allowed to delete
+    // its own entry from the Map when empty; per JS spec, deleting the current entry
+    // during Map iteration is safe (already-visited).
+    const metricsOn = this.particleMetrics.enabled;
     let particleUpdateStart;
-    if (this.particleMetrics.enabled) {
+    if (metricsOn) {
       particleUpdateStart = performance.now();
     }
-    this.waterParticles.forEach((particles, towerId) => {
+    for (const towerId of this.waterParticles.keys()) {
       const count = this.updateWaterParticles(towerId, deltaTime);
-      if (this.particleMetrics.enabled) {
+      if (metricsOn) {
         this.particleMetrics.frameParticles += count;
         this.particleMetrics.frameUpdatedTowers += 1;
       }
-    });
-    if (this.particleMetrics.enabled) {
+    }
+    if (metricsOn) {
       this.particleMetrics.frameUpdateMs = performance.now() - particleUpdateStart;
     }
     
@@ -2811,10 +3021,10 @@ export class Renderer {
    */
   drawPowerUpBorderGlow() {
     const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
-    const now = Date.now();
-    // If paused, use pauseStartTime to freeze the timer display
-    const isEffectivelyPaused = (this.gameState?.pauseStartTime !== null && this.gameState?.pauseStartTime !== undefined);
-    const timeReference = isEffectivelyPaused ? this.gameState.pauseStartTime : now;
+    const timeReference = getTempPowerUpTimeReference(
+      this.gameState,
+      typeof window !== 'undefined' ? window.gameLoop : null,
+    );
     const activeTempPowerUps = tempPowerUps.filter(temp => temp.expiresAt > timeReference);
     
     if (activeTempPowerUps.length === 0) {
@@ -3222,14 +3432,7 @@ export class Renderer {
     const powerUpConfig = tempPowerUpConfig || CONFIG.POWER_UPS[powerUpId];
     if (!powerUpConfig) return;
     
-    const powerUpGraphicMap = {
-      'water_pressure': 'water_pressure.png',
-      'xp_boost': 'xp_boost.png',
-      'tower_health': 'tower_durability.png',
-      'fire_resistance': 'fire_resistance.png',
-      'temp_power_up_spawn_boost': 'power_up_magnet.png'
-    };
-    const graphicFilename = powerUpGraphicMap[powerUpId];
+    const graphicFilename = getPowerUpGraphicFilename(powerUpId);
     const notificationData = {
       powerUpId,
       name: powerUpConfig.name,
@@ -3296,16 +3499,40 @@ export class Renderer {
    * @returns {boolean} True if point is visible
    */
   isInViewport(screenX, screenY, margin = null) {
+    // Hot path: called per-hex per-frame from drawGrid, drawFires, drawTower, etc.
+    // The cached bounds are refreshed once per frame in render() so we just need
+    // 4 number compares here when the margin matches the cached default margin.
+    const viewportMargin = margin ?? this._defaultViewportMargin ?? (CONFIG.HEX_RADIUS * 2);
+    const bounds = this._viewportBounds;
+    if (bounds && viewportMargin === bounds.margin) {
+      return screenX >= bounds.minX && screenX <= bounds.maxX
+        && screenY >= bounds.minY && screenY <= bounds.maxY;
+    }
     const canvasWidth = this.canvasCssWidth ?? (this.canvas.width / (this.dpr || 1));
     const canvasHeight = this.canvasCssHeight ?? (this.canvas.height / (this.dpr || 1));
-    
-    // Use hex radius as default margin for smooth scrolling
-    const viewportMargin = margin ?? CONFIG.HEX_RADIUS * 2;
-    
-    return screenX >= -viewportMargin && 
+    return screenX >= -viewportMargin &&
            screenX <= canvasWidth + viewportMargin &&
-           screenY >= -viewportMargin && 
+           screenY >= -viewportMargin &&
            screenY <= canvasHeight + viewportMargin;
+  }
+
+  /**
+   * Refresh viewport bounds cache for the current frame. Called from render().
+   * isInViewport reads these instead of recomputing canvas dimensions per call.
+   * @private
+   */
+  _refreshViewportBounds() {
+    const canvasWidth = this.canvasCssWidth ?? (this.canvas.width / (this.dpr || 1));
+    const canvasHeight = this.canvasCssHeight ?? (this.canvas.height / (this.dpr || 1));
+    const margin = CONFIG.HEX_RADIUS * 2;
+    this._defaultViewportMargin = margin;
+    this._viewportBounds = {
+      margin,
+      minX: -margin,
+      minY: -margin,
+      maxX: canvasWidth + margin,
+      maxY: canvasHeight + margin,
+    };
   }
 
   /**
@@ -3316,8 +3543,12 @@ export class Renderer {
    * @returns {boolean} True if hex is visible
    */
   isHexInViewport(screenX, screenY, margin = 0) {
+    // Most callers pass margin=0, in which case the effective margin matches the
+    // cached default (HEX_RADIUS * 2) and we fast-path through the cached bounds.
+    if (margin === 0) {
+      return this.isInViewport(screenX, screenY);
+    }
     const hexRadius = CONFIG.HEX_RADIUS;
-    // Hex extends roughly hexRadius in all directions from center
     return this.isInViewport(screenX, screenY, hexRadius * 2 + margin);
   }
 
@@ -3451,7 +3682,7 @@ export class Renderer {
           }
         });
 
-        // Draw dynamic town center health overlay
+        // Dynamic town center overlay (sprite + draining hex; HP bar is drawn after particles)
         this.drawTownCenterHex(gridSystem);
         
         // Draw red flashing borders on town hexes when on fire (only when actually burning)
@@ -3560,11 +3791,11 @@ export class Renderer {
         
         // Center hex (0,0) uses the draining fire effect to show health
         if (isCenterHex) {
-        // Check if any town hexes are actually burning (use getBurningHexes as source of truth)
+        // Check if any town hexes are actually burning. Use the 7-hex town cluster cache
+        // (gridSystem.isAnyTownHexBurning) instead of scanning the (potentially huge) burning hex list.
         let isAnyTownHexBurning = false;
         if (this.gameState?.gridSystem) {
-          const burningHexes = this.gameState.gridSystem.getBurningHexes();
-          isAnyTownHexBurning = burningHexes.some(hex => this.gameState.gridSystem.isTownHex(hex.q, hex.r));
+          isAnyTownHexBurning = this.gameState.gridSystem.isAnyTownHexBurning();
         }
         
         // Always draw the green town background (fire will be drawn on top by drawFires)
@@ -3710,7 +3941,7 @@ export class Renderer {
     // Draw thick red flashing borders on all edges of all town hexes when on fire
     this.drawTownHexFireBorders(gridSystem);
     
-    // Draw town graphic and health bar on center hex AFTER all borders are redrawn
+    // Draw town graphic on center hex AFTER all borders are redrawn (HP bar after particles)
     // This ensures the graphic is always above hex borders
     const centerHex = gridSystem.getHex(0, 0);
     if (centerHex && centerHex.isTown && this.gameState) {
@@ -3759,14 +3990,7 @@ export class Renderer {
         this.ctx.restore();
       }
       
-      // Draw town health bar beneath the graphic
-      const currentHealth = Math.round(centerHex.townHealth || 0);
-      const maxHealth = Math.round(centerHex.maxTownHealth || 0);
-      // Slightly below the graphic
-      const healthY = screenY + Math.max(18, CONFIG.HEX_RADIUS * 0.45);
-      
-      // Draw health bar
-      this.drawHealthBar(screenX, healthY, currentHealth, maxHealth, 45, 4.5);
+      // Grove health bar is drawn in drawAllWorldHealthBarsAfterParticles() so water/fire particles never cover it
     }
   }
 
@@ -3777,9 +4001,15 @@ export class Renderer {
    */
   redrawAllSpawners(gridSystem) {
     if (!gridSystem) return;
-    
-    const hexes = gridSystem.getAllHexes();
-    hexes.forEach(hex => {
+
+    // Iterate the cached spawner list (typically 0–4 entries) instead of all ~441 hexes.
+    // Burning spawners are intentionally skipped — they get a different visual path.
+    const spawners = this.gameState?.fireSpawnerSystem?.getAllSpawners?.() || [];
+    if (spawners.length === 0) return;
+    for (let si = 0; si < spawners.length; si++) {
+      const sp = spawners[si];
+      const hex = gridSystem.getHex(sp.q, sp.r);
+      if (!hex) continue;
       if (hex.hasFireSpawner && !hex.isBurning) {
         const { x, y } = axialToPixel(hex.q, hex.r);
         const screenX = x + this.offsetX;
@@ -3795,8 +4025,8 @@ export class Renderer {
         const normalizedPulse = Math.sin(pulsePhase) * 0.5 + 0.5; // Maps sin from -1..1 to 0..1
         const pulseFactor = minSize + (maxSize - minSize) * normalizedPulse;
         
-        // Draw spawner with its fire type color
-        const spawnerColor = hex.fireSpawnerColor || CONFIG.COLOR_FIRE_CINDER;
+        // Draw spawner with its fire type color (Blackfyre hue animates)
+        const spawnerColor = getSpawnerDrawColor(hex);
         const baseSpawnerRadius = CONFIG.HEX_RADIUS;
         const spawnerRadius = baseSpawnerRadius * pulseFactor;
         const spawnerVertices = getHexVertices(screenX, screenY, spawnerRadius);
@@ -3877,7 +4107,7 @@ export class Renderer {
           this.ctx.restore();
         }
       }
-    });
+    }
   }
 
   buildGridRenderCache(gridSystem) {
@@ -3903,18 +4133,22 @@ export class Renderer {
    */
   drawAllSpawnerRings(gridSystem) {
     if (!gridSystem) return;
-    
-    const hexes = gridSystem.getAllHexes();
-    hexes.forEach(hex => {
-      if (hex.hasFireSpawner && !hex.isBurning) {
-        const { x, y } = axialToPixel(hex.q, hex.r);
-        const screenX = x + this.offsetX;
-        const screenY = y + this.offsetY;
-        const spawnerKey = `${hex.q},${hex.r}`;
-        const spawnerColor = hex.fireSpawnerColor || CONFIG.COLOR_FIRE_CINDER;
-        this.drawSpawnerRings(spawnerKey, screenX, screenY, spawnerColor);
-      }
-    });
+
+    // Same optimization as redrawAllSpawners: walk the cached spawner list rather than
+    // every hex in the grid. This used to do 441 hasFireSpawner reads per frame.
+    const spawners = this.gameState?.fireSpawnerSystem?.getAllSpawners?.() || [];
+    if (spawners.length === 0) return;
+    for (let si = 0; si < spawners.length; si++) {
+      const sp = spawners[si];
+      const hex = gridSystem.getHex(sp.q, sp.r);
+      if (!hex || !hex.hasFireSpawner || hex.isBurning) continue;
+      const { x, y } = axialToPixel(hex.q, hex.r);
+      const screenX = x + this.offsetX;
+      const screenY = y + this.offsetY;
+      const spawnerKey = `${hex.q},${hex.r}`;
+      const spawnerColor = getSpawnerDrawColor(hex);
+      this.drawSpawnerRings(spawnerKey, screenX, screenY, spawnerColor);
+    }
   }
 
   /**
@@ -3956,7 +4190,7 @@ export class Renderer {
             const tank = this.gameState.waterTankSystem.getWaterTankAt(hex.q, hex.r);
             if (tank) {
               const tankHex = gridSystem.getHex(hex.q, hex.r);
-              const isBeingHitByWater = tankHex && tankHex.isBeingSprayed;
+              const isBeingHitByWater = tankHex && tankHex.isBeingSprayed && this.isWaveActiveForSprayHitVisuals();
               if (isBeingHitByWater) {
                 shouldFlash = true;
                 flashColor = CONFIG.COLOR_TOWER; // Bright blue
@@ -4068,7 +4302,7 @@ export class Renderer {
         if (hex.hasWaterTank && this.gameState?.waterTankSystem) {
           const tank = this.gameState.waterTankSystem.getWaterTankAt(hex.q, hex.r);
           if (tank) {
-            const isBeingHitByWater = hex.isBeingSprayed;
+            const isBeingHitByWater = hex.isBeingSprayed && this.isWaveActiveForSprayHitVisuals();
             if (isBeingHitByWater) {
               shouldFlash = true;
               flashColor = CONFIG.COLOR_TOWER; // Bright blue
@@ -4163,39 +4397,39 @@ export class Renderer {
    */
   drawFires(gridSystem) {
     const burningHexes = gridSystem.getBurningHexes();
-    
-    burningHexes.forEach(hex => {
+    if (burningHexes.length === 0) return;
+
+    const fireInset = CONFIG.FIRE_HEX_INSET || 5;
+    const animatedValues = this.animatedValues;
+    const borderColor = 'rgba(255, 255, 255, 0.125)'; // White 50% — same for every hex
+
+    for (let i = 0; i < burningHexes.length; i++) {
+      const hex = burningHexes[i];
       const { x, y } = axialToPixel(hex.q, hex.r);
       const screenX = x + this.offsetX;
       const screenY = y + this.offsetY;
-      
-      // Viewport culling: skip fires outside viewport
+
+      // Viewport culling: skip fires outside viewport (cached bounds inside isHexInViewport)
       if (!this.isHexInViewport(screenX, screenY)) {
-        return;
+        continue;
       }
-      
-      // Get fire color based on type
-      const fireConfig = getFireTypeConfig(hex.fireType);
-      const fireColor = fireConfig ? fireConfig.color : CONFIG.COLOR_FIRE_CINDER;
-      
-      // Calculate fire "fill level" (1.0 = full, 0.0 = empty)
-      const fillLevel = Math.max(0, Math.min(1, hex.extinguishProgress / hex.maxExtinguishTime));
-      
-      // Draw the "draining" fire hex with inset to show underlying hex border
+
+      const fireColor = getFireTypeDisplayColor(hex.fireType);
+
+      // Fire "fill level" (1.0 = full, 0.0 = empty)
+      const rawFill = hex.extinguishProgress / hex.maxExtinguishTime;
+      const fillLevel = rawFill < 0 ? 0 : rawFill > 1 ? 1 : rawFill;
+
+      // New fires animate from 0 → fillLevel. Use map.get (no separate has()) so we only
+      // pay one Map probe per hex per frame; getAnimatedValue inside also reuses the value.
       const fireAnimationKey = `fire-${hex.q},${hex.r}`;
-      
-      // For all fires (whether spawned or spread), ensure they animate from empty to full
-      // If this is a new fire (animation key doesn't exist), initialize it to 0 so it animates up
-      if (!this.animatedValues.has(fireAnimationKey)) {
-        this.animatedValues.set(fireAnimationKey, 0);
+      if (animatedValues.get(fireAnimationKey) === undefined) {
+        animatedValues.set(fireAnimationKey, 0);
       }
-      
-      this.drawDrainingFireHexWithKey(screenX, screenY, fireColor, fillLevel, fireAnimationKey, CONFIG.FIRE_HEX_INSET || 5);
-      
-      // Draw hex border after fire so it's visible (white 50% opacity for all hexes)
-      // This allows players to see what type of hex is burning
-      // Use thicker border for better visibility
-      const borderColor = 'rgba(255, 255, 255, 0.125)'; // White with 50% opacity for all hexes
+
+      this.drawDrainingFireHexWithKey(screenX, screenY, fireColor, fillLevel, fireAnimationKey, fireInset);
+
+      // Outline the hex so the fire type underneath remains readable.
       this.drawHex(screenX, screenY, null, borderColor, 2);
       
       // Fire glow and animation removed - only background color draining effect remains
@@ -4206,20 +4440,20 @@ export class Renderer {
         const currentProgress = hex.extinguishProgress || 0;
         // Format number to hide .0 for whole numbers
         const countdownText = currentProgress % 1 === 0 ? currentProgress.toString() : currentProgress.toFixed(1);
-        
+
         // Draw fire type name (larger text at top)
         this.ctx.fillStyle = '#fff';
         this.ctx.font = '10px Exo 2, sans-serif';
         this.ctx.textAlign = 'center';
         this.ctx.textBaseline = 'middle';
         this.ctx.fillText(fireTypeName, screenX, screenY - 8);
-        
+
         // Draw countdown timer (larger, bold text at bottom)
         this.ctx.fillStyle = '#ffeb3b';
         this.ctx.font = 'bold 11px Exo 2, sans-serif';
         this.ctx.fillText(countdownText, screenX, screenY + 8);
       }
-    });
+    }
   }
 
   /**
@@ -4291,54 +4525,71 @@ export class Renderer {
     // Use inset to show underlying hex border and color
     const fireRadius = CONFIG.HEX_RADIUS - inset;
     const vertices = getHexVertices(x, y, fireRadius);
-    
+
     // Clamp fillLevel to valid range
-    const clampedFillLevel = Math.max(0, Math.min(1, fillLevel));
-    
+    const clampedFillLevel = fillLevel < 0 ? 0 : (fillLevel > 1 ? 1 : fillLevel);
+
     // Get smoothly animated fill level
     const smoothFillLevel = this.getAnimatedValue(animationKey, clampedFillLevel, this.deltaTime || 0.016);
-    
-    // Calculate the height of the hex (using fire radius)
-    const hexHeight = fireRadius * 2;
-    const fillHeight = hexHeight * smoothFillLevel;
-    
-    // Y position where the fill level is (from bottom up)
-    const fillY = y + fireRadius - fillHeight;
-    
-    // Draw the filled portion using clipping
-    this.ctx.save();
-    
-    // Create clipping rectangle for the filled area (bottom portion)
-    this.ctx.beginPath();
-    this.ctx.rect(x - fireRadius * 2, fillY, fireRadius * 4, fillHeight + fireRadius);
-    this.ctx.clip();
-    
-    // Draw the hex (will be clipped)
+
+    // Resolve color + opacity once (memoized).
+    const colorWithOpacity = this._cachedColorWithOpacity(color, opacity);
+
+    // Common-case fast path: fire is "full" (no drain to clip). Skips the save/clip/restore
+    // overhead. At hundreds of burning hexes per frame this is ~4 fewer canvas state ops per fire.
+    const isFull = smoothFillLevel >= 0.9995;
+
+    if (!isFull) {
+      const hexHeight = fireRadius * 2;
+      const fillHeight = hexHeight * smoothFillLevel;
+      const fillY = y + fireRadius - fillHeight;
+
+      this.ctx.save();
+      this.ctx.beginPath();
+      this.ctx.rect(x - fireRadius * 2, fillY, fireRadius * 4, fillHeight + fireRadius);
+      this.ctx.clip();
+    }
+
+    // Hex path (clipped to fillRect when not full)
     this.ctx.beginPath();
     this.ctx.moveTo(vertices[0].x, vertices[0].y);
     for (let i = 1; i < vertices.length; i++) {
       this.ctx.lineTo(vertices[i].x, vertices[i].y);
     }
     this.ctx.closePath();
-    
-    // Convert color to rgba with configurable opacity
-    const colorWithOpacity = this.addOpacityToColor(color, opacity);
+
     this.ctx.fillStyle = colorWithOpacity;
     this.ctx.fill();
-    
-    // Draw border: white 50% opacity for default hex border (inset = 0), 
-    // or use fill color for animated effects like fires (inset > 0)
-    if (inset === 0) {
-      // Default hex border (e.g., town center hex) - white 50% opacity
-      this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.125)';
-    } else {
-      // Animated effect border (e.g., burning fires) - use fill color with 75% opacity to match the effect
-      this.ctx.strokeStyle = this.addOpacityToColor(color, opacity);
-    }
+
+    // Border: white 50% for default hex border (inset = 0), fire-color for animated drains.
+    this.ctx.strokeStyle = inset === 0 ? 'rgba(255, 255, 255, 0.125)' : colorWithOpacity;
     this.ctx.lineWidth = 2;
     this.ctx.stroke();
-    
-    this.ctx.restore();
+
+    if (!isFull) {
+      this.ctx.restore();
+    }
+  }
+
+  /**
+   * Memoized {@link addOpacityToColor} used by hot-path draws (fires, draining hexes).
+   * Map<color, Map<opacity, rgbaString>>. Fire colors are static hex constants from CONFIG,
+   * so this caps at a handful of entries.
+   * @private
+   */
+  _cachedColorWithOpacity(color, opacity) {
+    if (!this._colorOpacityCache) this._colorOpacityCache = new Map();
+    let perColor = this._colorOpacityCache.get(color);
+    if (!perColor) {
+      perColor = new Map();
+      this._colorOpacityCache.set(color, perColor);
+    }
+    let cached = perColor.get(opacity);
+    if (cached === undefined) {
+      cached = this.addOpacityToColor(color, opacity);
+      perColor.set(opacity, cached);
+    }
+    return cached;
   }
 
   /**
@@ -4355,10 +4606,14 @@ export class Renderer {
     if (currentHealth >= maxHealth) {
       return;
     }
-    
+
+    const scale = CONFIG.HEALTH_BAR_RENDER_SCALE ?? 1;
+    barWidth *= scale;
+    barHeight *= scale;
+
     const healthPercent = Math.max(0, Math.min(1, currentHealth / maxHealth));
     const barX = x - barWidth / 2;
-    const barY = y - 8; // Position above the text
+    const barY = y - 8 * scale; // Position above the anchor point
     
     // Draw background (dark/black)
     this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
@@ -4430,11 +4685,11 @@ export class Renderer {
       return;
     }
 
-    // Check if any town hexes are actually burning (use getBurningHexes as source of truth)
+    // Check if any town hexes are actually burning. Use the 7-hex town cluster cache
+    // (gridSystem.isAnyTownHexBurning) instead of scanning the (potentially huge) burning hex list.
     let isAnyTownHexBurning = false;
     if (this.gameState?.gridSystem) {
-      const burningHexes = this.gameState.gridSystem.getBurningHexes();
-      isAnyTownHexBurning = burningHexes.some(hex => this.gameState.gridSystem.isTownHex(hex.q, hex.r));
+      isAnyTownHexBurning = this.gameState.gridSystem.isAnyTownHexBurning();
     }
 
     let townColor = CONFIG.COLOR_TOWN;
@@ -4542,11 +4797,7 @@ export class Renderer {
       this.ctx.restore();
     }
 
-    // Draw town health bar beneath the graphic
-    const currentHealth = Math.round(centerHex.townHealth || 0);
-    const maxHealth = Math.round(centerHex.maxTownHealth || 0);
-    const healthY = screenY + Math.max(18, CONFIG.HEX_RADIUS * 0.45);
-    this.drawHealthBar(screenX, healthY, currentHealth, maxHealth, 45, 4.5);
+    // Grove health bar is drawn in drawAllWorldHealthBarsAfterParticles() so particles never cover it
   }
 
   buildGridStaticCache(gridSystem) {
@@ -4622,6 +4873,52 @@ export class Renderer {
   }
 
   /**
+   * Cached brightened turret sprite — same constant-brightness transform as the old
+   * inline code in drawAllTowerTurrets, but executed once per sprite/size/brightness.
+   * Returns an offscreen <canvas> the caller draws via ctx.drawImage(... -w/2, -h/2 ...).
+   *
+   * Without this, late-game runs with 30+ towers spent ~all of their frame budget in
+   * getImageData/putImageData per turret per frame, dropping FPS into single digits.
+   * @param {HTMLImageElement} baseSprite
+   * @param {number} width
+   * @param {number} height
+   * @param {number} brightnessMultiplier
+   * @returns {HTMLCanvasElement|null}
+   */
+  getBrightenedTurretSprite(baseSprite, width, height, brightnessMultiplier) {
+    const w = Math.max(1, Math.round(width));
+    const h = Math.max(1, Math.round(height));
+    const brightnessKey = brightnessMultiplier.toFixed(2);
+    const src = baseSprite?.src || '';
+    const cacheKey = `${src}|${w}x${h}|${brightnessKey}`;
+    const cached = this.brightenedTurretSpriteCache.get(cacheKey);
+    if (cached) return cached;
+
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = w;
+    tempCanvas.height = h;
+    const tempCtx = tempCanvas.getContext('2d');
+    if (!tempCtx) return null;
+
+    tempCtx.drawImage(baseSprite, 0, 0, w, h);
+    const imageData = tempCtx.getImageData(0, 0, w, h);
+    const data = imageData.data;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i + 3] > 0) {
+        const r = data[i] * brightnessMultiplier;
+        const g = data[i + 1] * brightnessMultiplier;
+        const b = data[i + 2] * brightnessMultiplier;
+        data[i] = r < 255 ? r : 255;
+        data[i + 1] = g < 255 ? g : 255;
+        data[i + 2] = b < 255 ? b : 255;
+      }
+    }
+    tempCtx.putImageData(imageData, 0, 0);
+    this.brightenedTurretSpriteCache.set(cacheKey, tempCanvas);
+    return tempCanvas;
+  }
+
+  /**
    * Draw a tower
    * @param {Object} tower - Tower data
    * @param {boolean} isSelected - Whether tower is selected
@@ -4630,6 +4927,10 @@ export class Renderer {
     const { x, y } = axialToPixel(tower.q, tower.r);
     const screenX = x + this.offsetX;
     const screenY = y + this.offsetY;
+    
+    if (this.towerFocusPulseRings?.has(tower.id)) {
+      this.updateFocusPulseRings(tower.id, screenX, screenY);
+    }
     
     // Viewport culling: skip towers that are completely outside the viewport
     // (but always draw selected towers so they're visible when selected)
@@ -4813,15 +5114,17 @@ export class Renderer {
       // Turret will be drawn later in drawAllTowerTurrets() (after water particles for proper z-index)
     }
     
-    // Health bar will be drawn later in drawAllTowerHealthBars() (after turrets for highest z-index)
+    // Tower + shield HP bars are drawn in drawAllWorldHealthBarsAfterParticles()
     
     // Draw shield overlay if tower has a shield
     if (tower.shield && tower.shield.health > 0) {
       this.drawTowerShield(screenX, screenY, tower.shield);
     }
     
-    // Update upgrade rings (but draw them later after path borders)
-    if (this.gameState?.isUpgradeSelectionMode) {
+    // Update upgrade/sellback rings (but draw them later after path borders)
+    if (this.gameState?.isTowerSellbackMode) {
+      this.updateUpgradeRings(tower.id, screenX, screenY);
+    } else if (this.gameState?.isUpgradeSelectionMode) {
       const canBeUpgraded = tower.rangeLevel < 4 || tower.powerLevel < 4;
       if (canBeUpgraded) {
         this.updateUpgradeRings(tower.id, screenX, screenY);
@@ -4917,7 +5220,8 @@ export class Renderer {
    * @param {TowerSystem} towerSystem - The tower system
    */
   drawAllUpgradeRings(towerSystem) {
-    if (!towerSystem || !this.gameState?.isUpgradeSelectionMode) return;
+    if (!towerSystem || (!this.gameState?.isUpgradeSelectionMode && !this.gameState?.isTowerSellbackMode)) return;
+    const ringColor = this.gameState?.isTowerSellbackMode ? '#ff2d2d' : '#ff67e7';
     
     this.ctx.save();
     
@@ -4932,12 +5236,12 @@ export class Renderer {
           // Draw the ring
           this.ctx.save();
           this.ctx.globalAlpha = ring.alpha;
-          this.ctx.strokeStyle = '#ff67e7'; // Upgrade plan color
+          this.ctx.strokeStyle = ringColor;
           this.ctx.lineWidth = 5; // Thicker line for more visibility
           this.ctx.lineCap = 'round';
           this.ctx.lineJoin = 'round';
           this.ctx.shadowBlur = 20; // More glow
-          this.ctx.shadowColor = '#ff67e7'; // Upgrade plan glow
+          this.ctx.shadowColor = ringColor;
           
           // Draw expanding hex ring
           const hexRadius = CONFIG.HEX_RADIUS * ring.scale;
@@ -4955,6 +5259,125 @@ export class Renderer {
       }
     }
     
+    this.ctx.restore();
+  }
+
+  /**
+   * @param {string} towerId
+   */
+  startTowerFocusPulse(towerId) {
+    const now = performance.now();
+    const RING_SPAWN_INTERVAL = 1171.875;
+    this.towerFocusPulseRings.set(towerId, {
+      rings: [],
+      lastSpawnTime: now - RING_SPAWN_INTERVAL,
+      screenX: 0,
+      screenY: 0,
+      endTime: now + 2800,
+    });
+  }
+
+  /** @param {string} towerId */
+  clearTowerFocusPulse(towerId) {
+    this.towerFocusPulseRings.delete(towerId);
+  }
+
+  /**
+   * Focus pulse rings (blue), finite spawn window — same timing as upgrade rings.
+   * @param {string} towerId
+   * @param {number} screenX
+   * @param {number} screenY
+   */
+  updateFocusPulseRings(towerId, screenX, screenY) {
+    const now = performance.now();
+    const RING_DURATION = 2343.75;
+    const RING_SPAWN_INTERVAL = 1171.875;
+    const FADE_IN_DURATION = 350;
+    const MAX_SCALE = 1.75;
+
+    if (!this.towerFocusPulseRings.has(towerId)) return;
+
+    const ringData = this.towerFocusPulseRings.get(towerId);
+    ringData.screenX = screenX;
+    ringData.screenY = screenY;
+    const rings = ringData.rings;
+    const canSpawn = now < (ringData.endTime || 0);
+
+    if (canSpawn && (now - ringData.lastSpawnTime) >= RING_SPAWN_INTERVAL) {
+      rings.push({
+        startTime: now,
+        scale: 1.0,
+        alpha: 0.0,
+      });
+      ringData.lastSpawnTime = now;
+    }
+
+    const activeRings = [];
+    for (const ring of rings) {
+      const elapsed = now - ring.startTime;
+      const progress = Math.min(elapsed / RING_DURATION, 1.0);
+      ring.scale = 1.0 + (progress * (MAX_SCALE - 1.0));
+      let alpha;
+      if (elapsed < FADE_IN_DURATION) {
+        const fadeInProgress = Math.max(0, elapsed / FADE_IN_DURATION);
+        alpha = fadeInProgress;
+      } else {
+        const fadeOutProgress = (elapsed - FADE_IN_DURATION) / (RING_DURATION - FADE_IN_DURATION);
+        alpha = Math.max(0, 1.0 - Math.min(fadeOutProgress, 1.0));
+      }
+      ring.alpha = alpha;
+      activeRings.push(ring);
+    }
+
+    ringData.rings = activeRings.filter(
+      (ring) => ring.alpha > 0.01 || now - ring.startTime < RING_DURATION
+    );
+
+    if (!canSpawn && ringData.rings.length === 0) {
+      this.towerFocusPulseRings.delete(towerId);
+    } else {
+      this.towerFocusPulseRings.set(towerId, ringData);
+    }
+  }
+
+  /** Draw focus pulse rings (Tower Status click-to-focus; after path borders). */
+  drawAllTowerFocusPulseRings() {
+    if (!this.towerFocusPulseRings?.size) return;
+    const ringColor = '#FFFFFF';
+
+    this.ctx.save();
+
+    for (const [, ringData] of this.towerFocusPulseRings.entries()) {
+      const rings = ringData.rings;
+      const sx = ringData.screenX;
+      const sy = ringData.screenY;
+
+      for (const ring of rings) {
+        if (ring.alpha > 0.01) {
+          this.ctx.save();
+          this.ctx.globalAlpha = ring.alpha;
+          this.ctx.strokeStyle = ringColor;
+          this.ctx.lineWidth = 5;
+          this.ctx.lineCap = 'round';
+          this.ctx.lineJoin = 'round';
+          this.ctx.shadowBlur = 20;
+          this.ctx.shadowColor = ringColor;
+
+          const hexRadius = CONFIG.HEX_RADIUS * ring.scale;
+          const vertices = getHexVertices(sx, sy, hexRadius);
+          this.ctx.beginPath();
+          this.ctx.moveTo(vertices[0].x, vertices[0].y);
+          for (let i = 1; i < vertices.length; i++) {
+            this.ctx.lineTo(vertices[i].x, vertices[i].y);
+          }
+          this.ctx.closePath();
+          this.ctx.stroke();
+
+          this.ctx.restore();
+        }
+      }
+    }
+
     this.ctx.restore();
   }
 
@@ -5071,6 +5494,34 @@ export class Renderer {
   }
 
   /**
+   * Draw a high-priority burning border around towers that are on fire.
+   * This intentionally runs in a late render pass so the red warning outline sits
+   * above shield overlays/borders, turret art, upgrade rings, and other tower FX.
+   * It matches the burning-vault/dig-site flashing red border style.
+   * @param {TowerSystem} towerSystem
+   */
+  drawBurningTowerBorders(towerSystem) {
+    if (!towerSystem || !this.gameState?.gridSystem) return;
+
+    const towers = towerSystem.getAllTowers();
+    const baseBorderColor = CONFIG.COLOR_HEX_NORMAL_BORDER;
+    const burningBorderColor = this.getFlashingColor(baseBorderColor, '#FF0000', 3.0);
+
+    for (let i = 0; i < towers.length; i++) {
+      const tower = towers[i];
+      const hex = this.gameState.gridSystem.getHex(tower.q, tower.r);
+      if (!hex?.isBurning) continue;
+
+      const { x, y } = axialToPixel(tower.q, tower.r);
+      const screenX = x + this.offsetX;
+      const screenY = y + this.offsetY;
+      if (!this.isHexInViewport(screenX, screenY)) continue;
+
+      this.drawHex(screenX, screenY, null, burningBorderColor, 5);
+    }
+  }
+
+  /**
    * Draw shield overlay for towers with shields
    * @param {number} screenX - Screen X coordinate
    * @param {number} screenY - Screen Y coordinate
@@ -5105,24 +5556,9 @@ export class Renderer {
     this.ctx.strokeStyle = 'rgba(145, 75, 225, 0.8)';
     this.ctx.lineWidth = 3;
     this.drawHex(screenX, screenY, null, 'rgba(145, 75, 225, 0.8)', 3);
-    
-    // Draw shield health bar (only if not at 100% health)
-    if (shield.health < shield.maxHealth) {
-      const barWidth = CONFIG.HEX_RADIUS * 0.8;
-      const barHeight = 4;
-      const barX = screenX - barWidth / 2;
-      const barY = screenY + CONFIG.HEX_RADIUS * 0.5;
-      
-      // Background bar
-      this.ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-      this.ctx.fillRect(barX, barY, barWidth, barHeight);
-      
-      // Health bar with cooler purple-blue color
-      const healthWidth = barWidth * shieldHealthPercent;
-      this.ctx.fillStyle = 'rgba(145, 75, 225, 0.9)'; // Cooler, brighter purple-blue
-      this.ctx.fillRect(barX, barY, healthWidth, barHeight);
-    }
-    
+
+    // Shield HP bar is drawn in drawTowerShieldHealthBarsOverlay() so particles never cover it
+
     this.ctx.restore();
   }
 
@@ -5210,22 +5646,28 @@ export class Renderer {
     if (!isSelected && !isDragging && !this.isHexInViewport(screenStartX, screenStartY, CONFIG.PARTICLE_CULL_MARGIN)) {
       return;
     }
-    
-    if (tower.type === CONFIG.TOWER_TYPE_RAIN) {
-      // Draw subtle overlay for rain tower's AOE range (always during placement phase)
-      const shouldShowRange = this.gameState?.wave?.isPlacementPhase;
-      if (shouldShowRange) {
-        // Batch draw all overlays in a single path for better performance
+
+    // Bomber aim markers are drawn later in drawAllBomberTrajectoryOverlays() (above sprays, particles, turrets)
+    if (tower.type === CONFIG.TOWER_TYPE_BOMBER) return;
+
+    const wVis = this.getWaterVisualAlphaScale();
+
+    // Rain/pulsing placement AOE: draw before water alpha scale so tint stays readable on all terrain
+    if (this.gameState?.wave?.isPlacementPhase) {
+      const overlayFill =
+        tower.type === CONFIG.TOWER_TYPE_RAIN
+          ? CONFIG.AOE_HEX_OVERLAY_RAIN
+          : tower.type === CONFIG.TOWER_TYPE_PULSING
+            ? CONFIG.AOE_HEX_OVERLAY_PULSING
+            : null;
+      if (overlayFill) {
         this.ctx.save();
-        this.ctx.fillStyle = 'rgba(0, 191, 191, 0.15)';
+        this.ctx.fillStyle = overlayFill;
         this.ctx.beginPath();
-        
         affectedHexes.forEach(hex => {
           const { x, y } = axialToPixel(hex.q, hex.r);
           const screenX = x + this.offsetX;
           const screenY = y + this.offsetY;
-          
-          // Add hex to path
           const vertices = getHexVertices(screenX, screenY);
           this.ctx.moveTo(vertices[0].x, vertices[0].y);
           for (let i = 1; i < vertices.length; i++) {
@@ -5233,11 +5675,15 @@ export class Renderer {
           }
           this.ctx.closePath();
         });
-        
         this.ctx.fill();
         this.ctx.restore();
       }
-      
+    }
+
+    this.ctx.save();
+    this.ctx.globalAlpha *= wVis;
+
+    if (tower.type === CONFIG.TOWER_TYPE_RAIN) {
       // Generate rain particles for visual effect (only during active wave)
       if (CONFIG.USE_WATER_PARTICLES && this.gameState?.wave?.isActive) {
         this.generateRainParticles(tower, affectedHexes);
@@ -5250,37 +5696,12 @@ export class Renderer {
         this.generatePulsingParticles(tower, screenStartX, screenStartY);
       }
       
-      // Draw orange overlay (always during placement phase)
-      const shouldShowRange = this.gameState?.wave?.isPlacementPhase;
-      if (shouldShowRange) {
-        // Batch draw all overlays in a single path for better performance
-        this.ctx.save();
-        this.ctx.fillStyle = 'rgba(255, 107, 53, 0.15)';
-        this.ctx.beginPath();
-        
-        affectedHexes.forEach(hex => {
-          const { x, y } = axialToPixel(hex.q, hex.r);
-          const screenX = x + this.offsetX;
-          const screenY = y + this.offsetY;
-          
-          // Add hex to path
-          const vertices = getHexVertices(screenX, screenY);
-          this.ctx.moveTo(vertices[0].x, vertices[0].y);
-          for (let i = 1; i < vertices.length; i++) {
-            this.ctx.lineTo(vertices[i].x, vertices[i].y);
-          }
-          this.ctx.closePath();
-        });
-        
-        this.ctx.fill();
-        this.ctx.restore();
-      }
-      
       // Particle updates are handled globally in Renderer.render() to avoid double-updating.
     } else if (tower.type === CONFIG.TOWER_TYPE_SPREAD) {
       // Draw spread tower spray: 5 jets (main + 4 flanking at ±15° and ±30°)
       if (CONFIG.USE_WATER_PARTICLES) {
-      const range = getSpreadTowerRange(tower.rangeLevel); // Use spread tower range upgrades
+      const rangeHexBonus = getTowerRangeHexBonusFromTemps(this.gameState?.player?.tempPowerUps || []);
+      const range = getSpreadTowerRange(tower.rangeLevel) + rangeHexBonus;
       
       // Get spray endpoints (includes border termination points for even ranges)
       const endpoints = getSpreadTowerSprayEndpoints(tower.q, tower.r, tower.direction, range);
@@ -5307,7 +5728,8 @@ export class Renderer {
         // Only draw fallback lines during placement phase (when player needs to see range)
         const shouldShowRange = this.gameState?.wave?.isPlacementPhase;
         if (shouldShowRange) {
-          const range = getSpreadTowerRange(tower.rangeLevel);
+          const rangeHexBonus = getTowerRangeHexBonusFromTemps(this.gameState?.player?.tempPowerUps || []);
+          const range = getSpreadTowerRange(tower.rangeLevel) + rangeHexBonus;
           const endpoints = getSpreadTowerSprayEndpoints(tower.q, tower.r, tower.direction, range);
           
         // Draw solid lines from tower center to each endpoint
@@ -5333,28 +5755,6 @@ export class Renderer {
         });
         }
         // When particles disabled and wave is active, skip all rendering (no visual needed)
-      }
-    } else if (tower.type === CONFIG.TOWER_TYPE_BOMBER) {
-      // Draw bomber tower trajectory line (always during placement phase, or when hovering)
-      const hovered = this.gameState?.inputHandler?.hoveredHex;
-      const isHoveredTower = hovered && hovered.q === tower.q && hovered.r === tower.r;
-      const shouldShowTrajectory = isSelected || isDragging || isHoveredTower || this.gameState?.wave?.isPlacementPhase;
-      if (shouldShowTrajectory) {
-        affectedHexes.forEach(hex => {
-          const { x, y } = axialToPixel(hex.q, hex.r);
-          const screenX = x + this.offsetX;
-          const screenY = y + this.offsetY;
-          
-          // Draw trajectory line (dashed)
-          this.ctx.beginPath();
-          this.ctx.moveTo(screenStartX, screenStartY);
-          this.ctx.lineTo(screenX, screenY);
-          this.ctx.strokeStyle = CONFIG.COLOR_WATER;
-          this.ctx.lineWidth = 3;
-          this.ctx.setLineDash([4, 2]); // Dashed line (reduced dash length by 50%)
-          this.ctx.stroke();
-          this.ctx.setLineDash([]); // Reset dash
-        });
       }
     } else {
       // Draw water spray for Jet towers (single direction)
@@ -5400,6 +5800,228 @@ export class Renderer {
         // When particles disabled and wave is active, skip all rendering (no visual needed)
       }
     }
+
+    this.ctx.restore();
+  }
+
+  /**
+   * Bomber aim trajectory (mini water-bomb markers). Drawn late so it stacks above beams, particles, and turret sprites.
+   * @param {object} towerSystem
+   */
+  drawAllBomberTrajectoryOverlays(towerSystem) {
+    if (!towerSystem?.getAllTowers) return;
+    const towers = towerSystem.getAllTowers();
+    const gs = this.gameState;
+    const wVis = this.getWaterVisualAlphaScale();
+
+    for (const tower of towers) {
+      if (tower.type !== CONFIG.TOWER_TYPE_BOMBER) continue;
+      const affectedHexes = tower.affectedHexes;
+      if (!affectedHexes || affectedHexes.length <= 1) continue;
+
+      const { x: startX, y: startY } = axialToPixel(tower.q, tower.r);
+      const screenStartX = startX + this.offsetX;
+      const screenStartY = startY + this.offsetY;
+      const isSelected = tower.id === gs?.selectedTowerId;
+      const isDragging = gs?.inputHandler?.isDragging && gs?.inputHandler?.dragData?.towerId === tower.id;
+      if (!isSelected && !isDragging && !this.isHexInViewport(screenStartX, screenStartY, CONFIG.PARTICLE_CULL_MARGIN)) {
+        continue;
+      }
+
+      const hovered = gs?.inputHandler?.hoveredHex;
+      const isHoveredTower = hovered && hovered.q === tower.q && hovered.r === tower.r;
+      const shouldShowTrajectory =
+        isSelected || isDragging || isHoveredTower || gs?.wave?.isPlacementPhase;
+      if (!shouldShowTrajectory) continue;
+
+      this.ctx.save();
+      this.ctx.lineCap = 'round';
+      this.ctx.lineJoin = 'round';
+      this.ctx.globalAlpha = Math.min(1, wVis * 1.22 + 0.06);
+
+      const impactLevel = tower.powerLevel || 1;
+      const markerScale = 0.4;
+      const towerSalt = (tower.id?.length || 0) * 0.31;
+      const minDetonateDistance = Math.max(1, Math.floor(getBomberMinDistance() || 1));
+      for (let i = 1; i < affectedHexes.length; i++) {
+        const hex = affectedHexes[i];
+        const { x, y } = axialToPixel(hex.q, hex.r);
+        const screenX = x + this.offsetX;
+        const screenY = y + this.offsetY;
+        const stepDistance = i;
+        if (stepDistance < minDetonateDistance) {
+          this._drawBomberTrajectoryDeadZoneMarker(screenX, screenY, {
+            idSalt: towerSalt + i * 0.19,
+            impactLevel,
+            timeOffset: i * 0.72,
+            sizeScale: markerScale,
+            animationDamp: 0.5,
+          });
+        } else {
+          this._drawBomberWaterProjectile(screenX, screenY, {
+            idSalt: towerSalt + i * 0.19,
+            impactLevel,
+            timeOffset: i * 0.72,
+            sizeScale: markerScale,
+            jitter: false,
+            animationDamp: 0.5,
+          });
+        }
+      }
+      this.ctx.restore();
+    }
+  }
+
+  /**
+   * Aim-line hexes closer than {@link getBomberMinDistance}: same silhouette as path markers but black ↔ very dark gray (no detonation).
+   * @param {number} screenX
+   * @param {number} screenY
+   * @param {{ idSalt?: number, impactLevel?: number, timeOffset?: number, sizeScale?: number, animationDamp?: number }} [opts]
+   */
+  _drawBomberTrajectoryDeadZoneMarker(screenX, screenY, opts = {}) {
+    const idSalt = opts.idSalt ?? 0;
+    const impactLevel = Math.min(4, Math.max(1, Math.floor(opts.impactLevel ?? 3)));
+    const sizeScale = opts.sizeScale ?? 1;
+    const timeOffset = opts.timeOffset ?? 0;
+    const d = opts.animationDamp != null && Number.isFinite(opts.animationDamp) ? opts.animationDamp : 1;
+    const t = performance.now() * 0.0055 + idSalt + timeOffset;
+    const drawX = screenX;
+    const drawY = screenY;
+
+    const wobble =
+      1 +
+      d *
+        (0.2 * Math.sin(t * 1.4 * d) +
+          0.14 * Math.sin(t * 2.6 * d + 1.1) +
+          0.08 * Math.sin(t * 5.5 * d + sizeScale * 0.5));
+    const BASE_RADIUS_AT_IMPACT_3 = 12.5 * (1 + 0.28 * (3 - 1));
+    const impactSizeMult = { 1: 0.6, 2: 0.8, 3: 1, 4: 1.2 }[impactLevel] ?? 1;
+    const baseRadius = BASE_RADIUS_AT_IMPACT_3 * impactSizeMult * sizeScale;
+    const r = baseRadius * wobble;
+
+    if (!this.isInViewport(screenX, screenY, baseRadius * 1.45 * 1.35)) {
+      return;
+    }
+
+    const phase = (Math.sin(t * 3.0 * d) + 1) / 2;
+    const gBase = 2;
+    /** Small excursion only — mostly black, brief charcoal hint at peak */
+    const grayLift = 12;
+    const gMain = Math.round(gBase + phase * grayLift);
+    const gInner = Math.round(gBase + (1 - phase) * (grayLift * 0.65));
+
+    this.ctx.beginPath();
+    this.ctx.arc(drawX, drawY, r * 1.42, 0, 2 * Math.PI);
+    this.ctx.fillStyle = `rgba(${gMain}, ${gMain}, ${gMain}, 0.35)`;
+    this.ctx.fill();
+
+    this.ctx.beginPath();
+    this.ctx.arc(drawX, drawY, r, 0, 2 * Math.PI);
+    this.ctx.fillStyle = `rgb(${gMain}, ${gMain}, ${gMain})`;
+    this.ctx.fill();
+
+    this.ctx.beginPath();
+    this.ctx.arc(drawX, drawY, r * 0.38, 0, 2 * Math.PI);
+    this.ctx.fillStyle = `rgb(${gInner}, ${gInner}, ${gInner})`;
+    this.ctx.fill();
+
+    const rimR = r * (1.18 + d * 0.07 * Math.sin(t * 2.1 * d));
+    this.ctx.beginPath();
+    this.ctx.arc(drawX, drawY, rimR, 0, 2 * Math.PI);
+    const rimG = Math.min(32, gMain + 6);
+    this.ctx.strokeStyle = `rgba(${rimG}, ${rimG}, ${rimG}, 0.45)`;
+    this.ctx.lineWidth = Math.max(0.9, 2.5 * sizeScale);
+    this.ctx.stroke();
+
+    this.ctx.beginPath();
+    this.ctx.arc(drawX, drawY, r * 0.72, 0, 2 * Math.PI);
+    const edgePulse = 0.18 + 0.1 * Math.sin(t * 2.5 * d);
+    this.ctx.strokeStyle = `rgba(22, 22, 24, ${edgePulse})`;
+    this.ctx.lineWidth = Math.max(0.55, 1.25 * sizeScale);
+    this.ctx.stroke();
+  }
+
+  /**
+   * In-flight bomber bomb and trajectory markers: same layered circles, cyan ↔ white pulse as water FX.
+   * @param {number} screenX
+   * @param {number} screenY
+   * @param {{ idSalt?: number, impactLevel?: number, timeOffset?: number, sizeScale?: number, jitter?: boolean, animationDamp?: number }} [opts]
+   * @param {number} [opts.animationDamp] - 1 = full motion (in-flight bombs). Lower for aim line only (e.g. 0.5 = half movement & half color-cycle speed).
+   */
+  _drawBomberWaterProjectile(screenX, screenY, opts = {}) {
+    const idSalt = opts.idSalt ?? 0;
+    const impactLevel = Math.min(4, Math.max(1, Math.floor(opts.impactLevel ?? 3)));
+    const sizeScale = opts.sizeScale ?? 1;
+    const useJitter = opts.jitter !== false;
+    const timeOffset = opts.timeOffset ?? 0;
+    const d = opts.animationDamp != null && Number.isFinite(opts.animationDamp) ? opts.animationDamp : 1;
+
+    const t = performance.now() * 0.0055 + idSalt + timeOffset;
+    const jitterAmp = 1.15 * sizeScale;
+    let jx = 0;
+    let jy = 0;
+    if (useJitter) {
+      const dj = d;
+      jx =
+        jitterAmp * Math.sin(t * 22 * dj + idSalt) +
+        jitterAmp * 0.5 * Math.sin(t * 31.7 * dj + idSalt * 0.8);
+      jy =
+        jitterAmp * Math.cos(t * 24.2 * dj + idSalt * 1.2) +
+        jitterAmp * 0.5 * Math.cos(t * 28.4 * dj + idSalt);
+    }
+    const drawX = screenX + jx;
+    const drawY = screenY + jy;
+
+    const wobble =
+      1 +
+      d *
+        (0.2 * Math.sin(t * 1.4 * d) +
+          0.14 * Math.sin(t * 2.6 * d + 1.1) +
+          0.08 * Math.sin(t * 5.5 * d + sizeScale * 0.5));
+    const BASE_RADIUS_AT_IMPACT_3 = 12.5 * (1 + 0.28 * (3 - 1));
+    const impactSizeMult = { 1: 0.6, 2: 0.8, 3: 1, 4: 1.2 }[impactLevel] ?? 1;
+    const baseRadius = BASE_RADIUS_AT_IMPACT_3 * impactSizeMult * sizeScale;
+    const r = baseRadius * wobble;
+
+    const maxR = baseRadius * 1.45 * 1.35 + (useJitter ? jitterAmp : 0);
+    if (!this.isInViewport(screenX, screenY, maxR)) {
+      return;
+    }
+
+    const colorPhase = (Math.sin(t * 3.4 * d) + 1) / 2;
+    const br = Math.round(90 + colorPhase * 165);
+    const bg = Math.round(215 + colorPhase * 40);
+    const bb = Math.round(238 + colorPhase * 17);
+    const bombColor = `rgb(${br}, ${bg}, ${bb})`;
+
+    const glowA = useJitter ? 0.48 : 0.38;
+    this.ctx.beginPath();
+    this.ctx.arc(drawX, drawY, r * 1.42, 0, 2 * Math.PI);
+    this.ctx.fillStyle = `rgba(${br}, ${bg}, ${bb}, ${glowA})`;
+    this.ctx.fill();
+
+    this.ctx.beginPath();
+    this.ctx.arc(drawX, drawY, r, 0, 2 * Math.PI);
+    this.ctx.fillStyle = bombColor;
+    this.ctx.fill();
+
+    this.ctx.beginPath();
+    this.ctx.arc(drawX, drawY, r * 0.38, 0, 2 * Math.PI);
+    this.ctx.fillStyle = `rgba(255, 255, 255, ${0.45 + 0.35 * colorPhase})`;
+    this.ctx.fill();
+
+    const rimR = r * (1.18 + d * 0.07 * Math.sin(t * 2.1 * d));
+    this.ctx.beginPath();
+    this.ctx.arc(drawX, drawY, rimR, 0, 2 * Math.PI);
+    this.ctx.strokeStyle = `rgba(${Math.min(255, br + 90)}, ${Math.min(255, bg + 50)}, 255, ${0.75 + 0.17 * useJitter})`;
+    this.ctx.lineWidth = Math.max(0.9, 2.5 * sizeScale);
+    this.ctx.stroke();
+
+    this.ctx.beginPath();
+    this.ctx.arc(drawX, drawY, r * 0.72, 0, 2 * Math.PI);
+    this.ctx.strokeStyle = `rgba(255, 255, 255, ${0.35 + d * 0.25 * Math.sin(t * 3 * d)})`;
+    this.ctx.lineWidth = Math.max(0.55, 1.25 * sizeScale);
+    this.ctx.stroke();
   }
 
   /**
@@ -5407,81 +6029,41 @@ export class Renderer {
    * @param {Array} waterBombs - Array of active water bombs
    */
   drawWaterBombs(waterBombs) {
+    const wVis = this.getWaterVisualAlphaScale();
+    this.ctx.save();
+    this.ctx.lineCap = 'round';
+    this.ctx.lineJoin = 'round';
+    // Bomber projectiles: stay more opaque than ambient spray when water alpha is reduced
+    this.ctx.globalAlpha *= Math.min(1, wVis * 1.22 + 0.06);
+
     // Draw active bombs if any
     if (waterBombs && waterBombs.length > 0) {
       waterBombs.forEach(bomb => {
-      // Convert bomb position to pixel coordinates
-      const { x, y } = axialToPixel(bomb.currentQ, bomb.currentR);
-      const screenX = x + this.offsetX;
-      const screenY = y + this.offsetY;
-      
-      // Viewport culling: skip bombs outside viewport (with margin for size)
-      const bombRadius = 9 * 1.5; // Max bomb size with wobble
-      if (!this.isInViewport(screenX, screenY, bombRadius)) {
-        return;
-      }
-      
-      // Draw water bomb with wobble/warble (giant water ball effect)
-      const t = performance.now() * 0.004 + (bomb.id?.length || 0);
-      const wobble = 1 + 0.12 * Math.sin(t) + 0.08 * Math.sin(t * 1.7 + 1.3);
-      const levelForSize = bomb.impactLevel || bomb.powerLevel || 1;
-      const baseRadius = 9 * (1 + 0.25 * (levelForSize - 1)); // +25% per impact level
-      const r = baseRadius * wobble;
-      
-      // Animate color between blue (#00BCD4) and white
-      const colorPhase = (Math.sin(t * 2.3) + 1) / 2; // 0..1 oscillation
-      const br = Math.round(0 + colorPhase * 255);
-      const bg = Math.round(188 + colorPhase * (255 - 188));
-      const bb = Math.round(212 + colorPhase * (255 - 212));
-      const bombColor = `rgb(${br}, ${bg}, ${bb})`;
-      
-      // Main filled blob
-      this.ctx.beginPath();
-      this.ctx.arc(screenX, screenY, r, 0, 2 * Math.PI);
-      this.ctx.fillStyle = bombColor;
-      this.ctx.fill();
-      
-      // Irregular highlight ring (suggests fluid surface)
-      const rimR = r * (1.15 + 0.05 * Math.sin(t * 1.3));
-      this.ctx.beginPath();
-      this.ctx.arc(screenX, screenY, rimR, 0, 2 * Math.PI);
-      this.ctx.strokeStyle = `rgba(${Math.min(255, br + 80)}, ${Math.min(255, bg + 40)}, 255, 0.6)`;
-      this.ctx.lineWidth = 1.5;
-      this.ctx.stroke();
-      
-      // Subtle glow
-      this.ctx.beginPath();
-      this.ctx.arc(screenX, screenY, r * 1.35, 0, 2 * Math.PI);
-      this.ctx.fillStyle = `rgba(${br}, ${bg}, ${bb}, 0.25)`;
-      this.ctx.fill();
-      
-      // Draw a small trail behind the bomb
-      const trailLength = 15;
-      const angle = Math.atan2(bomb.targetR - bomb.startR, bomb.targetQ - bomb.startQ);
-      const trailX = screenX - Math.cos(angle) * trailLength;
-      const trailY = screenY - Math.sin(angle) * trailLength;
-      
-      this.ctx.beginPath();
-      this.ctx.moveTo(trailX, trailY);
-      this.ctx.lineTo(screenX, screenY);
-      this.ctx.strokeStyle = `rgba(${br}, ${bg}, ${bb}, 0.6)`;
-      this.ctx.lineWidth = 2;
-      this.ctx.stroke();
-    });
+        const { x, y } = axialToPixel(bomb.currentQ, bomb.currentR);
+        const screenX = x + this.offsetX;
+        const screenY = y + this.offsetY;
+        const idSalt = (bomb.id?.length || 0) * 0.31;
+        const impactLevel = Math.floor(bomb.impactLevel || bomb.powerLevel || 3);
+        this._drawBomberWaterProjectile(screenX, screenY, {
+          idSalt,
+          impactLevel,
+          jitter: true,
+          sizeScale: 1,
+        });
+      });
     }
-    
-    // Update and draw all active explosion particle groups
-    const dt = this.deltaTime || 0.016;
-    const emptyKeys = [];
+
+    this.ctx.restore();
+
+    // Explosion/bonus water particles: updated once in render(); drawn once in drawAllWaterParticles().
+    // Only remove finished groups here (avoids double update + double draw that ran every frame before).
+    const emptyExplosionKeys = [];
     this.explosionParticles.forEach((_, key) => {
-      this.updateWaterParticles(key, dt);
-      this.drawWaterParticles(key);
       if ((this.waterParticles.get(key) || []).length === 0) {
-        emptyKeys.push(key);
+        emptyExplosionKeys.push(key);
       }
     });
-    // Cleanup finished explosion groups
-    emptyKeys.forEach(k => {
+    emptyExplosionKeys.forEach((k) => {
       this.explosionParticles.delete(k);
       this.waterParticles.delete(k);
     });
@@ -5644,7 +6226,7 @@ export class Renderer {
    * Spawn explosion particles for water tank (NON-PLAYER-PLACED, category 2).
    * Uses same distinct bonus-item style: small soft sparkles, pale colors, gentle motion, fewer particles.
    * @param {Object} tank - Tank data
-   * @param {Array} explosionHexes - Array of hexes in explosion radius (7 hexes)
+   * @param {Array} explosionHexes - Hexes in explosion radius (center + rings 1–3)
    */
   spawnWaterTankExplosionParticles(tank, explosionHexes) {
     if (!tank || !explosionHexes || explosionHexes.length === 0) return;
@@ -5867,6 +6449,7 @@ export class Renderer {
       CONFIG.FIRE_TYPE_FIRESTORM,
       CONFIG.FIRE_TYPE_INFERNO,
       CONFIG.FIRE_TYPE_CATACLYSM,
+      CONFIG.FIRE_TYPE_BLACKFYRE,
     ];
     const fireIntensity = fireTypes.indexOf(fireType) + 1;
     
@@ -6202,30 +6785,8 @@ export class Renderer {
    * @returns {Object} Object with outerGlow, main, core, and flash colors as RGB arrays
    */
   getLightningColors(fireType) {
-    let fireColor;
-    switch (fireType) {
-      case CONFIG.FIRE_TYPE_CINDER:
-        fireColor = CONFIG.COLOR_FIRE_CINDER;
-        break;
-      case CONFIG.FIRE_TYPE_FLAME:
-        fireColor = CONFIG.COLOR_FIRE_FLAME;
-        break;
-      case CONFIG.FIRE_TYPE_BLAZE:
-        fireColor = CONFIG.COLOR_FIRE_BLAZE;
-        break;
-      case CONFIG.FIRE_TYPE_FIRESTORM:
-        fireColor = CONFIG.COLOR_FIRE_FIRESTORM;
-        break;
-      case CONFIG.FIRE_TYPE_INFERNO:
-        fireColor = CONFIG.COLOR_FIRE_INFERNO;
-        break;
-      case CONFIG.FIRE_TYPE_CATACLYSM:
-        fireColor = CONFIG.COLOR_FIRE_CATACLYSM;
-        break;
-      default:
-        fireColor = CONFIG.COLOR_FIRE_CINDER; // Default to cinder
-    }
-    
+    const fireColor = getFireTypeDisplayColor(fireType);
+
     const rgb = this.colorToRgb(fireColor);
     
     // Return colors with appropriate brightness levels
@@ -6589,11 +7150,30 @@ export class Renderer {
     const screenX = x + this.offsetX;
     const screenY = y + this.offsetY;
     
-    const color = isValid ? CONFIG.COLOR_VALID_PLACEMENT : CONFIG.COLOR_INVALID_PLACEMENT;
-    this.drawHex(screenX, screenY, color, null);
-    
     const dragType = this.gameState?.inputHandler?.dragType;
     const dragData = this.gameState?.inputHandler?.dragData;
+    let towerTypeFromDrag = null;
+    if (dragType === 'tower-new') {
+      towerTypeFromDrag = dragData?.towerType ?? null;
+    } else if (dragType === 'tower-stored') {
+      towerTypeFromDrag = dragData?.storedTower?.type ?? null;
+    }
+    const isAoeTowerDrag =
+      towerTypeFromDrag === CONFIG.TOWER_TYPE_RAIN ||
+      towerTypeFromDrag === CONFIG.TOWER_TYPE_PULSING;
+
+    let placementFill = isValid ? CONFIG.COLOR_VALID_PLACEMENT : CONFIG.COLOR_INVALID_PLACEMENT;
+    let placementStroke = null;
+    let placementStrokeW = 1;
+    if (isValid && isAoeTowerDrag) {
+      placementFill =
+        towerTypeFromDrag === CONFIG.TOWER_TYPE_RAIN
+          ? CONFIG.AOE_HEX_OVERLAY_RAIN
+          : CONFIG.AOE_HEX_OVERLAY_PULSING;
+      placementStroke = CONFIG.COLOR_VALID_PLACEMENT_AOE_CENTER_STROKE;
+      placementStrokeW = 2.5;
+    }
+    this.drawHex(screenX, screenY, placementFill, placementStroke, placementStrokeW);
     
     // Show suppression bomb impact zone if dragging a suppression bomb
     if (dragType === 'suppression-bomb-new') {
@@ -6639,6 +7219,11 @@ export class Renderer {
       
       if (dragType === 'tower-new') {
         towerType = dragData?.towerType;
+        const towerIndex = Number.isInteger(dragData?.towerIndex) ? dragData.towerIndex : 0;
+        const purchasedTower = this.gameState?.player?.inventory?.purchasedTowers?.[towerIndex];
+        if (purchasedTower) {
+          rangeLevel = purchasedTower.rangeLevel || 1;
+        }
       } else if (dragType === 'tower-stored') {
         towerType = dragData?.storedTower?.type;
         rangeLevel = dragData?.storedTower?.rangeLevel || 1;
@@ -6649,14 +7234,15 @@ export class Renderer {
         
         // Rain tower: show AOE range
         if (towerType === CONFIG.TOWER_TYPE_RAIN) {
-          const rainRange = getRainRange(rangeLevel);
+          const rangeHexBonus = getTowerRangeHexBonusFromTemps(this.gameState?.player?.tempPowerUps || []);
+          const rainRange = getRainRange(rangeLevel) + rangeHexBonus;
           affectedHexes = getHexesInRadius(q, r, rainRange);
           // Filter out hexes that don't exist in the grid
           affectedHexes = affectedHexes.filter(hex => {
             return this.gameState?.gridSystem?.getHex(hex.q, hex.r) !== null;
           });
           
-          // Draw AOE preview (similar to rain tower's overlay when selected)
+          // Draw AOE preview (same tint strength as placed tower placement phase)
           affectedHexes.forEach(hex => {
             if (hex.q === q && hex.r === r) return; // Skip the center hex (tower position)
             
@@ -6664,38 +7250,25 @@ export class Renderer {
             const screenHexX = hexX + this.offsetX;
             const screenHexY = hexY + this.offsetY;
             
-            // Draw subtle teal overlay (matching rain tower's AOE color)
-            this.ctx.globalAlpha = 0.15;
-            this.drawHex(screenHexX, screenHexY, 'rgba(0, 191, 191, 0.3)', null);
-            this.ctx.globalAlpha = 1.0;
+            this.drawHex(screenHexX, screenHexY, CONFIG.AOE_HEX_OVERLAY_RAIN, null);
           });
         } 
-        // Pulsing tower: show 6 adjacent hexes
+        // Pulsing tower: AOE rings (matches tower system + Range Extender)
         else if (towerType === CONFIG.TOWER_TYPE_PULSING) {
-          const neighbors = [
-            { q: q + 1, r: r },
-            { q: q + 1, r: r - 1 },
-            { q: q, r: r - 1 },
-            { q: q - 1, r: r },
-            { q: q - 1, r: r + 1 },
-            { q: q, r: r + 1 },
-          ];
-          
-          // Filter out hexes that don't exist in the grid
-          affectedHexes = neighbors.filter(hex => {
+          const rangeHexBonus = getTowerRangeHexBonusFromTemps(this.gameState?.player?.tempPowerUps || []);
+          const pulseRadius = 1 + rangeHexBonus;
+          affectedHexes = getHexesInRadius(q, r, pulseRadius);
+          affectedHexes = affectedHexes.filter(hex => {
             return this.gameState?.gridSystem?.getHex(hex.q, hex.r) !== null;
           });
           
-          // Draw AOE preview
           affectedHexes.forEach(hex => {
+            if (hex.q === q && hex.r === r) return;
             const { x: hexX, y: hexY } = axialToPixel(hex.q, hex.r);
             const screenHexX = hexX + this.offsetX;
             const screenHexY = hexY + this.offsetY;
             
-            // Draw subtle overlay (using a different color to distinguish from rain towers)
-            this.ctx.globalAlpha = 0.2;
-            this.drawHex(screenHexX, screenHexY, 'rgba(255, 152, 0, 0.4)', null);
-            this.ctx.globalAlpha = 1.0;
+            this.drawHex(screenHexX, screenHexY, CONFIG.AOE_HEX_OVERLAY_PULSING, null);
           });
         }
       }
@@ -6774,6 +7347,36 @@ export class Renderer {
   }
 
   /**
+   * Vertical offset (px) when map objects first spawn: ease-in fall from above, then three damped bounces
+   * (each bounce amplitude is half the previous). Negative values draw higher on screen.
+   * @param {number|undefined} startMs - performance.now() when the object was placed
+   */
+  getMapSpawnLandDropYOffsetMs(startMs) {
+    if (startMs == null || !Number.isFinite(startMs)) return 0;
+    let elapsed = performance.now() - startMs;
+    const fallMs = 240;
+    const bounceDurationsMs = [170, 150, 130];
+    const bounceAmpsPx = [9, 4.5, 2.25];
+    const totalMs = fallMs + bounceDurationsMs[0] + bounceDurationsMs[1] + bounceDurationsMs[2];
+    if (elapsed >= totalMs) return 0;
+
+    if (elapsed < fallMs) {
+      const u = elapsed / fallMs;
+      return -22 * (1 - u * u);
+    }
+    elapsed -= fallMs;
+    for (let i = 0; i < bounceDurationsMs.length; i++) {
+      const w = bounceDurationsMs[i];
+      if (elapsed < w) {
+        const v = elapsed / w;
+        return -bounceAmpsPx[i] * Math.sin(Math.PI * v);
+      }
+      elapsed -= w;
+    }
+    return 0;
+  }
+
+  /**
    * Draw floating notifications (XP popups and boss abilities)
    * @param {NotificationSystem} notificationSystem - Notification system
    */
@@ -6799,6 +7402,90 @@ export class Renderer {
       const progress = notif.life / notif.maxLife; // 0 to 1
       const floatHeight = progress * 40; // Float up
       const opacity = 1 - progress; // Fade out
+
+      // Burning vault reward preview OR map pickup collect: floating sprite (same motion as XP text)
+      const isSpriteFloat =
+        (notif.isBurningVaultSpawnPreview || notif.isMapCollectSpriteFloat) && notif.spriteFilename;
+      if (isSpriteFloat) {
+        const isArtifacts = notif.spriteCategory === 'artifacts';
+        const isPowerUp = notif.spriteCategory === 'power_ups';
+        const baseUrl = isArtifacts
+          ? 'assets/images/artifacts/'
+          : isPowerUp
+            ? 'assets/images/power_ups/'
+            : 'assets/images/items/';
+        const cacheKey = isArtifacts ? `artifact-float:${notif.spriteFilename}` : notif.spriteFilename;
+
+        let img;
+        if (isArtifacts) {
+          img = this.itemSprites.get(cacheKey);
+          if (!img) {
+            img = new Image();
+            img.onload = () => {};
+            img.onerror = () => {
+              console.warn(`Floating pickup sprite not found: ${baseUrl}${notif.spriteFilename}`);
+            };
+            img.src = `${baseUrl}${notif.spriteFilename}`;
+            this.itemSprites.set(cacheKey, img);
+          }
+        } else if (isPowerUp) {
+          img = this.powerUpSprites.get(notif.spriteFilename);
+          if (!img) {
+            img = new Image();
+            img.onload = () => {};
+            img.onerror = () => {
+              console.warn(`Floating pickup sprite not found: ${baseUrl}${notif.spriteFilename}`);
+            };
+            img.src = `${baseUrl}${notif.spriteFilename}`;
+            this.powerUpSprites.set(notif.spriteFilename, img);
+          }
+        } else {
+          img = this.itemSprites.get(notif.spriteFilename);
+          if (!img) {
+            img = new Image();
+            img.onload = () => {};
+            img.onerror = () => {
+              console.warn(`Floating pickup sprite not found: ${baseUrl}${notif.spriteFilename}`);
+            };
+            img.src = `${baseUrl}${notif.spriteFilename}`;
+            this.itemSprites.set(notif.spriteFilename, img);
+          }
+        }
+
+        this.ctx.save();
+        this.ctx.globalAlpha = opacity;
+        this.ctx.translate(screenX, screenY - floatHeight);
+
+        const spriteSize = CONFIG.HEX_RADIUS * 0.8 * 1.5 * 0.85;
+        const spriteWidth = spriteSize;
+        let spriteHeight =
+          img.complete && img.naturalWidth > 0
+            ? (img.naturalHeight / img.naturalWidth) * spriteWidth
+            : spriteWidth * 0.9;
+
+        if (img.complete && img.naturalWidth > 0) {
+          this.ctx.imageSmoothingEnabled = true;
+          this.ctx.imageSmoothingQuality = 'high';
+          this.ctx.drawImage(img, -spriteWidth / 2, -spriteHeight / 2, spriteWidth, spriteHeight);
+          this.ctx.imageSmoothingEnabled = false;
+          this.ctx.imageSmoothingQuality = 'low';
+        }
+
+        if (notif.valueText) {
+          const ty = spriteHeight / 2 + 8;
+          this.ctx.font = 'bold 20px "Exo 2", sans-serif';
+          this.ctx.textAlign = 'center';
+          this.ctx.textBaseline = 'top';
+          this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.88)';
+          this.ctx.lineWidth = 2.5;
+          this.ctx.fillStyle = notif.valueColor || '#ffffff';
+          this.ctx.strokeText(notif.valueText, 0, ty);
+          this.ctx.fillText(notif.valueText, 0, ty);
+        }
+
+        this.ctx.restore();
+        return;
+      }
       
       // Draw the text with scale transform
       this.ctx.save();
@@ -7059,7 +7746,7 @@ export class Renderer {
       const isTankOnFire = tankHex && tankHex.isBurning;
       
       // Check if water tank is being hit by water (health ticking down)
-      const isBeingHitByWater = tankHex && tankHex.isBeingSprayed;
+      const isBeingHitByWater = tankHex && tankHex.isBeingSprayed && this.isWaveActiveForSprayHitVisuals();
       
       // Draw hex border with flashing effect if being hit by water (similar to temp power-ups)
       // For path hexes, don't draw border here - let redrawPathHexBorders() handle it
@@ -7098,7 +7785,8 @@ export class Renderer {
       // Draw water tank graphic if loaded (similar to temp power-ups)
       if (waterTankSprite.complete && waterTankSprite.naturalWidth > 0) {
         this.ctx.save();
-        this.ctx.translate(screenX, screenY);
+        const landY = this.getMapSpawnLandDropYOffsetMs(tank.mysteryLandDropAtMs);
+        this.ctx.translate(screenX, screenY + landY);
         
         // Flash opacity if being hit by water
         if (isBeingHitByWater) {
@@ -7131,17 +7819,50 @@ export class Renderer {
         
         this.ctx.restore();
       }
-      
-      // Draw water tank health bar (always show, like temp power-ups)
-      const currentHealth = Math.round(Math.max(0, tank.health || 0));
-      const maxHealth = Math.round(Math.max(1, tank.maxHealth || CONFIG.WATER_TANK_HEALTH));
-      const healthLabelY = screenY + CONFIG.HEX_RADIUS * 0.6;
-      
-      // Draw health bar (only show if not at full health, like other items)
-      if (currentHealth < maxHealth) {
-        this.drawHealthBar(screenX, healthLabelY, currentHealth, maxHealth, CONFIG.HEX_RADIUS * 0.8, 4);
-      }
+
+      // Health bar drawn in drawAllWorldHealthBarsAfterParticles()
     });
+  }
+
+  /**
+   * Dig sites and burning vaults: red flashing hex outline when the hex is burning, else tower-color flash when sprayed.
+   * Skips custom border on path hexes (path border comes from the grid). Same as former inline dig-site border block.
+   * @returns {{ isBurning: boolean, isSprayed: boolean }}
+   */
+  _drawHexBorderDigSiteStyle(screenX, screenY, hex) {
+    const isBurning = !!(hex && hex.isBurning);
+    const isSprayed = !!(hex && hex.isBeingSprayed && this.isWaveActiveForSprayHitVisuals());
+    if (!hex || !hex.isPath) {
+      const baseBorderColor = CONFIG.COLOR_HEX_NORMAL_BORDER;
+      let borderColor = baseBorderColor;
+      let finalBorderWidth = 1;
+      if (isBurning) {
+        borderColor = this.getFlashingColor(baseBorderColor, '#FF0000', 3.0);
+        finalBorderWidth = 5;
+      } else if (isSprayed) {
+        borderColor = this.getFlashingColor(baseBorderColor, CONFIG.COLOR_TOWER, 3.0);
+        finalBorderWidth = 5;
+      }
+      this.drawHex(screenX, screenY, null, borderColor, finalBorderWidth);
+    }
+    return { isBurning, isSprayed };
+  }
+
+  /**
+   * Same sprite alpha pulse as dig sites when burning or under water spray (pairs with {@link _drawHexBorderDigSiteStyle}).
+   */
+  _setCtxGlobalAlphaDigSiteStyleItemPulse(ctx, isBurning, isSprayed) {
+    if (isBurning || isSprayed) {
+      const flashTime = (performance.now() / 1000) * 3.0; // 3 flashes per second
+      const flashValue = (Math.sin(flashTime) + 1) / 2;
+      ctx.globalAlpha = 0.5 + flashValue * 0.5;
+    }
+  }
+
+  _resetCtxGlobalAlphaAfterDigSiteStyleItemPulse(ctx, isBurning, isSprayed) {
+    if (isBurning || isSprayed) {
+      ctx.globalAlpha = 1.0;
+    }
   }
 
   /**
@@ -7161,27 +7882,12 @@ export class Renderer {
         return;
       }
       
-      // Check if dig site hex is on fire
       const siteHex = this.gameState?.gridSystem?.getHex(site.q, site.r);
-      const isSiteOnFire = siteHex && siteHex.isBurning;
-      
-      // Check if dig site is being hit by water
-      const isBeingHitByWater = siteHex && siteHex.isBeingSprayed;
-      
-      // Draw hex border with flashing effect if being hit by water
-      if (!siteHex || !siteHex.isPath) {
-        let baseBorderColor = CONFIG.COLOR_HEX_NORMAL_BORDER;
-        let borderWidth = 1;
-        
-        // Flash border color if being hit by water
-        let borderColor = baseBorderColor;
-        let finalBorderWidth = borderWidth;
-        if (isBeingHitByWater) {
-          borderColor = this.getFlashingColor(baseBorderColor, CONFIG.COLOR_TOWER, 3.0);
-          finalBorderWidth = 5;
-        }
-        this.drawHex(screenX, screenY, null, borderColor, finalBorderWidth);
-      }
+      const { isBurning: isSiteOnFire, isSprayed: isBeingHitByWater } = this._drawHexBorderDigSiteStyle(
+        screenX,
+        screenY,
+        siteHex
+      );
       
       // Get sprite filename from config
       const siteConfig = CONFIG.DIG_SITE_TYPES[site.type];
@@ -7206,14 +7912,10 @@ export class Renderer {
       // Draw dig site graphic if loaded
       if (digSiteSprite.complete && digSiteSprite.naturalWidth > 0) {
         this.ctx.save();
-        this.ctx.translate(screenX, screenY);
+        const digLandY = this.getMapSpawnLandDropYOffsetMs(site.mysteryLandDropAtMs);
+        this.ctx.translate(screenX, screenY + digLandY);
         
-        // Flash opacity if being hit by water
-        if (isBeingHitByWater) {
-          const flashTime = (performance.now() / 1000) * 3.0; // 3 flashes per second
-          const flashValue = (Math.sin(flashTime) + 1) / 2; // 0 to 1
-          this.ctx.globalAlpha = 0.5 + flashValue * 0.5; // Fade between 0.5 and 1.0
-        }
+        this._setCtxGlobalAlphaDigSiteStyleItemPulse(this.ctx, isSiteOnFire, isBeingHitByWater);
         
         // Size the sprite to match town center hex (same size as great tree)
         const spriteSize = CONFIG.HEX_RADIUS * 1.5 * 1.1 * 1.05;
@@ -7232,22 +7934,12 @@ export class Renderer {
         this.ctx.imageSmoothingEnabled = false; // Restore default for other sprites
         this.ctx.imageSmoothingQuality = 'low';
         
-        if (isBeingHitByWater) {
-          this.ctx.globalAlpha = 1.0;
-        }
+        this._resetCtxGlobalAlphaAfterDigSiteStyleItemPulse(this.ctx, isSiteOnFire, isBeingHitByWater);
         
         this.ctx.restore();
       }
-      
-      // Draw dig site health bar (always show if not at full health)
-      const currentHealth = Math.round(Math.max(0, site.health || 0));
-      const maxHealth = Math.round(Math.max(1, site.maxHealth || siteConfig.health));
-      const healthLabelY = screenY + CONFIG.HEX_RADIUS * 0.6;
-      
-      // Draw health bar (only show if not at full health)
-      if (currentHealth < maxHealth) {
-        this.drawHealthBar(screenX, healthLabelY, currentHealth, maxHealth, CONFIG.HEX_RADIUS * 0.8, 4);
-      }
+
+      // Health bar drawn in drawAllWorldHealthBarsAfterParticles()
     });
   }
 
@@ -7349,6 +8041,24 @@ export class Renderer {
           this.ctx.fillText(countdownText, 0, 0);
         }
       }
+
+      // Draw remaining uses above bomb (same position/scale style as artifact timers).
+      const usesText = String(Math.max(0, Math.ceil(bomb.usesRemaining ?? 0)));
+      const usesY = -CONFIG.HEX_RADIUS * 0.92 + 15;
+      const usesFontPx = Math.max(20, Math.round(CONFIG.HEX_RADIUS * 0.68));
+      this.ctx.save();
+      this.ctx.translate(0, usesY);
+      const countScale = 0.64 * 0.9;
+      this.ctx.scale(countScale, countScale);
+      this.ctx.font = `bold ${usesFontPx}px "Exo 2", sans-serif`;
+      this.ctx.textAlign = 'center';
+      this.ctx.textBaseline = 'bottom';
+      this.ctx.lineWidth = Math.max(2.5, Math.round(usesFontPx * 0.14));
+      this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.92)';
+      this.ctx.strokeText(usesText, 0, 0);
+      this.ctx.fillStyle = (bomb.usesRemaining ?? 0) <= 1 ? '#FF3B30' : '#FFFFFF';
+      this.ctx.fillText(usesText, 0, 0);
+      this.ctx.restore();
       
       this.ctx.restore();
     });
@@ -7360,76 +8070,103 @@ export class Renderer {
   drawAllWaterParticles() {
     if (this.waterParticles.size === 0) return;
 
+    const metricsEnabled = this.particleMetrics.enabled;
     let drawStart;
-    if (this.particleMetrics.enabled) {
+    if (metricsEnabled) {
       drawStart = performance.now();
     }
 
-    // Get viewport bounds for culling (with margin for smooth entry/exit)
+    // Viewport culling bounds (margin keeps fade-in/out smooth). ctx is in CSS-pixel
+    // space (scaled by DPR), so we cull against CSS dims — using device-pixel
+    // canvas.width on Retina silently disables right/bottom-edge culling.
     const cullMargin = CONFIG.PARTICLE_CULL_MARGIN;
+    const cssW = this.canvasCssWidth ?? (this.canvas.width / (this.dpr || 1));
+    const cssH = this.canvasCssHeight ?? (this.canvas.height / (this.dpr || 1));
     const minX = -cullMargin;
-    const maxX = this.canvas.width + cullMargin;
+    const maxX = cssW + cullMargin;
     const minY = -cullMargin;
-    const maxY = this.canvas.height + cullMargin;
+    const maxY = cssH + cullMargin;
+    const glowMinSize = CONFIG.PARTICLE_GLOW_MIN_SIZE;
+    const TWO_PI = Math.PI * 2;
+    const ctx = this.ctx;
+    const offsetX = this.offsetX;
+    const offsetY = this.offsetY;
 
-    this.ctx.save();
+    ctx.save();
+    const wVis = this.getWaterVisualAlphaScale();
+    ctx.globalAlpha *= wVis;
 
     let drawnTowers = 0;
     let drawnParticles = 0;
 
-    // Draw all active water particles from all towers in a single pass
-    this.waterParticles.forEach((particles) => {
-      if (!particles || particles.length === 0) return;
+    // Walk every active particle group. Most groups use one hex (spray towers, explosions),
+    // but RAIN towers spawn particles across every hex in the AoE — so we cache
+    // axialToPixel results per unique (q,r) within a group instead of assuming a
+    // single hex for the whole group. for-of avoids forEach callback allocation.
+    // hexScreenCache is allocated once and cleared per group to avoid GC churn.
+    const hexScreenCache = this._waterHexScreenCache || (this._waterHexScreenCache = new Map());
+    for (const particles of this.waterParticles.values()) {
+      const len = particles ? particles.length : 0;
+      if (len === 0) continue;
       drawnTowers += 1;
-      drawnParticles += particles.length;
+      drawnParticles += len;
 
-      particles.forEach(particle => {
-        // Recalculate screen position if particle has hex coordinates
+      hexScreenCache.clear();
+
+      for (let p = 0; p < len; p++) {
+        const particle = particles[p];
+
+        // Per-particle coord space: hex-relative (tower spray/rain) or absolute (explosions).
+        const hasHex = particle.offsetX !== null && particle.offsetY !== null
+          && particle.hexQ !== null && particle.hexR !== null;
+
         let screenX, screenY;
-        if (particle.offsetX !== null && particle.offsetY !== null && particle.hexQ !== null && particle.hexR !== null) {
-          // Recalculate from hex coordinates and relative offset
-          const { x, y } = axialToPixel(particle.hexQ, particle.hexR);
-          screenX = x + this.offsetX + particle.offsetX;
-          screenY = y + this.offsetY + particle.offsetY;
+        if (hasHex) {
+          const hq = particle.hexQ;
+          const hr = particle.hexR;
+          // Rain towers reuse a small set of (q,r) across many particles; cache the
+          // axialToPixel result so we only compute once per hex per frame per group.
+          const key = hq * 1000 + hr; // axial coords stay small; avoids string allocation
+          let base = hexScreenCache.get(key);
+          if (base === undefined) {
+            const { x: hx, y: hy } = axialToPixel(hq, hr);
+            base = { x: hx + offsetX, y: hy + offsetY };
+            hexScreenCache.set(key, base);
+          }
+          screenX = base.x + particle.offsetX;
+          screenY = base.y + particle.offsetY;
         } else {
-          // Use absolute position (for explosion particles)
           screenX = particle.x;
           screenY = particle.y;
         }
 
-        // Off-screen culling: skip particles outside viewport
-        if (screenX < minX || screenX > maxX || screenY < minY || screenY > maxY) {
-          return;
-        }
+        // Off-screen culling
+        if (screenX < minX || screenX > maxX || screenY < minY || screenY > maxY) continue;
 
         const alpha = particle.life / particle.maxLife;
-        const baseSize = particle.size * alpha; // Fade size with life
-        const finalSize = baseSize * (particle.sizeMultiplier || 1); // Scale with power level
+        const sizeMult = particle.sizeMultiplier || 1;
+        const finalSize = particle.size * alpha * sizeMult;
 
-        // Use cached color base for performance (avoid regex on every frame)
         const colorBase = particle.cachedColorBase || 'rgba(100, 200, 255, ';
         const particleAlpha = alpha * 0.8;
         const fillColor = colorBase + particleAlpha + ')';
 
-        // Draw particle with individual color and transparency
-        this.ctx.beginPath();
-        this.ctx.arc(screenX, screenY, finalSize, 0, 2 * Math.PI);
-        this.ctx.fillStyle = fillColor;
-        this.ctx.fill();
+        ctx.beginPath();
+        ctx.arc(screenX, screenY, finalSize, 0, TWO_PI);
+        ctx.fillStyle = fillColor;
+        ctx.fill();
 
-        // Add enhanced glow effect
-        if (finalSize >= CONFIG.PARTICLE_GLOW_MIN_SIZE) {
-          const glowAlpha = alpha * 0.5 * (particle.sizeMultiplier || 1);
-          const glowColor = colorBase + glowAlpha + ')';
-          this.ctx.beginPath();
-          this.ctx.arc(screenX, screenY, finalSize * 2.0, 0, 2 * Math.PI);
-          this.ctx.fillStyle = glowColor;
-          this.ctx.fill();
+        if (finalSize >= glowMinSize) {
+          const glowAlpha = alpha * 0.5 * sizeMult;
+          ctx.beginPath();
+          ctx.arc(screenX, screenY, finalSize * 2.0, 0, TWO_PI);
+          ctx.fillStyle = colorBase + glowAlpha + ')';
+          ctx.fill();
         }
-      });
-    });
+      }
+    }
 
-    if (this.particleMetrics.enabled) {
+    if (metricsEnabled) {
       this.particleMetrics.frameDrawnTowers += drawnTowers;
       this.particleMetrics.frameDrawnParticles += drawnParticles;
       this.particleMetrics.frameDrawMs += performance.now() - drawStart;
@@ -7599,37 +8336,24 @@ export class Renderer {
           const turretHeight = CONFIG.HEX_RADIUS * turretHeightMultiplier;
           const aspectRatio = turretSprite.naturalWidth / turretSprite.naturalHeight;
           const turretWidth = turretHeight * aspectRatio;
-          
-          // Brighten turret by 25% using pixel manipulation (like we do for bases)
-          const tempCanvas = document.createElement('canvas');
-          tempCanvas.width = turretWidth;
-          tempCanvas.height = turretHeight;
-          const tempCtx = tempCanvas.getContext('2d');
-          
-          // Draw the sprite to the temporary canvas
-          tempCtx.drawImage(turretSprite, 0, 0, turretWidth, turretHeight);
-          
-          // Get image data and brighten only opaque pixels
-          const imageData = tempCtx.getImageData(0, 0, turretWidth, turretHeight);
-          const data = imageData.data;
-          
-          for (let i = 0; i < data.length; i += 4) {
-            // Only brighten pixels that are not transparent (alpha > 0)
-            if (data[i + 3] > 0) {
-              // Brighten by 35% (multiply by 1.35, cap at 255)
-              data[i] = Math.min(255, data[i] * 1.35);     // Red
-              data[i + 1] = Math.min(255, data[i + 1] * 1.35); // Green
-              data[i + 2] = Math.min(255, data[i + 2] * 1.35); // Blue
-              // Alpha stays the same
-            }
+
+          // Brighten turret by 35% — cached offscreen canvas so this is a hot-path
+          // ctx.drawImage instead of getImageData/putImageData per tower per frame.
+          // Cache key includes rounded size so live resizes still produce a sharp result
+          // after the cache miss settles. Falls back to the raw sprite if the brightener
+          // ever fails (e.g. tainted canvas / 2D context unavailable).
+          const brightenedTurret = this.getBrightenedTurretSprite(
+            turretSprite,
+            turretWidth,
+            turretHeight,
+            1.35
+          );
+          if (brightenedTurret) {
+            this.ctx.drawImage(brightenedTurret, -turretWidth / 2, -turretHeight / 2, turretWidth, turretHeight);
+          } else {
+            this.ctx.drawImage(turretSprite, -turretWidth / 2, -turretHeight / 2, turretWidth, turretHeight);
           }
-          
-          // Put the modified image data back
-          tempCtx.putImageData(imageData, 0, 0);
-          
-          // Draw the brightened image to the main canvas, centered at origin (after translation and rotation, if applicable)
-          this.ctx.drawImage(tempCanvas, -turretWidth / 2, -turretHeight / 2);
-          
+
           this.ctx.restore();
         }
       }
@@ -7637,25 +8361,234 @@ export class Renderer {
   }
 
   /**
-   * Draw all tower health bars (highest z-index, after turrets)
+   * Draw all tower health bars (called from drawAllWorldHealthBarsAfterParticles)
    * @param {TowerSystem} towerSystem - Tower system to get all towers from
    */
   drawAllTowerHealthBars(towerSystem) {
     if (!towerSystem) return;
-    
+
     const towers = towerSystem.getAllTowers();
-    towers.forEach(tower => {
+    // drawHealthBar bails when current >= max, but we still pay axialToPixel + screen-math
+    // for every tower above. Towers spend most of the game at full HP, so we skip them
+    // outright here. Also viewport-cull so offscreen damaged towers don't trigger draws.
+    for (let i = 0; i < towers.length; i++) {
+      const tower = towers[i];
+      const rawHealth = tower.health || 0;
+      const rawMax = tower.maxHealth || CONFIG.TOWER_HEALTH;
+      if (rawHealth >= rawMax) continue;
+
       const { x, y } = axialToPixel(tower.q, tower.r);
       const screenX = x + this.offsetX;
       const screenY = y + this.offsetY;
-      
-      const currentHealth = Math.round(Math.max(0, tower.health || 0));
-      const maxHealth = Math.round(Math.max(1, tower.maxHealth || CONFIG.TOWER_HEALTH));
+      if (!this.isHexInViewport(screenX, screenY)) continue;
+
+      const currentHealth = Math.round(Math.max(0, rawHealth));
+      const maxHealth = Math.round(Math.max(1, rawMax));
       const healthLabelY = screenY + CONFIG.HEX_RADIUS * 0.7;
-      
-      // Draw health bar
+
       this.drawHealthBar(screenX, healthLabelY, currentHealth, maxHealth, 40, 4);
+    }
+  }
+
+  /**
+   * Ancient Grove (town center) health only — after water and fire FX so bars stay readable.
+   * @param {import('../systems/gridSystem.js').GridSystem} gridSystem
+   */
+  drawAncientGroveHealthBar(gridSystem) {
+    if (!gridSystem || !this.gameState) return;
+
+    const centerHex = gridSystem.getHex(0, 0);
+    if (!centerHex || !centerHex.isTown) return;
+
+    const { x, y } = axialToPixel(0, 0);
+    const screenX = x + this.offsetX;
+    const screenY = y + this.offsetY;
+
+    if (!this.isHexInViewport(screenX, screenY)) return;
+
+    const currentHealth = Math.round(centerHex.townHealth || 0);
+    const maxHealth = Math.round(centerHex.maxTownHealth || 0);
+    const healthY = screenY + Math.max(18, CONFIG.HEX_RADIUS * 0.45);
+    this.drawHealthBar(screenX, healthY, currentHealth, maxHealth, 45, 4.5);
+  }
+
+  /**
+   * Water tank health bars only (sprite pass does not draw bars — avoids water particle overlap).
+   */
+  drawWaterTankHealthBarsOverlay(waterTankSystem) {
+    if (!waterTankSystem) return;
+
+    waterTankSystem.getAllWaterTanks().forEach((tank) => {
+      const { x, y } = axialToPixel(tank.q, tank.r);
+      const screenX = x + this.offsetX;
+      const screenY = y + this.offsetY;
+      if (!this.isHexInViewport(screenX, screenY)) return;
+
+      const currentHealth = Math.round(Math.max(0, tank.health || 0));
+      const maxHealth = Math.round(Math.max(1, tank.maxHealth || CONFIG.WATER_TANK_HEALTH));
+      const healthLabelY = screenY + CONFIG.HEX_RADIUS * 0.6;
+      if (currentHealth < maxHealth) {
+        this.drawHealthBar(screenX, healthLabelY, currentHealth, maxHealth, CONFIG.HEX_RADIUS * 0.8, 4);
+      }
     });
+  }
+
+  /**
+   * Dig site health bars only.
+   */
+  drawDigSiteHealthBarsOverlay(digSiteSystem) {
+    if (!digSiteSystem) return;
+
+    digSiteSystem.getAllDigSites().forEach((site) => {
+      const siteConfig = CONFIG.DIG_SITE_TYPES[site.type];
+      if (!siteConfig) return;
+
+      const { x, y } = axialToPixel(site.q, site.r);
+      const screenX = x + this.offsetX;
+      const screenY = y + this.offsetY;
+      if (!this.isHexInViewport(screenX, screenY)) return;
+
+      const currentHealth = Math.round(Math.max(0, site.health || 0));
+      const maxHealth = Math.round(Math.max(1, site.maxHealth || siteConfig.health));
+      const healthLabelY = screenY + CONFIG.HEX_RADIUS * 0.6;
+      if (currentHealth < maxHealth) {
+        this.drawHealthBar(screenX, healthLabelY, currentHealth, maxHealth, CONFIG.HEX_RADIUS * 0.8, 4);
+      }
+    });
+  }
+
+  /**
+   * Burning vault health bars (standard RTS bar; matches other map objects after scaling).
+   */
+  drawBurningVaultHealthBarsOverlay(burningVaultSystem) {
+    if (!burningVaultSystem) return;
+
+    burningVaultSystem.getAllItems().forEach((item) => {
+      if (!item.isActive || item.health >= item.maxHealth) return;
+
+      const { x, y } = axialToPixel(item.q, item.r);
+      const screenX = x + this.offsetX;
+      const screenY = y + this.offsetY;
+      if (!this.isHexInViewport(screenX, screenY)) return;
+
+      const landY = this.getMapSpawnLandDropYOffsetMs(item.mysteryLandDropAtMs);
+      const healthLabelY = screenY + landY + CONFIG.HEX_RADIUS * 0.62;
+      const currentHealth = Math.round(Math.max(0, item.health || 0));
+      const maxHealth = Math.round(Math.max(1, item.maxHealth || 1));
+      this.drawHealthBar(screenX, healthLabelY, currentHealth, maxHealth, CONFIG.HEX_RADIUS * 0.8, 4);
+    });
+  }
+
+  /**
+   * Temp power-ups, mystery boxes, artifacts, and currency pickups — HP bars only (after particles).
+   * @param {object} gameState
+   */
+  drawCollectibleMapItemHealthBarsOverlay(gameState) {
+    if (!gameState) return;
+
+    const labelY = (screenY, item) =>
+      screenY + this.getMapSpawnLandDropYOffsetMs(item.mysteryLandDropAtMs) + CONFIG.HEX_RADIUS * 0.6;
+
+    const drawOne = (item, q, r) => {
+      const { x, y } = axialToPixel(q, r);
+      const screenX = x + this.offsetX;
+      const screenY = y + this.offsetY;
+      if (!this.isHexInViewport(screenX, screenY)) return;
+      this.drawHealthBar(
+        screenX,
+        labelY(screenY, item),
+        Math.round(Math.max(0, item.health)),
+        Math.round(Math.max(1, item.maxHealth)),
+        CONFIG.HEX_RADIUS * 0.8,
+        4
+      );
+    };
+
+    if (gameState.tempPowerUpItemSystem) {
+      gameState.tempPowerUpItemSystem.getAllItems().forEach((item) => {
+        if (!item.isActive || item.health >= item.maxHealth) return;
+        drawOne(item, item.q, item.r);
+      });
+    }
+
+    if (gameState.mysteryItemSystem) {
+      gameState.mysteryItemSystem.getAllItems().forEach((item) => {
+        if (!item.isActive || item.health >= item.maxHealth) return;
+        drawOne(item, item.q, item.r);
+      });
+    }
+
+    if (gameState.artifactSystem) {
+      gameState.artifactSystem.getAllItems().forEach((item) => {
+        if (!item.isActive || item.health >= item.maxHealth) return;
+        if (!getArtifactById(item.artifactId)) return;
+        drawOne(item, item.q, item.r);
+      });
+    }
+
+    if (gameState.currencyItemSystem) {
+      gameState.currencyItemSystem.getAllItems().forEach((item) => {
+        if (!item.isActive || item.health >= item.maxHealth) return;
+        drawOne(item, item.q, item.r);
+      });
+    }
+  }
+
+  /**
+   * Shield HP bars for shielded towers (same timing as other map health bars).
+   */
+  drawTowerShieldHealthBarsOverlay(towerSystem) {
+    if (!towerSystem) return;
+
+    const scale = CONFIG.HEALTH_BAR_RENDER_SCALE ?? 1;
+
+    towerSystem.getAllTowers().forEach((tower) => {
+      const sh = tower.shield;
+      if (!sh || sh.health >= sh.maxHealth) return;
+
+      const { x, y } = axialToPixel(tower.q, tower.r);
+      const screenX = x + this.offsetX;
+      const screenY = y + this.offsetY;
+      if (!this.isHexInViewport(screenX, screenY)) return;
+
+      const shieldHealthPercent = Math.max(0, Math.min(1, sh.health / sh.maxHealth));
+      let barWidth = CONFIG.HEX_RADIUS * 0.8 * scale;
+      let barHeight = 4 * scale;
+      const barX = screenX - barWidth / 2;
+      const barY = screenY + CONFIG.HEX_RADIUS * 0.5;
+
+      this.ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+      this.ctx.fillRect(barX, barY, barWidth, barHeight);
+
+      const healthWidth = barWidth * shieldHealthPercent;
+      this.ctx.fillStyle = 'rgba(145, 75, 225, 0.9)';
+      this.ctx.fillRect(barX, barY, healthWidth, barHeight);
+    });
+  }
+
+  /**
+   * Draw every map health bar after water and fire particles so FX never obscure HP (grove, towers, items).
+   * @param {object} gameState
+   */
+  drawAllWorldHealthBarsAfterParticles(gameState) {
+    if (!gameState) return;
+    if (gameState.gridSystem) {
+      this.drawAncientGroveHealthBar(gameState.gridSystem);
+    }
+    if (gameState.waterTankSystem) {
+      this.drawWaterTankHealthBarsOverlay(gameState.waterTankSystem);
+    }
+    if (gameState.digSiteSystem) {
+      this.drawDigSiteHealthBarsOverlay(gameState.digSiteSystem);
+    }
+    this.drawCollectibleMapItemHealthBarsOverlay(gameState);
+    if (gameState.burningVaultSystem) {
+      this.drawBurningVaultHealthBarsOverlay(gameState.burningVaultSystem);
+    }
+    if (gameState.towerSystem) {
+      this.drawTowerShieldHealthBarsOverlay(gameState.towerSystem);
+      this.drawAllTowerHealthBars(gameState.towerSystem);
+    }
   }
 
   /**
@@ -7758,7 +8691,7 @@ export class Renderer {
       const isItemOnFire = itemHex && itemHex.isBurning;
       
       // Check if item is being hit by water (health ticking down)
-      const isBeingHitByWater = itemHex && itemHex.isBeingSprayed;
+      const isBeingHitByWater = itemHex && itemHex.isBeingSprayed && this.isWaveActiveForSprayHitVisuals();
       
       // Draw hex border with appropriate color and width based on hex type
       if (!itemHex || !itemHex.isPath) {
@@ -7777,7 +8710,8 @@ export class Renderer {
       
       // Draw power-up item icon
       this.ctx.save();
-      this.ctx.translate(screenX, screenY);
+      const landY = this.getMapSpawnLandDropYOffsetMs(item.mysteryLandDropAtMs);
+      this.ctx.translate(screenX, screenY + landY);
       
       // Get power-up config for icon
       const itemConfig = CONFIG.TEMP_POWER_UP_ITEMS[item.powerUpId];
@@ -7788,15 +8722,7 @@ export class Renderer {
       }
       
       // Get power-up graphic filename
-      const powerUpGraphicMap = {
-        'water_pressure': 'water_pressure.png',
-        'xp_boost': 'xp_boost.png',
-        'tower_health': 'tower_durability.png',
-        'fire_resistance': 'fire_resistance.png',
-        'temp_power_up_spawn_boost': 'power_up_magnet.png'
-      };
-      const powerUpId = itemConfig?.id || powerUpConfig?.id || item.powerUpId;
-      const graphicFilename = powerUpGraphicMap[powerUpId];
+      const graphicFilename = getPowerUpGraphicFilename(item.powerUpId);
       
       if (graphicFilename) {
         // Load and draw power-up sprite
@@ -7870,22 +8796,8 @@ export class Renderer {
         this.ctx.fillText(fallbackChar, 0, 0);
       }
       
-      // Draw health bar if damaged
-      if (item.health < item.maxHealth) {
-        const healthPercent = item.health / item.maxHealth;
-        const barWidth = CONFIG.HEX_RADIUS * 0.8;
-        const barHeight = 4;
-        const barY = CONFIG.HEX_RADIUS * 0.6;
-        
-        // Background
-        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-        this.ctx.fillRect(-barWidth / 2, barY, barWidth, barHeight);
-        
-        // Health
-        this.ctx.fillStyle = healthPercent > 0.5 ? '#6BA6FF' : healthPercent > 0.25 ? '#FF9800' : '#F44336';
-        this.ctx.fillRect(-barWidth / 2, barY, barWidth * healthPercent, barHeight);
-      }
-      
+      // HP bar: drawCollectibleMapItemHealthBarsOverlay()
+
       this.ctx.restore();
     });
   }
@@ -7911,7 +8823,7 @@ export class Renderer {
       const isItemOnFire = itemHex && itemHex.isBurning;
       
       // Check if item is being hit by water (health ticking down)
-      const isBeingHitByWater = itemHex && itemHex.isBeingSprayed;
+      const isBeingHitByWater = itemHex && itemHex.isBeingSprayed && this.isWaveActiveForSprayHitVisuals();
       
       // Draw hex border with appropriate color and width based on hex type
       if (!itemHex || !itemHex.isPath) {
@@ -7930,7 +8842,8 @@ export class Renderer {
       
       // Draw mystery item sprite
       this.ctx.save();
-      this.ctx.translate(screenX, screenY);
+      const mysteryLandY = this.getMapSpawnLandDropYOffsetMs(item.mysteryLandDropAtMs);
+      this.ctx.translate(screenX, screenY + mysteryLandY);
       
       // Get mystery item config
       const itemConfig = CONFIG.MYSTERY_ITEMS[item.itemId];
@@ -7988,23 +8901,181 @@ export class Renderer {
         }
       }
       
-      // Draw health bar if damaged
-      if (item.health < item.maxHealth) {
-        const healthPercent = item.health / item.maxHealth;
-        const barWidth = CONFIG.HEX_RADIUS * 0.8;
-        const barHeight = 4;
-        const barY = CONFIG.HEX_RADIUS * 0.6;
-        
-        // Background
-        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-        this.ctx.fillRect(-barWidth / 2, barY, barWidth, barHeight);
-        
-        // Health
-        this.ctx.fillStyle = healthPercent > 0.5 ? '#6BA6FF' : healthPercent > 0.25 ? '#FF9800' : '#F44336';
-        this.ctx.fillRect(-barWidth / 2, barY, barWidth * healthPercent, barHeight);
-      }
-      
+      // HP bar: drawCollectibleMapItemHealthBarsOverlay()
+
       this.ctx.restore();
+    });
+  }
+
+  /**
+   * Draw artifact map pickups (timed; collected with water like mystery boxes).
+   * @param {import('../systems/artifactSystem.js').ArtifactSystem} artifactSystem
+   */
+  drawArtifacts(artifactSystem) {
+    if (!artifactSystem) return;
+
+    const items = artifactSystem.getAllItems();
+
+    items.forEach((item) => {
+      if (!item.isActive) return;
+
+      const { x, y } = axialToPixel(item.q, item.r);
+      const screenX = x + this.offsetX;
+      const screenY = y + this.offsetY;
+
+      const itemHex = this.gameState?.gridSystem?.getHex(item.q, item.r);
+      const isBeingHitByWater = itemHex && itemHex.isBeingSprayed && this.isWaveActiveForSprayHitVisuals();
+
+      if (!itemHex || !itemHex.isPath) {
+        let borderWidth = 1;
+        let borderColor = 'rgba(255, 255, 255, 0.125)';
+        let finalBorderWidth = borderWidth;
+        if (isBeingHitByWater) {
+          borderColor = this.getFlashingColor('#FFFFFF', CONFIG.COLOR_TOWER, 3.0);
+          finalBorderWidth = 5;
+        }
+        this.drawHex(screenX, screenY, null, borderColor, finalBorderWidth);
+      }
+
+      const def = getArtifactById(item.artifactId);
+      if (!def) return;
+
+      this.ctx.save();
+      const artifactLandY = this.getMapSpawnLandDropYOffsetMs(item.mysteryLandDropAtMs);
+      this.ctx.translate(screenX, screenY + artifactLandY);
+
+      const spriteFilename = `artifact:${def.sprite}`;
+      let artSprite = this.itemSprites.get(spriteFilename);
+
+      if (!artSprite) {
+        artSprite = new Image();
+        artSprite.onload = () => {};
+        artSprite.onerror = () => {
+          console.warn(`Artifact sprite not found: ${def.sprite}`);
+        };
+        artSprite.src = `assets/images/artifacts/${def.sprite}`;
+        this.itemSprites.set(spriteFilename, artSprite);
+      }
+
+      if (artSprite.complete && artSprite.naturalWidth > 0) {
+        if (isBeingHitByWater) {
+          const flashTime = (performance.now() / 1000) * 3.0;
+          const flashValue = (Math.sin(flashTime) + 1) / 2;
+          this.ctx.globalAlpha = 0.5 + flashValue * 0.5;
+        }
+
+        const spriteSize = CONFIG.HEX_RADIUS * 1.35 * 0.75;
+        const spriteWidth = spriteSize;
+        const spriteHeight = (artSprite.naturalHeight / artSprite.naturalWidth) * spriteWidth;
+
+        this.ctx.imageSmoothingEnabled = true;
+        this.ctx.imageSmoothingQuality = 'high';
+        this.ctx.drawImage(
+          artSprite,
+          -spriteWidth / 2,
+          -spriteHeight / 2,
+          spriteWidth,
+          spriteHeight,
+        );
+        this.ctx.imageSmoothingEnabled = false;
+        this.ctx.imageSmoothingQuality = 'low';
+
+        if (isBeingHitByWater) {
+          this.ctx.globalAlpha = 1.0;
+        }
+      }
+
+      // Countdown: quoted "Exo 2" + scale (halved vs prior 1.28 for legibility without dominating the hex)
+      const tSec = Math.max(0, Math.ceil(item.timeLeftSeconds ?? 0));
+      const tLabel = String(tSec);
+      const ty = -CONFIG.HEX_RADIUS * 0.92 + 15;
+      const fontPx = Math.max(20, Math.round(CONFIG.HEX_RADIUS * 0.68));
+      this.ctx.save();
+      this.ctx.translate(0, ty);
+      const countScale = 0.64 * 0.9; // artifact map timer ~10% smaller than prior
+      this.ctx.scale(countScale, countScale);
+      this.ctx.font = `bold ${fontPx}px "Exo 2", sans-serif`;
+      this.ctx.textAlign = 'center';
+      this.ctx.textBaseline = 'bottom';
+      this.ctx.lineWidth = Math.max(2.5, Math.round(fontPx * 0.14));
+      this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.92)';
+      this.ctx.strokeText(tLabel, 0, 0);
+      this.ctx.fillStyle = tSec <= 3 ? '#FF3B30' : '#FFFFFF';
+      this.ctx.fillText(tLabel, 0, 0);
+      this.ctx.restore();
+
+      // HP bar: drawCollectibleMapItemHealthBarsOverlay()
+
+      this.ctx.restore();
+    });
+  }
+
+  /**
+   * Draw Burning Vault map objects (high HP; water drains, fire restores until opened).
+   * @param {import('../systems/burningVaultSystem.js').BurningVaultSystem} burningVaultSystem
+   */
+  drawBurningVaults(burningVaultSystem) {
+    if (!burningVaultSystem) return;
+
+    const items = burningVaultSystem.getAllItems();
+    const spriteKey = CONFIG.BURNING_VAULT?.sprite || 'burning_vault.png';
+
+    items.forEach((item) => {
+      if (!item.isActive) return;
+
+      const { x, y } = axialToPixel(item.q, item.r);
+      const screenX = x + this.offsetX;
+      const screenY = y + this.offsetY;
+
+      if (!this.isHexInViewport(screenX, screenY)) return;
+
+      const itemHex = this.gameState?.gridSystem?.getHex(item.q, item.r);
+      const { isBurning: isVaultOnFire, isSprayed: isBeingHitByWater } = this._drawHexBorderDigSiteStyle(
+        screenX,
+        screenY,
+        itemHex
+      );
+
+      let vaultSprite = this.itemSprites.get(spriteKey);
+      if (!vaultSprite) {
+        vaultSprite = new Image();
+        vaultSprite.onload = () => {};
+        vaultSprite.onerror = () => {
+          console.warn(`Burning vault sprite not found: ${spriteKey}`);
+        };
+        vaultSprite.src = `assets/images/items/${spriteKey}`;
+        this.itemSprites.set(spriteKey, vaultSprite);
+      }
+
+      if (vaultSprite.complete && vaultSprite.naturalWidth > 0) {
+        this.ctx.save();
+        const vaultLandY = this.getMapSpawnLandDropYOffsetMs(item.mysteryLandDropAtMs);
+        this.ctx.translate(screenX, screenY + vaultLandY);
+
+        this._setCtxGlobalAlphaDigSiteStyleItemPulse(this.ctx, isVaultOnFire, isBeingHitByWater);
+
+        const spriteSize = CONFIG.HEX_RADIUS * 1.55;
+        const spriteWidth = spriteSize;
+        const spriteHeight = (vaultSprite.naturalHeight / vaultSprite.naturalWidth) * spriteWidth;
+
+        this.ctx.imageSmoothingEnabled = true;
+        this.ctx.imageSmoothingQuality = 'high';
+        this.ctx.drawImage(
+          vaultSprite,
+          -spriteWidth / 2,
+          -spriteHeight / 2,
+          spriteWidth,
+          spriteHeight
+        );
+        this.ctx.imageSmoothingEnabled = false;
+        this.ctx.imageSmoothingQuality = 'low';
+
+        this._resetCtxGlobalAlphaAfterDigSiteStyleItemPulse(this.ctx, isVaultOnFire, isBeingHitByWater);
+
+        // Health bar drawn in drawAllWorldHealthBarsAfterParticles()
+
+        this.ctx.restore();
+      }
     });
   }
 
@@ -8029,7 +9100,7 @@ export class Renderer {
       const isItemOnFire = itemHex && itemHex.isBurning;
       
       // Check if item is being hit by water (health ticking down)
-      const isBeingHitByWater = itemHex && itemHex.isBeingSprayed;
+      const isBeingHitByWater = itemHex && itemHex.isBeingSprayed && this.isWaveActiveForSprayHitVisuals();
       
       // Draw hex border with appropriate color and width based on hex type
       if (!itemHex || !itemHex.isPath) {
@@ -8046,19 +9117,24 @@ export class Renderer {
         this.drawHex(screenX, screenY, null, borderColor, finalBorderWidth);
       }
       
-      // Draw bonus item sprite (money or movement token)
+      // Draw bonus item sprite (currency / xp / token / consumables)
       this.ctx.save();
-      this.ctx.translate(screenX, screenY);
+      const landY = this.getMapSpawnLandDropYOffsetMs(item.mysteryLandDropAtMs);
+      this.ctx.translate(screenX, screenY + landY);
       
       // Determine sprite filename based on item type
       let spriteFilename = 'currency.png';
       if (item.itemType === 'movement_token') {
         spriteFilename = 'movement_token.png';
+      } else if (item.itemType === 'xp') {
+        spriteFilename = 'xp.png';
       } else if (item.itemType === 'shield') {
         const level = Math.min(4, Math.max(1, item.value || 1));
         spriteFilename = `shield_${level}.png`;
       } else if (item.itemType === 'upgrade_plans') {
         spriteFilename = 'upgrade_token.png';
+      } else if (item.itemType === 'tree_juice') {
+        spriteFilename = 'town_defense.png';
       }
       let currencySprite = this.itemSprites.get(spriteFilename);
       
@@ -8107,22 +9183,8 @@ export class Renderer {
         }
       }
       
-      // Draw health bar if damaged
-      if (item.health < item.maxHealth) {
-        const healthPercent = item.health / item.maxHealth;
-        const barWidth = CONFIG.HEX_RADIUS * 0.8;
-        const barHeight = 4;
-        const barY = CONFIG.HEX_RADIUS * 0.6;
-        
-        // Background
-        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-        this.ctx.fillRect(-barWidth / 2, barY, barWidth, barHeight);
-        
-        // Health
-        this.ctx.fillStyle = healthPercent > 0.5 ? '#6BA6FF' : healthPercent > 0.25 ? '#FF9800' : '#F44336';
-        this.ctx.fillRect(-barWidth / 2, barY, barWidth * healthPercent, barHeight);
-      }
-      
+      // HP bar: drawCollectibleMapItemHealthBarsOverlay()
+
       this.ctx.restore();
     });
   }
@@ -8385,6 +9447,7 @@ export class Renderer {
     const towers = this.gameState.towerSystem?.towers || [];
     const waterTanks = this.gameState.waterTankSystem?.getAllWaterTanks() || [];
     const tempPowerUpItems = this.gameState.tempPowerUpItemSystem?.getAllItems() || [];
+    const artifactItems = this.gameState.artifactSystem?.getAllItems() || [];
     const digSites = this.gameState.digSiteSystem?.getAllDigSites() || [];
     
     // Create lookup maps for quick access
@@ -8404,6 +9467,12 @@ export class Renderer {
     tempPowerUpItems.forEach(item => {
       const key = `${item.q},${item.r}`;
       tempPowerUpMap.set(key, item);
+    });
+
+    const artifactMap = new Map();
+    artifactItems.forEach(item => {
+      const key = `${item.q},${item.r}`;
+      artifactMap.set(key, item);
     });
     
     const digSiteMap = new Map();
@@ -8442,12 +9511,10 @@ export class Renderer {
       let fillColor = darkenedBackground; // Use darkened background color for empty hexes
       
       if (hex.isBurning) {
-        // Use fire color
-        const fireConfig = getFireTypeConfig(hex.fireType);
-        fillColor = fireConfig ? fireConfig.color : CONFIG.COLOR_FIRE_CINDER;
+        fillColor = getFireTypeDisplayColor(hex.fireType);
       } else if (hex.hasFireSpawner) {
         // Fire spawner - use spawner's fire type color (slightly brighter to distinguish from fires)
-        const spawnerColor = hex.fireSpawnerColor || CONFIG.COLOR_FIRE_CINDER;
+        const spawnerColor = getSpawnerDrawColor(hex);
         // Brighten the spawner color by 20% to make it stand out
         fillColor = this.brightenColor(spawnerColor, 1.2);
       } else if (hex.isTown) {
@@ -8467,8 +9534,9 @@ export class Renderer {
         } else if (digSiteMap.has(hexKey) || hex.hasDigSite) {
           // Dig sites are white
           fillColor = '#FFFFFF'; // White
-        } else if (tempPowerUpMap.has(hexKey) || hex.hasTempPowerUpItem || hex.hasMysteryItem || hex.hasCurrencyItem) {
-          // Power-ups, mystery items, and currency items are fuschia
+        } else if (tempPowerUpMap.has(hexKey) || artifactMap.has(hexKey) || hex.hasTempPowerUpItem || hex.hasMysteryItem || hex.hasCurrencyItem ||
+          hex.hasBurningVault || hex.hasArtifactItem) {
+          // Power-ups, mystery items, currency items, burning vaults, artifacts are fuschia
           fillColor = '#FF00FF'; // Fuschia
         }
       }

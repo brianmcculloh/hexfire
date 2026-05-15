@@ -44,7 +44,7 @@
             <div class="tutorial-step-indicator tutorial-step-indicator-in-bubble"></div>
         </div>
     </div>
-    <div id="tutorialShieldOverlay" class="tutorial-shield-overlay" style="display: none;" aria-hidden="true" title="Click to purchase shield"></div>
+    <div id="tutorialShieldOverlay" class="tutorial-shield-overlay" style="display: none;" aria-hidden="true" data-tooltip="Click to purchase shield"></div>
     <div id="tutorialWaterTankBubble" class="tutorial-water-tank-bubble" style="display: none;" aria-hidden="true">
         <span class="tutorial-speech-bubble-text"></span>
     </div>
@@ -63,24 +63,26 @@
                 <button id="pauseBtn" class="control-btn cta-button cta-red" aria-label="Pause"><img src="assets/images/ui/pause.png" alt="Pause" class="control-btn-icon" /> Pause</button>
             </div>
             
-            <!-- Top Left Overlay Panel (Combined Wave and Currency) -->
+            <!-- Top-left HUD + floating FPS (below panel, not inside it) -->
+            <div class="overlay-top-left-stack">
             <div class="overlay-panel overlay-top-left">
                 <div class="overlay-content">
-                    <div class="overlay-row overlay-row-right">
+                    <div class="overlay-row overlay-row-right overlay-wave-row">
                         <label class="label label-white" id="overlayWaveGroupCombined">
                             <span class="label-middle-bg"></span>
                             <span class="label-text">Wave 1-1</span>
                         </label>
+                        <span id="overlayEndlessModeBadge" class="overlay-endless-mode-badge" hidden aria-hidden="true">Endless<br />mode</span>
                     </div>
                     <div class="overlay-timer" id="overlayWaveTimer">2:00</div>
                     <div id="overlayLevelXpRow" class="overlay-progress-bar-container overlay-level-xp-row overlay-row-tooltip" data-tooltip="Experience points earned by extinguishing fires. Level up to unlock new towers and upgrades.">
                         <div class="overlay-level-hex-wrap">
-                            <img src="assets/images/misc/level.png" class="overlay-level-hex" alt="" />
+                            <img id="overlayLevelHexImg" src="assets/images/misc/level1.png" class="overlay-level-hex" alt="" />
                             <span class="overlay-level-value" id="overlayPlayerLevel">1</span>
                         </div>
                         <div class="overlay-progress-bar">
                             <div class="overlay-progress-fill overlay-xp-fill" id="overlayXpProgress"></div>
-                            <span class="overlay-progress-text" id="overlayPlayerXP">0 / 100</span>
+                            <span class="overlay-progress-text" id="overlayPlayerXP">0</span>
                         </div>
                     </div>
                     <div class="overlay-progress-bar-container overlay-hp-container overlay-row-tooltip" data-tooltip="Ancient Grove's health. If it reaches zero, it's game over! Protect the town center and surrounding trees.">
@@ -124,6 +126,19 @@
                     </div>
                 </div>
             </div>
+            <div id="fpsCounterFloating" class="fps-counter-floating" aria-hidden="true" hidden><span class="fps-counter-label">FPS: </span><span id="fpsCounterValue" class="fps-counter-value">--</span></div>
+            <div id="towerStatusPanel" class="tower-status-panel">
+                <div class="overlay-row overlay-row-right tower-status-header-row">
+                    <label class="label label-white">
+                        <span class="label-middle-bg"></span>
+                        <span class="label-text">Towers</span>
+                    </label>
+                </div>
+                <div class="tower-status-scroll-area">
+                    <div id="towerStatusList" class="tower-status-list"></div>
+                </div>
+            </div>
+            </div>
             
             <!-- Debug Wave Selector Panel (only visible when debug mode is on) -->
             <div class="overlay-panel overlay-debug-selector" id="debugWaveSelectorPanel" style="display: none;">
@@ -148,12 +163,12 @@
                         <button id="debugGameOverBtn" class="debug-btn debug-btn-red debug-btn-wrap">Game Over</button>
                     </div>
                     <div class="overlay-row debug-row-inline">
-                        <button id="debugPlaceBoxesBtn" class="debug-btn debug-btn-blue debug-btn-wrap">Place Boxes</button>
-                        <button id="debugPlaceItemsBtn" class="debug-btn debug-btn-green debug-btn-wrap">Place Items</button>
+                        <button id="debugPlaceBoxesBtn" class="debug-btn debug-btn-blue debug-btn-wrap" title="Spawns up to 5 mystery boxes and 5 burning vaults">Place Boxes</button>
+                        <button id="debugPlaceItemsBtn" class="debug-btn debug-btn-green debug-btn-wrap" title="Mystery-style drops (5) plus all spawnable map artifacts when unlocked for this wave group">Place Items</button>
                     </div>
-                    <div class="overlay-row" style="padding-right: 30px;">
-                        <span class="overlay-label">FPS</span>
-                        <span class="overlay-value" id="debugFpsCounter" style="color: #FFD700;">--</span>
+                    <div class="overlay-row debug-row-inline">
+                        <button id="debugResetMetaProgressionBtn" class="debug-btn debug-btn-red debug-btn-wrap" title="Reset persistent meta progression unlocks">Reset Meta</button>
+                        <button id="debugMaxMetaProgressionBtn" class="debug-btn debug-btn-yellow debug-btn-wrap" title="Unlock all persistent meta progression items">Max Meta</button>
                     </div>
                 </div>
             </div>
@@ -253,8 +268,28 @@
 
             <!-- Inventory Tab -->
             <div class="tab-content active" id="inventoryTab">
-                <div class="inventory-grid" id="inventoryGrid">
-                    <!-- Purchased towers will be dynamically added here -->
+                <div class="shop-sub-tabs">
+                    <button type="button" class="shop-sub-tab-button cta-button cta-small cta-blue active" data-inventory-sub-tab="items">
+                        <span class="tab-content-wrapper">
+                            Items
+                        </span>
+                    </button>
+                    <button type="button" class="shop-sub-tab-button cta-button cta-small cta-green" data-inventory-sub-tab="artifacts">
+                        <span class="tab-content-wrapper">
+                            Collection
+                        </span>
+                        <span class="tab-badge" id="inventorySubTabBadgeArtifacts" style="display: none;">0</span>
+                    </button>
+                </div>
+                <div class="shop-sub-tab-content active" id="inventorySubTabItems">
+                    <div class="inventory-grid" id="inventoryGrid">
+                        <!-- Purchased towers and placeable items -->
+                    </div>
+                </div>
+                <div class="shop-sub-tab-content" id="inventorySubTabArtifacts">
+                    <div class="inventory-grid" id="inventoryGridArtifacts">
+                        <!-- Collected artifacts -->
+                    </div>
                 </div>
             </div>
 
@@ -263,7 +298,7 @@
                 <span id="waveNumber">1</span>
                 <span id="waveTimer">2:00</span>
                 <span id="playerLevel">1</span>
-                <span id="playerXP">0 / 100</span>
+                <span id="playerXP">0</span>
                 <div class="xp-bar"><div class="xp-progress" id="xpProgress"></div></div>
                 <span id="playerCurrency">$0</span>
                 <span id="upgradeTokens">0</span>
@@ -289,16 +324,13 @@
     <div id="gameOverModal" class="modal-overlay save-load-mask">
         <div class="modal modal-frame-9patch">
             <div class="modal-frame-content">
-                <img src="assets/images/misc/death.png" alt="Death" class="game-over-image" style="width: 100%; max-width: 300px; height: auto; margin: 0 auto 20px; display: block; image-rendering: crisp-edges;">
-                <h2>Game Over</h2>
-                <p class="modal-subtitle">Fire destroyed the Great Tree, and all is lost... this time...</p>
+                <h2 class="game-over-title">
+                    <img src="assets/images/misc/death.png" alt="" class="game-over-title-icon">
+                    <span>Game Over</span>
+                </h2>
+                <p class="modal-subtitle">Fire destroyed The Ancient Grove, and all is lost... this time...</p>
                 <div class="game-over-stats" id="gameOverStats">
                     <!-- Stats will be added dynamically -->
-                </div>
-                <div class="modal-choices">
-                    <button class="choice-btn cta-button" id="restartBtn">Restart</button>
-                    <button class="choice-btn cta-button" id="gameOverNewGameBtn" style="display: none;">New Game</button>
-                    <button class="choice-btn cta-button" id="gameOverLoadGameBtn">Load Game</button>
                 </div>
             </div>
         </div>
@@ -350,6 +382,12 @@
     <div id="settingsModal" class="modal-overlay splash-screen">
         <div class="modal splash-modal modal-frame-9patch">
             <div class="modal-frame-content">
+                <div class="splash-menu-corner">
+                    <span id="splashGameVersion" class="splash-version" aria-label="Game version"></span>
+                    <button type="button" id="splashFeedbackBtn" class="splash-feedback-btn overlay-row-tooltip" data-tooltip="Give feedback or report a bug" aria-label="Give feedback or report a bug">
+                        <img src="assets/images/misc/feedback.png" alt="" decoding="async">
+                    </button>
+                </div>
                 <div class="splash-content">
                     <h1 class="splash-title">
                         <img src="assets/images/ui/hexfire-logo.png" alt="Hexfire Logo" class="hexfire-logo-icon">
@@ -444,6 +482,50 @@
                     </label>
                 </div>
                 
+                <!-- FPS counter (below top-left HUD) -->
+                <div class="setting-item">
+                    <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
+                        <span style="font-weight: bold;">Show FPS counter</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="settingShowFpsCounter">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </label>
+                </div>
+                
+                <!-- Hover tooltips (map, shop, overlay, etc.) -->
+                <div class="setting-item">
+                    <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
+                        <span style="font-weight: bold;">Disable tooltips</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="settingDisableGameTooltips">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </label>
+                </div>
+
+                <!-- Reduced-opacity water streams & particles (performance / clarity) -->
+                <div class="setting-item">
+                    <div style="display: flex; align-items: center; justify-content: space-between; color: #fff;">
+                        <label for="settingSimplifiedWaterVisuals" style="font-weight: bold; cursor: var(--cursor-default);">Reduced water visuals</label>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="settingSimplifiedWaterVisuals">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+                
+                <!-- Endless mode (locked until campaign complete; debug mode bypasses lock) -->
+                <div class="setting-item" id="settingEndlessModeRow">
+                    <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
+                        <span style="font-weight: bold;">Endless mode</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="settingEndlessMode">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </label>
+                </div>
+                
                 <!-- Debug Mode -->
                 <div class="setting-item">
                     <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
@@ -456,9 +538,9 @@
                 </div>
                 
                 </div>
-                <div class="modal-choices">
-                    <button class="choice-btn cta-button" id="openAdvancedSettingsBtn">Advanced</button>
-                    <button class="choice-btn cta-button" id="closeSettingsModalBtn">Close</button>
+                <div class="modal-choices modal-choices-settings-footer">
+                    <button class="choice-btn cta-button" id="closeSettingsModalBtn">Done</button>
+                    <button class="choice-btn cta-button cta-purple" id="openAdvancedSettingsBtn">Advanced</button>
                 </div>
             </div>
         </div>
@@ -521,8 +603,77 @@
                     <input type="range" id="settingWheelScrollSpeed" class="setting-slider" min="0.5" max="5" value="1" step="0.5">
                 </div>
                 </div>
+                <div class="modal-choices modal-choices-advanced-footer">
+                    <button class="choice-btn cta-button" id="closeAdvancedSettingsBtn">Done</button>
+                    <button type="button" class="choice-btn cta-button cta-lime" id="openMetaProgressionBtn">Unlocks</button>
+                    <button type="button" class="choice-btn cta-button cta-yellow" id="openRunHistoryBtn">Run history</button>
+                    <button type="button" class="choice-btn cta-button cta-orange" id="openUpdateLogBtn">Update log</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Meta progression unlocks (from Advanced Settings) -->
+    <div id="metaProgressionModal" class="modal-overlay">
+        <div class="modal modal-frame-9patch meta-progression-modal-panel">
+            <div class="modal-frame-content">
+                <h2>Unlocks</h2>
+                <p class="modal-subtitle meta-progression-gallery-intro">Complete runs above each listed wave group to make these items and mechanics available in future runs.</p>
+                <div id="metaProgressionUnlockGrid" class="meta-progression-gallery-grid" role="list"></div>
                 <div class="modal-choices">
-                    <button class="choice-btn cta-button" id="closeAdvancedSettingsBtn">Back</button>
+                    <button type="button" class="choice-btn cta-button" id="closeMetaProgressionBtn">Done</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Run history (from Advanced Settings) -->
+    <div id="runHistoryModal" class="modal-overlay">
+        <div class="modal modal-frame-9patch run-history-modal-panel">
+            <div class="modal-frame-content">
+                <h2>Run history</h2>
+                <p class="modal-subtitle run-history-intro">Runs saved when a game ends. Select one to view full stats.</p>
+                <div class="run-history-layout">
+                    <div class="run-history-list-col">
+                        <div id="runHistoryList" class="run-history-list" role="listbox" aria-label="Past runs"></div>
+                    </div>
+                    <div class="run-history-detail-col">
+                        <div id="runHistoryDetail" class="run-history-detail" role="region" aria-label="Run details">
+                            <div class="run-history-detail-placeholder">Select a run from the list</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-choices">
+                    <button type="button" class="choice-btn cta-button" id="closeRunHistoryModalBtn">Done</button>
+                    <button type="button" class="choice-btn cta-button cta-red" id="resetRunHistoryModalBtn">Reset History</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Update log modal (opened from Advanced Settings) -->
+    <div id="updateLogModal" class="modal-overlay">
+        <div class="modal modal-frame-9patch update-log-modal-panel">
+            <div class="modal-frame-content">
+                <h2>Update log</h2>
+                <div id="updateLogBody" class="update-log-body" role="document"></div>
+                <div class="modal-choices">
+                    <button type="button" class="choice-btn cta-button" id="closeUpdateLogBtn">Done</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Feedback / bug reports (scaffold — submission wired later) -->
+    <div id="feedbackModal" class="modal-overlay">
+        <div class="modal modal-frame-9patch feedback-modal-panel">
+            <div class="modal-frame-content">
+                <h2>Give feedback or report a bug</h2>
+                <p class="modal-subtitle feedback-modal-intro">We welcome any and all feedback, whether it's to report a bug, suggest a feature, or give any other thoughts or ideas about Hexfire! Game state and debug info will also be submitted automatically with your message.</p>
+                <textarea id="feedbackMessageInput" class="feedback-textarea" rows="6" placeholder="Describe what happened or what you’d like to see…" maxlength="8000" aria-label="Feedback message"></textarea>
+                <div class="modal-choices feedback-modal-choices">
+                    <button type="button" class="choice-btn cta-button" id="cancelFeedbackModalBtn">Cancel</button>
+                    <button type="button" class="choice-btn cta-button cta-green" id="sendFeedbackBtn">Send feedback</button>
                 </div>
             </div>
         </div>
@@ -531,14 +682,17 @@
     <!-- Save Game Modal -->
     <div id="saveGameModal" class="modal-overlay save-load-mask">
         <div class="modal modal-frame-9patch" style="max-width: 700px; max-height: 80vh;">
-            <div class="modal-frame-content">
-                <h2>Save Game</h2>
-                <p class="modal-subtitle">Select a slot to save your game:</p>
-                <div id="saveSlotsContainer" class="save-slots-container">
-                    <!-- Save slots will be populated dynamically -->
+            <div class="modal-frame-content save-game-modal-content">
+                <h2 class="save-game-modal-title">Save Game</h2>
+                <div class="save-slots-scroll-wrap">
+                    <div class="save-slots-scroll">
+                        <div id="saveSlotsContainer" class="save-slots-container">
+                            <!-- Save slots will be populated dynamically -->
+                        </div>
+                    </div>
                 </div>
-                <div class="modal-choices">
-                    <button class="choice-btn cta-button" id="closeSaveGameBtn">Close</button>
+                <div class="modal-choices save-game-modal-footer">
+                    <button type="button" class="choice-btn cta-button" id="closeSaveGameBtn">Close</button>
                 </div>
             </div>
         </div>
@@ -687,8 +841,9 @@
                 <div id="leaderboardList" class="leaderboard-list">
                     <!-- Entries populated dynamically -->
                 </div>
-                <div class="modal-choices" style="margin-top: 16px;">
-                    <button class="choice-btn cta-button" id="leaderboardCloseBtn">Close</button>
+                <div class="modal-choices leaderboard-modal-choices" style="margin-top: 16px;">
+                    <button type="button" class="choice-btn cta-button cta-red" id="leaderboardResetBtn">Reset</button>
+                    <button type="button" class="choice-btn cta-button" id="leaderboardCloseBtn">Close</button>
                 </div>
             </div>
         </div>

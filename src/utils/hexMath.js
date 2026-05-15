@@ -4,6 +4,12 @@
 
 import { CONFIG } from '../config.js';
 
+// Precomputed sqrt(3) — axialToPixel/pixelToAxial are called per-hex per-frame from
+// renderer/grid loops, so avoiding two Math.sqrt calls per invocation matters at scale.
+const SQRT3 = Math.sqrt(3);
+const SQRT3_OVER_3 = SQRT3 / 3;
+const SQRT3_OVER_2 = SQRT3 / 2;
+
 /**
  * Converts axial coordinates (q, r) to pixel coordinates (x, y) for rendering
  * @param {number} q - Column coordinate
@@ -12,7 +18,7 @@ import { CONFIG } from '../config.js';
  * @returns {{x: number, y: number}} Pixel coordinates
  */
 export function axialToPixel(q, r, radius = CONFIG.HEX_RADIUS) {
-  const x = radius * (Math.sqrt(3) * q + Math.sqrt(3) / 2 * r);
+  const x = radius * (SQRT3 * q + SQRT3_OVER_2 * r);
   const y = radius * (3 / 2 * r);
   return { x, y };
 }
@@ -25,7 +31,7 @@ export function axialToPixel(q, r, radius = CONFIG.HEX_RADIUS) {
  * @returns {{q: number, r: number}} Axial coordinates (rounded)
  */
 export function pixelToAxial(x, y, radius = CONFIG.HEX_RADIUS) {
-  const q = (Math.sqrt(3) / 3 * x - 1 / 3 * y) / radius;
+  const q = (SQRT3_OVER_3 * x - 1 / 3 * y) / radius;
   const r = (2 * y) / (3 * radius);
   return axialRound(q, r);
 }
@@ -63,26 +69,44 @@ export function axialRound(q, r) {
   return { q: rx, r: rz };
 }
 
+// getNeighbors is one of the most-called helpers in the whole game (renderer,
+// fire spread, boss serpentine/doomfire, pathing, spawner adjacency checks,
+// water tank fill, suppression bomb adjacency, etc). Each call previously
+// allocated a 6-direction array PLUS 6 fresh {q,r} objects — that's 7 GC
+// objects per call, hundreds of times per frame in late-game waves.
+//
+// Cache: results are keyed by `q,r` and reused across the run. The total
+// number of unique (q,r) inputs is bounded by ~grid size + the immediate
+// out-of-bounds halo, so the cache stays small (<1000 entries).
+//
+// IMPORTANT: callers must treat the returned array as READ-ONLY. A quick
+// repo audit confirmed no callers mutate it (only forEach/for-of/some/find/
+// map/filter usages).
+const _NEIGHBOR_CACHE = new Map();
+
 /**
- * Gets all 6 neighboring hexes for a given hex
+ * Gets all 6 neighboring hexes for a given hex.
+ *
+ * NOTE: returns a CACHED, SHARED array. Do not mutate the result.
+ *
  * @param {number} q - Column coordinate
  * @param {number} r - Row coordinate
  * @returns {Array<{q: number, r: number}>} Array of neighbor coordinates
  */
 export function getNeighbors(q, r) {
-  const directions = [
-    { q: 1, r: 0 },   // East
-    { q: 1, r: -1 },  // Northeast
-    { q: 0, r: -1 },  // Northwest
-    { q: -1, r: 0 },  // West
-    { q: -1, r: 1 },  // Southwest
-    { q: 0, r: 1 },   // Southeast
+  const key = q * 65536 + r; // packed numeric key — fast, collision-free for reasonable grid sizes
+  let cached = _NEIGHBOR_CACHE.get(key);
+  if (cached) return cached;
+  cached = [
+    { q: q + 1, r: r },      // East
+    { q: q + 1, r: r - 1 },  // Northeast
+    { q: q,     r: r - 1 },  // Northwest
+    { q: q - 1, r: r },      // West
+    { q: q - 1, r: r + 1 },  // Southwest
+    { q: q,     r: r + 1 },  // Southeast
   ];
-  
-  return directions.map(dir => ({
-    q: q + dir.q,
-    r: r + dir.r,
-  }));
+  _NEIGHBOR_CACHE.set(key, cached);
+  return cached;
 }
 
 /**
@@ -239,6 +263,17 @@ export function getHexesInRing(q, r, ring) {
   return hexes;
 }
 
+// Precomputed unit vertex offsets (cos/sin at -30°, 30°, 90°, 150°, 210°, 270°).
+// getHexVertices is hammered every frame for every hex drawn (grid, fires, towers,
+// borders, FX), so trading 6 cos/sin calls per call for 6 multiplies is a clear win.
+const _HEX_VERT_COS = new Array(6);
+const _HEX_VERT_SIN = new Array(6);
+for (let i = 0; i < 6; i++) {
+  const a = (Math.PI / 180) * (60 * i - 30);
+  _HEX_VERT_COS[i] = Math.cos(a);
+  _HEX_VERT_SIN[i] = Math.sin(a);
+}
+
 /**
  * Get vertices of a hexagon for rendering
  * @param {number} x - Center x pixel coordinate
@@ -247,16 +282,14 @@ export function getHexesInRing(q, r, ring) {
  * @returns {Array<{x: number, y: number}>} Array of 6 vertex coordinates
  */
 export function getHexVertices(x, y, radius = CONFIG.HEX_RADIUS) {
-  const vertices = [];
-  for (let i = 0; i < 6; i++) {
-    const angleDeg = 60 * i - 30; // Start from -30 degrees (flat-top)
-    const angleRad = Math.PI / 180 * angleDeg;
-    vertices.push({
-      x: x + radius * Math.cos(angleRad),
-      y: y + radius * Math.sin(angleRad),
-    });
-  }
-  return vertices;
+  return [
+    { x: x + radius * _HEX_VERT_COS[0], y: y + radius * _HEX_VERT_SIN[0] },
+    { x: x + radius * _HEX_VERT_COS[1], y: y + radius * _HEX_VERT_SIN[1] },
+    { x: x + radius * _HEX_VERT_COS[2], y: y + radius * _HEX_VERT_SIN[2] },
+    { x: x + radius * _HEX_VERT_COS[3], y: y + radius * _HEX_VERT_SIN[3] },
+    { x: x + radius * _HEX_VERT_COS[4], y: y + radius * _HEX_VERT_SIN[4] },
+    { x: x + radius * _HEX_VERT_COS[5], y: y + radius * _HEX_VERT_SIN[5] },
+  ];
 }
 
 /**
@@ -493,80 +526,103 @@ export function getSpreadTowerTargets(q, r, direction, range, jetCount = 3) {
  */
 export function getSpreadTowerSprayEndpoints(q, r, direction, range) {
   const endpoints = [];
-  
-  // Get main direction angle
+
   const mainAngle = getDirectionAngle(direction);
-  
-  // Find the last valid hex along the main direction that's within map bounds
-  // This ensures the center beam stops at the map edge, just like jet towers
+
   let lastValidHex = { q, r };
   for (let i = 1; i <= range; i++) {
     const testHex = getHexInDirection(q, r, direction, i);
     if (isInBounds(testHex.q, testHex.r)) {
       lastValidHex = testHex;
     } else {
-      break; // Stop at first out-of-bounds hex
+      break;
     }
   }
-  
+
   const { x: startX, y: startY } = axialToPixel(q, r);
   const { x: mainEndX, y: mainEndY } = axialToPixel(lastValidHex.q, lastValidHex.r);
-  const mainDistance = Math.sqrt((mainEndX - startX) ** 2 + (mainEndY - startY) ** 2);
-  
-  // Calculate all spray angles: main + 4 flanking (±15° and ±30°)
-  const leftAngle30 = mainAngle - (30 * Math.PI / 180);  // -30° from main
-  const rightAngle30 = mainAngle + (30 * Math.PI / 180); // +30° from main
-  const leftAngle15 = mainAngle - (15 * Math.PI / 180);  // -15° from main
-  const rightAngle15 = mainAngle + (15 * Math.PI / 180); // +15° from main
-  
-  // For each angle, calculate the spray endpoint
-  [mainAngle, leftAngle15, rightAngle15, leftAngle30, rightAngle30].forEach((angle, index) => {
-    if (index === 0) {
-      // Main jet: endpoint is at the last valid hex (stops at map edge)
-      const maxRangeHex = getHexInDirection(q, r, direction, range);
-      const isAtBorder = !isInBounds(maxRangeHex.q, maxRangeHex.r);
-      endpoints.push({ x: mainEndX, y: mainEndY, isBorder: isAtBorder });
-    } else {
-      // Offset jets with different lengths based on angle
-      let offsetDistance;
-      if (index === 1 || index === 2) {
-        // ±15° jets: 85% + 5% = 89.25% of main distance
-        offsetDistance = mainDistance * 0.8925;
+  const mainDistance = Math.hypot(mainEndX - startX, mainEndY - startY);
+
+  const gameplayTargets = getSpreadTowerTargets(q, r, direction, range);
+  const maxRangeHex = getHexInDirection(q, r, direction, range);
+  const mainRayOutOfBounds = !isInBounds(maxRangeHex.q, maxRangeHex.r);
+
+  const leftAngle30 = mainAngle - (30 * Math.PI) / 180;
+  const rightAngle30 = mainAngle + (30 * Math.PI) / 180;
+  const leftAngle15 = mainAngle - (15 * Math.PI) / 180;
+  const rightAngle15 = mainAngle + (15 * Math.PI) / 180;
+  const beamAngles = [mainAngle, leftAngle15, rightAngle15, leftAngle30, rightAngle30];
+
+  // Five jets at 15° spacing; each "owns" ±7.5° so every hit hex maps to exactly one beam for extent.
+  const sectorHalfRad = (7.5 * Math.PI) / 180;
+
+  const angleDiffSigned = (a, b) => {
+    let d = a - b;
+    while (d > Math.PI) d -= 2 * Math.PI;
+    while (d < -Math.PI) d += 2 * Math.PI;
+    return d;
+  };
+
+  /** Furthest gameplay hex along `beamAngle` whose bearing lies in this jet's sector (matches 5-way fan). */
+  const maxAlongRayInSector = (beamAngle) => {
+    const c = Math.cos(beamAngle);
+    const s = Math.sin(beamAngle);
+    let maxT = 0;
+    for (const hex of gameplayTargets) {
+      const { x, y } = axialToPixel(hex.q, hex.r);
+      const dx = x - startX;
+      const dy = y - startY;
+      if (dx * dx + dy * dy < 1e-8) continue;
+      const hexAng = Math.atan2(dy, dx);
+      if (Math.abs(angleDiffSigned(hexAng, beamAngle)) > sectorHalfRad + 1e-7) continue;
+      const t = dx * c + dy * s;
+      if (t > maxT) maxT = t;
+    }
+    return maxT;
+  };
+
+  beamAngles.forEach((angle, index) => {
+    // Endpoint = max projection of hit hex centers onto this jet (no extra margin — a full
+    // HEX_RADIUS extension was reading ~1 hex past actual damage range).
+    let maxT = maxAlongRayInSector(angle);
+    let offsetDistance = maxT;
+
+    if (offsetDistance < CONFIG.HEX_RADIUS * 0.35) {
+      if (index === 0) {
+        offsetDistance = mainDistance;
       } else {
-        // ±30° jets: 85% of main distance
-        offsetDistance = mainDistance * 0.85;
-      }
-      
-      // Calculate offset endpoint
-      const offsetEndX = startX + Math.cos(angle) * offsetDistance;
-      const offsetEndY = startY + Math.sin(angle) * offsetDistance;
-      
-      // Check if offset endpoint is within bounds by converting back to hex coordinates
-      const offsetHex = pixelToAxial(offsetEndX, offsetEndY);
-      const isOffsetInBounds = isInBounds(offsetHex.q, offsetHex.r);
-      
-      // If out of bounds, find the last valid point along this angle
-      if (!isOffsetInBounds) {
-        // Find last valid hex along this angle by testing points at decreasing distances
-        let lastValidOffsetX = startX;
-        let lastValidOffsetY = startY;
-        for (let testDist = offsetDistance; testDist > 0; testDist -= CONFIG.HEX_RADIUS * 0.5) {
-          const testX = startX + Math.cos(angle) * testDist;
-          const testY = startY + Math.sin(angle) * testDist;
-          const testHex = pixelToAxial(testX, testY);
-          if (isInBounds(testHex.q, testHex.r)) {
-            lastValidOffsetX = testX;
-            lastValidOffsetY = testY;
-            break;
-          }
-        }
-        endpoints.push({ x: lastValidOffsetX, y: lastValidOffsetY, isBorder: true });
-      } else {
-      endpoints.push({ x: offsetEndX, y: offsetEndY, isBorder: false });
+        const scale = index === 1 || index === 2 ? 0.8925 : 0.85;
+        offsetDistance = Math.max(mainDistance * scale, CONFIG.HEX_RADIUS * 2);
       }
     }
+
+    let endX = startX + Math.cos(angle) * offsetDistance;
+    let endY = startY + Math.sin(angle) * offsetDistance;
+
+    let isBorder = index === 0 && mainRayOutOfBounds;
+
+    const endHex = pixelToAxial(endX, endY);
+    if (!isInBounds(endHex.q, endHex.r)) {
+      let lastValidOffsetX = startX;
+      let lastValidOffsetY = startY;
+      for (let testDist = offsetDistance; testDist > 0; testDist -= CONFIG.HEX_RADIUS * 0.5) {
+        const testX = startX + Math.cos(angle) * testDist;
+        const testY = startY + Math.sin(angle) * testDist;
+        const testHex = pixelToAxial(testX, testY);
+        if (isInBounds(testHex.q, testHex.r)) {
+          lastValidOffsetX = testX;
+          lastValidOffsetY = testY;
+          break;
+        }
+      }
+      endX = lastValidOffsetX;
+      endY = lastValidOffsetY;
+      isBorder = true;
+    }
+
+    endpoints.push({ x: endX, y: endY, isBorder });
   });
-  
+
   return endpoints;
 }
 

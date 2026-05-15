@@ -1,9 +1,10 @@
 // Input Handler - Manages mouse/touch input and drag-and-drop
 
 import { pixelToAxial, axialToPixel, getDirectionAngle, getDirectionAngle12 } from './hexMath.js';
-import { CONFIG, isTowerMovementAllowed } from '../config.js';
+import { CONFIG, isTowerMovementAllowed, getBossPatternForWaveGroup } from '../config.js';
 import { MapScrollSystem } from '../systems/mapScrollSystem.js';
 import { TooltipSystem } from './tooltip.js';
+import { showConfirmModal } from './modal.js';
 
 // Custom cursor URLs - use full path for reliable loading (hotspot 0 0 for consistent alignment across all cursors)
 function getCursorUrl(filename) {
@@ -23,6 +24,14 @@ const CURSOR_DRAG = getCursorUrl('cursor-drag.png') + CURSOR_HOTSPOT + ", auto";
 
 const BODY_CLASS_PLACING = 'placing-item';
 const BODY_CLASS_CLICK_FEEDBACK = 'cursor-click-feedback';
+
+function findFirstInventoryIndexByLevel(arr, level) {
+  if (!arr) return -1;
+  for (let i = 0; i < arr.length; i++) {
+    if (arr[i].level === level) return i;
+  }
+  return -1;
+}
 
 export class InputHandler {
   constructor(canvas, renderer, gameState) {
@@ -47,7 +56,9 @@ export class InputHandler {
     
     // Initialize tooltip system (pass gameState so tooltips can be disabled during tutorial)
     this.tooltipSystem = new TooltipSystem(gameState);
-    
+    /** @type {{ clientX: number, clientY: number, hexCoords: { q: number, r: number }, canvasMouseX: number, canvasMouseY: number } | null} */
+    this._lastCanvasTooltipState = null;
+
     this.setupEventListeners();
   }
 
@@ -158,19 +169,7 @@ export class InputHandler {
     } else if (this.isDragging && this.dragType === 'suppression-bomb-existing' && isTowerMovementAllowed(this.gameState)) {
       const bomb = this.gameState.suppressionBombSystem?.getSuppressionBomb(this.dragData.bombId);
       if (bomb) {
-        // Remove suppression bomb from grid
-        this.gameState.suppressionBombSystem?.removeSuppressionBomb(this.dragData.bombId);
-        
-        // Initialize purchasedSuppressionBombs array if it doesn't exist
-        if (!this.gameState.player.inventory.purchasedSuppressionBombs) {
-          this.gameState.player.inventory.purchasedSuppressionBombs = [];
-        }
-        
-        // Add the suppression bomb back to inventory
-        this.gameState.player.inventory.purchasedSuppressionBombs.push({
-          type: 'suppression_bomb',
-          level: bomb.level
-        });
+        this.gameState.suppressionBombSystem?.storeSuppressionBombInInventory(this.dragData.bombId);
         
         // Update inventory UI
         if (window.updateInventory) {
@@ -228,6 +227,136 @@ export class InputHandler {
       const item = e.target.closest('.inventory-item');
       
       if (!item || item.classList.contains('locked')) return;
+
+      // Parts voucher targeting: click a broken stored tower to permanently recycle it for currency.
+      if (this.gameState.isPartsRecycleMode && item.id && item.id.startsWith('stored-tower-')) {
+        const index = parseInt(item.id.split('-')[2], 10);
+        const storedTower = this.gameState.player.inventory.storedTowers?.[index];
+        if (storedTower?.broken) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (typeof window !== 'undefined' && window.AudioManager) {
+            window.AudioManager.playSFX('button1');
+          }
+          (async () => {
+            if (!storedTower.partsValue || storedTower.partsValue <= 0) {
+              storedTower.partsValue = this.gameState.towerSystem?.rollBrokenTowerPartsValue?.() ?? 100;
+            }
+            const partsValue = Math.max(1, Math.round(Number(storedTower.partsValue) || 100));
+            const towerIconHtml = (typeof window !== 'undefined' && window.createTowerIconHTML)
+              ? window.createTowerIconHTML(
+                  storedTower.type || 'jet',
+                  storedTower.rangeLevel || 1,
+                  storedTower.powerLevel || 1
+                )
+              : '';
+            const confirmed = await showConfirmModal({
+              title: 'Recycle this tower?',
+              message: `<div class="parts-voucher-value-row" style="display:flex;align-items:center;justify-content:center;gap:8px;color:#00FF88;font-size:26px;font-weight:700;margin-top:4px;">Parts value: $${partsValue}</div>`,
+              messageIsHtml: true,
+              confirmText: 'Collect',
+              cancelText: 'Cancel',
+              itemIcon: `<div style="display:flex;align-items:center;justify-content:center;gap:10px;">
+                <img src="assets/images/items/parts_voucher.png" style="width: 64px; height: auto; image-rendering: pixelated;" />
+                <img src="assets/images/ui/trade-arrow.png" style="width: 30px; height: auto; image-rendering: pixelated;" />
+                <div style="display:flex;align-items:center;justify-content:center;transform:scale(1.05);margin-left:15px;position:relative;filter:grayscale(0.8);">
+                  ${towerIconHtml}
+                  <img src="assets/images/misc/hammer.png" style="position:absolute;right:-8px;bottom:-4px;width:28px;height:auto;image-rendering:pixelated;" />
+                </div>
+              </div>`,
+            });
+            if (confirmed && typeof window !== 'undefined' && window.applyPartsVoucherFromInventory) {
+              window.applyPartsVoucherFromInventory(index, item);
+            }
+          })();
+          return;
+        }
+      }
+
+      // Repair kit targeting: click a broken stored tower (handled here; onclick on items is disabled)
+      if (this.gameState.isRepairSelectionMode && item.id && item.id.startsWith('stored-tower-')) {
+        const index = parseInt(item.id.split('-')[2], 10);
+        const storedTower = this.gameState.player.inventory.storedTowers?.[index];
+        if (storedTower?.broken) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (typeof window !== 'undefined' && window.AudioManager) {
+            window.AudioManager.playSFX('button1');
+          }
+          (async () => {
+            const towerIconHtml = (typeof window !== 'undefined' && window.createTowerIconHTML)
+              ? window.createTowerIconHTML(
+                  storedTower.type || 'jet',
+                  storedTower.rangeLevel || 1,
+                  storedTower.powerLevel || 1
+                )
+              : '';
+            const confirmed = await showConfirmModal({
+              title: 'repair this tower?',
+              message: 'Use Repair Supplies to fix this tower for placement.',
+              confirmText: 'Repair',
+              cancelText: 'Cancel',
+              pinDialogRight: true,
+              itemIcon: `<div style="display:flex;align-items:center;justify-content:center;gap:10px;">
+                <img src="assets/images/items/repair.png" style="width: 64px; height: auto; image-rendering: pixelated;" />
+                <img src="assets/images/ui/trade-arrow.png" style="width: 30px; height: auto; image-rendering: pixelated;" />
+                <div style="display:flex;align-items:center;justify-content:center;transform:scale(1.05);margin-left:15px;">${towerIconHtml}</div>
+              </div>`,
+            });
+            if (confirmed && typeof window !== 'undefined' && window.applyTowerRepairFromInventory) {
+              window.applyTowerRepairFromInventory(index);
+            }
+          })();
+          return;
+        }
+      }
+
+      // Tower sellback: stored or unplaced purchased tower cards
+      if (this.gameState.isTowerSellbackMode && item.id && (item.id.startsWith('stored-tower-') || item.id.startsWith('tower-to-place-'))) {
+        const isStored = item.id.startsWith('stored-tower-');
+        const index = isStored ? parseInt(item.id.split('-')[2], 10) : parseInt(item.id.split('-')[3], 10);
+        if (!Number.isFinite(index)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.handleInventoryTowerSellbackClick(isStored ? 'stored' : 'purchased', index);
+        return;
+      }
+
+      if (this.gameState.isTowerSellbackMode) {
+        return;
+      }
+      if (this.gameState.isPartsRecycleMode) {
+        return;
+      }
+
+      // Shield targeting: apply to inventory tower cards (same stacking rules as map)
+      if (this.selectedShieldForPlacement && item.id) {
+        if (item.id.startsWith('tower-to-place-')) {
+          const towerIndex = parseInt(item.id.split('-')[3], 10);
+          const tower = this.gameState.player.inventory.purchasedTowers?.[towerIndex];
+          if (tower) {
+            e.preventDefault();
+            e.stopPropagation();
+            this.applyShieldToInventoryTower('purchased', towerIndex, e);
+            return;
+          }
+        }
+        if (item.id.startsWith('stored-tower-')) {
+          const index = parseInt(item.id.split('-')[2], 10);
+          const storedTower = this.gameState.player.inventory.storedTowers?.[index];
+          if (storedTower) {
+            if (storedTower.broken) {
+              this.gameState.notificationSystem?.showToast?.('Tower needs repaired!', 3000, 'neutral');
+              e.preventDefault();
+              return;
+            }
+            e.preventDefault();
+            e.stopPropagation();
+            this.applyShieldToInventoryTower('stored', index, e);
+            return;
+          }
+        }
+      }
       
       // Check if in upgrade selection mode
       if (this.gameState.isUpgradeSelectionMode) {
@@ -255,7 +384,7 @@ export class InputHandler {
         if (item.id && item.id.startsWith('stored-tower-')) {
           const index = parseInt(item.id.split('-')[2]);
           const storedTower = this.gameState.player.inventory.storedTowers[index];
-          if (storedTower && (storedTower.rangeLevel < 4 || storedTower.powerLevel < 4)) {
+          if (storedTower && !storedTower.broken && (storedTower.rangeLevel < 4 || storedTower.powerLevel < 4)) {
             // Play button2 sound when clicking tower for upgrade
             if (typeof window !== 'undefined' && window.AudioManager) {
               window.AudioManager.playSFX('button2');
@@ -273,8 +402,14 @@ export class InputHandler {
         return;
       }
       
-      // If shield is selected for placement and user clicked another inventory item, clear selection (block in tutorial step 24)
-      if (this.selectedShieldForPlacement && (!item.id || !item.id.startsWith('shield-to-place-'))) {
+      // If shield is selected for placement and user clicked a non-target inventory item, clear selection (block in tutorial step 24)
+      const isInventoryTowerCard =
+        item.id && (item.id.startsWith('stored-tower-') || item.id.startsWith('tower-to-place-'));
+      if (
+        this.selectedShieldForPlacement &&
+        !isInventoryTowerCard &&
+        (!item.id || !item.id.startsWith('shield-to-place-'))
+      ) {
         if (this.gameState.tutorialShieldApplyOnlyPathTower) return; // No cancel - must apply to path tower
         this.clearShieldSelection();
       }
@@ -301,6 +436,15 @@ export class InputHandler {
         const index = parseInt(item.id.split('-')[2]);
         const storedTower = this.gameState.player.inventory.storedTowers[index];
         if (storedTower) {
+          if (storedTower.broken) {
+            this.gameState.notificationSystem?.showToast?.(
+              'Tower needs repaired!',
+              3000,
+              'neutral'
+            );
+            e.preventDefault();
+            return;
+          }
           this.setPlacingActiveItem(item);
           this.startDraggingStoredTower(e, storedTower, index);
           e.preventDefault();
@@ -308,10 +452,14 @@ export class InputHandler {
         return;
       }
       
-      // Check if clicking on a suppression bomb to place
+      // Check if clicking on a suppression bomb to place (one card per level; consume first matching entry)
       if (item.id && item.id.startsWith('suppression-bomb-to-place-')) {
-        const bombIndex = parseInt(item.id.split('-')[4]);
-        const bomb = this.gameState.player.inventory.purchasedSuppressionBombs?.[bombIndex];
+        const m = item.id.match(/^suppression-bomb-to-place-level-(\d+)$/);
+        const level = m ? parseInt(m[1], 10) : NaN;
+        const bombIndex = Number.isFinite(level)
+          ? findFirstInventoryIndexByLevel(this.gameState.player.inventory.purchasedSuppressionBombs, level)
+          : parseInt(item.id.split('-')[4], 10);
+        const bomb = bombIndex >= 0 ? this.gameState.player.inventory.purchasedSuppressionBombs?.[bombIndex] : null;
         
         if (bomb) {
           this.setPlacingActiveItem(item);
@@ -323,8 +471,12 @@ export class InputHandler {
       
       // Check if clicking on a shield to place
       if (item.id && item.id.startsWith('shield-to-place-')) {
-        const shieldIndex = parseInt(item.id.split('-')[3]);
-        const shield = this.gameState.player.inventory.purchasedShields?.[shieldIndex];
+        const m = item.id.match(/^shield-to-place-level-(\d+)$/);
+        const level = m ? parseInt(m[1], 10) : NaN;
+        const shieldIndex = Number.isFinite(level)
+          ? findFirstInventoryIndexByLevel(this.gameState.player.inventory.purchasedShields, level)
+          : parseInt(item.id.split('-')[3], 10);
+        const shield = shieldIndex >= 0 ? this.gameState.player.inventory.purchasedShields?.[shieldIndex] : null;
         
         if (shield) {
           // Check if we should start dragging or enter placement mode
@@ -446,11 +598,20 @@ export class InputHandler {
     };
     this.gameState.selectedTowerId = null;
     // Keep the selected shield card highlighted so player knows which one they're applying
-    const shieldEl = document.getElementById(`shield-to-place-${index}`);
+    const shieldEl = document.getElementById(`shield-to-place-level-${shield.level}`);
     if (shieldEl) shieldEl.classList.add('shield-selected');
     if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_select');
     document.body.style.cursor = CURSOR_DRAG; // Will switch to CURSOR_PLUS/x when hovering over map
     this.setPlacingItemMode(true);
+    // Tutorial: inventory shield uses mousedown + preventDefault — no reliable click; advance from here.
+    this.gameState.advanceTutorialAfterInventoryShieldSelect?.();
+    if (typeof window !== 'undefined' && window.requestAnimationFrame) {
+      requestAnimationFrame(() => {
+        if (window.updateInventory) window.updateInventory();
+      });
+    } else if (typeof window !== 'undefined' && window.updateInventory) {
+      window.updateInventory();
+    }
   }
 
   /**
@@ -614,9 +775,35 @@ export class InputHandler {
       document.body.style.cursor = this.gameState.placementPreview.isValid ? CURSOR_PLUS : CURSOR_X;
       return;
     }
-    // Upgrade modals (selection, confirm) - use default cursor
-    if (this.gameState.isUpgradeSelectionMode && this.isUpgradeModalVisible()) {
+    // Upgrade/sellback modals (selection, confirm) - use default cursor
+    if ((this.gameState.isUpgradeSelectionMode || this.gameState.isTowerSellbackMode) && this.isUpgradeModalVisible()) {
       document.body.style.cursor = CURSOR_DEFAULT;
+      return;
+    }
+    if (this.gameState.isPartsRecycleMode) {
+      document.body.style.cursor = CURSOR_X;
+      return;
+    }
+    // Tower sellback mode: plus over placed towers, x over invalid targets, drag elsewhere
+    if (this.gameState.isTowerSellbackMode) {
+      if (tower) {
+        document.body.style.cursor = CURSOR_PLUS;
+      } else {
+        const hex = this.gameState.gridSystem?.getHex(hexCoords.q, hexCoords.r);
+        const isGroveCenter = hexCoords.q === 0 && hexCoords.r === 0 && hex?.isTown;
+        const hasInvalidTarget = hex && (
+          this.gameState.suppressionBombSystem?.getSuppressionBombAt(hexCoords.q, hexCoords.r) ||
+          this.gameState.waterTankSystem?.getWaterTankAt(hexCoords.q, hexCoords.r) ||
+          hex.hasMysteryItem ||
+          hex.hasTempPowerUpItem ||
+          hex.hasCurrencyItem ||
+          hex.hasDigSite ||
+          hex.hasBurningVault ||
+          hex.hasArtifactItem ||
+          isGroveCenter
+        );
+        document.body.style.cursor = hasInvalidTarget ? CURSOR_X : CURSOR_DRAG;
+      }
       return;
     }
     // Shield placement mode: plus over any tower (stackable), x over non-tower targets, drag elsewhere
@@ -633,6 +820,8 @@ export class InputHandler {
           hex.hasTempPowerUpItem ||
           hex.hasCurrencyItem ||
           hex.hasDigSite ||
+          hex.hasBurningVault ||
+          hex.hasArtifactItem ||
           isGroveCenter
         );
         document.body.style.cursor = hasInvalidTarget ? CURSOR_X : CURSOR_DRAG;
@@ -654,6 +843,8 @@ export class InputHandler {
           hex.hasTempPowerUpItem ||
           hex.hasCurrencyItem ||
           hex.hasDigSite ||
+          hex.hasBurningVault ||
+          hex.hasArtifactItem ||
           isGroveCenter
         );
         document.body.style.cursor = hasInvalidTarget ? CURSOR_X : CURSOR_DRAG;
@@ -670,7 +861,14 @@ export class InputHandler {
   setCursorForInventoryHover(canUpgrade) {
     if (this.isDragging) return;
     if (this.gameState.tutorialMode) return;
-    if (!this.gameState.isUpgradeSelectionMode) return;
+    if (
+      !this.gameState.isUpgradeSelectionMode &&
+      !this.gameState.isTowerSellbackMode &&
+      !this.gameState.isRepairSelectionMode &&
+      !this.gameState.isPartsRecycleMode &&
+      !this.selectedShieldForPlacement
+    )
+      return;
     if (this.isUpgradeModalVisible()) return; // Don't override default cursor when modal is open
     document.body.style.cursor = canUpgrade ? CURSOR_PLUS : CURSOR_X;
   }
@@ -723,7 +921,7 @@ export class InputHandler {
    */
   handleMouseMove(e) {
     // Don't allow interaction if game is over
-    if (this.gameState.gameOver) {
+    if (this.gameState.gameOver && !this.gameState.isGameOverMapInspecting) {
       return;
     }
     // Get canvas-container for consistent coordinate system
@@ -764,9 +962,18 @@ export class InputHandler {
     
     // Update cursor for shield placement / upgrade mode (plus over valid targets, x over invalid)
     const towerAtCursor = this.gameState.towerSystem?.getTowerAt(hexCoords.q, hexCoords.r);
-    this.updateGameCursor(hexCoords, towerAtCursor);
+    if (!this.gameState.isGameOverMapInspecting) {
+      this.updateGameCursor(hexCoords, towerAtCursor);
+    }
     
     // Update tooltip (pass canvas mouse coordinates for boss image detection)
+    this._lastCanvasTooltipState = {
+      clientX: e.clientX,
+      clientY: e.clientY,
+      hexCoords: { q: hexCoords.q, r: hexCoords.r },
+      canvasMouseX,
+      canvasMouseY,
+    };
     this.updateTooltip(e.clientX, e.clientY, hexCoords, canvasMouseX, canvasMouseY);
     
     // Side panel drag detection is now handled globally
@@ -867,6 +1074,15 @@ export class InputHandler {
       this.handleUpgradeSelectionClick(e);
       return;
     }
+
+    if (this.gameState.isTowerSellbackMode) {
+      this.handleTowerSellbackSelectionClick(e);
+      return;
+    }
+
+    if (this.gameState.isPartsRecycleMode) {
+      return;
+    }
     
     if (!this.hoveredHex) return;
     
@@ -878,7 +1094,11 @@ export class InputHandler {
       if (clickedDirection !== null) {
         const towerId = this.gameState.selectedTowerId;
         this.gameState.towerSystem.rotateTower(towerId, clickedDirection);
-        if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('rotate', { volume: 0.25 });
+        this.gameState.runStats?.recordRotation?.();
+        if (typeof window !== 'undefined' && window.AudioManager) {
+          // Per-call gain: 50% of 0.3125×0.75² (two prior 25% step-downs from original 0.3125)
+          window.AudioManager.playSFX('rotate', { volume: 0.3125 * 0.75 * 0.75 * 0.5 });
+        }
         this.gameState.checkTutorialRotationAdvance?.(towerId);
         return;
       }
@@ -971,6 +1191,12 @@ export class InputHandler {
    */
   handleRightClick(e) {
     e.preventDefault(); // Prevent context menu from showing
+
+    if (this.isDragging && this.dragType === 'suppression-bomb-new') {
+      if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_cancel');
+      this.stopDragging();
+      return;
+    }
     
     // Tutorial step 24: block right-click when shield selected (no cancel)
     if (this.gameState.tutorialShieldApplyOnlyPathTower && this.selectedShieldForPlacement) return;
@@ -1000,6 +1226,27 @@ export class InputHandler {
     // Find tower at this location
     const tower = this.gameState.towerSystem?.getTowerAt(hexCoords.q, hexCoords.r);
     if (tower) {
+      if (this.gameState.isMovementTokenMode) {
+        (async () => {
+          const confirmed = await showConfirmModal({
+            title: 'Use movement token?',
+            message:
+              'Store this tower in your inventory? This will use one movement token.',
+            confirmText: 'Confirm',
+            cancelText: 'Cancel',
+            itemIcon: `<img src="assets/images/items/movement_token.png" style="height: 64px; width: auto; image-rendering: pixelated;" />`,
+          });
+          if (!confirmed) return;
+          const success = this.gameState.towerSystem?.storeTowerInInventory(tower.id);
+          if (success) {
+            if (typeof window !== 'undefined' && window.AudioManager) {
+              window.AudioManager.playSFX('tower_cancel');
+            }
+            this.gameState.finalizeMovementTokenUseAfterReposition?.();
+          }
+        })();
+        return;
+      }
       const success = this.gameState.towerSystem?.storeTowerInInventory(tower.id);
       if (success) {
         if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_cancel');
@@ -1013,14 +1260,7 @@ export class InputHandler {
     // Find suppression bomb at this location
     const suppressionBomb = this.gameState.suppressionBombSystem?.getSuppressionBombAt(hexCoords.q, hexCoords.r);
     if (suppressionBomb) {
-      this.gameState.suppressionBombSystem?.removeSuppressionBomb(suppressionBomb.id);
-      if (!this.gameState.player.inventory.purchasedSuppressionBombs) {
-        this.gameState.player.inventory.purchasedSuppressionBombs = [];
-      }
-      this.gameState.player.inventory.purchasedSuppressionBombs.push({
-        type: 'suppression_bomb',
-        level: suppressionBomb.level
-      });
+      this.gameState.suppressionBombSystem?.storeSuppressionBombInInventory(suppressionBomb.id);
       if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_cancel');
       if (window.updateInventory) window.updateInventory();
       if (window.updateUI) window.updateUI();
@@ -1040,9 +1280,9 @@ export class InputHandler {
     
     let placed = false;
     
-    // Check if right-click: cancel placement for towers from inventory
+    // Check if right-click: cancel placement for towers from inventory or new suppression bomb from inventory
     const isRightClick = e.button === 2 || e.which === 3;
-    if (isRightClick && (this.dragType === 'tower-new' || this.dragType === 'tower-stored')) {
+    if (isRightClick && (this.dragType === 'tower-new' || this.dragType === 'tower-stored' || this.dragType === 'suppression-bomb-new')) {
       if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_cancel');
       this.stopDragging();
       return;
@@ -1114,36 +1354,32 @@ export class InputHandler {
           placed = true;
           this.gameState.checkTutorialTowerMoveAdvance?.(fromQ, fromR, q, r);
           if (this.gameState.isMovementTokenMode) {
-            this.gameState.player.movementTokens = Math.max(0, (this.gameState.player.movementTokens || 0) - 1);
-            this.gameState.isMovementTokenMode = false;
-            if (window.hideMovementInstructions) window.hideMovementInstructions();
-            if (window.updateInventory) window.updateInventory();
-            if (window.updateUI) window.updateUI();
-            // Resume game and wave music after successful move
-            if (window.gameLoop?.isPaused && window.resumeGameWithAudio) {
-              window.resumeGameWithAudio();
-              if (window.syncPauseButton) window.syncPauseButton();
-            }
+            this.gameState.finalizeMovementTokenUseAfterReposition?.();
           }
         }
       } else if (this.dragType === 'water-tank-existing') {
         const moved = this.gameState.waterTankSystem?.moveWaterTank(this.dragData.tankId, q, r);
         if (moved) placed = true;
       } else if (this.dragType === 'suppression-bomb-new') {
-        // Place suppression bomb
-        const bomb = this.dragData.bomb;
-        const bombIndex = this.dragData.bombIndex;
-        
-        // Place suppression bomb
-        const bombId = this.gameState.suppressionBombSystem?.placeSuppressionBomb(q, r, bomb.level);
-        if (bombId) {
-          placed = true;
-          if (this.gameState.player.inventory.purchasedSuppressionBombs && this.gameState.player.inventory.purchasedSuppressionBombs.length > bombIndex) {
-            this.gameState.player.inventory.purchasedSuppressionBombs.splice(bombIndex, 1);
+        // Place suppression bomb (left click only; right-click cancels earlier)
+        if (e.button === 0) {
+          const bomb = this.dragData.bomb;
+          const bombIndex = this.dragData.bombIndex;
+
+          const bombId = this.gameState.suppressionBombSystem?.placeSuppressionBomb(q, r, bomb.level, {
+            totalUses: bomb.totalUses,
+            usesRemaining: bomb.usesRemaining,
+          });
+          if (bombId) {
+            placed = true;
+            this.gameState.runStats?.recordItemPlacedOnMap?.('suppression_bomb', { level: bomb.level, q, r });
+            if (this.gameState.player.inventory.purchasedSuppressionBombs && this.gameState.player.inventory.purchasedSuppressionBombs.length > bombIndex) {
+              this.gameState.player.inventory.purchasedSuppressionBombs.splice(bombIndex, 1);
+            }
+            if (window.updateInventory) window.updateInventory();
+            if (window.updateUI) window.updateUI();
+            if (this.gameState.waveSystem) this.gameState.waveSystem.updateClearAllButtonVisibility();
           }
-          if (window.updateInventory) window.updateInventory();
-          if (window.updateUI) window.updateUI();
-          if (this.gameState.waveSystem) this.gameState.waveSystem.updateClearAllButtonVisibility();
         }
       } else if (this.dragType === 'suppression-bomb-existing') {
         // Move existing suppression bomb
@@ -1160,6 +1396,12 @@ export class InputHandler {
           const success = this.gameState.shieldSystem?.applyShieldToTower(tower.id, shield.level);
           if (success) {
             placed = true;
+            this.gameState.runStats?.recordItemPlacedOnMap?.('shield', {
+              level: shield.level,
+              q,
+              r,
+              targetTowerId: tower.id,
+            });
             if (window.AudioManager) window.AudioManager.playSFX('shield_applied');
             if (this.gameState.player.inventory.purchasedShields && this.gameState.player.inventory.purchasedShields.length > shieldIndex) {
               this.gameState.player.inventory.purchasedShields.splice(shieldIndex, 1);
@@ -1226,6 +1468,238 @@ export class InputHandler {
     }
   }
 
+  getUpgradePlansSpentOnTower(tower) {
+    const costToReachLevel = (level) => {
+      const n = Math.max(1, Math.min(4, Math.floor(Number(level) || 1)));
+      if (n <= 1) return 0;
+      if (n === 2) return 1;
+      if (n === 3) return 3;
+      return 7;
+    };
+
+    return costToReachLevel(tower?.rangeLevel) + costToReachLevel(tower?.powerLevel);
+  }
+
+  enterTowerSellbackMode() {
+    this.gameState.isTowerSellbackMode = true;
+    document.body.classList.add('tower-sellback-selection-mode');
+    this.gameState.selectedTowerId = null;
+    this.renderer.arrowHoverState?.clear?.();
+
+    if (window.toggleSidebar) {
+      window.toggleSidebar(true);
+    }
+    if (window.updateInventory) {
+      window.updateInventory();
+    }
+
+    this.showTowerSellbackInstructions();
+  }
+
+  exitTowerSellbackMode({ resumeWave = true } = {}) {
+    this.gameState.isTowerSellbackMode = false;
+    document.body.classList.remove('tower-sellback-selection-mode');
+    this.hideTowerSellbackInstructions();
+    document.body.style.cursor = CURSOR_DEFAULT;
+
+    if (window.updateInventory) {
+      window.updateInventory();
+    }
+    if (window.updateUI) {
+      window.updateUI();
+    }
+    if (window.syncPauseButton) {
+      window.syncPauseButton();
+    }
+
+    if (resumeWave && window.gameLoop?.isPaused) {
+      if (window.resumeGameSilently) window.resumeGameSilently();
+      else if (window.resumeGameWithAudio) window.resumeGameWithAudio();
+    }
+  }
+
+  showTowerSellbackInstructions() {
+    this.hideTowerSellbackInstructions();
+
+    const instructionDiv = document.createElement('div');
+    instructionDiv.id = 'towerSellbackInstructions';
+    instructionDiv.style.cssText = `
+      position: absolute;
+      bottom: 16px;
+      left: 16px;
+      background: url('assets/images/ui/modal6.png') center/100% 100% no-repeat;
+      color: white;
+      padding: 24px 32px;
+      border-radius: 12px;
+      border: none;
+      z-index: 100000 !important;
+      font-size: 16px;
+      text-align: center;
+      box-shadow: none;
+    `;
+    instructionDiv.innerHTML = `
+      <div style="margin-bottom: 8px;"><strong>Click a tower on the map or in your inventory</strong></div>
+      <div style="font-size: 14px; color: #ccc; margin-bottom: 10px;">Game is paused — confirm to refund spent upgrade plans</div>
+      <div style="display: flex; justify-content: center; margin-top: 5px;">
+        <button id="cancelTowerSellbackBtn" class="cta-button" style="
+          color: white;
+          cursor: var(--cursor-default);
+        ">Done</button>
+      </div>
+    `;
+
+    const cancelBtn = instructionDiv.querySelector('#cancelTowerSellbackBtn');
+    cancelBtn.classList.add('upgrade-modal-btn');
+    cancelBtn.style.setProperty('--btn-bg-hover', '#6b6b6b');
+    cancelBtn.style.setProperty('--btn-border-hover', '#9a9a9a');
+    cancelBtn.onclick = () => {
+      if (typeof window !== 'undefined' && window.AudioManager) {
+        window.AudioManager.playSFX('button2');
+      }
+      this.exitTowerSellbackMode();
+    };
+
+    const canvasContainer = document.querySelector('.canvas-container');
+    if (canvasContainer) {
+      canvasContainer.appendChild(instructionDiv);
+    } else {
+      document.body.appendChild(instructionDiv);
+    }
+  }
+
+  hideTowerSellbackInstructions() {
+    const instructionDiv = document.getElementById('towerSellbackInstructions');
+    if (instructionDiv && instructionDiv.parentNode) {
+      instructionDiv.parentNode.removeChild(instructionDiv);
+    }
+  }
+
+  async handleTowerSellbackSelectionClick(e) {
+    const canvas = document.getElementById('gameCanvas');
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    const offsetX = this.gameState.renderer?.offsetX || 0;
+    const offsetY = this.gameState.renderer?.offsetY || 0;
+    const hexCoords = pixelToAxial(mouseX - offsetX, mouseY - offsetY);
+    if (!hexCoords) return;
+
+    const tower = this.gameState.towerSystem?.getTowerAt(hexCoords.q, hexCoords.r);
+    if (!tower) return;
+
+    const refundPlans = this.getUpgradePlansSpentOnTower(tower);
+    const towerIconHtml = window.createTowerIconHTML
+      ? window.createTowerIconHTML(tower.type, tower.rangeLevel || 1, tower.powerLevel || 1, false)
+      : '';
+    const itemIcon = `<div style="display:flex;align-items:center;justify-content:center;gap:10px;">
+      <div style="display:flex;align-items:center;justify-content:center;transform:scale(1.05);margin-right:26px;">${towerIconHtml}</div>
+      <img src="assets/images/ui/trade-arrow.png" style="width: 30px; height: auto; image-rendering: pixelated;" />
+      <div style="display:flex;align-items:center;justify-content:center;gap:2px;">
+        <img src="assets/images/items/upgrade_token.png" style="width: 64px; height: auto; image-rendering: pixelated;" />
+        <span style="color:#ff67e7;font-size:32px;font-weight:700;line-height:1;">x${refundPlans}</span>
+      </div>
+    </div>`;
+
+    this.hideTowerSellbackInstructions();
+    const confirmed = await showConfirmModal({
+      title: 'Sell Back Tower?',
+      message: `Remove this tower permanently and refund ${refundPlans} upgrade plan${refundPlans === 1 ? '' : 's'}?`,
+      confirmText: 'Sell Back',
+      cancelText: 'Cancel',
+      itemIcon,
+    });
+
+    if (!this.gameState.isTowerSellbackMode) return;
+
+    if (!confirmed) {
+      this.showTowerSellbackInstructions();
+      return;
+    }
+
+    if ((this.gameState.player.towerSellbacks || 0) <= 0) {
+      this.exitTowerSellbackMode();
+      return;
+    }
+
+    this.gameState.towerSystem?.removeTower(tower.id);
+    this.renderer.upgradeRings?.delete?.(tower.id);
+    this.gameState.player.towerSellbacks = Math.max(0, (this.gameState.player.towerSellbacks || 0) - 1);
+    this.gameState.player.upgradePlans = (this.gameState.player.upgradePlans || 0) + refundPlans;
+    this.gameState.selectedTowerId = null;
+
+    if (this.gameState.notificationSystem) {
+      const refundText = refundPlans > 0 ? ` Refunded ${refundPlans} upgrade plan${refundPlans === 1 ? '' : 's'}.` : '';
+      this.gameState.notificationSystem.showToast(`Tower sold back.${refundText}`, 3000, 'positive');
+    }
+    if (typeof window !== 'undefined' && window.AudioManager) {
+      window.AudioManager.playSFX('sellback1');
+      window.AudioManager.playSFX('sellback2');
+    }
+
+    this.exitTowerSellbackMode();
+  }
+
+  async handleInventoryTowerSellbackClick(kind, index) {
+    const inv = this.gameState.player.inventory;
+    const tower =
+      kind === 'stored' ? inv?.storedTowers?.[index] : inv?.purchasedTowers?.[index];
+    if (!tower) return;
+
+    const refundPlans = this.getUpgradePlansSpentOnTower(tower);
+    const towerIconHtml = window.createTowerIconHTML
+      ? window.createTowerIconHTML(tower.type, tower.rangeLevel || 1, tower.powerLevel || 1, false)
+      : '';
+    const itemIcon = `<div style="display:flex;align-items:center;justify-content:center;gap:10px;">
+      <div style="display:flex;align-items:center;justify-content:center;transform:scale(1.05);margin-right:12px;">${towerIconHtml}</div>
+      <img src="assets/images/ui/trade-arrow.png" style="width: 30px; height: auto; image-rendering: pixelated;" />
+      <div style="display:flex;align-items:center;justify-content:center;gap:2px;">
+        <img src="assets/images/items/upgrade_token.png" style="width: 64px; height: auto; image-rendering: pixelated;" />
+        <span style="color:#ff67e7;font-size:32px;font-weight:700;line-height:1;">x${refundPlans}</span>
+      </div>
+    </div>`;
+
+    this.hideTowerSellbackInstructions();
+    const confirmed = await showConfirmModal({
+      title: 'Sell Back Tower?',
+      message: `Remove this tower permanently and refund ${refundPlans} upgrade plan${refundPlans === 1 ? '' : 's'}?`,
+      confirmText: 'Sell Back',
+      cancelText: 'Cancel',
+      itemIcon,
+    });
+
+    if (!this.gameState.isTowerSellbackMode) return;
+
+    if (!confirmed) {
+      this.showTowerSellbackInstructions();
+      return;
+    }
+
+    if ((this.gameState.player.towerSellbacks || 0) <= 0) {
+      this.exitTowerSellbackMode();
+      return;
+    }
+
+    if (kind === 'stored') {
+      inv.storedTowers.splice(index, 1);
+    } else {
+      inv.purchasedTowers.splice(index, 1);
+    }
+
+    this.gameState.player.towerSellbacks = Math.max(0, (this.gameState.player.towerSellbacks || 0) - 1);
+    this.gameState.player.upgradePlans = (this.gameState.player.upgradePlans || 0) + refundPlans;
+
+    if (this.gameState.notificationSystem) {
+      const refundText = refundPlans > 0 ? ` Refunded ${refundPlans} upgrade plan${refundPlans === 1 ? '' : 's'}.` : '';
+      this.gameState.notificationSystem.showToast(`Tower sold back.${refundText}`, 3000, 'positive');
+    }
+    if (typeof window !== 'undefined' && window.AudioManager) {
+      window.AudioManager.playSFX('sellback1');
+      window.AudioManager.playSFX('sellback2');
+    }
+
+    this.exitTowerSellbackMode();
+  }
+
   /**
    * Handle mouse wheel scrolling
    * @param {WheelEvent} e - Wheel event
@@ -1246,6 +1720,19 @@ export class InputHandler {
    * @param {number} canvasMouseX - Mouse X in canvas coordinates (optional, for boss image detection)
    * @param {number} canvasMouseY - Mouse Y in canvas coordinates (optional, for boss image detection)
    */
+  /**
+   * Re-run the last canvas hover tooltip with fresh game data (HP, timers, etc.) while the pointer is still.
+   * Called from the game render loop.
+   */
+  refreshGameTooltipIfVisible() {
+    if (!this.tooltipSystem?.isVisible() || !this.tooltipSystem.isFromCanvas() || !this._lastCanvasTooltipState) {
+      return;
+    }
+    if (this.gameState?.gameOver) return;
+    const t = this._lastCanvasTooltipState;
+    this.updateTooltip(t.clientX, t.clientY, t.hexCoords, t.canvasMouseX, t.canvasMouseY);
+  }
+
   updateTooltip(mouseX, mouseY, hexCoords, canvasMouseX = null, canvasMouseY = null) {
     if (!this.tooltipSystem) return;
     
@@ -1255,10 +1742,10 @@ export class InputHandler {
     // Check for boss image/name FIRST (before hex checks) so it takes priority
     if (canvasMouseX != null && canvasMouseY != null && this.isMouseOverBossImage(canvasMouseX, canvasMouseY)) {
       const bossPattern = (this.gameState?.bossSystem?.bossPattern ??
-        (this.gameState?.waveSystem && CONFIG.BOSS_PATTERNS[this.gameState.waveSystem.currentWaveGroup])) ?? null;
+        (this.gameState?.waveSystem && getBossPatternForWaveGroup(this.gameState.waveSystem.currentWaveGroup))) ?? null;
       if (bossPattern) {
         const content = this.generateBossTooltipContent(bossPattern);
-        this.tooltipSystem.show(content, mouseX, mouseY);
+        this.tooltipSystem.show(content, mouseX, mouseY, { fromCanvas: true });
         return;
       }
     }
@@ -1327,11 +1814,22 @@ export class InputHandler {
         tooltipContents.push(content);
       }
     }
+
+    if (hex.hasArtifactItem) {
+      const art = this.gameState.artifactSystem?.getItemAt(hexCoords.q, hexCoords.r);
+      if (art) {
+        tooltipContents.push(this.tooltipSystem.getArtifactItemTooltipContent(art));
+      }
+    }
     
-    // Check for currency item
+    // Check for currency / map bonus pickup (money, XP, shield token, etc.)
     if (hex.hasCurrencyItem) {
-      const item = this.gameState.currencyItemSystem?.getItemAt(hexCoords.q, hexCoords.r);
-      if (item) {
+      const cis = this.gameState.currencyItemSystem;
+      const item =
+        hex.currencyItemId && cis?.getItem
+          ? cis.getItem(hex.currencyItemId)
+          : cis?.getItemAt(hexCoords.q, hexCoords.r);
+      if (item?.isActive !== false) {
         const content = this.tooltipSystem.getCurrencyItemTooltipContent(item);
         tooltipContents.push(content);
       }
@@ -1356,13 +1854,20 @@ export class InputHandler {
         tooltipContents.push(content);
       }
     }
+
+    if (hex.hasBurningVault) {
+      const vaultItem = this.gameState.burningVaultSystem?.getItemAt(hexCoords.q, hexCoords.r);
+      if (vaultItem) {
+        tooltipContents.push(this.tooltipSystem.getBurningVaultTooltipContent(vaultItem));
+      }
+    }
     
     // Show all collected tooltips or hide if none
     if (tooltipContents.length > 0) {
       // If only one tooltip, pass as single string for backwards compatibility
       // If multiple, pass as array
       const contentToShow = tooltipContents.length === 1 ? tooltipContents[0] : tooltipContents;
-      this.tooltipSystem.show(contentToShow, mouseX, mouseY);
+      this.tooltipSystem.show(contentToShow, mouseX, mouseY, { fromCanvas: true });
     } else {
       this.tooltipSystem.hide();
     }
@@ -1467,7 +1972,7 @@ export class InputHandler {
     if (isOverImage) return true;
     
     // Also check boss name label area (matches drawBossNameLabel position)
-    const bossPattern = CONFIG.BOSS_PATTERNS[currentWaveGroup];
+    const bossPattern = getBossPatternForWaveGroup(currentWaveGroup);
     if (bossPattern) {
       const bossName = bossPattern.name || 'Unknown';
       const bossTitle = bossPattern.title || '';
@@ -1513,7 +2018,7 @@ export class InputHandler {
   getBossPattern() {
     if (!this.gameState?.waveSystem) return null;
     const currentWaveGroup = this.gameState.waveSystem.currentWaveGroup || 1;
-    return CONFIG.BOSS_PATTERNS[currentWaveGroup] || null;
+    return getBossPatternForWaveGroup(currentWaveGroup);
   }
 
   /**
@@ -1549,6 +2054,7 @@ export class InputHandler {
    * Handle mouse leaving canvas
    */
   handleMouseLeave() {
+    this._lastCanvasTooltipState = null;
     // Hide tooltip
     if (this.tooltipSystem) {
       this.tooltipSystem.hide();
@@ -1692,6 +2198,12 @@ export class InputHandler {
    * Handle global right-click - cancel shield selection when shield is active
    */
   handleGlobalRightClick(e) {
+    if (this.isDragging && this.dragType === 'suppression-bomb-new') {
+      if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_cancel');
+      this.stopDragging();
+      e.preventDefault();
+      return;
+    }
     if (this.selectedShieldForPlacement) {
       if (this.gameState.tutorialShieldApplyOnlyPathTower) {
         e.preventDefault();
@@ -1802,19 +2314,7 @@ export class InputHandler {
           } else if (this.dragType === 'suppression-bomb-existing') {
             const bomb = this.gameState.suppressionBombSystem?.getSuppressionBomb(this.dragData.bombId);
             if (bomb) {
-              // Remove suppression bomb from grid
-              this.gameState.suppressionBombSystem?.removeSuppressionBomb(this.dragData.bombId);
-              
-              // Initialize purchasedSuppressionBombs array if it doesn't exist
-              if (!this.gameState.player.inventory.purchasedSuppressionBombs) {
-                this.gameState.player.inventory.purchasedSuppressionBombs = [];
-              }
-              
-              // Add the suppression bomb back to inventory
-              this.gameState.player.inventory.purchasedSuppressionBombs.push({
-                type: 'suppression_bomb',
-                level: bomb.level
-              });
+              this.gameState.suppressionBombSystem?.storeSuppressionBombInInventory(this.dragData.bombId);
               
               // Update inventory UI
               if (window.updateInventory) {
@@ -1864,6 +2364,12 @@ export class InputHandler {
     // Apply shield to tower
     const success = this.gameState.shieldSystem?.applyShieldToTower(towerId, shield.level);
     if (success) {
+      this.gameState.runStats?.recordItemPlacedOnMap?.('shield', {
+        level: shield.level,
+        q: tower.q,
+        r: tower.r,
+        targetTowerId: towerId,
+      });
       if (window.AudioManager) window.AudioManager.playSFX('shield_applied');
       this.gameState.checkTutorialShieldApplyAdvance?.();
       
@@ -1883,6 +2389,42 @@ export class InputHandler {
   }
 
   /**
+   * Apply selected shield to an inventory tower (stored or purchased).
+   * @param {'stored'|'purchased'} kind
+   * @param {number} index
+   */
+  applyShieldToInventoryTower(kind, index, e) {
+    if (!this.selectedShieldForPlacement) return;
+
+    if (this.gameState.tutorialShieldApplyOnlyPathTower && this.gameState.tutorialShieldApplyPathTowerHex) {
+      if (e && this.gameState.showTutorialBlockedNotification) {
+        this.gameState.showTutorialBlockedNotification(e.clientX, e.clientY);
+      }
+      return;
+    }
+
+    const shield = this.selectedShieldForPlacement.shield;
+    const shieldIndex = this.selectedShieldForPlacement.shieldIndex;
+
+    const success = this.gameState.shieldSystem?.applyShieldToInventoryTower(kind, index, shield.level);
+    if (success) {
+      this.gameState.runStats?.recordItemPlacedOnMap?.('shield', {
+        level: shield.level,
+        inventoryKind: kind,
+        inventoryIndex: index,
+      });
+      if (window.AudioManager) window.AudioManager.playSFX('shield_applied');
+      this.gameState.checkTutorialShieldApplyAdvance?.();
+
+      if (this.gameState.player.inventory.purchasedShields && this.gameState.player.inventory.purchasedShields.length > shieldIndex) {
+        this.gameState.player.inventory.purchasedShields.splice(shieldIndex, 1);
+      }
+
+      this.clearShieldSelection();
+    }
+  }
+
+  /**
    * Clear shield selection
    */
   clearShieldSelection() {
@@ -1892,6 +2434,7 @@ export class InputHandler {
     this.selectedShieldForPlacement = null;
     document.body.style.cursor = CURSOR_DEFAULT;
     this.setPlacingItemMode(false);
+    if (typeof window !== 'undefined' && window.updateInventory) window.updateInventory();
   }
 
   /**
@@ -2061,3 +2604,5 @@ export class InputHandler {
   }
 }
 
+/** Full CSS cursor values (same strings inputHandler sets on document.body) — use for :root so var(--cursor-*) matches JS. */
+export { CURSOR_DEFAULT, CURSOR_DRAG, CURSOR_PLUS, CURSOR_X };

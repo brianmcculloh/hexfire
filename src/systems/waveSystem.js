@@ -1,9 +1,69 @@
 // Wave System - Manages wave timing and progression
 
-import { CONFIG, getPulsingPower, getPulsingAttackInterval, getPathCountForWave, getFireSpawnProbabilities, getFireTypeConfig } from '../config.js';
+import { CONFIG, getPulsingPower, getPulsingAttackInterval, getPathCountForWave, getFireSpawnProbabilities, getFireTypeConfig, getPowerUpMultiplier, getEffectiveDurationTowerAttackInterval, getPowerUpGraphicFilename, formatDisplayHundredths, getSuppressionBombTotalUses, getBossPatternForWaveGroup, getBossPatternForSpeech, getSpeechBubblePatternGroup, getCampaignEndWaveGroup } from '../config.js';
+import { VICTORY_SPEECH_PLACEHOLDERS } from '../patterns.js';
 import { getScenarioByName } from '../scenarios.js';
+import { buildWaveGroupCompleteStatsContainer } from './waveGroupStatsBuilder.js';
 import { addScoreToLeaderboard } from '../utils/leaderboard.js';
 import { showConfirmModal, createModalFloatingText } from '../utils/modal.js';
+import {
+  artifactTraderShouldOffer,
+  ensureArtifactTraderWantsForRun,
+  mountArtifactTraderModalBody,
+  artifactTraderAcknowledgeAllCollected,
+} from '../utils/artifactTrader.js';
+import {
+  buildMetaProgressionUnlocksHtml,
+  isMetaItemUnlocked,
+  unlockMetaProgressionForCompletedWaveGroup,
+} from '../utils/metaProgression.js';
+import { filterWeightedRewardPool } from '../utils/rewardPoolUnlocks.js';
+
+/**
+ * True if `type` has spawn weight on `waveNumber` but never on any earlier wave.
+ */
+function isFireTypeFirstAppearanceAtWave(type, waveNumber, probsAtWave) {
+  const cur = probsAtWave || getFireSpawnProbabilities(waveNumber);
+  if ((cur[type] || 0) <= 0) return false;
+  for (let w = 1; w < waveNumber; w++) {
+    const p = getFireSpawnProbabilities(w);
+    if ((p[type] || 0) > 0) return false;
+  }
+  return true;
+}
+
+/**
+ * Turn a weighted dig-site pool row into a rolled reward (supports optional `count`, default 1).
+ * Currency `amount` is multiplied by `count` so the returned object stays a single currency line.
+ * @param {object} e
+ * @returns {{ type: string, amount?: number, level?: number, count?: number }|null}
+ */
+function digSitePoolEntryToReward(e) {
+  if (!e || !e.type) return null;
+  const count = Math.max(1, Math.floor(Number(e.count) || 1));
+  switch (e.type) {
+    case 'currency':
+      return { type: 'currency', amount: Math.round((Number(e.amount) || 0) * count) };
+    case 'shield':
+      return typeof e.level === 'number' ? { type: 'shield', level: e.level, count } : null;
+    case 'suppression_bomb':
+      return typeof e.level === 'number' ? { type: 'suppression_bomb', level: e.level, count } : null;
+    case 'upgrade_plan':
+      return { type: 'upgrade_plan', count };
+    case 'movement_token':
+      return { type: 'movement_token', count };
+    case 'tree_juice':
+      return { type: 'tree_juice', count };
+    default:
+      return null;
+  }
+}
+
+/** Boss defeat RAF duration (must match addBossDefeatGraphic). */
+const BOSS_DEFEAT_TOTAL_MS = 6000;
+
+/** After Collect on wave / wave-group complete, close modal quickly; reward float text lives on `document.body`. */
+const WAVE_COLLECT_MODAL_DISMISS_MS = 100;
 
 export class WaveSystem {
   constructor(gameState) {
@@ -35,17 +95,48 @@ export class WaveSystem {
     
     // Track which mystery items have been introduced (by mystery item ID)
     this.introducedMysteryItems = new Set();
+
+    /** Placement modal: one-shot keys e.g. 'artifacts', 'burning_vault' for map pickup categories */
+    this.introducedPlacementModalMapCategories = new Set();
     
     // Track if water tank message has been shown
     this.waterTankMessageShown = false;
+
+    /** Deferred map/theme transition applied when entering next group's placement phase. */
+    this.pendingGroupTransition = null;
+  }
+
+  /**
+   * Wave group index for environment visuals (background parallax, map name pill) while the group-complete
+   * modal is open. Logical {@link #currentWaveGroup} is already the next group; art/name stay on the
+   * completed group until Collect runs {@link #applyPendingGroupTransition}.
+   * @returns {number}
+   */
+  getDisplayWaveGroupForEnvironment() {
+    const pending = this.pendingGroupTransition;
+    if (pending != null && pending.waveGroup != null) {
+      const nextGroup = Math.max(1, Math.floor(Number(pending.waveGroup)));
+      return Math.max(1, nextGroup - 1);
+    }
+    return Math.max(1, this.currentWaveGroup || 1);
   }
 
   /**
    * Start placement phase (before wave begins)
+   * @param {Object} [options]
+   * @param {boolean} [options.skipDigSiteGeneration] - If true, do not roll new dig sites (used after loadGame: sites already restored or generated in applyLoadedState)
    */
-  startPlacementPhase() {
+  startPlacementPhase(options = {}) {
+    const skipDigSiteGeneration = options.skipDigSiteGeneration === true;
+
     this.gameState.wave.isPlacementPhase = true;
     this.gameState.wave.isActive = false;
+
+    // If already paused (e.g. main menu → load game), resume first so pause timers extend temp power-up
+    // expiries and the next pause() refreshes pauseStartTime. Otherwise pause() is a no-op and timers stay stale.
+    if (window.gameLoop?.isPaused) {
+      window.gameLoop.resume();
+    }
     
     // Clear any in-flight tower projectiles (bomber water bombs) so none animate during placement
     if (this.gameState.towerSystem) {
@@ -56,7 +147,8 @@ export class WaveSystem {
     
     // Generate dig sites for this wave (they persist through the wave group)
     // Each wave has a chance to spawn new dig sites based on spawnChance (skip during tutorial)
-    if (this.gameState.digSiteSystem && !this.gameState.tutorialMode) {
+    // After loading a save, skip: dig sites are restored from file (or legacy-generated once in applyLoadedState)
+    if (this.gameState.digSiteSystem && !this.gameState.tutorialMode && !skipDigSiteGeneration) {
       this.gameState.digSiteSystem.generateDigSites(this.currentWaveGroup);
     }
     
@@ -64,6 +156,17 @@ export class WaveSystem {
     this.gameState.isPaused = true;
     if (window.gameLoop) {
       window.gameLoop.pause();
+    }
+    
+    // Clear stale isBeingSprayed flags — towerSystem.update doesn't run while paused, so the last
+    // wave's spray state could remain on dig sites, water tanks, and map items. Mutate in place
+    // (non-structural field) to avoid a full setHex spread + cache rewrite per hex.
+    if (this.gameState.gridSystem?.getAllHexes) {
+      const hexes = this.gameState.gridSystem.getAllHexes();
+      for (let i = 0; i < hexes.length; i++) {
+        const hex = hexes[i];
+        if (hex.isBeingSprayed) hex.isBeingSprayed = false;
+      }
     }
     
     // Hide pause button during placement phase (Start Wave button will be shown instead)
@@ -144,9 +247,19 @@ export class WaveSystem {
           this.clearAllItems();
         }
       };
-      
-      countdownContainer.innerHTML = '';
-      countdownContainer.appendChild(newClearAllBtn);
+
+      // NOTE: Don't wipe `countdownContainer.innerHTML` here — the container also holds the
+      // placement-mode Back button (when present), and it's not the only thing we render in
+      // this row. The countdown display is removed by destroying the whole container in
+      // `showCountdownAndStartWave`, so there's nothing stale to clean up.
+      // Insert CAI BEFORE the Back button (if the Back button exists) so the visual order is
+      // [CLEAR ALL ITEMS] [BACK]. Otherwise just append.
+      const existingBackBtn = countdownContainer.querySelector('#backToPlacementModalBtn');
+      if (existingBackBtn) {
+        countdownContainer.insertBefore(newClearAllBtn, existingBackBtn);
+      } else {
+        countdownContainer.appendChild(newClearAllBtn);
+      }
     } else if (!shouldShow && clearAllBtn) {
       // Button exists but shouldn't - remove it
       clearAllBtn.remove();
@@ -301,15 +414,16 @@ export class WaveSystem {
     // Reset fire extinguishing tracking for this wave
     this.gameState.fireSystem?.resetWaveTracking();
 
-    // Reset town damage tracking and initialize protection bonus
+    // Reset cumulative grove damage tracking and initialize protection bonus placeholder
     if (this.gameState.gridSystem?.resetTownDamageThisWave) {
       this.gameState.gridSystem.resetTownDamageThisWave();
     }
+    this.gameState.runStats?.resetTowerDamageForNewWave?.();
     const townCenter = this.gameState.gridSystem?.getTownCenter?.();
     // townBonusStart kept for compatibility; award is now percentage-based (see wave complete)
     this.gameState.wave.townBonusStart = townCenter ? Math.round(townCenter.maxTownHealth || CONFIG.TOWN_HEALTH_BASE) : CONFIG.TOWN_HEALTH_BASE;
     this.gameState.wave.townBonusAward = CONFIG.TOWN_PROTECTION_BONUS_FULL ?? 300; // Placeholder until wave ends
-    this.gameState.wave.baseWaveReward = 0; // No base wave reward - only town bonus
+    this.gameState.wave.baseWaveReward = 0; // No base wave reward - only grove protection bonus
 
     // Set dynamic ignition chance based on wave-in-group scaling
     try {
@@ -355,7 +469,7 @@ export class WaveSystem {
     // Boss speech bubble: show immediately when wave starts (boss waves only)
     const isBossWave = this.waveInGroup === this.wavesPerGroup;
     if (isBossWave) {
-      const bossPattern = CONFIG.BOSS_PATTERNS[this.currentWaveGroup] || CONFIG.BOSS_PATTERNS[1];
+      const bossPattern = getBossPatternForSpeech(this.currentWaveGroup);
       const speechBubbles = bossPattern?.speechBubbles || [];
       const speechText = (speechBubbles[0] ?? speechBubbles) || ''; // [0] = wave start; support legacy single string
       if (speechText) {
@@ -395,15 +509,22 @@ export class WaveSystem {
       this.gameState.towerSystem?.towers?.forEach?.(tower => {
         if (tower.type === CONFIG.TOWER_TYPE_PULSING) {
           const powerPerSecond = getPulsingPower(tower.powerLevel);
-          const attackInterval = getPulsingAttackInterval(tower.rangeLevel);
-          const attackPower = powerPerSecond * attackInterval;
+          const powerUps = this.gameState?.player?.powerUps || {};
+          const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+          const attackInterval = getEffectiveDurationTowerAttackInterval(
+            getPulsingAttackInterval(tower.rangeLevel),
+            powerUps,
+            tempPowerUps
+          );
+          const waterM = getPowerUpMultiplier('waterTowerPower', powerUps, tempPowerUps);
+          const attackPower = powerPerSecond * attackInterval * waterM;
           tower.flashTime = 0.3;
           
           // Attack all adjacent hexes immediately
           tower.affectedHexes.forEach(hexCoord => {
             const hex = this.gameState.gridSystem.getHex(hexCoord.q, hexCoord.r);
             if (hex && hex.isBurning) {
-              this.gameState.gridSystem.setHex(hexCoord.q, hexCoord.r, { isBeingSprayed: true });
+              hex.isBeingSprayed = true;
               
               const extinguished = this.gameState.fireSystem.extinguishHex(
                 hexCoord.q,
@@ -454,11 +575,9 @@ export class WaveSystem {
    * This ensures we track which fire types have been seen before
    */
   initializeIntroducedFireTypes() {
-    // Check all previous wave groups to see which fire types have been introduced
-    // We check up to currentWaveGroup - 1 (all previous groups)
-    for (let group = 1; group < this.currentWaveGroup; group++) {
-      const waveNumber = (group - 1) * this.wavesPerGroup + 1;
-      const probs = getFireSpawnProbabilities(waveNumber);
+    const firstWaveOfCurrentGroup = (this.currentWaveGroup - 1) * this.wavesPerGroup + 1;
+    for (let w = 1; w < firstWaveOfCurrentGroup; w++) {
+      const probs = getFireSpawnProbabilities(w);
       Object.entries(probs).forEach(([type, prob]) => {
         if (prob > 0) {
           this.introducedFireTypes.add(type);
@@ -522,8 +641,8 @@ export class WaveSystem {
         // When jumping via debug, existing hero may be from a different group - always replace in that case.
         const isWithinGroupTransition = this.waveInGroup > 1;
         const existingHero = modal?.querySelector('.wave-complete-hero-graphic');
-        const existingHeroGroup = existingHero?.dataset?.heroGroup ? parseInt(existingHero.dataset.heroGroup, 10) : null;
-        const heroMatchesCurrentGroup = existingHeroGroup === this.currentWaveGroup;
+        const existingHeroWaveGroup = existingHero?.dataset?.heroWaveGroup ? parseInt(existingHero.dataset.heroWaveGroup, 10) : null;
+        const heroMatchesCurrentGroup = existingHeroWaveGroup === this.currentWaveGroup;
         const shouldKeepHero = isWithinGroupTransition && heroMatchesCurrentGroup;
         if (shouldKeepHero) {
           this.removeHeroSpeechBubbleOnly(modal);
@@ -630,43 +749,25 @@ export class WaveSystem {
         blaze: 'Blaze',
         firestorm: 'Firestorm',
         inferno: 'Inferno',
-        cataclysm: 'Cataclysm'
+        cataclysm: 'Cataclysm',
+        blackfyre: 'Blackfyre',
       };
       
-      // Detect new fire types (first time appearing with > 0 probability)
-      // Show new fire type on the first wave of a wave group
-      // For wave group 1, show cinder as the new fire type (first time player sees any fire type)
+      // Detect new fire types: first wave in the entire run where this type has >0 spawn probability.
+      // Runs for every placement (e.g. boss 22-5), not only wave 1 of the group.
       // Scenarios: skip "new fire type" box - only list fire types with probabilities
       const newFireTypes = [];
-      if (!isScenario && this.waveInGroup === 1) {
-        if (this.currentWaveGroup === 1) {
-          // Wave group 1: show cinder as new fire type
+      if (!isScenario) {
+        if (this.currentWaveGroup === 1 && waveWeArePlacingFor === 1) {
           if (fireProbs.cinder > 0) {
             newFireTypes.push('cinder');
             this.introducedFireTypes.add('cinder');
           }
         } else {
-          // Other wave groups: check for new fire types
-          // Compare current wave group's fire types with all previous wave groups
           Object.entries(fireProbs).forEach(([type, prob]) => {
-            if (prob > 0) {
-              // Check if this fire type appeared in any previous wave group
-              let wasIntroduced = false;
-              for (let prevGroup = 1; prevGroup < this.currentWaveGroup; prevGroup++) {
-                const prevWaveNumber = (prevGroup - 1) * this.wavesPerGroup + 1;
-                const prevProbs = getFireSpawnProbabilities(prevWaveNumber);
-                if (prevProbs[type] > 0) {
-                  wasIntroduced = true;
-                  break;
-                }
-              }
-              
-              // If it wasn't introduced in any previous group, it's new
-              if (!wasIntroduced) {
-                newFireTypes.push(type);
-                // Mark as introduced so we don't show the message again
-                this.introducedFireTypes.add(type);
-              }
+            if (prob > 0 && isFireTypeFirstAppearanceAtWave(type, waveWeArePlacingFor, fireProbs)) {
+              newFireTypes.push(type);
+              this.introducedFireTypes.add(type);
             }
           });
         }
@@ -698,21 +799,15 @@ export class WaveSystem {
       
       // Check for boosters becoming available
       Object.values(CONFIG.TEMP_POWER_UP_ITEMS).forEach(booster => {
+        if (!isMetaItemUnlocked(this.gameState, booster.id)) return;
+
         const availableAtWaveGroup = booster.availableAtWaveGroup || 999;
         const isFirstWaveOfGroup = this.waveInGroup === 1;
         const isBecomingAvailable = this.currentWaveGroup === availableAtWaveGroup && isFirstWaveOfGroup;
-        const wasAlreadyIntroduced = this.introducedBoosters.has(booster.id);
         
-        if (isBecomingAvailable && !wasAlreadyIntroduced) {
+        if (isBecomingAvailable) {
           hasNewItem = true;
-          const powerUpGraphicMap = {
-            'water_pressure': 'water_pressure.png',
-            'xp_boost': 'xp_boost.png',
-            'tower_health': 'tower_durability.png',
-            'fire_resistance': 'fire_resistance.png',
-            'temp_power_up_spawn_boost': 'power_up_magnet.png'
-          };
-          const graphicFilename = powerUpGraphicMap[booster.id];
+          const graphicFilename = getPowerUpGraphicFilename(booster.id);
           
           newItems.push({
             type: 'powerup',
@@ -733,46 +828,46 @@ export class WaveSystem {
       });
       
       // Check for dig sites becoming available
-      Object.keys(CONFIG.DIG_SITE_TYPES).forEach(siteTypeKey => {
-        const siteType = parseInt(siteTypeKey);
-        const siteConfig = CONFIG.DIG_SITE_TYPES[siteType];
-        // Check if this is the first wave of a group (either by waveInGroup or by wave number calculation)
-        const isFirstWaveOfGroup = this.waveInGroup === 1 || (waveNumber % this.wavesPerGroup === 1 || waveNumber === 1);
-        // Check if this dig site type becomes available on this wave group
-        // Special case: wave 1 is always the first wave of group 1
-        const wave1Check = waveNumber === 1 && siteConfig.startWaveGroup === 1;
-        const groupCheck = this.currentWaveGroup === siteConfig.startWaveGroup && isFirstWaveOfGroup;
-        const isBecomingAvailable = wave1Check || groupCheck;
-        const wasAlreadyIntroduced = this.introducedDigSites.has(siteType);
-        
-        if (isBecomingAvailable && !wasAlreadyIntroduced) {
-          hasNewItem = true;
-          newItems.push({
-            type: 'dig_site',
-            siteType: siteType, // Store siteType so we can mark it as introduced later
-            html: `
-              <div class="placement-new-item-frame">
-                <img src="assets/images/items/${siteConfig.sprite}" alt="${siteConfig.name}" class="placement-new-item-icon placement-new-item-icon-dig-site" />
-                <div class="placement-new-item-content">
-                  <div class="placement-new-item-name">${siteConfig.name.toUpperCase()}</div>
-                  <div class="placement-new-item-description">Protect dig sites from burning down to receive a bonus at the end of the wave group.</div>
-                </div>
-              </div>
-            `
-          });
+      if (isMetaItemUnlocked(this.gameState, 'dig_sites')) {
+        Object.keys(CONFIG.DIG_SITE_TYPES).forEach(siteTypeKey => {
+          const siteType = parseInt(siteTypeKey);
+          const siteConfig = CONFIG.DIG_SITE_TYPES[siteType];
+          // Check if this is the first wave of a group (either by waveInGroup or by wave number calculation)
+          const isFirstWaveOfGroup = this.waveInGroup === 1 || (waveNumber % this.wavesPerGroup === 1 || waveNumber === 1);
+          // Check if this dig site type becomes available on this wave group
+          // Special case: wave 1 is always the first wave of group 1
+          const wave1Check = waveNumber === 1 && siteConfig.startWaveGroup === 1;
+          const groupCheck = this.currentWaveGroup === siteConfig.startWaveGroup && isFirstWaveOfGroup;
+          const isBecomingAvailable = wave1Check || groupCheck;
           
-          // Don't mark as introduced here - do it after HTML is inserted
-        }
-      });
+          if (isBecomingAvailable) {
+            hasNewItem = true;
+            newItems.push({
+              type: 'dig_site',
+              siteType: siteType, // Store siteType so we can mark it as introduced later
+              html: `
+                <div class="placement-new-item-frame">
+                  <img src="assets/images/items/${siteConfig.sprite}" alt="${siteConfig.name}" class="placement-new-item-icon placement-new-item-icon-dig-site" />
+                  <div class="placement-new-item-content">
+                    <div class="placement-new-item-name">${siteConfig.name.toUpperCase()}</div>
+                    <div class="placement-new-item-description">Protect dig sites from burning down to receive a bonus at the end of the wave group.</div>
+                  </div>
+                </div>
+              `
+            });
+            
+            // Don't mark as introduced here - do it after HTML is inserted
+          }
+        });
+      }
       
       // Check for mystery items becoming available
       Object.values(CONFIG.MYSTERY_ITEMS).forEach(mysteryItem => {
         const availableAtWaveGroup = mysteryItem.availableAtWaveGroup || 999;
         const isFirstWaveOfGroup = this.waveInGroup === 1;
         const isBecomingAvailable = this.currentWaveGroup === availableAtWaveGroup && isFirstWaveOfGroup;
-        const wasAlreadyIntroduced = this.introducedMysteryItems.has(mysteryItem.id);
         
-        if (isBecomingAvailable && !wasAlreadyIntroduced) {
+        if (isBecomingAvailable) {
           hasNewItem = true;
           newItems.push({
             type: 'mystery_item',
@@ -791,6 +886,54 @@ export class WaveSystem {
           // Don't mark as introduced here - do it after HTML is inserted
         }
       });
+
+      // Artifacts (map pickups): show on placement when the category unlocks (first wave of that wave group)
+      const artifactUnlockWg = CONFIG.ARTIFACT_SPAWN?.availableAtWaveGroup ?? 5;
+      const isFirstWaveOfGroupArtifacts = this.waveInGroup === 1;
+      if (
+        isMetaItemUnlocked(this.gameState, 'artifacts') &&
+        this.currentWaveGroup === artifactUnlockWg &&
+        isFirstWaveOfGroupArtifacts
+      ) {
+        const modalSprite = CONFIG.ARTIFACT_PLACEMENT_MODAL_SPRITE || 'artifact.png';
+        hasNewItem = true;
+        newItems.push({
+          type: 'artifact_map',
+          html: `
+            <div class="placement-new-item-frame">
+              <img src="assets/images/artifacts/${modalSprite}" alt="Artifacts" class="placement-new-item-icon" style="width: 90px;" />
+              <div class="placement-new-item-content">
+                <div class="placement-new-item-name">ARTIFACTS</div>
+                <div class="placement-new-item-description">These weird, unique trinkets don't seem very important. But they could be, to the right person.</div>
+              </div>
+            </div>
+          `,
+        });
+      }
+
+      // Burning Vault: show on placement when it unlocks (first wave of that wave group)
+      const bvCfg = CONFIG.BURNING_VAULT;
+      const burningVaultUnlockWg = bvCfg?.availableAtWaveGroup ?? 10;
+      if (
+        isMetaItemUnlocked(this.gameState, 'burning_vaults') &&
+        this.currentWaveGroup === burningVaultUnlockWg &&
+        isFirstWaveOfGroupArtifacts
+      ) {
+        const bvSprite = bvCfg?.sprite || 'burning_vault.png';
+        hasNewItem = true;
+        newItems.push({
+          type: 'burning_vault_map',
+          html: `
+            <div class="placement-new-item-frame">
+              <img src="assets/images/items/${bvSprite}" alt="${bvCfg.name || 'Burning Vault'}" class="placement-new-item-icon" style="width: 90px;" />
+              <div class="placement-new-item-content">
+                <div class="placement-new-item-name">${(bvCfg.name || 'Burning Vault').toUpperCase()}</div>
+                <div class="placement-new-item-description">A suspicious chest. Water drains its power while fire restores it. Vanishes at the end of its wave group.</div>
+              </div>
+            </div>
+          `,
+        });
+      }
       
       // Build the new items HTML with header and container
       if (hasNewItem && newItems.length > 0) {
@@ -860,7 +1003,8 @@ export class WaveSystem {
         'blaze': 3,
         'firestorm': 4,
         'inferno': 5,
-        'cataclysm': 6
+        'cataclysm': 6,
+        'blackfyre': 7,
       };
       
       const fireTypes = Object.entries(fireProbs)
@@ -916,12 +1060,16 @@ export class WaveSystem {
             } else if (fireType === 'cataclysm') {
               displayName = 'CATA-<br>CLYSM';
               nameClass += ' placement-new-fire-type-name-wrapped';
+            } else if (fireType === 'blackfyre') {
+              displayName = 'BLACK<br>FYRE';
+              nameClass += ' placement-new-fire-type-name-wrapped placement-blackfyre-name-color-anim';
             } else if (fireType === 'cinder') {
               // Cinder fire type uses black text instead of white
               nameStyle = ' style="color: black;"';
             }
             
-            newFireTypeHtml += '<div class="placement-new-fire-type">';
+            const newTypeRowClass = fireType === CONFIG.FIRE_TYPE_BLACKFYRE ? ' placement-new-fire-type--dark-fire' : '';
+            newFireTypeHtml += `<div class="placement-new-fire-type${newTypeRowClass}">`;
             newFireTypeHtml += '<div class="placement-new-fire-type-frame">';
             newFireTypeHtml += '<div class="placement-new-fire-type-header">';
             newFireTypeHtml += '<img src="assets/images/ui/icon-fire-type.png" alt="Fire" class="placement-new-fire-type-icon" />';
@@ -931,13 +1079,22 @@ export class WaveSystem {
             newFireTypeHtml += '<div class="placement-new-fire-type-left">';
             newFireTypeHtml += `<div class="placement-new-fire-type-hex-wrapper">`;
             newFireTypeHtml += `<div class="placement-new-fire-type-hex-border"></div>`;
-            newFireTypeHtml += `<div class="placement-new-fire-type-hex" style="background: ${fireColor};"></div>`;
+            if (fireType === CONFIG.FIRE_TYPE_BLACKFYRE) {
+              newFireTypeHtml += `<div class="placement-new-fire-type-hex placement-new-fire-type-hex--rim" aria-hidden="true"></div>`;
+            }
+            const newTypeHexClass =
+              fireType === CONFIG.FIRE_TYPE_BLACKFYRE
+                ? 'placement-new-fire-type-hex placement-blackfyre-color-anim'
+                : 'placement-new-fire-type-hex';
+            const newTypeHexStyle =
+              fireType === CONFIG.FIRE_TYPE_BLACKFYRE ? '' : ` style="background: ${fireColor};"`;
+            newFireTypeHtml += `<div class="${newTypeHexClass}"${newTypeHexStyle}></div>`;
             newFireTypeHtml += `<div class="${nameClass}"${nameStyle}>${displayName}</div>`;
             newFireTypeHtml += `</div>`;
             newFireTypeHtml += '</div>';
             newFireTypeHtml += '<div class="placement-new-fire-type-right">';
-            newFireTypeHtml += `<div class="placement-new-fire-type-stat"><img src="assets/images/misc/health.png" alt="HP" /> ${extinguishTime}HP</div>`;
-            newFireTypeHtml += `<div class="placement-new-fire-type-stat"><img src="assets/images/misc/damage.png" alt="Damage" /> ${damagePerSecond}HP/sec</div>`;
+            newFireTypeHtml += `<div class="placement-new-fire-type-stat"><img src="assets/images/misc/health.png" alt="HP" /> ${formatDisplayHundredths(extinguishTime)}HP</div>`;
+            newFireTypeHtml += `<div class="placement-new-fire-type-stat"><img src="assets/images/misc/damage.png" alt="Damage" /> ${formatDisplayHundredths(damagePerSecond)}HP/sec</div>`;
             newFireTypeHtml += '</div>';
             newFireTypeHtml += '</div>';
             newFireTypeHtml += '</div>';
@@ -961,20 +1118,27 @@ export class WaveSystem {
           // Format: use hundredths when needed (value < 1% or has fractional part beyond whole)
           const hasFraction = Math.abs(percentFloat - Math.round(percentFloat)) > 0.001;
           const percentDisplay = (percentFloat < 1 || hasFraction)
-            ? percentFloat.toFixed(2) + '%'
+            ? formatDisplayHundredths(percentFloat) + '%'
             : Math.round(percentFloat) + '%';
           const fireConfig = getFireTypeConfig(type);
           const fireColor = fireConfig ? fireConfig.color : '#FFD700';
           const extinguishTime = fireConfig ? fireConfig.extinguishTime : 0;
           const damagePerSecond = fireConfig ? fireConfig.damagePerSecond : 0;
           
-          fireTypesHtml += `<div class="placement-fire-type-entry">`;
-          fireTypesHtml += `<div style="display: flex; align-items: center; gap: 12px; flex-shrink: 0;">`;
-          fireTypesHtml += `<span class="placement-fire-type-hex" style="background: ${fireColor};"></span>`;
-          fireTypesHtml += `<span class="placement-fire-type-name" style="color: ${fireColor};">${name}</span>`;
-          fireTypesHtml += `<span class="placement-fire-type-stat"><img src="assets/images/misc/health.png" alt="HP" /> ${extinguishTime}HP</span>`;
-          fireTypesHtml += `<span class="placement-fire-type-stat"><img src="assets/images/misc/damage.png" alt="Damage" /> ${damagePerSecond}HP/sec</span>`;
-          fireTypesHtml += `</div>`;
+          const darkFire = type === CONFIG.FIRE_TYPE_BLACKFYRE;
+          const entryMod = darkFire ? ' placement-fire-type-entry--dark-fire' : '';
+          const hexCell = darkFire
+            ? `<span class="placement-fire-type-hex-stack"><span class="placement-fire-type-hex placement-fire-type-hex--rim" aria-hidden="true"></span><span class="placement-fire-type-hex placement-fire-type-hex--fill placement-blackfyre-color-anim"></span></span>`
+            : `<span class="placement-fire-type-hex" style="background: ${fireColor};"></span>`;
+          const nameClass = darkFire
+            ? 'placement-fire-type-name placement-blackfyre-name-color-anim'
+            : 'placement-fire-type-name';
+          const nameStyle = darkFire ? '' : ` style="color: ${fireColor};"`;
+          fireTypesHtml += `<div class="placement-fire-type-entry${entryMod}">`;
+          fireTypesHtml += hexCell;
+          fireTypesHtml += `<span class="${nameClass}"${nameStyle}>${name}</span>`;
+          fireTypesHtml += `<span class="placement-fire-type-stat placement-fire-type-stat-hp"><img src="assets/images/misc/health.png" alt="" /> ${formatDisplayHundredths(extinguishTime)}HP</span>`;
+          fireTypesHtml += `<span class="placement-fire-type-stat placement-fire-type-stat-dps"><img src="assets/images/misc/damage.png" alt="" /> ${formatDisplayHundredths(damagePerSecond)}HP/sec</span>`;
           fireTypesHtml += `<span class="placement-fire-type-percent">(${percentDisplay})</span>`;
           fireTypesHtml += `</div>`;
         });
@@ -982,19 +1146,32 @@ export class WaveSystem {
         fireTypesHtml += '</div>';
         fireTypesHtml += '<div class="placement-start-button-container"></div>';
         fireTypesHtml += '</div>';
+      } else if (!isScenario) {
+        // No positive spawn probabilities (edge case) — still need START PLACEMENT mount point
+        fireTypesHtml = '<div class="placement-fire-types">';
+        fireTypesHtml += '<div class="placement-fire-types-header">';
+        fireTypesHtml += '<label class="label label-red">';
+        fireTypesHtml += '<span class="label-middle-bg"></span>';
+        fireTypesHtml += '<span class="label-text">FIRE TYPES THIS WAVE</span>';
+        fireTypesHtml += '</label></div>';
+        fireTypesHtml += '<div class="placement-fire-types-frame"></div>';
+        fireTypesHtml += '<div class="placement-start-button-container"></div>';
+        fireTypesHtml += '</div>';
       }
       
       // Build boss section
       let bossHtml = '';
       if (isBossWave && this.gameState?.renderer) {
-        // Always try the current wave group's image first so the correct boss shows (e.g. group11 for wave 11).
-        // The browser loads it directly; we don't depend on the renderer's cache. If the file doesn't exist
-        // (e.g. wave 14 with only group1–10), onerror falls back to the highest available.
-        const currentBossKey = `group${this.currentWaveGroup}`;
+        // Endless: only group1–group22 portraits exist; reuse group22 for higher groups (no group23.png request).
+        const bossPortraitGroup = Math.min(
+          this.currentWaveGroup,
+          Math.max(1, Math.floor(Number(CONFIG.FINAL_WAVE_GROUP)) || 22)
+        );
+        const currentBossKey = `group${bossPortraitGroup}`;
         const imagePath = `assets/images/creatures/${currentBossKey}.png`;
         const effectiveBossKey = this.gameState.renderer.getEffectiveBossGroupKey(this.currentWaveGroup);
         const fallbackPath = `assets/images/creatures/${effectiveBossKey}.png`;
-        const bossPattern = CONFIG.BOSS_PATTERNS[this.currentWaveGroup] || CONFIG.BOSS_PATTERNS[1];
+        const bossPattern = getBossPatternForWaveGroup(this.currentWaveGroup);
         
         if (bossPattern) {
           const bossName = bossPattern.name || 'Unknown';
@@ -1080,8 +1257,14 @@ export class WaveSystem {
         // Insert header at the beginning of modal content
         modalFrameContent.insertBefore(headerContainer, modalFrameContent.firstChild);
         
-        // Build instruction text
-        const instructionText = '<p class="placement-instructions">Purchase items from the shop. Drag and drop them from your inventory to place on the map. Items cannot be repositioned while a wave is active.</p>';
+        // Shop / inventory hint: only on the first campaign placement (wave 1, group 1)
+        const showShopPlacementInstructions =
+          !isScenario &&
+          this.currentWaveGroup === 1 &&
+          this.waveInGroup === 1;
+        const instructionText = showShopPlacementInstructions
+          ? '<p class="placement-instructions">Purchase items from the shop. Drag and drop them from your inventory to place on the map. Items cannot be repositioned while a wave is active.</p>'
+          : '';
         
         // Build main content layout
         let mainContentHtml = '';
@@ -1146,13 +1329,17 @@ export class WaveSystem {
             this.introducedBoosters.add(item.boosterId);
           } else if (item.type === 'mystery_item' && item.mysteryItemId) {
             this.introducedMysteryItems.add(item.mysteryItemId);
+          } else if (item.type === 'artifact_map') {
+            this.introducedPlacementModalMapCategories.add('artifacts');
+          } else if (item.type === 'burning_vault_map') {
+            this.introducedPlacementModalMapCategories.add('burning_vault');
           }
         });
       
-        // Setup continue button - use fixed-position container so button stays visible when content scrolls
+        // Setup continue button — in flow under fire types (same idea as Collect on wave complete modals)
+        modal.querySelector('.placement-start-button-fixed')?.remove();
         const buttonContainer = modalFrameContent.querySelector('.placement-start-button-container');
         if (continueBtn && buttonContainer) {
-          // Remove button from its current parent if it exists
           if (continueBtn.parentElement) {
             continueBtn.parentElement.removeChild(continueBtn);
           }
@@ -1161,13 +1348,11 @@ export class WaveSystem {
           continueBtn.style.width = 'auto';
           continueBtn.style.minWidth = 'auto';
           continueBtn.style.maxWidth = 'none';
-          continueBtn.style.margin = '0';
+          continueBtn.style.margin = '6px auto 0 auto';
           continueBtn.style.display = 'block';
           continueBtn.style.visibility = 'visible';
-          // Remove any existing onclick handlers
           continueBtn.onclick = null;
           continueBtn.onclick = () => {
-            // Clean up modal classes
             modal.classList.remove('active', 'upgrade-token-mask', 'placement-phase');
             modal.style.pointerEvents = '';
             const modalInner = modal.querySelector('.modal');
@@ -1177,14 +1362,7 @@ export class WaveSystem {
             }
             this.enterPlacementMode();
           };
-          // Append to fixed-position container (create if needed) so button stays at bottom of viewport
-          let fixedContainer = modal.querySelector('.placement-start-button-fixed');
-          if (!fixedContainer) {
-            fixedContainer = document.createElement('div');
-            fixedContainer.className = 'placement-start-button-fixed';
-            modal.appendChild(fixedContainer);
-          }
-          fixedContainer.appendChild(continueBtn);
+          buttonContainer.appendChild(continueBtn);
         }
       }
     }
@@ -1222,23 +1400,27 @@ export class WaveSystem {
     if (pauseBtn) {
       pauseBtn.style.display = 'none';
     }
-    
+
     // Set up "Start Wave" button in controls area
     const controlsDiv = document.querySelector('.controls');
     if (controlsDiv) {
-      // Remove any existing Start Wave button first
+      // Remove any existing Start Wave + Back buttons first
       const existingBtn = document.getElementById('startWaveBtn');
       if (existingBtn) {
         existingBtn.remove();
       }
-      
+      const existingBackBtn = document.getElementById('backToPlacementModalBtn');
+      if (existingBackBtn) {
+        existingBackBtn.remove();
+      }
+
       // Create a new Start Wave button
       const startWaveBtn = document.createElement('button');
       startWaveBtn.id = 'startWaveBtn';
       startWaveBtn.className = 'control-btn cta-button cta-green';
       startWaveBtn.innerHTML = '<img src="assets/images/ui/resume.png" alt="Start Wave" class="control-btn-icon" /> Start Wave';
       startWaveBtn.setAttribute('aria-label', 'Start Wave');
-      
+
       // Disable if game is over
       if (this.gameState.gameOver) {
         startWaveBtn.disabled = true;
@@ -1247,11 +1429,14 @@ export class WaveSystem {
       } else {
         startWaveBtn.onclick = () => {
           if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('resume');
-          startWaveBtn.remove(); // Remove the button immediately
+          // Clean up both the Start Wave button and (if present) the Back button.
+          const backBtn = document.getElementById('backToPlacementModalBtn');
+          if (backBtn) backBtn.remove();
+          startWaveBtn.remove();
           this.showCountdownAndStartWave();
         };
       }
-      
+
       // Add it where the pause button would be (or append if pause button doesn't exist)
       if (pauseBtn && pauseBtn.parentNode) {
         pauseBtn.parentNode.insertBefore(startWaveBtn, pauseBtn);
@@ -1259,9 +1444,73 @@ export class WaveSystem {
         controlsDiv.appendChild(startWaveBtn);
       }
     }
-    
+
     // Update clear all button visibility (will only show if items exist)
     this.updateClearAllButtonVisibility();
+
+    // Create the "Back" button — it lives in the same row as the Clear All Items button (in
+    // wave-countdown-container) so the three placement-mode buttons sit together in one row:
+    //   [START WAVE] [CLEAR ALL ITEMS] [BACK]
+    // Clicking it re-displays the placement modal exactly as it was before the player clicked
+    // Continue / Start Placement. The modal's DOM (hero, speech bubble, item callouts, etc.) is
+    // preserved when the modal is hidden — we just toggle the visibility classes back on.
+    //
+    // Gate creation on the modal actually having content. Tutorial / scenario reset paths can
+    // call enterPlacementMode() without ever showing the placement modal, in which case there's
+    // nothing to go back to.
+    const placementModal = document.getElementById('waveCompleteModal');
+    const placementModalHasContent = !!placementModal?.querySelector('.placement-header-container');
+    if (placementModalHasContent && !this.gameState.gameOver) {
+      const canvasContainer = document.querySelector('.canvas-container');
+      let countdownContainer = document.getElementById('wave-countdown-container');
+      if (!countdownContainer && canvasContainer) {
+        countdownContainer = document.createElement('div');
+        countdownContainer.id = 'wave-countdown-container';
+        countdownContainer.className = 'wave-countdown-container';
+        canvasContainer.appendChild(countdownContainer);
+      }
+      if (countdownContainer) {
+        const backBtn = document.createElement('button');
+        backBtn.id = 'backToPlacementModalBtn';
+        backBtn.className = 'control-btn cta-button cta-orange placement-back-btn';
+        backBtn.innerHTML = '<img src="assets/images/ui/arrow.png" alt="" class="control-btn-icon placement-back-arrow" /> Back';
+        backBtn.setAttribute('aria-label', 'Back to placement screen');
+        backBtn.onclick = () => {
+          if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('button2');
+          // Remove the in-canvas controls — the placement modal will own the next interaction.
+          const swBtn = document.getElementById('startWaveBtn');
+          if (swBtn) swBtn.remove();
+          backBtn.remove();
+          this.reopenPlacementPhaseModal();
+        };
+        countdownContainer.appendChild(backBtn);
+      }
+    }
+  }
+
+  /**
+   * Re-open the placement phase modal that was hidden when the player clicked
+   * Continue / START PLACEMENT. The modal's DOM contents (hero graphic, speech bubble,
+   * new-item callouts, continue button with its existing onclick handler, etc.) are still
+   * intact — we just toggle the visibility classes that were removed.
+   *
+   * Called by the Back button placed above the Start Wave button during placement mode.
+   */
+  reopenPlacementPhaseModal() {
+    const modal = document.getElementById('waveCompleteModal');
+    if (!modal) return;
+    // Bail out gracefully if the modal no longer holds placement content (e.g. it was repurposed
+    // for a wave-complete view in the meantime). Without content, re-showing it would just be a
+    // blank overlay.
+    if (!modal.querySelector('.placement-header-container')) return;
+
+    modal.classList.add('active', 'upgrade-token-mask', 'placement-phase');
+    modal.style.pointerEvents = '';
+    const modalInner = modal.querySelector('.modal');
+    if (modalInner) {
+      modalInner.classList.add('modal-upgrade-token', 'modal-no-frame');
+      modalInner.style.pointerEvents = '';
+    }
   }
 
   /**
@@ -1373,11 +1622,56 @@ export class WaveSystem {
   }
 
   /**
+   * Persist per-wave best fires extinguished (once per completed wave, keyed by that wave number).
+   * Sets wave.firesExtinguishedHighScoreBanner only when this run strictly exceeds the prior stored best.
+   * Sets wave.firesExtinguishedSubtext for the wave-complete modal (PB line / matched / new).
+   * @param {number} completedWave - 1-based wave index that just ended (before wave.number++)
+   * @param {number} count - fires extinguished this wave
+   */
+  recordFiresExtinguishedHighScore(completedWave, count) {
+    const waveKey = String(Math.max(1, completedWave));
+    const safeCount = Math.max(0, Math.round(Number(count)) || 0);
+    this.gameState.meta = this.gameState.meta || {};
+    const prevMap = this.gameState.meta.maxFiresExtinguishedByWave;
+    const map = typeof prevMap === 'object' && prevMap !== null ? { ...prevMap } : {};
+    const prevBest = map[waveKey];
+    const hadPrior = typeof prevBest === 'number' && !Number.isNaN(prevBest);
+    const isStrictNewHigh = hadPrior && safeCount > prevBest;
+    const equaledBest = hadPrior && safeCount === prevBest;
+    const firstRecord = !hadPrior;
+    map[waveKey] = hadPrior ? Math.max(prevBest, safeCount) : safeCount;
+    this.gameState.meta.maxFiresExtinguishedByWave = map;
+    const personalBestAfter = map[waveKey];
+    if (this.gameState.wave) {
+      this.gameState.wave.firesExtinguishedHighScoreBanner = !!isStrictNewHigh;
+      this.gameState.wave.firesExtinguishedSubtext = {
+        isNewHigh: !!isStrictNewHigh,
+        equaledBest: !!equaledBest,
+        firstRecord: !!firstRecord,
+        hadPrior,
+        previousBest: hadPrior ? prevBest : null,
+        personalBestAfter,
+      };
+    }
+  }
+
+  /**
    * Complete the current wave
    */
   completeWave() {
-    
+    const completedWave = this.gameState.wave?.number ?? 1;
+    const completedWaveGroup = this.currentWaveGroup;
+    const completedWaveInGroup = this.waveInGroup;
+    const groveDamage = this.gameState.gridSystem?.getTownDamageThisWave?.() ?? 0;
+    this.gameState.runStats?.flushWaveSegment?.(
+      completedWave,
+      completedWaveGroup,
+      completedWaveInGroup,
+      groveDamage
+    );
+
     this.gameState.wave.isActive = false;
+    this.gameState.suppressionBombSystem?.resetPendingExplosions?.();
     
     // Open sidebar when wave completes
     if (window.toggleSidebar) {
@@ -1417,22 +1711,19 @@ export class WaveSystem {
       pauseBtn.style.display = 'none';
     }
     
-    // No base wave reward - only town protection bonus is awarded
+    // No base wave reward - only ancient grove protection bonus is awarded
     this.gameState.wave.baseWaveReward = 0;
 
-    // Award town protection bonus: percentage of HP remaining = percentage of full reward ($300)
-    // Decoupled from raw HP so upgrading town health cannot exploit the bonus
+    // Ancient grove protection bonus: full reward minus share lost to cumulative damage this wave
+    // (total HP lost while burning / max grove HP), not end-of-wave HP or lowest-HP snapshot
     const townCenter = this.gameState.gridSystem?.getTownCenter?.();
     const maxHealth = townCenter?.maxTownHealth ? Math.round(townCenter.maxTownHealth) : 1;
-    const currentHealth = townCenter?.townHealth != null ? Math.round(townCenter.townHealth) : 0;
-    const healthPercent = maxHealth > 0 ? Math.max(0, Math.min(1, currentHealth / maxHealth)) : 0;
+    const damageTaken = this.gameState.gridSystem?.getTownDamageThisWave?.() ?? 0;
+    const damageFraction = maxHealth > 0 ? Math.min(1, Math.max(0, damageTaken / maxHealth)) : 0;
     const fullBonus = CONFIG.TOWN_PROTECTION_BONUS_FULL ?? 300;
-    const protectionBonus = Math.round(healthPercent * fullBonus);
+    const protectionBonus = Math.round((1 - damageFraction) * fullBonus);
     this.gameState.wave.townBonusAward = protectionBonus;
-    if (protectionBonus > 0) {
-      this.gameState.player.currency = (this.gameState.player.currency || 0) + protectionBonus;
-      if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('earn');
-    }
+    // Currency + earn SFX applied when player taps Collect on the wave / group / victory modal
     
     // Check for unlocks now that wave has ended
     // NOTE: If player leveled up during the wave, unlocks were already checked and queued
@@ -1463,6 +1754,9 @@ export class WaveSystem {
     if (window.updateUI) {
       window.updateUI();
     }
+
+    const totalExtinguishedThisWave = this.gameState.fireSystem?.getTotalFiresExtinguishedThisWave() || 0;
+    this.recordFiresExtinguishedHighScore(completedWave, totalExtinguishedThisWave);
     
     // Increment wave number and waveInGroup BEFORE callbacks (so autosave has correct state)
     // This ensures the saved state reflects the next wave, not the completed wave
@@ -1498,40 +1792,36 @@ export class WaveSystem {
   /**
    * Roll one reward from a dig site reward pool (weighted random).
    * @param {number} siteType - Dig site type (1, 2, or 3)
-   * @returns {{ type: string, amount?: number, level?: number }|null}
+   * @returns {{ type: string, amount?: number, level?: number, count?: number }|null}
    */
   rollDigSiteReward(siteType) {
-    const pool = CONFIG.DIG_SITE_REWARD_POOLS?.[siteType];
-    if (!pool || !Array.isArray(pool) || pool.length === 0) return null;
+    const raw = CONFIG.DIG_SITE_REWARD_POOLS?.[siteType];
+    let pool = filterWeightedRewardPool(this.gameState, raw || []);
+    if (!pool.length) {
+      return { type: 'currency', amount: 100 };
+    }
     const total = pool.reduce((s, e) => s + (e.weight || 0), 0);
     if (total <= 0) return null;
     let r = Math.random() * total;
     for (const e of pool) {
       r -= e.weight || 0;
       if (r <= 0) {
-        if (e.type === 'currency') return { type: 'currency', amount: e.amount };
-        if (e.type === 'shield') return { type: 'shield', level: e.level };
-        if (e.type === 'suppression_bomb') return { type: 'suppression_bomb', level: e.level };
-        if (e.type === 'upgrade_plan') return { type: 'upgrade_plan' };
-        if (e.type === 'movement_token') return { type: 'movement_token' };
-        return null;
+        const out = digSitePoolEntryToReward(e);
+        if (out) return out;
+        break;
       }
     }
     const last = pool[pool.length - 1];
-    if (last.type === 'currency') return { type: 'currency', amount: last.amount };
-    if (last.type === 'shield') return { type: 'shield', level: last.level };
-    if (last.type === 'suppression_bomb') return { type: 'suppression_bomb', level: last.level };
-    if (last.type === 'upgrade_plan') return { type: 'upgrade_plan' };
-    if (last.type === 'movement_token') return { type: 'movement_token' };
-    return null;
+    return digSitePoolEntryToReward(last) || { type: 'currency', amount: 100 };
   }
 
   /**
    * Apply a dig site reward to the player (currency or inventory).
-   * @param {{ type: string, amount?: number, level?: number }} reward
+   * @param {{ type: string, amount?: number, level?: number, count?: number }} reward
    */
   applyDigSiteReward(reward) {
     if (!reward) return;
+    const count = Math.max(1, Math.floor(Number(reward.count) || 1));
     if (reward.type === 'currency' && typeof reward.amount === 'number') {
       this.gameState.player.currency = (this.gameState.player.currency || 0) + reward.amount;
       if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('earn');
@@ -1541,27 +1831,90 @@ export class WaveSystem {
       if (!this.gameState.player.inventory.purchasedShields) {
         this.gameState.player.inventory.purchasedShields = [];
       }
-      this.gameState.player.inventory.purchasedShields.push({ type: 'shield', level: reward.level });
+      for (let i = 0; i < count; i++) {
+        this.gameState.player.inventory.purchasedShields.push({ type: 'shield', level: reward.level });
+      }
       return;
     }
     if (reward.type === 'suppression_bomb' && typeof reward.level === 'number') {
       if (!this.gameState.player.inventory.purchasedSuppressionBombs) {
         this.gameState.player.inventory.purchasedSuppressionBombs = [];
       }
-      this.gameState.player.inventory.purchasedSuppressionBombs.push({
-        type: 'suppression_bomb',
-        level: reward.level,
-      });
+      for (let i = 0; i < count; i++) {
+        const totalUses = getSuppressionBombTotalUses(reward.level);
+        this.gameState.player.inventory.purchasedSuppressionBombs.push({
+          type: 'suppression_bomb',
+          level: reward.level,
+          totalUses,
+          usesRemaining: totalUses,
+        });
+      }
       return;
     }
     if (reward.type === 'upgrade_plan') {
-      this.gameState.player.upgradePlans = (this.gameState.player.upgradePlans || 0) + 1;
+      this.gameState.player.upgradePlans = (this.gameState.player.upgradePlans || 0) + count;
+      for (let i = 0; i < count; i++) {
+        this.gameState.runStats?.recordUpgradePlanFromDigOrGroup?.();
+      }
       if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('earn');
+      return;
     }
     if (reward.type === 'movement_token') {
-      this.gameState.player.movementTokens = (this.gameState.player.movementTokens || 0) + 1;
+      this.gameState.player.movementTokens = (this.gameState.player.movementTokens || 0) + count;
+      for (let i = 0; i < count; i++) {
+        this.gameState.runStats?.recordMovementTokenFromDig?.();
+      }
+      if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('earn');
+      return;
+    }
+    if (reward.type === 'tree_juice') {
+      for (let i = 0; i < count; i++) {
+        this.gameState.townLevel = (this.gameState.townLevel || 1) + 1;
+        this.gameState.gridSystem?.applyTownUpgrade?.(CONFIG.TOWN_HEALTH_PER_UPGRADE);
+        this.gameState.runStats?.recordTownHealthUpgrade?.();
+      }
+      if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tree_juice');
+    }
+  }
+
+  /**
+   * Apply ancient grove protection bonus from the completed wave (currency + SFX). Clears townBonusAward.
+   */
+  applyPendingTownBonus() {
+    const bonus = Math.max(0, Math.round(this.gameState.wave.townBonusAward || 0));
+    if (bonus > 0) {
+      this.gameState.player.currency = (this.gameState.player.currency || 0) + bonus;
       if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('earn');
     }
+    this.gameState.wave.townBonusAward = 0;
+  }
+
+  /**
+   * Apply wave-group rewards (dig sites, group $ bonus, upgrade plans). Clears pendingGroupRewards.
+   */
+  applyPendingGroupRewards() {
+    const p = this.gameState.wave.pendingGroupRewards;
+    if (!p) return;
+    const list = p.digSiteRewards || [];
+    for (let i = 0; i < list.length; i++) {
+      const entry = list[i];
+      if (entry?.reward) this.applyDigSiteReward(entry.reward);
+      const nd = entry?.noDamageBonusCurrency;
+      if (typeof nd === 'number' && nd > 0) {
+        this.gameState.player.currency = (this.gameState.player.currency || 0) + nd;
+      }
+    }
+    if (typeof p.groupBonus === 'number' && p.groupBonus > 0) {
+      this.gameState.player.currency = (this.gameState.player.currency || 0) + p.groupBonus;
+    }
+    if (typeof p.upgradePlanDelta === 'number' && p.upgradePlanDelta > 0) {
+      this.gameState.player.upgradePlans = (this.gameState.player.upgradePlans || 0) + p.upgradePlanDelta;
+      for (let i = 0; i < p.upgradePlanDelta; i++) {
+        this.gameState.runStats?.recordUpgradePlanFromDigOrGroup?.();
+      }
+    }
+    if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('earn');
+    this.gameState.wave.pendingGroupRewards = null;
   }
 
   /**
@@ -1577,27 +1930,77 @@ export class WaveSystem {
     // Dig sites persist for the entire group; we only clear and respawn at group boundaries.
     const digSiteRewards = [];
     const surviving = this.gameState.digSiteSystem?.getSurvivingDigSites() ?? [];
+    const completedGroupForDigStats = this.currentWaveGroup;
+    const noDamageEps = 1e-4;
+    const fireDamageBySiteId = new Map();
+    for (const site of surviving) {
+      const raw = this.gameState.runStats?.getDigSiteDamageTotal?.(site.id);
+      const dmg = typeof raw === 'number' && !Number.isNaN(raw) ? raw : Number.NaN;
+      fireDamageBySiteId.set(site.id, dmg);
+    }
+    for (const site of surviving) {
+      this.gameState.runStats?.recordDigSiteSurvivedGroup?.(
+        site.id,
+        site.type,
+        site.q,
+        site.r,
+        completedGroupForDigStats
+      );
+    }
     for (const site of surviving) {
       const reward = this.rollDigSiteReward(site.type);
       if (!reward) continue;
-      this.applyDigSiteReward(reward);
       const siteConfig = CONFIG.DIG_SITE_TYPES?.[site.type];
+      const fireDamage = fireDamageBySiteId.get(site.id);
+      const tookNoFireDamage = Number.isFinite(fireDamage) && fireDamage <= noDamageEps;
+      const noDamageBonusAmt = Math.max(0, Math.round(siteConfig?.noDamageBonusCurrency ?? 0));
+      const noDamageBonusCurrency = tookNoFireDamage && noDamageBonusAmt > 0 ? noDamageBonusAmt : 0;
       digSiteRewards.push({
         siteName: siteConfig?.name ?? `Dig Site ${site.type}`,
         siteType: site.type,
         reward,
+        noDamageBonusCurrency,
       });
     }
-    
-    // Award bonus dollars for completing wave group (configurable reward)
+
     const groupBonus = CONFIG.WAVE_GROUP_BONUS_REWARD;
-    this.gameState.player.currency = (this.gameState.player.currency || 0) + groupBonus;
-    
-    // Award 1 upgrade plan for completing wave group
-    this.gameState.player.upgradePlans = (this.gameState.player.upgradePlans || 0) + 1;
-    
-    // Play reward sound for group completion rewards
-    if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('earn');
+    const finalGroup = CONFIG.FINAL_WAVE_GROUP ?? 22;
+    this.gameState.meta = this.gameState.meta || {};
+    const isVictoryPath = this.currentWaveGroup === finalGroup && !this.gameState.meta.endlessMode;
+    this.gameState.wave.pendingGroupRewards = {
+      digSiteRewards: digSiteRewards.map((e) => ({ ...e, reward: e.reward ? { ...e.reward } : e.reward })),
+      groupBonus,
+      upgradePlanDelta: 1,
+      isVictory: !!isVictoryPath,
+    };
+
+    // Group boundary reset: return all player-placed map items to inventory
+    // so each new wave group starts with a clean map.
+    this.gameState.towerSystem?.storeAllTowersInInventory?.();
+    this.gameState.suppressionBombSystem?.storeAllSuppressionBombsInInventory?.();
+
+    if (this.currentWaveGroup === finalGroup && !this.gameState.meta.endlessMode) {
+      this.clearAmbientWaveSpawnsForGroupBoundary();
+      // Campaign complete: stay on final group, snap wave index to last wave of that group
+      this.gameState.meta.endlessUnlocked = true;
+      const lastWaveInGroup = (finalGroup - 1) * this.wavesPerGroup + this.wavesPerGroup;
+      this.gameState.wave.number = lastWaveInGroup;
+      this.waveInGroup = 5;
+      this.gameState.wave.waveInGroup = 5;
+      this.gameState.wave.currentGroup = finalGroup;
+      this.currentWaveGroup = finalGroup;
+      if (this.callbacks.onWaveGroupComplete) {
+        this.callbacks.onWaveGroupComplete(this.currentWaveGroup);
+      }
+      this.gameState.runStats?.recordWaveGroupCompleted?.();
+      this.gameState.runStats?.recordCampaignVictory?.();
+      const metaUnlocks = unlockMetaProgressionForCompletedWaveGroup(this.gameState, finalGroup);
+      if (typeof this.gameState.persistMeta === 'function') {
+        this.gameState.persistMeta();
+      }
+      this.showVictoryModal(digSiteRewards, metaUnlocks);
+      return;
+    }
     
     // Increment wave group BEFORE callbacks (so autosave has correct state)
     this.currentWaveGroup++;
@@ -1606,21 +2009,13 @@ export class WaveSystem {
       this.gameState.wave.currentGroup = this.currentWaveGroup;
       this.gameState.wave.waveInGroup = this.waveInGroup;
     }
-    
-    // Generate new paths for the upcoming wave group BEFORE autosave
-    // This ensures the new paths are saved when autosave happens
-    const nextWaveNumber = this.gameState.wave?.number || 1;
-    this.gameState.pathSystem?.generatePaths(nextWaveNumber);
-    
-    // Generate fire spawners for the upcoming wave group (after paths are generated)
-    this.gameState.fireSpawnerSystem?.generateSpawners(this.currentWaveGroup);
-    
-    // Clear dig sites at wave group boundary (they persist through the group)
-    // New dig sites will spawn at the start of each wave in the new group
-    this.gameState.digSiteSystem?.clearAllDigSites();
-    
-    // Update fire system with new wave group for fire progression
-    this.gameState.fireSystem?.setWaveGroup(this.currentWaveGroup);
+
+    // Defer map/theme transition to startNextWaveGroup so the group-complete modal
+    // still shows the previous group's map in the background.
+    this.pendingGroupTransition = {
+      waveGroup: this.currentWaveGroup,
+      waveNumber: this.gameState.wave?.number || 1,
+    };
     
     // Update currency display immediately
     if (window.updateUI) {
@@ -1632,13 +2027,500 @@ export class WaveSystem {
       this.callbacks.onWaveGroupComplete(this.currentWaveGroup);
     }
     
+    this.gameState.runStats?.recordWaveGroupCompleted?.();
+
     // Show wave group complete modal (include dig site rewards for display)
     this.showWaveGroupCompleteModal(digSiteRewards);
   }
 
   /**
+   * Remove ambient map spawns from the prior wave group: water tanks, temp power-ups, mystery items,
+   * currency pickups, artifacts, dig sites, and burning vaults. Player towers and suppression bombs
+   * are handled separately (returned to inventory in {@link #completeWaveGroup} before this runs).
+   */
+  clearAmbientWaveSpawnsForGroupBoundary() {
+    this.gameState.waterTankSystem?.clearAllWaterTanks();
+    this.gameState.tempPowerUpItemSystem?.clearAllItems();
+    this.gameState.mysteryItemSystem?.clearAllItems();
+    this.gameState.currencyItemSystem?.clearAllItems();
+    this.gameState.artifactSystem?.clearAllItems();
+    this.gameState.digSiteSystem?.clearAllDigSites();
+    this.gameState.burningVaultSystem?.clearAllItems();
+  }
+
+  /**
+   * Apply deferred map/theme transition for the upcoming wave group.
+   * Called right before the next placement phase begins.
+   */
+  applyPendingGroupTransition() {
+    const pending = this.pendingGroupTransition;
+    if (!pending) return;
+
+    const waveGroup = Math.max(1, Math.floor(Number(pending.waveGroup) || this.currentWaveGroup || 1));
+    const waveNumber = Math.max(1, Math.floor(Number(pending.waveNumber) || this.gameState.wave?.number || 1));
+
+    this.clearAmbientWaveSpawnsForGroupBoundary();
+
+    this.gameState.pathSystem?.generatePaths(waveNumber);
+    this.gameState.fireSpawnerSystem?.generateSpawners(waveGroup);
+
+    // Advance fire progression to the new group only when we enter placement.
+    this.gameState.fireSystem?.setWaveGroup(waveGroup);
+
+    this.pendingGroupTransition = null;
+  }
+
+  /**
+   * Campaign victory modal (completed final wave group with Endless mode off).
+   * @param {Array} digSiteRewards
+   */
+  showVictoryModal(digSiteRewards = [], metaUnlocks = []) {
+    const modal = document.getElementById('waveCompleteModal');
+    const statsDiv = document.getElementById('waveStats');
+    const modalFrameContent = modal?.querySelector('.modal-frame-content');
+    if (!modal || !modalFrameContent) return;
+
+    delete modal._victoryRewardsCollected;
+
+    modal.querySelector('.victory-modal-buttons')?.remove();
+    this.removeWaveCompleteHeroGraphic(modal);
+
+    if (window.gameLoop && !window.gameLoop.isPaused) {
+      window.gameLoop.pause();
+      this.gameState.isPaused = true;
+    }
+
+    modal.classList.add('active', 'upgrade-token-mask', 'wave-group-complete', 'victory-modal');
+    modal.style.pointerEvents = 'auto';
+    const modalInner = modal.querySelector('.modal');
+    if (modalInner) {
+      modalInner.style.pointerEvents = 'auto';
+      modalInner.classList.add('modal-upgrade-token', 'modal-no-frame');
+      modalInner.classList.remove('wave-complete-modal', 'boss-wave-modal');
+    }
+
+    const modalTitle = modal.querySelector('h2');
+    if (modalTitle) modalTitle.remove();
+    modal.querySelector('.wave-complete-header-container')?.remove();
+    modal.querySelector('.placement-boss-header-label')?.remove();
+    modal.querySelector('.placement-header-container')?.remove();
+    modal.querySelector('.victory-subtitle-block')?.remove();
+    modal.querySelector('.victory-hero-dock')?.remove();
+
+    const headerContainer = document.createElement('div');
+    headerContainer.className = 'wave-complete-header-container';
+    headerContainer.style.cssText = 'position: relative; display: flex; justify-content: center; align-items: center; width: 100%;';
+    const headerImage = document.createElement('img');
+    headerImage.src = 'assets/images/ui/header-bg-blue.png';
+    headerImage.style.cssText = 'width: 800px; height: auto; image-rendering: crisp-edges; position: relative; z-index: 1;';
+    headerContainer.appendChild(headerImage);
+    const headerText = document.createElement('div');
+    headerText.textContent = 'Victory!';
+    headerText.style.cssText = 'position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2; color: #FFFFFF; font-size: 32px; font-weight: bold; font-family: "Exo 2", sans-serif; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8); pointer-events: none; white-space: nowrap;';
+    headerContainer.appendChild(headerText);
+    modalFrameContent.insertBefore(headerContainer, modalFrameContent.firstChild);
+
+    const sub = document.createElement('div');
+    sub.className = 'victory-subtitle-block';
+    sub.innerHTML = '<p class="victory-subtitle-lead">You have extinguished the fires of Eternalfire and saved Hexalon.</p><p class="victory-subtitle-sub">The Ancient Grove and every ally along the way celebrate you—true <span class="text-gradient-water">Water Wielder</span> of legend.</p>';
+    const statsDivEl = document.getElementById('waveStats');
+    if (statsDivEl) {
+      modalFrameContent.insertBefore(sub, statsDivEl);
+    } else {
+      modalFrameContent.appendChild(sub);
+    }
+
+    const { statsContainer, tokenAmountRef, totalAmount, totalEarned } = buildWaveGroupCompleteStatsContainer(this, digSiteRewards);
+
+    const continueBtnEl = document.getElementById('continueBtn');
+    if (continueBtnEl) {
+      continueBtnEl.style.display = 'none';
+      // Wave group complete puts Continue inside #waveStats; clearing innerHTML would destroy it and
+      // break the next placement modal (no START PLACEMENT / Start Wave after endless victory jump).
+      if (modalFrameContent && continueBtnEl.parentElement !== modalFrameContent) {
+        modalFrameContent.appendChild(continueBtnEl);
+      }
+    }
+
+    if (statsDiv) {
+      statsDiv.innerHTML = '';
+      statsDiv.appendChild(statsContainer);
+      const metaUnlocksHtml = buildMetaProgressionUnlocksHtml(metaUnlocks);
+      if (metaUnlocksHtml) {
+        statsDiv.insertAdjacentHTML('beforeend', metaUnlocksHtml);
+      }
+    }
+
+    const heroDock = document.createElement('div');
+    heroDock.className = 'victory-hero-dock victory-hero-dock--fixed';
+    const indices = Array.from({ length: 22 }, (_, i) => i + 1);
+    for (let i = indices.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [indices[i], indices[j]] = [indices[j], indices[i]];
+    }
+    const pick = indices.slice(0, 4);
+    const pickSet = new Set(pick);
+    const peekPool = [];
+    for (let g = 1; g <= 22; g++) {
+      if (!pickSet.has(g)) peekPool.push(g);
+    }
+    for (let i = peekPool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [peekPool[i], peekPool[j]] = [peekPool[j], peekPool[i]];
+    }
+    const peekPick = peekPool.slice(0, 4);
+    const peekSet = new Set(peekPick);
+    const deepPool = [];
+    for (let g = 1; g <= 22; g++) {
+      if (!pickSet.has(g) && !peekSet.has(g)) deepPool.push(g);
+    }
+    for (let i = deepPool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [deepPool[i], deepPool[j]] = [deepPool[j], deepPool[i]];
+    }
+    const deepPick = deepPool.slice(0, 4);
+    const deepSet = new Set(deepPick);
+    const farPool = [];
+    for (let g = 1; g <= 22; g++) {
+      if (!pickSet.has(g) && !peekSet.has(g) && !deepSet.has(g)) farPool.push(g);
+    }
+    for (let i = farPool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [farPool[i], farPool[j]] = [farPool[j], farPool[i]];
+    }
+    const farPick = farPool.slice(0, 4);
+    const farSet = new Set(farPick);
+    const fifthPool = [];
+    for (let g = 1; g <= 22; g++) {
+      if (!pickSet.has(g) && !peekSet.has(g) && !deepSet.has(g) && !farSet.has(g)) fifthPool.push(g);
+    }
+    for (let i = fifthPool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [fifthPool[i], fifthPool[j]] = [fifthPool[j], fifthPool[i]];
+    }
+    const fifthPick = fifthPool.slice(0, 4);
+
+    const colLeft = document.createElement('div');
+    colLeft.className = 'victory-hero-col victory-hero-col--left';
+    const colRight = document.createElement('div');
+    colRight.className = 'victory-hero-col victory-hero-col--right';
+    heroDock.appendChild(colLeft);
+    heroDock.appendChild(colRight);
+
+    /** @param {'peek' | 'deep' | 'far' | 'fifth'} tier @param {number} rowRisePx — extra translateY before fade-in (shift-up reveal) */
+    const buildBackgroundHeroCard = (heroGroup, side, slot, tier, rowRisePx) => {
+      const tierClass = tier === 'fifth'
+        ? 'victory-hero-card--peek-fifth'
+        : tier === 'far'
+          ? 'victory-hero-card--peek-far'
+          : tier === 'deep'
+            ? 'victory-hero-card--peek-deep'
+            : 'victory-hero-card--peek';
+      const card = document.createElement('div');
+      card.className = `victory-hero-card ${tierClass} victory-hero-peek-${slot}`;
+      const wrap = document.createElement('div');
+      wrap.className = 'victory-hero-bob';
+      const img = document.createElement('img');
+      img.src = `assets/images/creatures/hero${heroGroup}.png?v=6`;
+      img.alt = '';
+      img.onerror = () => { img.src = 'assets/images/creatures/hero1.png?v=6'; };
+      // Opposite of row 1 mains: left column flip-wrap (face right toward center), right column unflipped (face left toward center) for these background rows.
+      if (side === 'left') {
+        const imgHost = document.createElement('div');
+        imgHost.className = 'victory-hero-flip-wrap';
+        imgHost.appendChild(img);
+        wrap.appendChild(imgHost);
+      } else {
+        wrap.appendChild(img);
+      }
+      card.appendChild(wrap);
+      card.style.setProperty('--victory-rise', `${rowRisePx}px`);
+      card.style.opacity = '0';
+      card.style.transition = 'opacity 0.5s ease-out, transform 0.5s ease-out';
+      return card;
+    };
+
+    const leftFifthLayer = document.createElement('div');
+    leftFifthLayer.className = 'victory-hero-fifth-layer victory-hero-fifth-layer--left';
+    leftFifthLayer.appendChild(buildBackgroundHeroCard(fifthPick[0], 'left', 'a', 'fifth', 20));
+    leftFifthLayer.appendChild(buildBackgroundHeroCard(fifthPick[1], 'left', 'b', 'fifth', 20));
+    colLeft.appendChild(leftFifthLayer);
+
+    const rightFifthLayer = document.createElement('div');
+    rightFifthLayer.className = 'victory-hero-fifth-layer victory-hero-fifth-layer--right';
+    rightFifthLayer.appendChild(buildBackgroundHeroCard(fifthPick[2], 'right', 'a', 'fifth', 20));
+    rightFifthLayer.appendChild(buildBackgroundHeroCard(fifthPick[3], 'right', 'b', 'fifth', 20));
+    colRight.appendChild(rightFifthLayer);
+
+    const leftFarLayer = document.createElement('div');
+    leftFarLayer.className = 'victory-hero-far-layer victory-hero-far-layer--left';
+    leftFarLayer.appendChild(buildBackgroundHeroCard(farPick[0], 'left', 'a', 'far', 40));
+    leftFarLayer.appendChild(buildBackgroundHeroCard(farPick[1], 'left', 'b', 'far', 40));
+    colLeft.appendChild(leftFarLayer);
+
+    const rightFarLayer = document.createElement('div');
+    rightFarLayer.className = 'victory-hero-far-layer victory-hero-far-layer--right';
+    rightFarLayer.appendChild(buildBackgroundHeroCard(farPick[2], 'right', 'a', 'far', 40));
+    rightFarLayer.appendChild(buildBackgroundHeroCard(farPick[3], 'right', 'b', 'far', 40));
+    colRight.appendChild(rightFarLayer);
+
+    const leftDeepLayer = document.createElement('div');
+    leftDeepLayer.className = 'victory-hero-deep-layer victory-hero-deep-layer--left';
+    leftDeepLayer.appendChild(buildBackgroundHeroCard(deepPick[0], 'left', 'a', 'deep', 60));
+    leftDeepLayer.appendChild(buildBackgroundHeroCard(deepPick[1], 'left', 'b', 'deep', 60));
+    colLeft.appendChild(leftDeepLayer);
+
+    const rightDeepLayer = document.createElement('div');
+    rightDeepLayer.className = 'victory-hero-deep-layer victory-hero-deep-layer--right';
+    rightDeepLayer.appendChild(buildBackgroundHeroCard(deepPick[2], 'right', 'a', 'deep', 60));
+    rightDeepLayer.appendChild(buildBackgroundHeroCard(deepPick[3], 'right', 'b', 'deep', 60));
+    colRight.appendChild(rightDeepLayer);
+
+    const leftPeekLayer = document.createElement('div');
+    leftPeekLayer.className = 'victory-hero-peek-layer victory-hero-peek-layer--left';
+    leftPeekLayer.appendChild(buildBackgroundHeroCard(peekPick[0], 'left', 'a', 'peek', 80));
+    leftPeekLayer.appendChild(buildBackgroundHeroCard(peekPick[1], 'left', 'b', 'peek', 80));
+    colLeft.appendChild(leftPeekLayer);
+
+    const rightPeekLayer = document.createElement('div');
+    rightPeekLayer.className = 'victory-hero-peek-layer victory-hero-peek-layer--right';
+    rightPeekLayer.appendChild(buildBackgroundHeroCard(peekPick[2], 'right', 'a', 'peek', 80));
+    rightPeekLayer.appendChild(buildBackgroundHeroCard(peekPick[3], 'right', 'b', 'peek', 80));
+    colRight.appendChild(rightPeekLayer);
+
+    const wraps = [];
+    const speechTexts = [];
+    const mainCards = [];
+    pick.forEach((heroGroup, idx) => {
+      const card = document.createElement('div');
+      card.className = 'victory-hero-card victory-hero-card--main';
+      const wrap = document.createElement('div');
+      wrap.className = 'victory-hero-bob';
+      const img = document.createElement('img');
+      img.src = `assets/images/creatures/hero${heroGroup}.png?v=6`;
+      img.alt = '';
+      img.className = 'pulsing';
+      img.onerror = () => { img.src = 'assets/images/creatures/hero1.png?v=6'; };
+      // Right column: mirror sprites like gameplay when heroes appear on the right
+      if (idx >= 2) {
+        const imgHost = document.createElement('div');
+        imgHost.className = 'victory-hero-flip-wrap';
+        imgHost.appendChild(img);
+        wrap.appendChild(imgHost);
+      } else {
+        wrap.appendChild(img);
+      }
+      card.appendChild(wrap);
+      if (idx < 2) colLeft.appendChild(card);
+      else colRight.appendChild(card);
+      card.style.setProperty('--victory-rise', '100px');
+      card.style.opacity = '0';
+      card.style.transition = 'opacity 0.5s ease-out, transform 0.5s ease-out';
+      wraps.push(wrap);
+      mainCards.push(card);
+      speechTexts.push(VICTORY_SPEECH_PLACEHOLDERS[heroGroup] || 'Placeholder: Well fought!');
+    });
+
+    const row2PeekCards = [
+      leftPeekLayer.querySelector('.victory-hero-card--peek.victory-hero-peek-a'),
+      leftPeekLayer.querySelector('.victory-hero-card--peek.victory-hero-peek-b'),
+      rightPeekLayer.querySelector('.victory-hero-card--peek.victory-hero-peek-a'),
+      rightPeekLayer.querySelector('.victory-hero-card--peek.victory-hero-peek-b'),
+    ];
+    const row3DeepCards = [
+      leftDeepLayer.querySelector('.victory-hero-card--peek-deep.victory-hero-peek-a'),
+      leftDeepLayer.querySelector('.victory-hero-card--peek-deep.victory-hero-peek-b'),
+      rightDeepLayer.querySelector('.victory-hero-card--peek-deep.victory-hero-peek-a'),
+      rightDeepLayer.querySelector('.victory-hero-card--peek-deep.victory-hero-peek-b'),
+    ];
+    const row4FarCards = [
+      leftFarLayer.querySelector('.victory-hero-card--peek-far.victory-hero-peek-a'),
+      leftFarLayer.querySelector('.victory-hero-card--peek-far.victory-hero-peek-b'),
+      rightFarLayer.querySelector('.victory-hero-card--peek-far.victory-hero-peek-a'),
+      rightFarLayer.querySelector('.victory-hero-card--peek-far.victory-hero-peek-b'),
+    ];
+    const row5FifthCards = [
+      leftFifthLayer.querySelector('.victory-hero-card--peek-fifth.victory-hero-peek-a'),
+      leftFifthLayer.querySelector('.victory-hero-card--peek-fifth.victory-hero-peek-b'),
+      rightFifthLayer.querySelector('.victory-hero-card--peek-fifth.victory-hero-peek-a'),
+      rightFifthLayer.querySelector('.victory-hero-card--peek-fifth.victory-hero-peek-b'),
+    ];
+    modal.insertBefore(heroDock, modal.firstChild);
+
+    const btnRow = document.createElement('div');
+    btnRow.className = 'victory-modal-buttons modal-choices';
+    btnRow.style.cssText = 'display: flex; flex-direction: row; flex-wrap: nowrap; justify-content: center; align-items: center; gap: 12px; margin-top: 12px; width: 100%;';
+
+    const closeVictory = () => {
+      (modal._victoryHeroFadeTimeouts || []).forEach((id) => clearTimeout(id));
+      delete modal._victoryHeroFadeTimeouts;
+      (modal._victorySpeechRevealTimeouts || []).forEach((id) => clearTimeout(id));
+      delete modal._victorySpeechRevealTimeouts;
+      this.gameState?.inputHandler?.tooltipSystem?.hide();
+      if (modal._victorySpeechCleanup) {
+        window.removeEventListener('resize', modal._victorySpeechCleanup.onResize);
+        modal._victorySpeechCleanup.bubbles.forEach((b) => b.remove());
+        delete modal._victorySpeechCleanup;
+      }
+      this.removeBossDefeatGraphic(modal);
+      modal.querySelectorAll('.character-speech-bubble').forEach((b) => b.remove());
+      modal.classList.remove('active', 'upgrade-token-mask', 'wave-group-complete', 'victory-modal');
+      modal.style.pointerEvents = '';
+      if (modalInner) {
+        modalInner.classList.remove('modal-upgrade-token', 'modal-no-frame');
+        modalInner.style.pointerEvents = '';
+      }
+      sub.remove();
+      heroDock.remove();
+      btnRow.remove();
+      headerContainer.remove();
+      if (statsDiv) {
+        const cb = document.getElementById('continueBtn');
+        if (cb && statsDiv.contains(cb) && modalFrameContent) {
+          modalFrameContent.appendChild(cb);
+        }
+        statsDiv.innerHTML = '';
+      }
+      const cbAfter = document.getElementById('continueBtn');
+      if (cbAfter) cbAfter.style.display = '';
+    };
+
+    const canEnableEndless = !this.gameState.meta?.endlessMode;
+    const endlessModeTooltipHtml = '<div style="color: #FFFFFF; font-size: 13px; line-height: 1.5;">You have officially beaten the game, but how far can you actually go...? Enable Endless Mode to find out!</div>';
+
+    let enableBtn = null;
+    if (canEnableEndless) {
+      enableBtn = document.createElement('button');
+      enableBtn.type = 'button';
+      enableBtn.className = 'choice-btn cta-button cta-special';
+      enableBtn.textContent = 'Enable endless mode';
+      enableBtn.removeAttribute('title');
+      enableBtn.addEventListener('mouseenter', (e) => {
+        const tooltipSystem = this.gameState?.inputHandler?.tooltipSystem;
+        if (tooltipSystem) tooltipSystem.show(endlessModeTooltipHtml, e.clientX, e.clientY);
+      });
+      enableBtn.addEventListener('mouseleave', () => {
+        this.gameState?.inputHandler?.tooltipSystem?.hide();
+      });
+      enableBtn.addEventListener('mousemove', (e) => {
+        const ts = this.gameState?.inputHandler?.tooltipSystem;
+        if (ts?.currentContent) ts.updateMousePosition(e.clientX, e.clientY);
+      });
+      enableBtn.onclick = () => {
+        this.gameState?.inputHandler?.tooltipSystem?.hide();
+        this.gameState.meta = this.gameState.meta || {};
+        this.gameState.meta.endlessMode = true;
+        this.gameState.meta.endlessUnlocked = true;
+        if (typeof this.gameState.persistMeta === 'function') this.gameState.persistMeta();
+        closeVictory();
+        if (typeof window.applyWaveJumpAfterVictory === 'function') {
+          window.applyWaveJumpAfterVictory(23, 1);
+        }
+      };
+    }
+
+    const dismissBtn = document.createElement('button');
+    dismissBtn.type = 'button';
+    dismissBtn.className = 'choice-btn cta-button';
+    dismissBtn.removeAttribute('title');
+    dismissBtn.textContent = canEnableEndless ? 'Not now' : 'Close';
+    dismissBtn.onclick = () => {
+      this.gameState.meta.useRunStartMetaProgression = false;
+      this.gameState.meta.activeRunProgression = null;
+      closeVictory();
+      if (canEnableEndless && typeof window.openSplashScreen === 'function') {
+        window.openSplashScreen(false);
+      }
+    };
+    if (canEnableEndless && enableBtn) {
+      btnRow.appendChild(dismissBtn);
+      btnRow.appendChild(enableBtn);
+    } else {
+      btnRow.appendChild(dismissBtn);
+    }
+
+    const WAVE_REWARD_TRANSITION_MS = 2000;
+    const collectRow = document.createElement('div');
+    collectRow.className = 'victory-collect-row';
+    collectRow.style.cssText = 'display: flex; justify-content: center; margin-top: 16px; width: 100%;';
+    const collectVictoryBtn = document.createElement('button');
+    collectVictoryBtn.type = 'button';
+    collectVictoryBtn.className = 'choice-btn cta-button cta-lime';
+    collectVictoryBtn.textContent = 'Collect';
+    collectRow.appendChild(collectVictoryBtn);
+    statsContainer.appendChild(collectRow);
+    collectVictoryBtn.onclick = () => {
+      if (modal._victoryRewardsCollected) return;
+      modal._victoryRewardsCollected = true;
+      collectVictoryBtn.disabled = true;
+      this.applyPendingTownBonus();
+      this.applyPendingGroupRewards();
+      if (window.updateUI) window.updateUI();
+      setTimeout(() => {
+        if (tokenAmountRef && tokenAmountRef.offsetParent !== null) {
+          createModalFloatingText(tokenAmountRef, '+1', '#ff67e7', 39, 1.6875, 40, 55);
+        }
+        if (totalAmount && totalAmount.offsetParent !== null) {
+          createModalFloatingText(totalAmount, `$${totalEarned}`, '#00FF88', 63, 1.6875, 40, -45);
+        }
+      }, 50);
+      setTimeout(() => {
+        collectVictoryBtn.disabled = false;
+        collectRow.style.display = 'none';
+        btnRow.style.display = 'flex';
+      }, WAVE_REWARD_TRANSITION_MS);
+    };
+    btnRow.style.display = 'none';
+
+    modalFrameContent.appendChild(btnRow);
+
+    modal.classList.add('active');
+    const finalGroup = CONFIG.FINAL_WAVE_GROUP ?? 22;
+    const HERO_FIRST_DELAY_MS = BOSS_DEFEAT_TOTAL_MS - 800;
+    const HERO_STAGGER_MS = 500;
+    this.addBossDefeatGraphic(modal, finalGroup);
+
+    const heroFadeTimeouts = [];
+    // Row 1: mains L→R; rows 2–5 background — each row after the previous
+    mainCards.forEach((card, idx) => {
+      if (!card) return;
+      const tid = setTimeout(() => {
+        card.style.opacity = '1';
+        card.style.setProperty('--victory-rise', '0px');
+      }, HERO_FIRST_DELAY_MS + idx * HERO_STAGGER_MS);
+      heroFadeTimeouts.push(tid);
+    });
+    const ROW_BG_GAP_MS = HERO_STAGGER_MS;
+    const row2Delay = HERO_FIRST_DELAY_MS + 4 * HERO_STAGGER_MS;
+    const row3Delay = row2Delay + ROW_BG_GAP_MS;
+    const row4Delay = row3Delay + ROW_BG_GAP_MS;
+    const row5Delay = row4Delay + ROW_BG_GAP_MS;
+    const fadeRow = (cards, delay) => {
+      const tid = setTimeout(() => {
+        cards.forEach((card) => {
+          if (card) {
+            card.style.opacity = '1';
+            card.style.setProperty('--victory-rise', '0px');
+          }
+        });
+      }, delay);
+      heroFadeTimeouts.push(tid);
+    };
+    fadeRow(row2PeekCards, row2Delay);
+    fadeRow(row3DeepCards, row3Delay);
+    fadeRow(row4FarCards, row4Delay);
+    fadeRow(row5FifthCards, row5Delay);
+    modal._victoryHeroFadeTimeouts = heroFadeTimeouts;
+
+    this.showVictorySpeechBubbles(modal, wraps, speechTexts, {
+      firstRevealDelayMs: HERO_FIRST_DELAY_MS,
+      staggerMs: HERO_STAGGER_MS,
+    });
+  }
+
+  /**
    * Show wave group complete modal
-   * @param {Array<{ siteName: string, siteType: number, reward: { type: string, amount?: number, level?: number } }>} [digSiteRewards] - Rewards from surviving dig sites
+   * @param {Array<{ siteName: string, siteType: number, reward: { type: string, amount?: number, level?: number, count?: number }, noDamageBonusCurrency?: number }>} [digSiteRewards] - Rewards from surviving dig sites
    */
   showWaveGroupCompleteModal(digSiteRewards = []) {
     const modal = document.getElementById('waveCompleteModal');
@@ -1646,7 +2528,21 @@ export class WaveSystem {
     const modalFrameContent = modal?.querySelector('.modal-frame-content');
     
     if (modal && modalFrameContent) {
+      delete modal._groupRewardsCollected;
+      (modal._victoryHeroFadeTimeouts || []).forEach((id) => clearTimeout(id));
+      delete modal._victoryHeroFadeTimeouts;
+      (modal._victorySpeechRevealTimeouts || []).forEach((id) => clearTimeout(id));
+      delete modal._victorySpeechRevealTimeouts;
+      if (modal._victorySpeechCleanup) {
+        window.removeEventListener('resize', modal._victorySpeechCleanup.onResize);
+        modal._victorySpeechCleanup.bubbles.forEach((b) => b.remove());
+        delete modal._victorySpeechCleanup;
+      }
       // Use level up modal structure - remove frames and backgrounds
+      modal.classList.remove('victory-modal');
+      modal.querySelector('.victory-subtitle-block')?.remove();
+      modal.querySelector('.victory-hero-dock')?.remove();
+      modal.querySelector('.victory-modal-buttons')?.remove();
       modal.classList.add('active');
       modal.classList.add('upgrade-token-mask');
       modal.style.pointerEvents = 'auto';
@@ -1701,13 +2597,13 @@ export class WaveSystem {
       // Get completed wave group number (wave group was already incremented in completeWaveGroup())
       const completedWaveGroupNumber = Math.max(1, (this.currentWaveGroup || 2) - 1);
       
-      // Create header container with header-bg-orange.png (no animation)
+      // Create header container with header-bg-blue.png (no animation) — complete modals use blue; orange is artifact trader only
       const headerContainer = document.createElement('div');
       headerContainer.className = 'wave-complete-header-container';
       headerContainer.style.cssText = 'position: relative; display: flex; justify-content: center; align-items: center; width: 100%;';
       
       const headerImage = document.createElement('img');
-      headerImage.src = 'assets/images/ui/header-bg-orange.png';
+      headerImage.src = 'assets/images/ui/header-bg-blue.png';
       headerImage.style.cssText = 'width: 800px; height: auto; image-rendering: crisp-edges; position: relative; z-index: 1;';
       headerContainer.appendChild(headerImage);
       
@@ -1720,290 +2616,28 @@ export class WaveSystem {
       // Insert header at the beginning of modal content
       modalFrameContent.insertBefore(headerContainer, modalFrameContent.firstChild);
       
-      // Get data for stats
-      const townBonusCurrency = Math.max(0, Math.round(this.gameState.wave.townBonusAward || 0));
-      const groupBonusCurrency = CONFIG.WAVE_GROUP_BONUS_REWARD;
-      const totalExtinguished = this.gameState.fireSystem?.getTotalFiresExtinguishedThisWave() || 0;
-      const digSiteCurrencyTotal = digSiteRewards
-        .filter((e) => e.reward?.type === 'currency')
-        .reduce((s, e) => s + (e.reward?.amount ?? 0), 0);
-      const totalEarned = groupBonusCurrency + townBonusCurrency + digSiteCurrencyTotal;
-      
-      // Create stats container
-      const statsContainer = document.createElement('div');
-      statsContainer.style.cssText = 'display: flex; flex-direction: column; align-items: center; gap: 0; width: 100%; margin-top: 16px;';
-      
-      // Create stat items container with 2-column grid (50/50 split, centered)
-      const statItemsContainer = document.createElement('div');
-      statItemsContainer.style.cssText = 'display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: 100%; max-width: 540px; justify-items: center;';
-      
-      // Left column container (align items to the right)
-      const leftColumn = document.createElement('div');
-      leftColumn.style.cssText = 'display: flex; flex-direction: column; align-items: flex-end; gap: 0; width: 100%;';
-      
-      // Right column container (align items to the left)
-      const rightColumn = document.createElement('div');
-      rightColumn.style.cssText = 'display: flex; flex-direction: column; align-items: flex-start; gap: 0; width: 100%;';
-      
-      // First stat item: Fires Extinguished (LEFT COLUMN)
-      const firesStatItem = document.createElement('div');
-      firesStatItem.style.cssText = 'display: flex; flex-direction: row; align-items: center; gap: 16px; width: 270px;';
-      
-      // Circular frame with icon
-      const firesFrame = document.createElement('div');
-      firesFrame.style.cssText = 'position: relative; width: 120px; height: 120px; flex-shrink: 0; background-image: url(assets/images/ui/frame-round-blue.png); background-size: 100% 100%; background-position: center; background-repeat: no-repeat; display: flex; align-items: center; justify-content: center;';
-      
-      const firesIcon = document.createElement('img');
-      firesIcon.src = 'assets/images/misc/fires_extinguished.png';
-      firesIcon.style.cssText = 'width: 64px; height: auto; image-rendering: crisp-edges;';
-      firesFrame.appendChild(firesIcon);
-      firesStatItem.appendChild(firesFrame);
-      
-      // Text content container
-      const firesTextContainer = document.createElement('div');
-      firesTextContainer.style.cssText = 'display: flex; flex-direction: column; gap: 2px; flex: 1;';
-      
-      // Number in light blue
-      const firesNumber = document.createElement('div');
-      firesNumber.textContent = totalExtinguished.toString();
-      firesNumber.style.cssText = 'color: #7DD3FC; font-size: 26px; font-weight: bold; font-family: "Exo 2", sans-serif; line-height: 1; margin-bottom: 5px;';
-      firesTextContainer.appendChild(firesNumber);
-      
-      // Label in white (wrapped to two lines)
-      const firesLabel = document.createElement('div');
-      firesLabel.innerHTML = 'FIRES<br>EXTINGUISHED';
-      firesLabel.style.cssText = 'color: #FFFFFF; font-size: 14px; font-weight: normal; font-family: "Exo 2", sans-serif; text-transform: uppercase; line-height: 1.2;';
-      firesTextContainer.appendChild(firesLabel);
-      
-      firesStatItem.appendChild(firesTextContainer);
-      leftColumn.appendChild(firesStatItem);
-      
-      // Second stat item: Town Protection Bonus (LEFT COLUMN)
-      const townStatItem = document.createElement('div');
-      townStatItem.style.cssText = 'display: flex; flex-direction: row; align-items: center; gap: 16px; width: 270px;';
-      
-      // Circular frame with icon
-      const townFrame = document.createElement('div');
-      townFrame.style.cssText = 'position: relative; width: 120px; height: 120px; flex-shrink: 0; background-image: url(assets/images/ui/frame-round-blue.png); background-size: 100% 100%; background-position: center; background-repeat: no-repeat; display: flex; align-items: center; justify-content: center;';
-      
-      const townIcon = document.createElement('img');
-      townIcon.src = 'assets/images/items/town.png';
-      townIcon.style.cssText = 'width: 64px; height: auto; image-rendering: crisp-edges;';
-      townFrame.appendChild(townIcon);
-      townStatItem.appendChild(townFrame);
-      
-      // Text content container
-      const townTextContainer = document.createElement('div');
-      townTextContainer.style.cssText = 'display: flex; flex-direction: column; gap: 2px; flex: 1;';
-      
-      // Amount in bright green
-      const townAmount = document.createElement('div');
-      townAmount.textContent = `$${townBonusCurrency}`;
-      townAmount.style.cssText = 'color: #00FF88; font-size: 26px; font-weight: bold; font-family: "Exo 2", sans-serif; line-height: 1; margin-bottom: 5px;';
-      townTextContainer.appendChild(townAmount);
-      
-      // Label in white (wrapped to two lines)
-      const townLabel = document.createElement('div');
-      townLabel.innerHTML = 'TOWN PROTECTION<br>BONUS';
-      townLabel.style.cssText = 'color: #FFFFFF; font-size: 14px; font-weight: normal; font-family: "Exo 2", sans-serif; text-transform: uppercase; line-height: 1.2;';
-      townTextContainer.appendChild(townLabel);
-      
-      townStatItem.appendChild(townTextContainer);
-      leftColumn.appendChild(townStatItem);
-      
-      // Third stat item: Upgrade Plans Reward (RIGHT COLUMN)
-      const tokenStatItem = document.createElement('div');
-      tokenStatItem.style.cssText = 'display: flex; flex-direction: row; align-items: center; gap: 16px; width: 270px;';
-      
-      // Circular frame with icon
-      const tokenFrame = document.createElement('div');
-      tokenFrame.style.cssText = 'position: relative; width: 120px; height: 120px; flex-shrink: 0; background-image: url(assets/images/ui/frame-round-blue.png); background-size: 100% 100%; background-position: center; background-repeat: no-repeat; display: flex; align-items: center; justify-content: center;';
-      
-      const tokenIcon = document.createElement('img');
-      tokenIcon.src = 'assets/images/items/upgrade_token.png';
-      tokenIcon.style.cssText = 'width: 64px; height: auto; image-rendering: crisp-edges;';
-      tokenFrame.appendChild(tokenIcon);
-      tokenStatItem.appendChild(tokenFrame);
-      
-      // Text content container
-      const tokenTextContainer = document.createElement('div');
-      tokenTextContainer.style.cssText = 'display: flex; flex-direction: column; gap: 2px; flex: 1;';
-      
-      // Amount in purple (matching upgrade plan color)
-      const tokenAmount = document.createElement('div');
-      tokenAmount.textContent = '+1';
-      tokenAmount.style.cssText = 'color: #ff67e7; font-size: 26px; font-weight: bold; font-family: "Exo 2", sans-serif; line-height: 1; margin-bottom: 5px;';
-      tokenTextContainer.appendChild(tokenAmount);
-      
-      // Store reference for floating text
-      const tokenAmountRef = tokenAmount;
-      
-      // Label in white (wrapped to two lines)
-      const tokenLabel = document.createElement('div');
-      tokenLabel.innerHTML = 'UPGRADE<br>PLANS';
-      tokenLabel.style.cssText = 'color: #FFFFFF; font-size: 14px; font-weight: normal; font-family: "Exo 2", sans-serif; text-transform: uppercase; line-height: 1.2;';
-      tokenTextContainer.appendChild(tokenLabel);
-      
-      tokenStatItem.appendChild(tokenTextContainer);
-      rightColumn.appendChild(tokenStatItem);
-      
-      // Fourth stat item: Group Bonus (RIGHT COLUMN)
-      const groupBonusStatItem = document.createElement('div');
-      groupBonusStatItem.style.cssText = 'display: flex; flex-direction: row; align-items: center; gap: 16px; width: 270px;';
-      
-      // Circular frame with icon
-      const groupBonusFrame = document.createElement('div');
-      groupBonusFrame.style.cssText = 'position: relative; width: 120px; height: 120px; flex-shrink: 0; background-image: url(assets/images/ui/frame-round-blue.png); background-size: 100% 100%; background-position: center; background-repeat: no-repeat; display: flex; align-items: center; justify-content: center;';
-      
-      const groupBonusIcon = document.createElement('img');
-      groupBonusIcon.src = 'assets/images/misc/group_bonus.png';
-      groupBonusIcon.style.cssText = 'width: 64px; height: auto; image-rendering: crisp-edges;';
-      groupBonusFrame.appendChild(groupBonusIcon);
-      groupBonusStatItem.appendChild(groupBonusFrame);
-      
-      // Text content container
-      const groupBonusTextContainer = document.createElement('div');
-      groupBonusTextContainer.style.cssText = 'display: flex; flex-direction: column; gap: 2px; flex: 1;';
-      
-      // Amount in bright green
-      const groupBonusAmount = document.createElement('div');
-      groupBonusAmount.textContent = `$${groupBonusCurrency}`;
-      groupBonusAmount.style.cssText = 'color: #00FF88; font-size: 26px; font-weight: bold; font-family: "Exo 2", sans-serif; line-height: 1; margin-bottom: 5px;';
-      groupBonusTextContainer.appendChild(groupBonusAmount);
-      
-      // Label in white (wrapped to two lines)
-      const groupBonusLabel = document.createElement('div');
-      groupBonusLabel.innerHTML = 'BOSS<br>BONUS';
-      groupBonusLabel.style.cssText = 'color: #FFFFFF; font-size: 14px; font-weight: normal; font-family: "Exo 2", sans-serif; text-transform: uppercase; line-height: 1.2;';
-      groupBonusTextContainer.appendChild(groupBonusLabel);
-      
-      groupBonusStatItem.appendChild(groupBonusTextContainer);
-      rightColumn.appendChild(groupBonusStatItem);
-      
-      // Dig site reward cards (same format as the four award cards) – one card per protected dig site
-      for (let i = 0; i < digSiteRewards.length; i++) {
-        const { siteName, siteType, reward } = digSiteRewards[i];
-        const siteConfig = CONFIG.DIG_SITE_TYPES?.[siteType];
-        const sprite = siteConfig?.sprite ?? 'dig_site_1.png';
-        const bonusLabel = (siteName ?? 'Dig Site') + ' Protection Bonus';
-        const bonusLabelHtml = bonusLabel.toUpperCase().replace(/ PROTECTION BONUS$/, '<br>PROTECTION BONUS');
+      const { statsContainer, tokenAmountRef, totalAmount, totalEarned } = buildWaveGroupCompleteStatsContainer(this, digSiteRewards);
 
-        const card = document.createElement('div');
-        card.style.cssText = 'display: flex; flex-direction: row; align-items: center; gap: 16px; width: 270px;';
-
-        const frame = document.createElement('div');
-        frame.style.cssText = 'position: relative; width: 120px; height: 120px; flex-shrink: 0; background-image: url(assets/images/ui/frame-round-blue.png); background-size: 100% 100%; background-position: center; background-repeat: no-repeat; display: flex; align-items: center; justify-content: center;';
-
-        const icon = document.createElement('img');
-        icon.src = `assets/images/items/${sprite}`;
-        icon.style.cssText = 'width: 64px; height: auto; image-rendering: crisp-edges;';
-        frame.appendChild(icon);
-        card.appendChild(frame);
-
-        const textContainer = document.createElement('div');
-        textContainer.style.cssText = 'display: flex; flex-direction: column; gap: 2px; flex: 1;';
-
-        if (reward.type === 'shield' || reward.type === 'suppression_bomb') {
-          const valueRow = document.createElement('div');
-          valueRow.style.cssText = 'display: flex; align-items: center; gap: 8px; margin-bottom: 5px;';
-          const itemImg = document.createElement('img');
-          itemImg.src = reward.type === 'shield'
-            ? `assets/images/items/shield_${reward.level}.png`
-            : `assets/images/items/suppression_${reward.level}.png`;
-          itemImg.style.cssText = 'width: 32px; height: 32px; object-fit: contain; image-rendering: crisp-edges; flex-shrink: 0;';
-          valueRow.appendChild(itemImg);
-          const valueSpan = document.createElement('span');
-          valueSpan.style.cssText = 'font-size: 14px; font-weight: bold; font-family: "Exo 2", sans-serif; line-height: 1; color: #B794F6;';
-          valueSpan.textContent = reward.type === 'shield' ? `Shield Level ${reward.level}` : `Suppression Bomb Level ${reward.level}`;
-          valueRow.appendChild(valueSpan);
-          textContainer.appendChild(valueRow);
-        } else if (reward.type === 'movement_token' || reward.type === 'upgrade_plan') {
-          const valueRow = document.createElement('div');
-          valueRow.style.cssText = 'display: flex; align-items: center; gap: 8px; margin-bottom: 5px;';
-          const itemImg = document.createElement('img');
-          itemImg.src = reward.type === 'movement_token'
-            ? 'assets/images/items/movement_token.png'
-            : 'assets/images/items/upgrade_token.png';
-          itemImg.style.cssText = 'width: 32px; height: 32px; object-fit: contain; image-rendering: crisp-edges; flex-shrink: 0;';
-          valueRow.appendChild(itemImg);
-          const valueSpan = document.createElement('span');
-          valueSpan.style.cssText = 'font-size: 14px; font-weight: bold; font-family: "Exo 2", sans-serif; line-height: 1;';
-          valueSpan.style.color = reward.type === 'movement_token' ? '#4FC3F7' : '#ff67e7';
-          valueSpan.textContent = reward.type === 'movement_token' ? '+1 Movement Token' : '+1 Upgrade Plan';
-          valueRow.appendChild(valueSpan);
-          textContainer.appendChild(valueRow);
-        } else if (reward.type === 'currency') {
-          const valueEl = document.createElement('div');
-          valueEl.style.cssText = 'font-size: 26px; font-weight: bold; font-family: "Exo 2", sans-serif; line-height: 1; margin-bottom: 5px; color: #00FF88;';
-          valueEl.textContent = `$${reward.amount}`;
-          textContainer.appendChild(valueEl);
-        } else {
-          continue;
+      const finishGroupModal = () => {
+        this.removeWaveCompleteHeroGraphic(modal);
+        modal.classList.remove('active', 'upgrade-token-mask', 'wave-group-complete');
+        modal.style.pointerEvents = '';
+        const modalInnerCleanup = modal.querySelector('.modal');
+        if (modalInnerCleanup) {
+          modalInnerCleanup.classList.remove('modal-upgrade-token', 'modal-no-frame', 'wave-complete-modal', 'boss-wave-modal');
+          modalInnerCleanup.style.pointerEvents = '';
         }
+        this.startNextWaveGroup();
+      };
 
-        const labelEl = document.createElement('div');
-        labelEl.innerHTML = bonusLabelHtml;
-        labelEl.style.cssText = 'color: #FFFFFF; font-size: 14px; font-weight: normal; font-family: "Exo 2", sans-serif; text-transform: uppercase; line-height: 1.2;';
-        textContainer.appendChild(labelEl);
-
-        card.appendChild(textContainer);
-
-        if (i % 2 === 0) {
-          leftColumn.appendChild(card);
-        } else {
-          rightColumn.appendChild(card);
-        }
-      }
-      
-      // Add columns to grid container
-      statItemsContainer.appendChild(leftColumn);
-      statItemsContainer.appendChild(rightColumn);
-      
-      statsContainer.appendChild(statItemsContainer);
-      
-      // Total earned section at bottom
-      // Aspect ratio: 721px width / 337px height ≈ 2.14:1
-      const totalEarnedSection = document.createElement('div');
-      totalEarnedSection.style.cssText = 'position: relative; width: 100%; max-width: 365px; margin-top: 0;';
-      
-      // Background image - maintain aspect ratio (721:337)
-      const totalEarnedBg = document.createElement('div');
-      totalEarnedBg.style.cssText = 'position: relative; width: 100%; padding: 0; box-sizing: border-box; background-image: url(assets/images/ui/total_earned.png); background-size: contain; background-position: center; background-repeat: no-repeat; display: flex; flex-direction: row; align-items: center; justify-content: center; gap: 12px; aspect-ratio: 721 / 337;';
-      
-      // Money icon
-      const totalEarnedIcon = document.createElement('img');
-      totalEarnedIcon.src = 'assets/images/misc/total_earned.png';
-      totalEarnedIcon.style.cssText = 'width: 75px; height: auto; image-rendering: crisp-edges; flex-shrink: 0;';
-      totalEarnedBg.appendChild(totalEarnedIcon);
-      
-      // Text content container
-      const totalTextContainer = document.createElement('div');
-      totalTextContainer.style.cssText = 'display: flex; flex-direction: column; align-items: flex-start; gap: 0;';
-      
-      // "TOTAL EARNED" label in white
-      const totalLabel = document.createElement('div');
-      totalLabel.textContent = 'TOTAL EARNED';
-      totalLabel.style.cssText = 'color: #FFFFFF; font-size: 14px; font-weight: normal; font-family: "Exo 2", sans-serif; text-transform: uppercase; line-height: 1;';
-      totalTextContainer.appendChild(totalLabel);
-      
-      // Amount in bright green
-      const totalAmount = document.createElement('div');
-      totalAmount.textContent = `$${totalEarned}`;
-      totalAmount.style.cssText = 'color: #00FF88; font-size: 42px; font-weight: bold; font-family: "Exo 2", sans-serif; line-height: 1;';
-      totalTextContainer.appendChild(totalAmount);
-      
-      totalEarnedBg.appendChild(totalTextContainer);
-      totalEarnedSection.appendChild(totalEarnedBg);
-      statsContainer.appendChild(totalEarnedSection);
-      
-      // Setup continue button and append to stats container BEFORE updating statsDiv
+      // Setup collect button and append to stats container BEFORE updating statsDiv
       const continueBtn = document.getElementById('continueBtn');
       if (continueBtn) {
         // Remove button from its current parent if it exists
         if (continueBtn.parentElement) {
           continueBtn.parentElement.removeChild(continueBtn);
         }
-        continueBtn.textContent = 'Continue to Next Group';
+        continueBtn.textContent = 'Collect';
         continueBtn.className = 'choice-btn cta-button';
         continueBtn.style.width = 'auto';
         continueBtn.style.minWidth = 'auto';
@@ -2011,42 +2645,54 @@ export class WaveSystem {
         continueBtn.style.margin = '16px auto 0 auto';
         continueBtn.style.display = 'block';
         continueBtn.style.visibility = 'visible';
-        // Remove any existing onclick handlers
+        continueBtn.disabled = false;
         continueBtn.onclick = null;
         continueBtn.onclick = () => {
-          this.removeWaveCompleteHeroGraphic(modal);
-          // Clean up modal classes
-          modal.classList.remove('active', 'upgrade-token-mask', 'wave-group-complete');
-          modal.style.pointerEvents = '';
-          const modalInner = modal.querySelector('.modal');
-          if (modalInner) {
-            modalInner.classList.remove('modal-upgrade-token', 'modal-no-frame', 'wave-complete-modal', 'boss-wave-modal');
-            modalInner.style.pointerEvents = '';
-          }
-          // Start next wave group (which will trigger placement phase)
-          this.startNextWaveGroup();
+          if (modal._groupRewardsCollected) return;
+          modal._groupRewardsCollected = true;
+          continueBtn.disabled = true;
+          this.applyPendingTownBonus();
+          this.applyPendingGroupRewards();
+          if (window.updateUI) window.updateUI();
+          requestAnimationFrame(() => {
+            if (tokenAmountRef && tokenAmountRef.offsetParent !== null) {
+              createModalFloatingText(tokenAmountRef, '+1', '#ff67e7', 39, 1.6875, 40, 55);
+            }
+            if (totalAmount && totalAmount.offsetParent !== null) {
+              createModalFloatingText(totalAmount, `$${totalEarned}`, '#00FF88', 63, 1.6875, 40, -45);
+            }
+          });
+          setTimeout(() => {
+            continueBtn.disabled = false;
+            finishGroupModal();
+          }, WAVE_COLLECT_MODAL_DISMISS_MS);
         };
-        // Append button to stats container
         statsContainer.appendChild(continueBtn);
       } else {
-        // If button doesn't exist, create it
         const newContinueBtn = document.createElement('button');
         newContinueBtn.id = 'continueBtn';
-        newContinueBtn.textContent = 'Continue to Next Group';
+        newContinueBtn.textContent = 'Collect';
         newContinueBtn.className = 'choice-btn cta-button';
         newContinueBtn.style.cssText = 'width: auto; min-width: auto; max-width: none; margin: 16px auto 0 auto; display: block; visibility: visible;';
         newContinueBtn.onclick = () => {
-          this.removeWaveCompleteHeroGraphic(modal);
-          // Clean up modal classes
-          modal.classList.remove('active', 'upgrade-token-mask', 'wave-group-complete');
-          modal.style.pointerEvents = '';
-          const modalInner = modal.querySelector('.modal');
-          if (modalInner) {
-            modalInner.classList.remove('modal-upgrade-token', 'modal-no-frame', 'wave-complete-modal', 'boss-wave-modal');
-            modalInner.style.pointerEvents = '';
-          }
-          // Start next wave group (which will trigger placement phase)
-          this.startNextWaveGroup();
+          if (modal._groupRewardsCollected) return;
+          modal._groupRewardsCollected = true;
+          newContinueBtn.disabled = true;
+          this.applyPendingTownBonus();
+          this.applyPendingGroupRewards();
+          if (window.updateUI) window.updateUI();
+          requestAnimationFrame(() => {
+            if (tokenAmountRef && tokenAmountRef.offsetParent !== null) {
+              createModalFloatingText(tokenAmountRef, '+1', '#ff67e7', 39, 1.6875, 40, 55);
+            }
+            if (totalAmount && totalAmount.offsetParent !== null) {
+              createModalFloatingText(totalAmount, `$${totalEarned}`, '#00FF88', 63, 1.6875, 40, -45);
+            }
+          });
+          setTimeout(() => {
+            newContinueBtn.disabled = false;
+            finishGroupModal();
+          }, WAVE_COLLECT_MODAL_DISMISS_MS);
         };
         statsContainer.appendChild(newContinueBtn);
       }
@@ -2061,20 +2707,6 @@ export class WaveSystem {
       
       this.addWaveCompleteHeroGraphic(modal, completedWaveGroupNumber, 5);
       this.addBossDefeatGraphic(modal, completedWaveGroupNumber);
-      
-      // Add floating text for +1 upgrade token and total collected number
-      setTimeout(() => {
-        // Floating text for +1 upgrade plan (shifted down 25px)
-        if (tokenAmountRef && tokenAmountRef.offsetParent !== null) {
-          // Create floating text: +1, color #ff67e7, 39px, 1.6875 seconds, float 40px, start 55px lower
-          createModalFloatingText(tokenAmountRef, '+1', '#ff67e7', 39, 1.6875, 40, 55);
-        }
-        // Floating text for total collected (start 45px higher)
-        if (totalAmount && totalAmount.offsetParent !== null) {
-          // Create floating text: total earned amount, color #00FF88, 63px, 1.6875 seconds, float 40px, start 45px higher
-          createModalFloatingText(totalAmount, `$${totalEarned}`, '#00FF88', 63, 1.6875, 40, -45);
-        }
-      }, 100);
     }
   }
 
@@ -2092,9 +2724,9 @@ export class WaveSystem {
       this.gameState.wave.currentGroup = this.currentWaveGroup;
       this.gameState.wave.waveInGroup = this.waveInGroup;
     }
-    
-    // Paths and fire system are already updated in completeWaveGroup()
-    // No need to regenerate paths here since they're already generated before autosave
+
+    // Apply map/theme transition now, immediately before the next placement modal.
+    this.applyPendingGroupTransition();
     
     this.startNextWave();
   }
@@ -2137,6 +2769,7 @@ export class WaveSystem {
     
     // Restore all tower health to 100%
     if (this.gameState.towerSystem) {
+      this.gameState.towerSystem.refreshAllTowerMaxHealth?.();
       const towers = this.gameState.towerSystem.getAllTowers();
       towers.forEach(tower => {
         tower.health = tower.maxHealth;
@@ -2157,7 +2790,173 @@ export class WaveSystem {
     if (window.updateUI) {
       window.updateUI();
     }
-    this.startPlacementPhase();
+    this.maybeArtifactTraderThenPlacement();
+  }
+
+  /**
+   * After a wave completes, either show the artifact trader (same modal shell as wave complete) or go to placement.
+   * @param {Object} [options] - forwarded to {@link startPlacementPhase}
+   */
+  maybeArtifactTraderThenPlacement(options = {}) {
+    if (artifactTraderShouldOffer(this.gameState, this)) {
+      ensureArtifactTraderWantsForRun(this.gameState);
+      this.showArtifactTraderModal(() => this.startPlacementPhase(options));
+      return;
+    }
+    this.startPlacementPhase(options);
+  }
+
+  /**
+   * Modal listing what the artifact trader seeks this run; only Continue advances to placement.
+   * @param {() => void} onContinue
+   */
+  showArtifactTraderModal(onContinue) {
+    const modal = document.getElementById('waveCompleteModal');
+    const statsDiv = document.getElementById('waveStats');
+    const modalFrameContent = modal?.querySelector('.modal-frame-content');
+    const wants = ensureArtifactTraderWantsForRun(this.gameState);
+    if (!modal || !statsDiv || !modalFrameContent || !wants) {
+      onContinue?.();
+      return;
+    }
+
+    modal.dataset.artifactTraderActive = '1';
+    delete modal._waveRewardsCollected;
+    delete modal._groupRewardsCollected;
+
+    modal.classList.remove('wave-group-complete', 'victory-modal', 'placement-phase');
+    modal.classList.add('active', 'upgrade-token-mask', 'artifact-trader-modal');
+    modal.style.pointerEvents = 'auto';
+
+    const modalInner = modal.querySelector('.modal');
+    if (modalInner) {
+      modalInner.style.pointerEvents = 'auto';
+      modalInner.classList.add('modal-upgrade-token', 'modal-no-frame');
+      modalInner.classList.remove('wave-complete-modal', 'boss-wave-modal', 'modal-frame-9patch');
+    }
+
+    modal.querySelector('h2')?.remove();
+    modal.querySelector('.wave-complete-header-container')?.remove();
+    modal.querySelector('.placement-header-container')?.remove();
+    modal.querySelector('.placement-boss-header-label')?.remove();
+    modal.querySelector('.placement-content-layout')?.remove();
+    modal.querySelector('.artifact-trader-header-container')?.remove();
+
+    this.removeWaveCompleteHeroGraphic(modal);
+
+    // Orange header is only used here; placement = red, all complete modals = blue
+    const headerContainer = document.createElement('div');
+    headerContainer.className = 'placement-header-container';
+    headerContainer.style.cssText =
+      'position: relative; display: flex; justify-content: center; align-items: center; width: 100%; margin-bottom: 5px!important;';
+    const headerImage = document.createElement('img');
+    headerImage.src = 'assets/images/ui/header-bg-orange.png';
+    headerImage.style.cssText =
+      'width: 800px; height: auto; image-rendering: crisp-edges; position: relative; z-index: 1;';
+    headerContainer.appendChild(headerImage);
+    const headerContentWrapper = document.createElement('div');
+    headerContentWrapper.style.cssText =
+      'position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2; display: flex; align-items: center; pointer-events: none;';
+    const headerText = document.createElement('div');
+    headerText.textContent = 'Artifact Trader';
+    headerText.style.cssText =
+      'color: #FFFFFF; font-size: 32px; font-weight: bold; font-family: "Exo 2", sans-serif; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8); white-space: nowrap;';
+    headerContentWrapper.appendChild(headerText);
+    headerContainer.appendChild(headerContentWrapper);
+    modalFrameContent.insertBefore(headerContainer, modalFrameContent.firstChild);
+
+    let continueBtn = document.getElementById('continueBtn');
+    if (!continueBtn) {
+      continueBtn = document.createElement('button');
+      continueBtn.id = 'continueBtn';
+    } else if (continueBtn.parentElement) {
+      continueBtn.parentElement.removeChild(continueBtn);
+    }
+
+    statsDiv.innerHTML = '';
+    const statsContainer = document.createElement('div');
+    statsContainer.style.cssText =
+      'display: flex; flex-direction: column; align-items: center; justify-content: flex-start; width: 100%; margin-top: 8px; padding-bottom: 4px; overflow: visible;';
+    continueBtn.textContent = 'Continue to next wave';
+    continueBtn.className = 'choice-btn cta-button';
+    continueBtn.style.cssText =
+      'width: auto; min-width: auto; max-width: none; margin: 0; display: block; visibility: visible; position: relative; z-index: 5;';
+    continueBtn.disabled = false;
+    continueBtn.onclick = null;
+
+    mountArtifactTraderModalBody(statsContainer, wants, this.gameState, { continueButton: continueBtn });
+    statsDiv.appendChild(statsContainer);
+
+    continueBtn.onclick = () => {
+      artifactTraderAcknowledgeAllCollected(this.gameState);
+      continueBtn.onclick = null;
+      this.removeWaveCompleteHeroGraphic(modal);
+      modal.classList.remove('active', 'upgrade-token-mask', 'artifact-trader-modal');
+      modal.style.pointerEvents = '';
+      delete modal.dataset.artifactTraderActive;
+      const inner = modal.querySelector('.modal');
+      if (inner) {
+        inner.classList.remove('modal-upgrade-token', 'modal-no-frame');
+        inner.style.pointerEvents = '';
+      }
+      headerContainer.remove();
+      continueBtn.remove();
+      statsDiv.innerHTML = '';
+      const frame = modal.querySelector('.modal-frame-content');
+      if (frame && statsDiv.parentElement === frame) {
+        if (statsDiv.nextSibling) frame.insertBefore(continueBtn, statsDiv.nextSibling);
+        else frame.appendChild(continueBtn);
+      }
+      this.gameState?.inputHandler?.tooltipSystem?.hide();
+      onContinue?.();
+    };
+
+    this.addArtifactTraderHeroGraphic(modal);
+
+    if (window.updateUI) window.updateUI();
+  }
+
+  /**
+   * Bottom-left character graphic for the artifact trader modal — same layout/classes as wave group 1 hero (1-1).
+   */
+  addArtifactTraderHeroGraphic(modal) {
+    this.removeWaveCompleteHeroGraphic(modal);
+    const heroSrc = 'assets/images/creatures/artifact-trader.png?v=3';
+    const speechText =
+      "Curious curios, sealed deals, and—when the wind's right—genuine upgrade plans. Show me the pieces, not the excuses, and we both leave happier than the last wave left your inventory.";
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'wave-complete-hero-graphic hero-size-110 hero-shift-100';
+    wrapper.setAttribute('aria-hidden', 'true');
+    const img = document.createElement('img');
+    img.src = heroSrc;
+    img.alt = '';
+    img.onerror = () => {
+      img.src = 'assets/images/creatures/hero1.png?v=6';
+    };
+    wrapper.appendChild(img);
+
+    const pill = document.createElement('div');
+    pill.className = 'wave-complete-hero-pill';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'wave-complete-hero-pill-name';
+    nameEl.textContent = 'WIMBLESMYTHE';
+    pill.appendChild(nameEl);
+    const titleEl = document.createElement('div');
+    titleEl.className = 'wave-complete-hero-pill-title';
+    titleEl.textContent = 'The Merchant';
+    pill.appendChild(titleEl);
+    wrapper.appendChild(pill);
+
+    modal.appendChild(wrapper);
+    requestAnimationFrame(() => {
+      wrapper.classList.add('shifted-in');
+    });
+    setTimeout(() => {
+      if (img.parentElement) img.classList.add('pulsing');
+    }, 450);
+
+    this.showCharacterSpeechBubble(modal, img, speechText, 'hero');
   }
 
   /**
@@ -2175,7 +2974,6 @@ export class WaveSystem {
     bubble.style.cssText = 'position: fixed; opacity: 0; transition: opacity 0.3s ease-in-out; z-index: 99999;';
     document.body.appendChild(bubble);
 
-    let widthLocked = false;
     const positionBubble = () => {
       const padding = 12;
       const bubbleWidth = bubble.offsetWidth || 340;
@@ -2195,12 +2993,6 @@ export class WaveSystem {
       bubble.style.left = `${centerX}px`;
       bubble.style.top = `${top}px`;
       bubble.style.transform = 'translate(-50%, -100%)';
-      if (!widthLocked && bubbleWidth > 0) {
-        bubble.style.width = `${bubbleWidth}px`;
-        bubble.style.minWidth = `${bubbleWidth}px`;
-        bubble.style.maxWidth = `${bubbleWidth}px`;
-        widthLocked = true;
-      }
     };
 
     let rafId = null;
@@ -2213,7 +3005,18 @@ export class WaveSystem {
     requestAnimationFrame(() => {
       positionBubble();
       bubble.style.opacity = '1';
-      rafId = requestAnimationFrame(updateLoop);
+      requestAnimationFrame(() => {
+        if (!bubble.parentElement) return;
+        positionBubble();
+        const w = Math.ceil(bubble.getBoundingClientRect().width);
+        if (w > 0) {
+          bubble.style.boxSizing = 'border-box';
+          bubble.style.width = `${w}px`;
+          bubble.style.minWidth = `${w}px`;
+          bubble.style.maxWidth = `${w}px`;
+        }
+        rafId = requestAnimationFrame(updateLoop);
+      });
     });
 
     setTimeout(() => {
@@ -2232,10 +3035,11 @@ export class WaveSystem {
    * @param {HTMLElement} characterWrapper - The hero wrapper element to position above
    * @param {string} text - The speech bubble text (plain text or HTML; use text-* classes for effects, e.g. <span class="text-fire text-glow">FIRE</span>)
    * @param {'hero'|'boss'} type - 'hero' for left-side character
+   * @param {string} [extraBubbleClass] - Optional extra class(es) for bubble styling (e.g. victory mini heroes)
    */
-  showCharacterSpeechBubble(modal, characterWrapper, text, type) {
+  showCharacterSpeechBubble(modal, characterWrapper, text, type, extraBubbleClass = '') {
     const bubble = document.createElement('div');
-    bubble.className = `character-speech-bubble character-speech-bubble-${type}`;
+    bubble.className = `character-speech-bubble character-speech-bubble-${type}${extraBubbleClass ? ` ${extraBubbleClass}` : ''}`.trim();
     bubble.innerHTML = text;
     bubble.style.cssText = 'position: fixed; opacity: 0; transition: opacity 0.3s ease-in-out;';
     modal.appendChild(bubble);
@@ -2272,11 +3076,186 @@ export class WaveSystem {
   }
 
   /**
+   * Victory modal: fixed-edge heroes with narrow bubbles; resolves vertical overlap per column.
+   * @param {{ firstRevealDelayMs?: number, staggerMs?: number, staggerStepByHeroIndex?: number[] }} [revealOptions] - Stagger bubble fades with heroes (default 0 / 500). Use staggerStepByHeroIndex when hero fade order is interleaved with peek cards.
+   * @returns {{ bubbles: HTMLElement[], onResize: function }}
+   */
+  showVictorySpeechBubbles(modal, wraps, texts, revealOptions = {}) {
+    const firstRevealDelayMs = revealOptions.firstRevealDelayMs ?? 0;
+    const staggerMs = revealOptions.staggerMs ?? 500;
+    const staggerStepByHeroIndex = revealOptions.staggerStepByHeroIndex;
+    const tailClassByIndex = [
+      'victory-bubble-tail-outer-left',
+      'victory-bubble-tail-inner-left',
+      'victory-bubble-tail-inner-right',
+      'victory-bubble-tail-outer-right',
+    ];
+    const anchorXByIndex = [0.4, 0.52, 0.48, 0.6];
+    const OUTER_TOP_LIFT = 30;
+    const OUTER_DOWN_NUDGE = 30; /* outer bubbles (i 0 & 3) lower vs prior */
+    const INNER_TOP_DROP = 28;
+    const PAIR_PULL_PX = 22;
+    const bubbles = texts.map((text, i) => {
+      const bubble = document.createElement('div');
+      bubble.className = `character-speech-bubble character-speech-bubble-hero character-speech-bubble-victory-mini ${tailClassByIndex[i] || ''}`;
+      bubble.innerHTML = text;
+      bubble.style.cssText = 'position: fixed; opacity: 0; transition: opacity 0.45s ease-out;';
+      modal.appendChild(bubble);
+      return bubble;
+    });
+    const padding = 10;
+    const layout = () => {
+      if (!wraps[0] || !wraps[0].isConnected) return;
+      const vw = window.innerWidth;
+      bubbles.forEach((bubble, i) => {
+        const rect = wraps[i].getBoundingClientRect();
+        if (rect.width < 2 && rect.height < 2) return;
+        /* Row 1 mains use --victory-rise before fade; rect includes that translateY — subtract so bubbles align to final pose */
+        const mainCard = wraps[i].closest?.('.victory-hero-card--main');
+        let riseComp = 0;
+        if (mainCard) {
+          const raw = getComputedStyle(mainCard).getPropertyValue('--victory-rise').trim();
+          if (raw.endsWith('px')) riseComp = parseFloat(raw) || 0;
+        }
+        const baseTop = rect.top - 2 - riseComp;
+        let top = baseTop;
+        if (i === 0 || i === 3) top = baseTop - OUTER_TOP_LIFT + OUTER_DOWN_NUDGE;
+        if (i === 1 || i === 2) top = baseTop + INNER_TOP_DROP;
+        if (i === 3) {
+          let anchorRight = Math.min(rect.right, vw - padding) - PAIR_PULL_PX + 20;
+          bubble.style.left = `${anchorRight}px`;
+          bubble.style.top = `${top}px`;
+          bubble.style.transform = 'translate(-100%, -100%)';
+          return;
+        }
+        const ax = anchorXByIndex[i] ?? 0.5;
+        let centerX = rect.left + rect.width * ax;
+        if (i === 0) centerX += PAIR_PULL_PX;
+        if (i === 1) centerX -= PAIR_PULL_PX;
+        if (i === 2) centerX += PAIR_PULL_PX;
+        const halfW = (bubble.offsetWidth || 200) / 2 + 2;
+        centerX = Math.max(padding + halfW, Math.min(vw - padding - halfW, centerX));
+        bubble.style.left = `${centerX}px`;
+        bubble.style.top = `${top}px`;
+        bubble.style.transform = 'translate(-50%, -100%)';
+      });
+      const bOuterRight = bubbles[3];
+      if (bOuterRight) {
+        let r3 = bOuterRight.getBoundingClientRect();
+        if (r3.left < padding) {
+          const curLeft = parseFloat(bOuterRight.style.left) || 0;
+          bOuterRight.style.left = `${curLeft + (padding - r3.left)}px`;
+        }
+        r3 = bOuterRight.getBoundingClientRect();
+        if (r3.right > vw - padding) {
+          const curLeft = parseFloat(bOuterRight.style.left) || 0;
+          bOuterRight.style.left = `${curLeft - (r3.right - (vw - padding))}px`;
+        }
+        r3 = bOuterRight.getBoundingClientRect();
+        if (r3.left < padding) {
+          const curLeft = parseFloat(bOuterRight.style.left) || 0;
+          bOuterRight.style.left = `${curLeft + (padding - r3.left)}px`;
+        }
+      }
+      bubbles.forEach((bubble) => {
+        const r = bubble.getBoundingClientRect();
+        if (r.top < padding) {
+          const cur = parseFloat(bubble.style.top) || 0;
+          bubble.style.top = `${cur + (padding - r.top)}px`;
+        }
+      });
+    };
+    const onResize = () => layout();
+    window.addEventListener('resize', onResize);
+    const revealTimeouts = [];
+    const run = () => {
+      layout();
+      bubbles.forEach((b, i) => {
+        const step = staggerStepByHeroIndex?.[i] ?? i;
+        const tid = setTimeout(() => {
+          b.style.opacity = '1';
+        }, firstRevealDelayMs + step * staggerMs);
+        revealTimeouts.push(tid);
+      });
+    };
+    requestAnimationFrame(() => {
+      run();
+      modal._victorySpeechRevealTimeouts = revealTimeouts;
+      requestAnimationFrame(() => layout());
+    });
+    setTimeout(() => layout(), 120);
+    modal._victorySpeechCleanup = { onResize, bubbles };
+    return { bubbles, onResize };
+  }
+
+  /**
+   * Move upper bubble higher until vertical rects no longer overlap (same side column).
+   */
+  resolveVictoryBubbleColumnOverlap(bubbles, indices, gap) {
+    for (let iter = 0; iter < 24; iter++) {
+      let changed = false;
+      const sorted = [...indices].sort((a, b) =>
+        bubbles[a].getBoundingClientRect().top - bubbles[b].getBoundingClientRect().top
+      );
+      for (let i = 0; i < sorted.length - 1; i++) {
+        const a = sorted[i];
+        const b = sorted[i + 1];
+        const ra = bubbles[a].getBoundingClientRect();
+        const rb = bubbles[b].getBoundingClientRect();
+        if (ra.bottom > rb.top - gap) {
+          const delta = ra.bottom - rb.top + gap;
+          const cur = parseFloat(bubbles[a].style.top) || 0;
+          bubbles[a].style.top = `${cur - delta}px`;
+          changed = true;
+        }
+      }
+      if (!changed) break;
+    }
+  }
+
+  /**
+   * If two bubbles still intersect (horizontal + vertical), nudge the upper one higher.
+   */
+  resolveVictoryBubbleOverlap2D(bubbles, indices, gap) {
+    const minTextOverlapY = 26;
+    for (let iter = 0; iter < 12; iter++) {
+      let changed = false;
+      for (let i = 0; i < indices.length; i++) {
+        for (let j = i + 1; j < indices.length; j++) {
+          const ai = indices[i];
+          const bi = indices[j];
+          const ra = bubbles[ai].getBoundingClientRect();
+          const rb = bubbles[bi].getBoundingClientRect();
+          const overlapX = Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left);
+          const overlapY = Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top);
+          if (overlapX <= 0 || overlapY <= 0) continue;
+          if (overlapY < minTextOverlapY) continue;
+          const higher = ra.top <= rb.top ? ai : bi;
+          const cur = parseFloat(bubbles[higher].style.top) || 0;
+          bubbles[higher].style.top = `${cur - (overlapY + gap)}px`;
+          changed = true;
+        }
+      }
+      if (!changed) break;
+    }
+  }
+
+  /**
    * Remove the hero graphic from the wave complete modal
    */
   removeWaveCompleteHeroGraphic(modal) {
     const hero = modal?.querySelector('.wave-complete-hero-graphic');
     if (hero) hero.remove();
+    modal?.querySelector('.victory-hero-dock')?.remove();
+    (modal?._victoryHeroFadeTimeouts || []).forEach((id) => clearTimeout(id));
+    delete modal?._victoryHeroFadeTimeouts;
+    (modal?._victorySpeechRevealTimeouts || []).forEach((id) => clearTimeout(id));
+    delete modal?._victorySpeechRevealTimeouts;
+    if (modal?._victorySpeechCleanup) {
+      window.removeEventListener('resize', modal._victorySpeechCleanup.onResize);
+      modal._victorySpeechCleanup.bubbles.forEach((b) => b.remove());
+      delete modal._victorySpeechCleanup;
+    }
     modal?.querySelectorAll('.character-speech-bubble').forEach(b => b.remove());
     this.removeBossDefeatGraphic(modal);
   }
@@ -2294,15 +3273,18 @@ export class WaveSystem {
    * Shows boss at full size with defeat speech bubble, then fades out after 3 seconds.
    */
   addBossDefeatGraphic(modal, completedWaveGroupNumber) {
-    const bossPattern = CONFIG.BOSS_PATTERNS[completedWaveGroupNumber] || CONFIG.BOSS_PATTERNS[1];
-    if (!bossPattern) return;
+    const bossPatternSpeech = getBossPatternForSpeech(completedWaveGroupNumber);
+    const bossPattern = getBossPatternForWaveGroup(completedWaveGroupNumber);
+    if (!bossPatternSpeech || !bossPattern) return;
 
     const bossName = bossPattern.name || 'Unknown';
     const bossTitle = bossPattern.title || '';
-    const speechBubbles = bossPattern.speechBubbles || [];
+    const speechBubbles = bossPatternSpeech.speechBubbles || [];
     const defeatSpeech = (speechBubbles[1] ?? speechBubbles[0] ?? '[Defeat placeholder]');
-    const bossKey = this.gameState?.renderer?.getEffectiveBossGroupKey?.(completedWaveGroupNumber) ?? `group${Math.min(completedWaveGroupNumber, 22)}`;
-    const imagePath = `assets/images/creatures/${bossKey}.png`;
+    const defeatedGroup = Math.max(1, completedWaveGroupNumber);
+    const portraitGroup = Math.min(defeatedGroup, Math.max(1, Math.floor(Number(CONFIG.FINAL_WAVE_GROUP)) || 22));
+    this.gameState?.renderer?.ensureBossSpriteForGroup?.(defeatedGroup);
+    const imagePath = `assets/images/creatures/group${portraitGroup}.png`;
     const fallbackPath = 'assets/images/creatures/group1.png';
 
     const container = document.createElement('div');
@@ -2347,7 +3329,7 @@ export class WaveSystem {
       container.style.opacity = '1';
     });
 
-    const TOTAL_MS = 6000; // entire boss display duration
+    const TOTAL_MS = BOSS_DEFEAT_TOTAL_MS; // entire boss display duration
     const startTime = performance.now();
     let rafId = null;
 
@@ -2403,7 +3385,7 @@ export class WaveSystem {
   /**
    * Fade out hero speech bubble, then run callback. Used for within-group Continue transition.
    */
-  fadeOutHeroSpeechBubbleAndContinue(modal, callback) {
+  fadeOutHeroSpeechBubbleAndContinue(modal, callback, bubbleCleanupDelayMs = 280) {
     const bubbles = modal?.querySelectorAll('.character-speech-bubble') || [];
     bubbles.forEach(b => {
       b.style.transition = 'opacity 0.25s ease-out';
@@ -2412,7 +3394,7 @@ export class WaveSystem {
     setTimeout(() => {
       this.removeHeroSpeechBubbleOnly(modal);
       if (callback) callback();
-    }, 280);
+    }, bubbleCleanupDelayMs);
   }
 
   /**
@@ -2422,8 +3404,8 @@ export class WaveSystem {
   addHeroSpeechBubbleOnly(modal, waveGroup, waveInGroup, speechContext, delayMs = 350) {
     const heroImg = modal?.querySelector('.wave-complete-hero-graphic img');
     if (!heroImg) return;
-    const group = Math.max(1, Math.min(waveGroup || 1, 22));
-    const heroPattern = CONFIG.HERO_PATTERNS?.[group] || CONFIG.HERO_PATTERNS?.[1] || { name: 'Hero', title: '' };
+    const speechGroup = getSpeechBubblePatternGroup(waveGroup);
+    const heroPattern = CONFIG.HERO_PATTERNS?.[speechGroup] || CONFIG.HERO_PATTERNS?.[1] || { name: 'Hero', title: '' };
     const speechBubbles = heroPattern.speechBubbles || [];
     const waveIndex = Math.max(0, Math.min((waveInGroup || 1) - 1, 4));
     const waveSpeech = speechBubbles[waveIndex];
@@ -2443,20 +3425,23 @@ export class WaveSystem {
    */
   addHeroGraphic(modal, waveGroup, waveInGroup, speechContext) {
     this.removeWaveCompleteHeroGraphic(modal);
-    const group = Math.max(1, Math.min(waveGroup || 1, 22));
-    const heroSrc = `assets/images/creatures/hero${group}.png?v=6`;
-    const heroPattern = CONFIG.HERO_PATTERNS?.[group] || CONFIG.HERO_PATTERNS?.[1] || { name: 'Hero', title: '' };
+    const campaignEnd = getCampaignEndWaveGroup();
+    const portraitGroup = Math.min(Math.max(1, waveGroup || 1), campaignEnd);
+    const speechGroup = getSpeechBubblePatternGroup(waveGroup);
+    const heroSrc = `assets/images/creatures/hero${portraitGroup}.png?v=6`;
+    const heroPattern = CONFIG.HERO_PATTERNS?.[speechGroup] || CONFIG.HERO_PATTERNS?.[1] || { name: 'Hero', title: '' };
     const heroName = heroPattern.name || 'Hero';
     const heroTitle = heroPattern.title || '';
 
     const wrapper = document.createElement('div');
     wrapper.className = 'wave-complete-hero-graphic';
-    wrapper.dataset.heroGroup = String(group);
-    const sizeClass = { 1: 'hero-size-110', 3: 'hero-size-78.75', 6: 'hero-size-120', 7: 'hero-size-140.6', 11: 'hero-size-135', 12: 'hero-size-90', 14: 'hero-size-125', 15: 'hero-size-90', 17: 'hero-size-125', 18: 'hero-size-125', 19: 'hero-size-127.5', 20: 'hero-size-144', 21: 'hero-size-170', 22: 'hero-size-170' }[group];
-    const shiftClass = { 1: 'hero-shift-100', 11: 'hero-shift-150', 14: 'hero-shift-100', 16: 'hero-shift-100', 17: 'hero-shift-100', 18: 'hero-shift-100', 19: 'hero-shift-280', 20: 'hero-shift-150', 21: 'hero-shift-300', 22: 'hero-shift-200' }[group];
-    const shiftUpClass = { 3: 'hero-shift-up-100', 12: 'hero-shift-up-100', 15: 'hero-shift-up-100' }[group];
-    const shiftDownClass = { 4: 'hero-shift-down-75', 6: 'hero-shift-down-80', 7: 'hero-shift-down-200', 8: 'hero-shift-down-25', 13: 'hero-shift-down-25' }[group];
-    const shiftLeftClass = { 6: 'hero-shift-left-50', 11: 'hero-shift-left-50', 18: 'hero-shift-left-40', 19: 'hero-shift-left-250', 20: 'hero-shift-left-50', 21: 'hero-shift-left-100', 22: 'hero-shift-left-100' }[group];
+    wrapper.dataset.heroGroup = String(portraitGroup);
+    wrapper.dataset.heroWaveGroup = String(Math.max(1, waveGroup || 1));
+    const sizeClass = { 1: 'hero-size-110', 3: 'hero-size-78.75', 6: 'hero-size-120', 7: 'hero-size-140.6', 11: 'hero-size-135', 12: 'hero-size-90', 14: 'hero-size-125', 15: 'hero-size-90', 17: 'hero-size-125', 18: 'hero-size-125', 19: 'hero-size-127.5', 20: 'hero-size-144', 21: 'hero-size-170', 22: 'hero-size-170' }[portraitGroup];
+    const shiftClass = { 1: 'hero-shift-100', 11: 'hero-shift-150', 14: 'hero-shift-100', 16: 'hero-shift-100', 17: 'hero-shift-100', 18: 'hero-shift-100', 19: 'hero-shift-280', 20: 'hero-shift-150', 21: 'hero-shift-300', 22: 'hero-shift-200' }[portraitGroup];
+    const shiftUpClass = { 3: 'hero-shift-up-100', 12: 'hero-shift-up-100', 15: 'hero-shift-up-100' }[portraitGroup];
+    const shiftDownClass = { 4: 'hero-shift-down-75', 6: 'hero-shift-down-80', 7: 'hero-shift-down-200', 8: 'hero-shift-down-25', 13: 'hero-shift-down-25' }[portraitGroup];
+    const shiftLeftClass = { 6: 'hero-shift-left-50', 11: 'hero-shift-left-50', 18: 'hero-shift-left-40', 19: 'hero-shift-left-250', 20: 'hero-shift-left-50', 21: 'hero-shift-left-100', 22: 'hero-shift-left-100' }[portraitGroup];
     if (sizeClass) wrapper.classList.add(sizeClass);
     if (shiftClass) wrapper.classList.add(shiftClass);
     if (shiftUpClass) wrapper.classList.add(shiftUpClass);
@@ -2517,6 +3502,7 @@ export class WaveSystem {
     const modalFrameContent = modal?.querySelector('.modal-frame-content');
     
     if (modal && modalFrameContent) {
+      delete modal._waveRewardsCollected;
       // Use level up modal structure - remove frames and backgrounds
       modal.classList.add('active');
       modal.classList.add('upgrade-token-mask');
@@ -2620,27 +3606,66 @@ export class WaveSystem {
       firesFrame.appendChild(firesIcon);
       firesStatItem.appendChild(firesFrame);
       
-      // Text content container
+      // Text content container (relative so PB celebration can sit top-right)
       const firesTextContainer = document.createElement('div');
-      firesTextContainer.style.cssText = 'display: flex; flex-direction: column; gap: 2px; flex: 1;';
+      firesTextContainer.style.cssText = 'display: flex; flex-direction: column; gap: 2px; flex: 1; position: relative;';
       
-      // Number in light blue
+      const showFiresHighScore = !!this.gameState.wave?.firesExtinguishedHighScoreBanner;
+      const firesNumberWrap = document.createElement('div');
+      firesNumberWrap.style.cssText = showFiresHighScore
+        ? 'position: relative; display: inline-block; align-self: flex-start; margin-bottom: 5px; padding-right: 72px; overflow: visible;'
+        : 'position: relative; display: inline-block; align-self: flex-start; margin-bottom: 5px;';
       const firesNumber = document.createElement('div');
       firesNumber.textContent = totalExtinguished.toString();
-      firesNumber.style.cssText = 'color: #7DD3FC; font-size: 26px; font-weight: bold; font-family: "Exo 2", sans-serif; line-height: 1; margin-bottom: 5px;';
-      firesTextContainer.appendChild(firesNumber);
+      firesNumber.style.cssText = 'color: #7DD3FC; font-size: 26px; font-weight: bold; font-family: "Exo 2", sans-serif; line-height: 1;';
+      firesNumberWrap.appendChild(firesNumber);
+      if (showFiresHighScore) {
+        const hs = document.createElement('div');
+        hs.className = 'wave-complete-stat-celebrate';
+        hs.textContent = 'new high score!';
+        hs.style.cssText =
+          'position: absolute; top: 13px; right: -8px; font-size: 13px; font-weight: bold; color: #FFD700; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5); z-index: 2; pointer-events: none; letter-spacing: 0px; white-space: nowrap; font-family: "Exo 2", sans-serif;';
+        firesNumberWrap.appendChild(hs);
+      }
+      firesTextContainer.appendChild(firesNumberWrap);
       
       // Label in white (wrapped to two lines)
       const firesLabel = document.createElement('div');
       firesLabel.innerHTML = 'FIRES<br>EXTINGUISHED';
       firesLabel.style.cssText = 'color: #FFFFFF; font-size: 14px; font-weight: normal; font-family: "Exo 2", sans-serif; text-transform: uppercase; line-height: 1.2;';
       firesTextContainer.appendChild(firesLabel);
+
+      const fireSub = this.gameState.wave?.firesExtinguishedSubtext;
+      if (fireSub && typeof fireSub.personalBestAfter === 'number' && !Number.isNaN(fireSub.personalBestAfter)) {
+        const goldPbBase =
+          'position: absolute; top: 16px; right: 4px; z-index: 2; font-weight: bold; font-family: "Exo 2", sans-serif; line-height: 1.08; color: #FFD700; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5); text-transform: none; pointer-events: none; letter-spacing: 0; text-align: center;';
+        const skipPersonalBestRibbon = showFiresHighScore && fireSub.isNewHigh;
+        if ((fireSub.isNewHigh || fireSub.firstRecord) && !skipPersonalBestRibbon) {
+          const firesGold = document.createElement('div');
+          firesGold.className = 'wave-complete-stat-celebrate';
+          firesGold.innerHTML = 'new personal<br>best!';
+          firesGold.style.cssText = `${goldPbBase} font-size: 12px;`;
+          firesTextContainer.appendChild(firesGold);
+        } else if (fireSub.equaledBest) {
+          const firesGold = document.createElement('div');
+          firesGold.className = 'wave-complete-stat-celebrate';
+          firesGold.innerHTML = 'Matched personal<br>best!';
+          firesGold.style.cssText = `${goldPbBase} font-size: 11px;`;
+          firesTextContainer.appendChild(firesGold);
+        } else {
+          const firesCompare = document.createElement('div');
+          firesCompare.textContent = `Personal best: ${fireSub.personalBestAfter}`;
+          firesCompare.style.cssText =
+            'font-size: 12px; font-weight: normal; font-family: "Exo 2", sans-serif; line-height: 1.2; color: rgba(148, 163, 184, 0.92); margin-top: 4px; text-transform: none;';
+          firesTextContainer.appendChild(firesCompare);
+        }
+      }
       
       firesStatItem.appendChild(firesTextContainer);
       
       statItemsContainer.appendChild(firesStatItem);
       
-      // Second stat item: Town Protection Bonus
+      // Second stat item: Ancient grove protection bonus
       const townStatItem = document.createElement('div');
       townStatItem.style.cssText = 'display: flex; flex-direction: row; align-items: center; gap: 16px; width: 100%; max-width: 270px;';
       
@@ -2666,7 +3691,7 @@ export class WaveSystem {
       
       // Label in white (wrapped to two lines)
       const townLabel = document.createElement('div');
-      townLabel.innerHTML = 'TOWN PROTECTION<br>BONUS';
+      townLabel.innerHTML = 'ANCIENT GROVE<br>PROTECTION BONUS';
       townLabel.style.cssText = 'color: #FFFFFF; font-size: 14px; font-weight: normal; font-family: "Exo 2", sans-serif; text-transform: uppercase; line-height: 1.2;';
       townTextContainer.appendChild(townLabel);
       
@@ -2719,7 +3744,7 @@ export class WaveSystem {
         if (continueBtn.parentElement) {
           continueBtn.parentElement.removeChild(continueBtn);
         }
-        continueBtn.textContent = 'Continue';
+        continueBtn.textContent = 'Collect';
         continueBtn.className = 'choice-btn cta-button';
         continueBtn.style.width = 'auto';
         continueBtn.style.minWidth = 'auto';
@@ -2727,22 +3752,37 @@ export class WaveSystem {
         continueBtn.style.margin = '16px auto 0 auto';
         continueBtn.style.display = 'block';
         continueBtn.style.visibility = 'visible';
+        continueBtn.disabled = false;
         // Remove any existing onclick handlers
         continueBtn.onclick = null;
         continueBtn.onclick = () => {
-          // Within-group: fade out speech bubble, keep hero, then transition
-          this.fadeOutHeroSpeechBubbleAndContinue(modal, () => {
-            // Clean up modal classes
-            modal.classList.remove('active', 'upgrade-token-mask', 'wave-group-complete');
-            modal.style.pointerEvents = '';
-            const modalInner = modal.querySelector('.modal');
-            if (modalInner) {
-              modalInner.classList.remove('modal-upgrade-token', 'modal-no-frame', 'wave-complete-modal', 'boss-wave-modal');
-              modalInner.style.pointerEvents = '';
+          if (modal._waveRewardsCollected) return;
+          modal._waveRewardsCollected = true;
+          continueBtn.disabled = true;
+          if (this.gameState.wave) {
+            delete this.gameState.wave.firesExtinguishedHighScoreBanner;
+            delete this.gameState.wave.firesExtinguishedSubtext;
+          }
+          this.applyPendingTownBonus();
+          if (window.updateUI) window.updateUI();
+          requestAnimationFrame(() => {
+            if (totalAmount && totalAmount.offsetParent !== null) {
+              createModalFloatingText(totalAmount, `$${totalEarned}`, '#00FF88', 63, 1.6875, 40, -45);
             }
-            // Start next wave (which will trigger placement phase)
-            this.startNextWave();
           });
+          setTimeout(() => {
+            continueBtn.disabled = false;
+            this.fadeOutHeroSpeechBubbleAndContinue(modal, () => {
+              modal.classList.remove('active', 'upgrade-token-mask', 'wave-group-complete');
+              modal.style.pointerEvents = '';
+              const modalInner = modal.querySelector('.modal');
+              if (modalInner) {
+                modalInner.classList.remove('modal-upgrade-token', 'modal-no-frame', 'wave-complete-modal', 'boss-wave-modal');
+                modalInner.style.pointerEvents = '';
+              }
+              this.startNextWave();
+            }, 60);
+          }, WAVE_COLLECT_MODAL_DISMISS_MS);
         };
         // Append button to stats container
         statsContainer.appendChild(continueBtn);
@@ -2750,23 +3790,37 @@ export class WaveSystem {
         // If button doesn't exist, create it
         const newContinueBtn = document.createElement('button');
         newContinueBtn.id = 'continueBtn';
-        newContinueBtn.textContent = 'Continue to Next Group';
+        newContinueBtn.textContent = 'Collect';
         newContinueBtn.className = 'choice-btn cta-button';
         newContinueBtn.style.cssText = 'width: auto; min-width: auto; max-width: none; margin: 16px auto 0 auto; display: block; visibility: visible;';
         newContinueBtn.onclick = () => {
-          // Within-group: fade out speech bubble, keep hero, then transition
-          this.fadeOutHeroSpeechBubbleAndContinue(modal, () => {
-            // Clean up modal classes
-            modal.classList.remove('active', 'upgrade-token-mask', 'wave-group-complete');
-            modal.style.pointerEvents = '';
-            const modalInner = modal.querySelector('.modal');
-            if (modalInner) {
-              modalInner.classList.remove('modal-upgrade-token', 'modal-no-frame', 'wave-complete-modal', 'boss-wave-modal');
-              modalInner.style.pointerEvents = '';
+          if (modal._waveRewardsCollected) return;
+          modal._waveRewardsCollected = true;
+          newContinueBtn.disabled = true;
+          if (this.gameState.wave) {
+            delete this.gameState.wave.firesExtinguishedHighScoreBanner;
+            delete this.gameState.wave.firesExtinguishedSubtext;
+          }
+          this.applyPendingTownBonus();
+          if (window.updateUI) window.updateUI();
+          requestAnimationFrame(() => {
+            if (totalAmount && totalAmount.offsetParent !== null) {
+              createModalFloatingText(totalAmount, `$${totalEarned}`, '#00FF88', 63, 1.6875, 40, -45);
             }
-            // Start next wave (which will trigger placement phase)
-            this.startNextWave();
           });
+          setTimeout(() => {
+            newContinueBtn.disabled = false;
+            this.fadeOutHeroSpeechBubbleAndContinue(modal, () => {
+              modal.classList.remove('active', 'upgrade-token-mask', 'wave-group-complete');
+              modal.style.pointerEvents = '';
+              const modalInner = modal.querySelector('.modal');
+              if (modalInner) {
+                modalInner.classList.remove('modal-upgrade-token', 'modal-no-frame', 'wave-complete-modal', 'boss-wave-modal');
+                modalInner.style.pointerEvents = '';
+              }
+              this.startNextWave();
+            }, 60);
+          }, WAVE_COLLECT_MODAL_DISMISS_MS);
         };
         statsContainer.appendChild(newContinueBtn);
       }
@@ -2780,14 +3834,6 @@ export class WaveSystem {
       modal.classList.add('active');
 
       this.addWaveCompleteHeroGraphic(modal, completedWaveGroup, completedWaveInGroup);
-
-      // Add floating text for total collected number
-      setTimeout(() => {
-        if (totalAmount && totalAmount.offsetParent !== null) {
-          // Create floating text: total earned amount, color #00FF88, 63px, 1.6875 seconds, float 40px, start 45px higher
-          createModalFloatingText(totalAmount, `$${totalEarned}`, '#00FF88', 63, 1.6875, 40, -45);
-        }
-      }, 100);
     }
   }
 
@@ -2795,6 +3841,7 @@ export class WaveSystem {
    * Show scenario complete modal
    */
   showScenarioCompleteModal() {
+    this.gameState.runStats?.recordScenarioCompleted?.();
     const modal = document.getElementById('waveCompleteModal');
     const statsDiv = document.getElementById('waveStats');
     const modalTitle = modal?.querySelector('h2');
@@ -2820,7 +3867,8 @@ export class WaveSystem {
           { key: 'blaze', name: 'Blaze', emoji: '🔴' },
           { key: 'firestorm', name: 'Firestorm', emoji: '🟣' },
           { key: 'inferno', name: 'Inferno', emoji: '⚫' },
-          { key: 'cataclysm', name: 'Cataclysm', emoji: '💀' }
+          { key: 'cataclysm', name: 'Cataclysm', emoji: '💀' },
+          { key: 'blackfyre', name: 'Blackfyre', emoji: '🖤' }
         ];
         
         fireTypes.forEach(fireType => {
@@ -2846,13 +3894,13 @@ export class WaveSystem {
       
       modal.classList.add('active');
       
-      // Setup continue button (will return to main menu or allow loading another scenario)
       const continueBtn = document.getElementById('continueBtn');
       if (continueBtn) {
-        continueBtn.textContent = 'Close';
+        continueBtn.textContent = 'Collect';
         continueBtn.onclick = () => {
+          this.applyPendingTownBonus();
+          if (window.updateUI) window.updateUI();
           modal.classList.remove('active');
-          // Game is complete, player can load another scenario from settings
         };
       }
     }

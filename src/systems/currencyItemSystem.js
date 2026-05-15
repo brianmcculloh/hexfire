@@ -1,9 +1,34 @@
 // Currency Item System - Manages currency items that spawn from mystery boxes
 
-import { CONFIG, getFireTypeConfig } from '../config.js';
+import { CONFIG, getFireTypeConfig, addPlayerScore, getPowerUpMultiplier } from '../config.js';
 import { getNeighbors } from '../utils/hexMath.js';
+import { filterWeightedRewardPool, isWeightedRewardUnlockedInRun } from '../utils/rewardPoolUnlocks.js';
 
 let currencyItemIdCounter = 0;
+
+/** Sprite shown when a map currency pickup is collected (floating fade, not mystery-box open). */
+function getCurrencyItemCollectSpriteSpec(item) {
+  if (!item?.itemType) return null;
+  switch (item.itemType) {
+    case 'currency':
+    case 'money':
+      return { spriteCategory: 'items', spriteFilename: 'currency.png' };
+    case 'xp':
+      return { spriteCategory: 'items', spriteFilename: 'xp.png' };
+    case 'movement_token':
+      return { spriteCategory: 'items', spriteFilename: 'movement_token.png' };
+    case 'shield': {
+      const level = Math.min(4, Math.max(1, item.value || 1));
+      return { spriteCategory: 'items', spriteFilename: `shield_${level}.png` };
+    }
+    case 'upgrade_plans':
+      return { spriteCategory: 'items', spriteFilename: 'upgrade_token.png' };
+    case 'tree_juice':
+      return { spriteCategory: 'items', spriteFilename: 'town_defense.png' };
+    default:
+      return null;
+  }
+}
 
 export class CurrencyItemSystem {
   constructor(gridSystem, fireSystem, gameState) {
@@ -13,21 +38,31 @@ export class CurrencyItemSystem {
     this.items = new Map(); // Map<itemId, CurrencyItemData>
   }
 
+  getRandomUnlockedPermanentPowerUpId() {
+    const ids = Object.keys(CONFIG.POWER_UPS || {}).filter((powerUpId) =>
+      isWeightedRewardUnlockedInRun(this.gameState, { type: 'permanent_power_up', powerUpId })
+    );
+    if (!ids.length) return null;
+    return ids[Math.floor(Math.random() * ids.length)];
+  }
+
   /**
-   * Spawn a bonus item at a location (money, movement token, shield, upgrade_plans)
+   * Spawn a bonus item at a location (currency, movement token, shield, upgrade_plans)
    * @param {number} q - Hex q coordinate
    * @param {number} r - Hex r coordinate
-   * @param {string} itemType - Type of item: 'money', 'movement_token', 'shield', 'upgrade_plans'
-   * @param {number} value - Value for money (amount), shield level (1-4), or 1 for movement_token/upgrade_plans
+   * @param {string} itemType - Type of item: 'currency', 'xp', 'movement_token', 'shield', 'upgrade_plans', 'tree_juice'
+   * @param {number} value - Value for currency/xp (amount), shield level (1-4), or 1 for movement_token/upgrade_plans
+   * @param {boolean} fromMystery - True when spawned from a mystery box cluster (for boss triggers)
+   * @param {{ skipSpawnBounce?: boolean }} [spawnOptions] - Set skipSpawnBounce when restoring from save (no drop-in animation)
    * @returns {string|null} Item ID or null if spawn failed
    */
-  spawnCurrencyItem(q, r, itemType = 'money', value = 1) {
+  spawnCurrencyItem(q, r, itemType = 'currency', value = 1, fromMystery = false, spawnOptions = {}) {
     const hex = this.gridSystem.getHex(q, r);
     if (!hex) return null;
     
     // Can't spawn on town, path, fire spawners, or if hex already has something
     if (hex.isTown || hex.isPath || hex.hasTower || hex.hasWaterTank || hex.isBurning || hex.hasFireSpawner ||
-        hex.hasTempPowerUpItem || hex.hasMysteryItem || hex.hasCurrencyItem) {
+        hex.hasTempPowerUpItem || hex.hasMysteryItem || hex.hasCurrencyItem || hex.hasBurningVault || hex.hasArtifactItem) {
       return null;
     }
     
@@ -37,15 +72,21 @@ export class CurrencyItemSystem {
     
     const itemId = `currency_${currencyItemIdCounter++}`;
     
+    const normalizedType = itemType === 'money' ? 'currency' : itemType;
     const item = {
       id: itemId,
       q,
       r,
-      itemType: itemType, // 'money', 'movement_token', 'shield', 'upgrade_plans'
-      value: (itemType === 'money' ? (value || 1) : itemType === 'shield' ? (value || 1) : null),
-      health: 20, // Same health as mystery boxes
-      maxHealth: 20,
+      itemType: normalizedType, // 'currency', 'xp', 'movement_token', 'shield', 'upgrade_plans', 'tree_juice'
+      value: (normalizedType === 'currency' || normalizedType === 'xp' ? (value || 1) : normalizedType === 'shield' ? (value || 1) : null),
+      health: 4, // Same health as mystery boxes
+      maxHealth: 4,
       isActive: true,
+      spawnedFromMystery: !!fromMystery,
+      mysteryLandDropAtMs:
+        spawnOptions?.skipSpawnBounce || typeof performance === 'undefined'
+          ? undefined
+          : performance.now(),
     };
     
     this.items.set(itemId, item);
@@ -59,10 +100,17 @@ export class CurrencyItemSystem {
    * @param {number} centerQ - Center hex q coordinate
    * @param {number} centerR - Center hex r coordinate
    * @param {number} count - Number of items to spawn (1 to max)
-   * @param {Array} dropPool - Array of {type, weight, minValue?, maxValue?} objects
+   * @param {Array} dropPool - Array of {type, weight, minValue?, maxValue?, level?} objects.
+   *   For type 'xp', minValue/maxValue define inclusive random XP (like money).
+   *   For type 'shield', set level (1–4) per entry; multiple rows = weighted levels. If level is omitted, a random level 1–4 is used.
    * @returns {number} Number of items actually spawned
    */
   spawnCurrencyItemsInCluster(centerQ, centerR, count, dropPool) {
+    let pool = filterWeightedRewardPool(this.gameState, dropPool);
+    if (!pool.length) {
+      pool = [{ type: 'currency', weight: 1, minValue: 10, maxValue: 50 }];
+    }
+
     // Get the 7 hexes: center + 6 neighbors
     const hexes = [{ q: centerQ, r: centerR }, ...getNeighbors(centerQ, centerR)];
     
@@ -73,7 +121,7 @@ export class CurrencyItemSystem {
       
       // Can't spawn on town, path, fire spawners, or if hex already has something
       if (hex.isTown || hex.isPath || hex.hasTower || hex.hasWaterTank || hex.hasFireSpawner ||
-          hex.hasTempPowerUpItem || hex.hasMysteryItem || hex.hasCurrencyItem) {
+          hex.hasTempPowerUpItem || hex.hasMysteryItem || hex.hasCurrencyItem || hex.hasBurningVault || hex.hasArtifactItem) {
         return false;
       }
       
@@ -87,7 +135,7 @@ export class CurrencyItemSystem {
     const shuffledHexes = [...availableHexes].sort(() => Math.random() - 0.5);
     
     // Calculate total weight for random selection
-    const totalWeight = dropPool.reduce((sum, item) => sum + (item.weight || 1), 0);
+    const totalWeight = pool.reduce((sum, item) => sum + (item.weight || 1), 0);
     
     // Spawn items
     let spawned = 0;
@@ -97,7 +145,7 @@ export class CurrencyItemSystem {
       // Select item type based on weights
       let roll = Math.random() * totalWeight;
       let selectedItem = null;
-      for (const poolItem of dropPool) {
+      for (const poolItem of pool) {
         roll -= (poolItem.weight || 1);
         if (roll <= 0) {
           selectedItem = poolItem;
@@ -107,7 +155,7 @@ export class CurrencyItemSystem {
       
       // Fallback to first item if something went wrong
       if (!selectedItem) {
-        selectedItem = dropPool[0];
+        selectedItem = pool[0];
       }
       
       let didSpawn = false;
@@ -117,22 +165,47 @@ export class CurrencyItemSystem {
       } else if (selectedItem.type === 'temp_power_up') {
         const powerUpId = this.gameState.tempPowerUpItemSystem?.getRandomPowerUpId();
         if (powerUpId) {
-          const itemId = this.gameState.tempPowerUpItemSystem?.spawnTempPowerUpItem(q, r, powerUpId);
+          const itemId = this.gameState.tempPowerUpItemSystem?.spawnTempPowerUpItem(q, r, powerUpId, {
+            fromMystery: true,
+          });
           didSpawn = !!itemId;
         }
+      } else if (selectedItem.type === 'permanent_power_up_random') {
+        const powerUpId = this.getRandomUnlockedPermanentPowerUpId();
+        if (powerUpId) {
+          const itemId = this.gameState.tempPowerUpItemSystem?.spawnTempPowerUpItem(q, r, powerUpId, {
+            fromMystery: true,
+            grantPermanent: true,
+          });
+          didSpawn = !!itemId;
+        }
+      } else if (selectedItem.type === 'artifact_random') {
+        const ast = this.gameState.artifactSystem;
+        const defs = ast?.getSpawnableDefinitions?.() || [];
+        if (defs.length) {
+          const def = defs[Math.floor(Math.random() * defs.length)];
+          didSpawn = !!ast?.spawnArtifact?.(q, r, def.id, {
+            timeLeftSeconds: CONFIG.ARTIFACT_LIFETIME_SECONDS ?? 10,
+          });
+        }
       } else if (selectedItem.type === 'shield') {
-        // Randomly choose one of the 4 shield levels when spawning from mystery box
-        const level = Math.floor(Math.random() * 4) + 1;
-        didSpawn = !!this.spawnCurrencyItem(q, r, 'shield', level);
+        let level;
+        if (selectedItem.level != null && Number.isFinite(Number(selectedItem.level))) {
+          level = Math.min(4, Math.max(1, Math.round(Number(selectedItem.level))));
+        } else {
+          level = Math.floor(Math.random() * 4) + 1;
+        }
+        didSpawn = !!this.spawnCurrencyItem(q, r, 'shield', level, true);
       } else {
-        // money, movement_token, upgrade_plans, etc. go through currency items
+        // currency, xp, movement_token, upgrade_plans, etc. go through currency items
         let value = 1;
-        if (selectedItem.type === 'money') {
+        if (selectedItem.type === 'currency' || selectedItem.type === 'money' || selectedItem.type === 'xp') {
           const minValue = selectedItem.minValue || 1;
           const maxValue = selectedItem.maxValue || 25;
           value = Math.floor(Math.random() * (maxValue - minValue + 1)) + minValue;
         }
-        didSpawn = !!this.spawnCurrencyItem(q, r, selectedItem.type, value);
+        const normalizedType = selectedItem.type === 'money' ? 'currency' : selectedItem.type;
+        didSpawn = !!this.spawnCurrencyItem(q, r, normalizedType, value, true);
       }
       if (didSpawn) {
         spawned++;
@@ -178,31 +251,40 @@ export class CurrencyItemSystem {
     if (!item || !item.isActive) return false;
     
     // Award score: 10 points per item collected
-    this.gameState.player.score = (this.gameState.player.score ?? 0) + 10;
+    addPlayerScore(this.gameState, 10);
     
     // Play collect sound
     if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('collect');
     
+    let mapBonusXpGranted = 0;
+    if (item.itemType === 'xp') {
+      mapBonusXpGranted = this.gameState.progressionSystem?.awardBonusMapXP(item.value) ?? 0;
+    }
+
+    const collectSpriteSpec = getCurrencyItemCollectSpriteSpec(item);
+    let floatSpec = collectSpriteSpec ? { ...collectSpriteSpec } : null;
+    if (floatSpec && (item.itemType === 'currency' || item.itemType === 'money')) {
+      floatSpec.valueText = `+$${item.value ?? 1}`;
+      floatSpec.valueColor = '#00FF88';
+    } else if (floatSpec && item.itemType === 'xp') {
+      floatSpec.valueText = `+${mapBonusXpGranted} XP`;
+      floatSpec.valueColor = '#7DD3FC';
+    }
+    if (floatSpec && this.gameState.notificationSystem) {
+      this.gameState.notificationSystem.addMapCollectedSpriteFloat(q, r, floatSpec);
+    }
+
     // Award based on item type
-    if (item.itemType === 'money') {
+    if (item.itemType === 'currency' || item.itemType === 'money') {
       // Award currency
       this.gameState.player.currency = (this.gameState.player.currency || 0) + item.value;
-      
-      // Show floating currency notification
-      if (this.gameState.notificationSystem) {
-        this.gameState.notificationSystem.addCurrencyNotification(q, r, item.value);
-      }
     } else if (item.itemType === 'movement_token') {
       // Award movement token
       if (!this.gameState.player.movementTokens) {
         this.gameState.player.movementTokens = 0;
       }
       this.gameState.player.movementTokens += 1;
-      
-      // Show floating movement token notification
-      if (this.gameState.notificationSystem) {
-        this.gameState.notificationSystem.addMovementTokenNotification(q, r);
-      }
+      this.gameState.runStats?.recordMovementTokenFromMapDrop?.();
     } else if (item.itemType === 'shield') {
       // Award shield (add to inventory like purchased shields)
       if (!this.gameState.player.inventory.purchasedShields) {
@@ -210,18 +292,36 @@ export class CurrencyItemSystem {
       }
       const level = Math.min(4, Math.max(1, item.value || 1));
       this.gameState.player.inventory.purchasedShields.push({ type: 'shield', level });
-      
-      // Show floating shield notification
-      if (this.gameState.notificationSystem) {
-        this.gameState.notificationSystem.addShieldNotification(q, r, level);
-      }
     } else if (item.itemType === 'upgrade_plans') {
       // Award upgrade plan
       this.gameState.player.upgradePlans = (this.gameState.player.upgradePlans || 0) + 1;
-      
-      // Show floating upgrade plan notification
+      this.gameState.runStats?.recordUpgradePlanFromMapDrop?.();
+    } else if (item.itemType === 'tree_juice') {
+      this.gameState.townLevel = (this.gameState.townLevel || 1) + 1;
+      this.gameState.gridSystem?.applyTownUpgrade(CONFIG.TOWN_HEALTH_PER_UPGRADE);
+      this.gameState.runStats?.recordTownHealthUpgrade?.();
+
+      if (typeof window !== 'undefined' && window.AudioManager) {
+        window.AudioManager.playSFX('tree_juice');
+      }
+
       if (this.gameState.notificationSystem) {
-        this.gameState.notificationSystem.addUpgradePlanNotification(q, r);
+        this.gameState.notificationSystem.showToast(
+          `Tree Juice collected! Town level ${this.gameState.townLevel} (+${CONFIG.TOWN_HEALTH_PER_UPGRADE} grove HP)`,
+          3500,
+          'positive'
+        );
+      }
+
+      try {
+        const centerKey = '0,0';
+        this.gameState.renderer?.hexFlashes?.set(centerKey, {
+          startTime: performance.now(),
+          duration: 800,
+          color: 'white',
+        });
+      } catch (e) {
+        // ignore
       }
     }
     
@@ -244,6 +344,17 @@ export class CurrencyItemSystem {
     
     // Clear the isBeingSprayed flag from the hex to prevent visual glitch
     this.gridSystem.setHex(q, r, { isBeingSprayed: false });
+
+    this.gameState.runStats?.recordMapItemCollection?.('currency_item', {
+      itemType: item.itemType,
+      value: item.value,
+      q,
+      r,
+    });
+
+    if (item.spawnedFromMystery) {
+      this.gameState.bossSystem?.notifyMapItemCollected?.();
+    }
     
     return true;
   }
@@ -303,7 +414,10 @@ export class CurrencyItemSystem {
       if (itemHex && itemHex.isBurning) {
         // Get fire type damage per second
         const fireConfig = getFireTypeConfig(itemHex.fireType);
-        const damagePerSecond = fireConfig ? fireConfig.damagePerSecond : 1;
+        const powerUps = this.gameState?.player?.powerUps || {};
+        const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+        const fireDamageMult = getPowerUpMultiplier('fireDamage', powerUps, tempPowerUps);
+        const damagePerSecond = (fireConfig ? fireConfig.damagePerSecond : 1) * fireDamageMult;
         const damageThisTick = deltaTime * damagePerSecond;
         
         // Damage the item

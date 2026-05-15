@@ -228,11 +228,11 @@ export const TUTORIAL_STEPS = [
   // Step 18: Point at currency - explain starting money and earning (Next button to advance)
   {
     target: '#overlayCurrencyRow',
-    message: "You start the game with $500, which you can spend at any time. Earn more by completing waves.",
+    message: `You start the game with $${CONFIG.STARTING_CURRENCY}, which you can spend at any time. Earn more by completing waves.`,
     buttonText: 'Next',
     arrowSide: 'right'
   },
-  // Step 19: Point at sidebar toggle - open to access shop and spend $500 (advance on click)
+  // Step 19: Point at sidebar toggle - open to access shop and spend currency (advance on click)
   {
     target: '#sidePanelToggle',
     message: "Now let\'s take a look at the SHOP. Open the sidebar again.",
@@ -256,7 +256,7 @@ export const TUTORIAL_STEPS = [
   // Step 22: Point at shop sub-tabs - tell user to click Items (advance on Items click; then disable Towers and Power-ups)
   {
     target: '.shop-sub-tabs',
-    message: "We haven\'t unlocked any POWER-UPS yet. Now, click ITEMS, which is where we'll find our newly unlocked item.",
+    message: "We haven\'t unlocked any POWER-UPS yet. No worries, now let's click ITEMS, which is where we'll find our newly unlocked item.",
     arrowSide: 'left',
     offsetX: 40  // Shift 10px left from 50
   },
@@ -284,7 +284,7 @@ export const TUTORIAL_STEPS = [
   },
   // Step 26: Point at shield in inventory - tell user to click it
   {
-    target: '#shield-to-place-0',
+    target: '#shield-to-place-level-1',
     message: "Click the shield to select it.",
     arrowSide: 'left',
     offsetX: 0  // Shift 40px right from -40
@@ -314,7 +314,7 @@ export const TUTORIAL_STEPS = [
   // Step 29: Tutorial complete
   {
     centered: true,
-    message: 'Nice damage! You\'re ready to defend the Ancient Grove. There\'s so much more to discover. Good luck, water wielder!',
+    message: 'Those water tanks have some nice fire-stopping power! You\'re ready to defend the Ancient Grove. There\'s so much more to discover. Good luck, water wielder!',
     buttonText: 'Finish'
   }
 ];

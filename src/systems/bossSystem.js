@@ -1,6 +1,14 @@
 // Boss System - Manages boss waves and boss abilities
 
-import { CONFIG, getFireSpawnProbabilities, getFireTypeStrengthRank } from '../config.js';
+import {
+  CONFIG,
+  getFireSpawnProbabilities,
+  getFireTypeStrengthRank,
+  pickFireTypeFromSpawnProbabilities,
+  getBossPatternForWaveGroup,
+  applyBossFireTypeProbabilityCap,
+  applyBossWeakSpawnProbZeroAfterFinalGroup,
+} from '../config.js';
 import { getHexesInRing, getHexInDirection, isInBounds, getNeighbors, hexKey } from '../utils/hexMath.js';
 
 export class BossSystem {
@@ -16,7 +24,7 @@ export class BossSystem {
     this.abilityTimers = []; // Array of timers, one per ability { timer, ability }
     this.pendingIgnitions = []; // Array of {q, r, delay} for staggered ignitions
     this.pendingStokes = []; // Array of {q, r, delay, maxFireType} for staggered stoke strikes
-    this.pendingTriggerQueue = []; // Queue of trigger events (e.g. 'level up') to fire after modal closes
+    this.pendingTriggerQueue = []; // Queue of trigger events to fire after modal closes
     this.lastWaveNumber = 0; // Track wave number to detect wave changes
     this.serpentineCharActivationCount = 0; // Tracks how many times serpentine char has fired this boss wave (for length scaling)
     this.collapsingFireActivationCount = 0; // Tracks how many times collapsing fire has fired (for ring offset)
@@ -29,6 +37,8 @@ export class BossSystem {
     this.castingAnimationStart = 0; // When current animation phase started
     this.castingDuration = 0; // Total casting duration (spell effect time)
     this.currentCastingAbility = null; // The ability currently being cast (for animation/text)
+    /** Provoked burn: delay offset so multiple map pickups in one tick chain separate grove strikes */
+    this.provokedBurnChainOffsetMs = 0;
   }
 
   /**
@@ -54,7 +64,7 @@ export class BossSystem {
       // Just became a boss wave - initialize
       this.isBossWave = true;
       this.currentWaveGroup = currentWaveGroup;
-      this.bossPattern = CONFIG.BOSS_PATTERNS[currentWaveGroup] || CONFIG.BOSS_PATTERNS[1] || null;
+      this.bossPattern = getBossPatternForWaveGroup(currentWaveGroup);
       this.serpentineCharActivationCount = 0;
       this.collapsingFireActivationCount = 0;
     this.barrageOfFlamesActivationCount = 0;
@@ -62,9 +72,11 @@ export class BossSystem {
     this.firelashActivationCount = 0;
     this.fireBreatheHexIndex = 0;
     this.purifyActivationCount = 0;
+    this.resetBossCastingVisualState();
     this.initAbilityTimers();
       this.pendingIgnitions = [];
       this.pendingStokes = [];
+      this.provokedBurnChainOffsetMs = 0;
     } else if (!isBoss && this.isBossWave) {
       // No longer a boss wave - reset
       this.isBossWave = false;
@@ -79,10 +91,12 @@ export class BossSystem {
     this.abilityTimers = [];
       this.pendingIgnitions = [];
       this.pendingStokes = [];
+      this.provokedBurnChainOffsetMs = 0;
+      this.resetBossCastingVisualState();
     } else if (isBoss && this.currentWaveGroup !== currentWaveGroup) {
       // Wave group changed while still in boss wave
       this.currentWaveGroup = currentWaveGroup;
-      this.bossPattern = CONFIG.BOSS_PATTERNS[currentWaveGroup] || CONFIG.BOSS_PATTERNS[1] || null;
+      this.bossPattern = getBossPatternForWaveGroup(currentWaveGroup);
       this.serpentineCharActivationCount = 0;
       this.collapsingFireActivationCount = 0;
     this.barrageOfFlamesActivationCount = 0;
@@ -90,9 +104,11 @@ export class BossSystem {
     this.firelashActivationCount = 0;
     this.fireBreatheHexIndex = 0;
     this.purifyActivationCount = 0;
+    this.resetBossCastingVisualState();
     this.initAbilityTimers();
       this.pendingIgnitions = [];
       this.pendingStokes = [];
+      this.provokedBurnChainOffsetMs = 0;
     } else if (isBoss && waveChanged) {
       // Same boss wave but wave number changed (wave restarted or new wave started)
       this.serpentineCharActivationCount = 0;
@@ -102,12 +118,23 @@ export class BossSystem {
     this.firelashActivationCount = 0;
     this.fireBreatheHexIndex = 0;
     this.purifyActivationCount = 0;
+    this.resetBossCastingVisualState();
     this.initAbilityTimers();
       this.pendingIgnitions = [];
       this.pendingStokes = [];
+      this.provokedBurnChainOffsetMs = 0;
     }
     
     return isBoss;
+  }
+
+  /**
+   * Boss mechanics (interval + trigger abilities) only apply on the boss wave (last wave of each group).
+   */
+  isBossWaveStage() {
+    const wpg = CONFIG.WAVES_PER_GROUP || 5;
+    const waveInGroup = this.gameState?.waveSystem?.waveInGroup || 1;
+    return waveInGroup === wpg;
   }
 
   /**
@@ -134,6 +161,9 @@ export class BossSystem {
    * @param {number} deltaTime - Time elapsed in seconds
    */
   update(deltaTime) {
+    // Reset provoked-burn chain offset each frame (tower/item collects run before boss.update in gameLoop)
+    this.provokedBurnChainOffsetMs = 0;
+
     // Always process pending ignitions and stokes (triggered abilities may add these outside boss wave)
     this.processPendingIgnitions(deltaTime);
     this.processPendingStokes(deltaTime);
@@ -145,6 +175,9 @@ export class BossSystem {
 
     // Only update if wave is active (not in placement phase)
     if (!this.gameState?.wave?.isActive) {
+      // Boss wave placement / between-waves: update() used to return here without advancing
+      // casting animation, so the boss could stay visually "mid-cast" from the prior wave or session.
+      this.resetBossCastingVisualState();
       return;
     }
 
@@ -200,16 +233,15 @@ export class BossSystem {
   }
 
   /**
-   * Queue a trigger event to fire when the player resumes (e.g. after level up modal)
-   * Use this instead of triggerBossAbilities when the player is in a modal
-   * @param {string} triggerEvent - The event name (e.g. 'level up')
+   * Queue a trigger event to fire when the player resumes (e.g. after a modal)
+   * @param {string} triggerEvent - The event name
    */
   queueTriggerAbility(triggerEvent) {
     this.pendingTriggerQueue.push(triggerEvent);
   }
 
   /**
-   * Fire any queued trigger abilities (call when player resumes after modal, e.g. level up)
+   * Fire any queued trigger abilities (call when player resumes after modal)
    */
   flushQueuedTriggerAbilities() {
     while (this.pendingTriggerQueue.length > 0) {
@@ -219,18 +251,37 @@ export class BossSystem {
   }
 
   /**
-   * Trigger abilities that match the given event (e.g. 'level up')
-   * Called from external events (e.g. progressionSystem.onResumeAfterLevelUp)
+   * Clear boss power-up / cast visuals when not in an active wave (e.g. boss-wave placement).
+   */
+  resetBossCastingVisualState() {
+    this.castingState = 'idle';
+    this.castingAnimationStart = 0;
+    this.castingDuration = 0;
+    this.currentCastingAbility = null;
+  }
+
+  /**
+   * Provoked Burn and similar: fire once per qualifying map pickup during an active boss wave.
+   */
+  notifyMapItemCollected() {
+    if (!this.gameState?.wave?.isActive) return;
+    if (!this.isBossWaveStage()) return;
+    this.triggerBossAbilities('map item collected');
+  }
+
+  /**
+   * Trigger abilities that match the given event (e.g. 'map item collected')
    * Fires all abilities in the current wave group's boss that have the matching trigger
-   * @param {string} triggerEvent - The event name (e.g. 'level up')
+   * @param {string} triggerEvent - The event name
    */
   triggerBossAbilities(triggerEvent) {
     if (!this.gameState?.waveSystem) return;
+    if (!this.isBossWaveStage()) return;
 
     const currentWaveGroup = this.gameState.waveSystem.currentWaveGroup || 1;
     this.currentWaveGroup = currentWaveGroup; // Ensure SFX and fire types use correct group
 
-    const bossPattern = CONFIG.BOSS_PATTERNS[currentWaveGroup];
+    const bossPattern = getBossPatternForWaveGroup(currentWaveGroup);
     if (!bossPattern?.abilities) return;
 
     const matchingAbilities = bossPattern.abilities.filter(a => a.trigger === triggerEvent);
@@ -246,47 +297,65 @@ export class BossSystem {
   }
 
   /**
-   * Process pending staggered ignitions
+   * Process pending staggered ignitions.
+   *
+   * Hot path during boss waves: purify schedules ~100 entries per cast and runs
+   * every frame for ~10s. The old `.filter()` allocated a fresh array each frame
+   * (~600 array allocations + ~10k {q,r,delay} object scans per cast). We now
+   * walk the array in place and swap-and-pop ready entries, which keeps the
+   * array stable and zero-alloc per frame.
+   *
    * @param {number} deltaTime - Time elapsed in seconds
    */
   processPendingIgnitions(deltaTime) {
-    if (this.pendingIgnitions.length === 0) return;
+    const list = this.pendingIgnitions;
+    if (list.length === 0) return;
 
-    // Update delays and ignite hexes that are ready
-    this.pendingIgnitions = this.pendingIgnitions.filter(pending => {
-      pending.delay -= deltaTime * 1000; // Convert to milliseconds
-      
+    const deltaMs = deltaTime * 1000;
+    let i = 0;
+    while (i < list.length) {
+      const pending = list[i];
+      pending.delay -= deltaMs;
       if (pending.delay <= 0) {
-        // Optional callback (e.g. piercing flame: play hit SFX + screen shake per strike)
         if (typeof pending.onIgnite === 'function') {
           pending.onIgnite();
         }
-        // Time to ignite this hex (force = true to re-ignite already burning hexes)
-        // Use specified fire type if provided, otherwise use wave-appropriate random type
-        const fireType = pending.fireType || this.getRandomFireTypeForWaveGroup();
-        this.fireSystem.igniteHex(pending.q, pending.r, fireType, true, true); // isSpawn = true, force = true
-        return false; // Remove from pending list
+        const fireType = pending.fireType || this.getAvailableFireTypesRanked()[0];
+        this.fireSystem.igniteHex(pending.q, pending.r, fireType, true, true);
+        // Swap-and-pop: replace this slot with the tail entry and shrink length by 1.
+        const lastIndex = list.length - 1;
+        if (i !== lastIndex) list[i] = list[lastIndex];
+        list.pop();
+        // Don't advance i — the moved tail entry still needs processing.
+      } else {
+        i++;
       }
-      
-      return true; // Keep in pending list
-    });
+    }
   }
 
   /**
-   * Process pending staggered stoke strikes
+   * Process pending staggered stoke strikes. Same in-place semantics as
+   * {@link processPendingIgnitions}.
    * @param {number} deltaTime - Time elapsed in seconds
    */
   processPendingStokes(deltaTime) {
-    if (this.pendingStokes.length === 0) return;
+    const list = this.pendingStokes;
+    if (list.length === 0) return;
 
-    this.pendingStokes = this.pendingStokes.filter(pending => {
-      pending.delay -= deltaTime * 1000;
+    const deltaMs = deltaTime * 1000;
+    let i = 0;
+    while (i < list.length) {
+      const pending = list[i];
+      pending.delay -= deltaMs;
       if (pending.delay <= 0) {
         this.fireSystem.stokeHex(pending.q, pending.r, pending.maxFireType);
-        return false;
+        const lastIndex = list.length - 1;
+        if (i !== lastIndex) list[i] = list[lastIndex];
+        list.pop();
+      } else {
+        i++;
       }
-      return true;
-    });
+    }
   }
 
   /**
@@ -326,7 +395,17 @@ export class BossSystem {
     }
 
     // Screen shake effect (heat-seek: per-path shakes; surround/hell-stoke: sustained shake for full duration)
-    if (CONFIG.SCREEN_SHAKE_ENABLED !== false && ability.type !== 'heat-seek' && ability.type !== 'surround' && ability.type !== 'hell-stoke' && ability.type !== 'stoke' && ability.type !== 'barrage-of-flames' && typeof document !== 'undefined') {
+    // Purify: single shake here; triple-strike casts do three shakes inside castPurify.
+    if (
+      CONFIG.SCREEN_SHAKE_ENABLED !== false &&
+      ability.type !== 'heat-seek' &&
+      ability.type !== 'surround' &&
+      ability.type !== 'hell-stoke' &&
+      ability.type !== 'stoke' &&
+      ability.type !== 'barrage-of-flames' &&
+      ability.type !== 'purify' &&
+      typeof document !== 'undefined'
+    ) {
       const canvas = document.getElementById('gameCanvas');
       if (canvas) {
         canvas.classList.remove('screen-shake');
@@ -457,6 +536,7 @@ export class BossSystem {
     const hexCount = params.hexCount || 20;
     const staggerMin = params.staggerRange?.min || 50;
     const staggerMax = params.staggerRange?.max || 100;
+    const igniteFireType = this.getAvailableFireTypesRanked()[0];
 
     // Get all valid hexes (not town, not already burning, not spawners)
     const validHexes = this.getValidHexes();
@@ -481,7 +561,8 @@ export class BossSystem {
       this.pendingIgnitions.push({
         q: hex.q,
         r: hex.r,
-        delay: delay
+        delay: delay,
+        fireType: igniteFireType,
       });
     });
 
@@ -497,6 +578,15 @@ export class BossSystem {
     this.purifyActivationCount++;
     const tripleStaggerMs = params.tripleStaggerMs ?? 800;
 
+    const triggerPurifyScreenShake = () => {
+      if (CONFIG.SCREEN_SHAKE_ENABLED === false || typeof document === 'undefined') return;
+      const canvas = document.getElementById('gameCanvas');
+      if (!canvas) return;
+      canvas.classList.remove('screen-shake');
+      void canvas.offsetWidth;
+      canvas.classList.add('screen-shake');
+    };
+
     const purifySounds = ['purify-a', 'purify-b', 'purify-c', 'purify-d', 'purify-e'];
     const playRandomPurifySound = () => {
       const key = purifySounds[Math.floor(Math.random() * purifySounds.length)];
@@ -507,9 +597,12 @@ export class BossSystem {
 
     if (this.purifyActivationCount % 3 === 0) {
       playRandomPurifySound();
+      triggerPurifyScreenShake();
       if (typeof window !== 'undefined') {
         setTimeout(() => playRandomPurifySound(), tripleStaggerMs);
+        setTimeout(() => triggerPurifyScreenShake(), tripleStaggerMs);
         setTimeout(() => playRandomPurifySound(), tripleStaggerMs * 2);
+        setTimeout(() => triggerPurifyScreenShake(), tripleStaggerMs * 2);
       }
       this.castScatterStrike(params, 0);
       this.castScatterStrike(params, tripleStaggerMs);
@@ -517,6 +610,7 @@ export class BossSystem {
       this.castingDuration = (tripleStaggerMs * 2) / 1000 + 0.5; // Cover all 3 strikes
     } else {
       playRandomPurifySound();
+      triggerPurifyScreenShake();
       this.castScatterStrike(params, 0);
     }
   }
@@ -560,13 +654,15 @@ export class BossSystem {
       hexesToIgnite.push({ q, r, dist: Math.abs(r) });
     }
 
+    const holyFireType = this.getAvailableFireTypesRanked()[0];
     // Schedule ignitions with stagger radiating outward from center
     hexesToIgnite.forEach(hex => {
       const delay = hex.dist * staggerPerHex;
       this.pendingIgnitions.push({
         q: hex.q,
         r: hex.r,
-        delay: delay
+        delay: delay,
+        fireType: holyFireType,
       });
     });
   }
@@ -657,14 +753,20 @@ export class BossSystem {
   }
 
   /**
-   * Get available fire types for the current wave, ranked strongest to weakest
+   * Get available fire types for the current wave, ranked strongest to weakest.
+   * Blackfyre is never included: boss “strongest available” caps at Cataclysm unless an ability sets `fireType` explicitly.
+   * If the spawn table only gives Blackfyre among the seven natural types (all others 0%), returns Cataclysm only.
    * @returns {Array<string>} Fire types with non-zero probability, strongest first
    */
   getAvailableFireTypesRanked() {
     const waveNumber = this.gameState?.wave?.number || 1;
+    const waveGroup = this.gameState?.waveSystem?.currentWaveGroup ?? 1;
     const probs = getFireSpawnProbabilities(waveNumber);
+    const finalGroup = Math.max(1, Math.floor(Number(CONFIG.FINAL_WAVE_GROUP)) || 22);
+    const cataclysmRank = getFireTypeStrengthRank(CONFIG.FIRE_TYPE_CATACLYSM);
+    const postCampaignBossTiers = waveGroup > finalGroup;
 
-    // Fire types ordered weakest to strongest
+    // Fire types ordered weakest to strongest (Blackfyre omitted — not a boss-ability tier)
     const fireTypesWeakToStrong = [
       { key: 'cinder', type: CONFIG.FIRE_TYPE_CINDER },
       { key: 'flame', type: CONFIG.FIRE_TYPE_FLAME },
@@ -676,12 +778,23 @@ export class BossSystem {
 
     // Filter to types with non-zero probability, then reverse to strongest first
     const available = fireTypesWeakToStrong
-      .filter(ft => (probs[ft.key] || 0) > 0)
+      .filter(ft => {
+        if ((probs[ft.key] || 0) <= 0) return false;
+        if (!postCampaignBossTiers) return true;
+        return getFireTypeStrengthRank(ft.type) >= cataclysmRank;
+      })
       .map(ft => ft.type)
       .reverse();
 
-    // Fallback to cinder if nothing is available
-    return available.length > 0 ? available : [CONFIG.FIRE_TYPE_CINDER];
+    if (available.length > 0) return available;
+
+    const onlyBlackfyreAmongNaturalSpawns =
+      (probs.blackfyre || 0) > 0 &&
+      ['cinder', 'flame', 'blaze', 'firestorm', 'inferno', 'cataclysm'].every((k) => (probs[k] || 0) <= 0);
+    if (onlyBlackfyreAmongNaturalSpawns) {
+      return [CONFIG.FIRE_TYPE_CATACLYSM];
+    }
+    return postCampaignBossTiers ? [CONFIG.FIRE_TYPE_CATACLYSM] : [CONFIG.FIRE_TYPE_CINDER];
   }
 
   /**
@@ -696,6 +809,7 @@ export class BossSystem {
     const pathStagger = params.pathStagger || 30;
 
     const halfSize = Math.floor(CONFIG.MAP_SIZE / 2);
+    const distractionFireType = this.getAvailableFireTypesRanked()[0];
 
     // Step 1: Gather all edge hexes that are NOT path hexes
     const edgeHexes = [];
@@ -725,7 +839,8 @@ export class BossSystem {
       this.pendingIgnitions.push({
         q: hex.q,
         r: hex.r,
-        delay: index * edgeStagger
+        delay: index * edgeStagger,
+        fireType: distractionFireType,
       });
     });
 
@@ -759,7 +874,8 @@ export class BossSystem {
         this.pendingIgnitions.push({
           q: hex.q,
           r: hex.r,
-          delay: pathStartDelay + (index * pathStagger)
+          delay: pathStartDelay + (index * pathStagger),
+          fireType: distractionFireType,
         });
       });
 
@@ -866,6 +982,7 @@ export class BossSystem {
 
     if (validRowIndices.length === 0) return;
 
+    const napalmFireType = this.getAvailableFireTypesRanked()[0];
     const chosenR = validRowIndices[Math.floor(Math.random() * validRowIndices.length)];
     const row1 = getHexesInRow(chosenR).sort((a, b) => a.q - b.q); // Left to right (ascending q)
     const row2 = getHexesInRow(chosenR + 1).sort((a, b) => b.q - a.q); // Right to left (descending q)
@@ -874,10 +991,10 @@ export class BossSystem {
     for (let i = 0; i < maxLen; i++) {
       const delay = i * staggerPerHex;
       if (row1[i]) {
-        this.pendingIgnitions.push({ q: row1[i].q, r: row1[i].r, delay });
+        this.pendingIgnitions.push({ q: row1[i].q, r: row1[i].r, delay, fireType: napalmFireType });
       }
       if (row2[i]) {
-        this.pendingIgnitions.push({ q: row2[i].q, r: row2[i].r, delay });
+        this.pendingIgnitions.push({ q: row2[i].q, r: row2[i].r, delay, fireType: napalmFireType });
       }
     }
 
@@ -886,15 +1003,19 @@ export class BossSystem {
   }
 
   /**
-   * Cast provoked burn ability - picks a random hex in the ring surrounding the grove,
-   * then ignites hexes in a straight 5-hex line through the grove to the opposite ring hex.
-   * SFX played in castBossAbility with delay. Triggered by level up event, not interval.
-   * @param {Object} params - Ability parameters {delayMs, staggerPerHex}
+   * Cast provoked burn ability - random direction through the grove (5 hexes when valid).
+   * Uses strongest wave fire type. Multiple pickups in one frame chain separate lines (strikeGapMs).
+   * SFX played in castBossAbility with delay. Triggered by map item / water tank collection.
+   * @param {Object} params - { delayMs, staggerPerHex, strikeGapMs }
    * @param {Object} ability - Full ability object (unused, SFX in castBossAbility)
    */
   castProvokedBurn(params, ability = {}) {
     const delayMs = params.delayMs ?? 1000;
     const staggerPerHex = params.staggerPerHex ?? 50;
+    const strikeGapMs = params.strikeGapMs ?? 450;
+    const strongestFire = this.getAvailableFireTypesRanked()[0];
+
+    const chainBase = this.provokedBurnChainOffsetMs;
 
     // Pick a random direction (0-5); each direction gives a unique line through center
     const direction = Math.floor(Math.random() * 6);
@@ -909,20 +1030,28 @@ export class BossSystem {
       getHexInDirection(0, 0, oppositeDir, 2), // End: hex outside grove opposite start
     ];
 
+    let maxRelativeDelayMs = 0;
     lineHexes.forEach((hex, index) => {
       if (!isInBounds(hex.q, hex.r)) return;
       const gridHex = this.gridSystem.getHex(hex.q, hex.r);
       if (!gridHex || gridHex.hasFireSpawner) return;
 
+      const relativeDelay = delayMs + index * staggerPerHex;
+      maxRelativeDelayMs = Math.max(maxRelativeDelayMs, relativeDelay);
       this.pendingIgnitions.push({
         q: hex.q,
         r: hex.r,
-        delay: delayMs + index * staggerPerHex
+        delay: chainBase + relativeDelay,
+        fireType: strongestFire,
       });
     });
 
-    const totalStaggerMs = delayMs + (lineHexes.length - 1) * staggerPerHex;
-    this.castingDuration = totalStaggerMs / 1000 + 0.3;
+    const lineSpanMs = maxRelativeDelayMs;
+    this.provokedBurnChainOffsetMs += lineSpanMs + strikeGapMs;
+
+    const lastHexDelay = chainBase + lineSpanMs;
+    const castEndSec = lastHexDelay / 1000 + 0.3;
+    this.castingDuration = Math.max(this.castingDuration || 0, castEndSec);
   }
 
   /**
@@ -934,6 +1063,7 @@ export class BossSystem {
   castMarkOfFlame(params) {
     const staggerPerHex = params.staggerPerHex || 80;
     const halfSize = Math.floor(CONFIG.MAP_SIZE / 2);
+    const markFlameFireType = this.getAvailableFireTypesRanked()[0];
 
     // X has 4 rays from center: NE(1), SW(4), NW(2), SE(5)
     const directions = [1, 4, 2, 5]; // NE, SW, NW, SE
@@ -949,7 +1079,8 @@ export class BossSystem {
         this.pendingIgnitions.push({
           q: hex.q,
           r: hex.r,
-          delay
+          delay,
+          fireType: markFlameFireType,
         });
       }
     }
@@ -972,6 +1103,7 @@ export class BossSystem {
     if (paths.length === 0) return;
 
     const soundKey = ability.type || 'heat-seek';
+    const heatSeekFireType = this.getAvailableFireTypesRanked()[0];
 
     paths.forEach((path, pathIndex) => {
       const pathDelay = pathIndex * staggerMs;
@@ -979,7 +1111,8 @@ export class BossSystem {
         this.pendingIgnitions.push({
           q: hex.q,
           r: hex.r,
-          delay: pathDelay
+          delay: pathDelay,
+          fireType: heatSeekFireType,
         });
       });
 
@@ -1006,12 +1139,17 @@ export class BossSystem {
   /**
    * Cast piercing flame ability - strikes only items specifically placed by the player
    * Targets: towers, suppression bombs (excludes mystery boxes, power-ups, water tanks, currency items, dig sites)
-   * Uses strongest fire type for the wave. soundMode 'multiple' plays per strike.
+   * Each strike rolls fire strength from the current wave's spawn probability pool (same as map fires), not always max tier.
    * @param {Object} params - Ability parameters {staggerPerTarget}
    * @param {Object} ability - Full ability object (for sound)
    */
   castPiercingFlame(params, ability = {}) {
     const staggerPerTarget = params.staggerPerTarget || 100;
+    const waveNumber = this.gameState?.wave?.number || 1;
+    const waveGroup = this.gameState?.waveSystem?.currentWaveGroup ?? 1;
+    const spawnProbs = applyBossFireTypeProbabilityCap(
+      applyBossWeakSpawnProbZeroAfterFinalGroup(getFireSpawnProbabilities(waveNumber), waveGroup)
+    );
 
     // Gather hexes with player-placed items only (towers and suppression bombs)
     const targetHexes = [];
@@ -1024,8 +1162,6 @@ export class BossSystem {
         targetHexes.push(hex);
       }
     });
-
-    const fireType = this.getAvailableFireTypesRanked()[0]; // Strongest available for this wave
 
     // Fallback: if no player items, strike 5 random hexes instead
     let hexesToStrike = targetHexes;
@@ -1043,6 +1179,7 @@ export class BossSystem {
     const isHittingPlayerItems = targetHexes.length > 0;
 
     hexesToStrike.forEach((hex, index) => {
+      const fireType = pickFireTypeFromSpawnProbabilities(spawnProbs);
       const ignition = {
         q: hex.q,
         r: hex.r,
@@ -1075,16 +1212,18 @@ export class BossSystem {
   }
 
   /**
-   * Cast cursefire ability - strikes all spawned items and power-ups with strongest fire type
-   * Targets: water tanks, mystery boxes, temp power-ups, currency items, dig sites
-   * Excludes: towers, suppression bombs
+   * Cast cursefire ability - strikes all spawned items, power-ups, AND one random placed player tower
+   * with strongest fire type.
+   * Item targets: water tanks, mystery boxes, temp power-ups, currency items, dig sites, burning vaults, artifacts.
+   * Tower target: one randomly selected tower from {@link towerSystem.getAllTowers()} (placed on the map).
+   * Excludes: suppression bombs, inventory/stored towers (they aren't on the map).
    * @param {Object} params - Ability parameters {staggerPerTarget}
    */
   castCursefire(params) {
     const staggerPerTarget = params.staggerPerTarget || 80;
 
     // Gather all hexes with targetable items (water tanks, mystery boxes, temp power-ups, currency items, dig sites)
-    // Exclude: towers, suppression bombs
+    // Exclude: towers (handled separately below), suppression bombs
     const targetHexes = [];
     const allHexes = this.gridSystem.getAllHexes();
     allHexes.forEach(hex => {
@@ -1093,15 +1232,26 @@ export class BossSystem {
       if (hex.hasSuppressionBomb) return;
 
       const hasTargetableItem = hex.hasWaterTank || hex.hasMysteryItem ||
-        hex.hasTempPowerUpItem || hex.hasCurrencyItem || hex.hasDigSite;
+        hex.hasTempPowerUpItem || hex.hasCurrencyItem || hex.hasDigSite || hex.hasBurningVault || hex.hasArtifactItem;
       if (hasTargetableItem) {
         targetHexes.push(hex);
       }
     });
 
+    // Pick one random placed player tower (if any). Append its hex to the strike list so the
+    // tower's underlying hex ignites along with the items, matching the description in patterns.js.
+    const placedTowers = this.gameState?.towerSystem?.getAllTowers?.() || [];
+    if (placedTowers.length > 0) {
+      const randomTower = placedTowers[Math.floor(Math.random() * placedTowers.length)];
+      const towerHex = this.gridSystem.getHex?.(randomTower.q, randomTower.r);
+      if (towerHex) {
+        targetHexes.push(towerHex);
+      }
+    }
+
     const fireType = this.getAvailableFireTypesRanked()[0]; // Strongest available for this wave
 
-    // If no targetable items, strike 4 random valid hexes instead
+    // If no targetable items / no placed tower, strike 4 random valid hexes instead
     let hexesToStrike = targetHexes;
     if (hexesToStrike.length === 0) {
       const validHexes = this.getValidHexes();
@@ -1747,16 +1897,40 @@ export class BossSystem {
   }
 
   /**
-   * Get random fire type using the current wave's fire spawn probabilities
+   * Random fire type for boss abilities from the wave table, capped at Cataclysm (never Blackfyre).
+   * If every boss-legal weight is zero after caps (e.g. wave is Blackfyre-only), returns Cataclysm.
    * @returns {string} Fire type
    */
   getRandomFireTypeForWaveGroup() {
-    // Delegate to fireSystem which uses wave-appropriate spawn probabilities
-    if (this.fireSystem && this.fireSystem.getRandomFireType) {
-      return this.fireSystem.getRandomFireType();
+    const waveGroup = this.gameState?.waveSystem?.currentWaveGroup ?? 1;
+    const finalGroup = Math.max(1, Math.floor(Number(CONFIG.FINAL_WAVE_GROUP)) || 22);
+    if (CONFIG.DEBUG_ALL_FIRE_TYPES) {
+      if (waveGroup > finalGroup) {
+        return CONFIG.FIRE_TYPE_CATACLYSM;
+      }
+      const pool = [
+        CONFIG.FIRE_TYPE_CINDER,
+        CONFIG.FIRE_TYPE_FLAME,
+        CONFIG.FIRE_TYPE_BLAZE,
+        CONFIG.FIRE_TYPE_FIRESTORM,
+        CONFIG.FIRE_TYPE_INFERNO,
+        CONFIG.FIRE_TYPE_CATACLYSM,
+      ];
+      return pool[Math.floor(Math.random() * pool.length)];
     }
-    // Fallback to cinder
-    return CONFIG.FIRE_TYPE_CINDER;
+    const waveNumber = this.gameState?.wave?.number || 1;
+    const probs = applyBossFireTypeProbabilityCap(
+      applyBossWeakSpawnProbZeroAfterFinalGroup(getFireSpawnProbabilities(waveNumber), waveGroup)
+    );
+    const bossRollOrder = ['cinder', 'flame', 'blaze', 'firestorm', 'inferno', 'cataclysm', 'blackfyre'];
+    let total = 0;
+    for (const k of bossRollOrder) {
+      total += Math.max(0, probs[k] || 0);
+    }
+    if (total <= 0) {
+      return CONFIG.FIRE_TYPE_CATACLYSM;
+    }
+    return pickFireTypeFromSpawnProbabilities(probs);
   }
 }
 

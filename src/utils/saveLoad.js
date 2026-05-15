@@ -2,12 +2,72 @@
 
 import { getScenarioByName } from '../scenarios.js';
 import { CONFIG } from '../config.js';
+import { RunStatsTracker } from '../systems/runStatsSystem.js';
+import { normalizeMetaProgression } from './metaProgression.js';
 
 const SAVE_KEY_PREFIX = 'hexfire_save_';
 const AUTOSAVE_KEY = 'hexfire_autosave';
 const SAVE_NAME_KEY_PREFIX = 'hexfire_save_name_';
 const TUTORIAL_STATE_KEY = 'hexfire_tutorial_state';
 const MAX_SAVE_SLOTS = 10;
+
+/** Gzip + base64 wrapper — keeps large mid/late-game saves under localStorage quota. Legacy saves have no prefix. */
+const GZIP_SAVE_PREFIX = 'HFz1:';
+
+function supportsSaveGzip() {
+  try {
+    return (
+      typeof CompressionStream !== 'undefined' &&
+      typeof DecompressionStream !== 'undefined' &&
+      typeof Blob !== 'undefined' &&
+      typeof Response !== 'undefined'
+    );
+  } catch {
+    return false;
+  }
+}
+
+function bytesToBase64(u8) {
+  const CHUNK = 0x8000;
+  let binary = '';
+  for (let i = 0; i < u8.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, u8.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(b64) {
+  const bin = atob(b64);
+  const len = bin.length;
+  const out = new Uint8Array(len);
+  for (let i = 0; i < len; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+async function gzipEncodeJsonString(jsonString) {
+  const inputBytes = new TextEncoder().encode(jsonString);
+  const stream = new Blob([inputBytes]).stream().pipeThrough(new CompressionStream('gzip'));
+  const buf = await new Response(stream).arrayBuffer();
+  return GZIP_SAVE_PREFIX + bytesToBase64(new Uint8Array(buf));
+}
+
+/**
+ * @param {string} storageStr
+ * @returns {Promise<string>} JSON text (not yet parsed)
+ */
+async function storageStringToJsonText(storageStr) {
+  if (!storageStr.startsWith(GZIP_SAVE_PREFIX)) {
+    return storageStr;
+  }
+  const u8 = base64ToBytes(storageStr.slice(GZIP_SAVE_PREFIX.length));
+  const stream = new Blob([u8]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return await new Response(stream).text();
+}
+
+async function parseSaveFromStorageString(storageStr) {
+  const jsonText = await storageStringToJsonText(storageStr);
+  return JSON.parse(jsonText);
+}
 
 /**
  * Format timestamp as readable date string
@@ -25,13 +85,40 @@ function formatTimestamp(timestamp) {
 }
 
 /**
+ * Legacy power-up ids: spread used `fire_resistance`, DPS used `damage_resistance`.
+ * When `damage_resistance` is present we can infer pre-rename save layout.
+ */
+function migrateLegacyResistancePowerUpIds(powerUps) {
+  if (!powerUps || typeof powerUps !== 'object') return;
+  if (!Object.prototype.hasOwnProperty.call(powerUps, 'damage_resistance')) return;
+
+  const dmgN = Number(powerUps.damage_resistance) || 0;
+  delete powerUps.damage_resistance;
+  const hasSpread = Object.prototype.hasOwnProperty.call(powerUps, 'spread_resistance');
+  const oldFire = Number(powerUps.fire_resistance) || 0;
+
+  if (!hasSpread) {
+    delete powerUps.fire_resistance;
+    powerUps.spread_resistance = (Number(powerUps.spread_resistance) || 0) + oldFire;
+    powerUps.fire_resistance = dmgN;
+  } else {
+    powerUps.fire_resistance = oldFire + dmgN;
+  }
+}
+
+function mapLegacyResistanceShopItemId(id) {
+  if (id === 'damage_resistance') return 'fire_resistance';
+  return id;
+}
+
+/**
  * Save the current game state
  * @param {Object} gameState - Current game state
  * @param {number|null} slot - Save slot number (0-9), or null for autosave
  * @param {string|null} customName - Custom name for the save (optional)
- * @returns {boolean} True if save succeeded
+ * @returns {Promise<boolean>} True if save succeeded
  */
-export function saveGame(gameState, slot = null, customName = null) {
+export async function saveGame(gameState, slot = null, customName = null) {
   const isAutosave = slot === null;
   // Don't overwrite autosave during tutorial - we need it intact for restore on exit
   if (isAutosave && gameState.tutorialMode) {
@@ -41,29 +128,39 @@ export function saveGame(gameState, slot = null, customName = null) {
     const saveData = serializeGameState(gameState);
     const timestamp = Date.now();
     saveData.timestamp = timestamp;
-    
+
+    const jsonPlain = JSON.stringify(saveData);
+    let toStore = jsonPlain;
+    if (supportsSaveGzip()) {
+      try {
+        toStore = await gzipEncodeJsonString(jsonPlain);
+      } catch (zipErr) {
+        console.warn('Save gzip failed; storing uncompressed (may hit quota on large runs)', zipErr);
+        toStore = jsonPlain;
+      }
+    }
+
     if (isAutosave) {
       // Autosave always overwrites
-      localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(saveData));
-      return true;
-    } else {
-      // Manual save slot
-      if (slot < 0 || slot >= MAX_SAVE_SLOTS) {
-        console.error('Invalid save slot:', slot);
-        return false;
-      }
-      
-      const saveKey = `${SAVE_KEY_PREFIX}${slot}`;
-      localStorage.setItem(saveKey, JSON.stringify(saveData));
-      
-      // Set save name (use custom name, preserve existing name, or generate from timestamp)
-      const saveNameKey = `${SAVE_NAME_KEY_PREFIX}${slot}`;
-      const existingName = localStorage.getItem(saveNameKey);
-      const saveName = customName || existingName || formatTimestamp(timestamp);
-      localStorage.setItem(saveNameKey, saveName);
-      
+      localStorage.setItem(AUTOSAVE_KEY, toStore);
       return true;
     }
+    // Manual save slot
+    if (slot < 0 || slot >= MAX_SAVE_SLOTS) {
+      console.error('Invalid save slot:', slot);
+      return false;
+    }
+
+    const saveKey = `${SAVE_KEY_PREFIX}${slot}`;
+    localStorage.setItem(saveKey, toStore);
+
+    // Set save name (use custom name, preserve existing name, or generate from timestamp)
+    const saveNameKey = `${SAVE_NAME_KEY_PREFIX}${slot}`;
+    const existingName = localStorage.getItem(saveNameKey);
+    const saveName = customName || existingName || formatTimestamp(timestamp);
+    localStorage.setItem(saveNameKey, saveName);
+
+    return true;
   } catch (error) {
     console.error('Failed to save game:', error);
     return false;
@@ -73,11 +170,11 @@ export function saveGame(gameState, slot = null, customName = null) {
 /**
  * Load game state from a save slot
  * @param {number|null} slot - Save slot number (0-9), or null for autosave
- * @returns {Object|null} Loaded game state or null
+ * @returns {Promise<Object|null>} Loaded game state or null
  */
-export function loadGame(slot = null) {
+export async function loadGame(slot = null) {
   const isAutosave = slot === null;
-  
+
   try {
     let saveDataStr;
     if (isAutosave) {
@@ -90,14 +187,14 @@ export function loadGame(slot = null) {
       const saveKey = `${SAVE_KEY_PREFIX}${slot}`;
       saveDataStr = localStorage.getItem(saveKey);
     }
-    
+
     if (!saveDataStr) {
       return null;
     }
-    
-    const saveData = JSON.parse(saveDataStr);
+
+    const saveData = await parseSaveFromStorageString(saveDataStr);
     const gameState = deserializeGameState(saveData);
-    
+
     return gameState;
   } catch (error) {
     console.error('Failed to load game:', error);
@@ -121,13 +218,13 @@ export function hasSaveData(slot = 0) {
 /**
  * Get save data info for a slot
  * @param {number|null} slot - Save slot number (0-9), or null for autosave
- * @returns {Object|null} Save info or null
+ * @returns {Promise<Object|null>} Save info or null
  */
-export function getSaveInfo(slot = 0) {
+export async function getSaveInfo(slot = 0) {
   try {
     let saveDataStr;
     let saveName = null;
-    
+
     if (slot === null) {
       saveDataStr = localStorage.getItem(AUTOSAVE_KEY);
       saveName = 'Autosave';
@@ -137,10 +234,10 @@ export function getSaveInfo(slot = 0) {
       const saveNameKey = `${SAVE_NAME_KEY_PREFIX}${slot}`;
       saveName = localStorage.getItem(saveNameKey);
     }
-    
+
     if (!saveDataStr) return null;
-    
-    const saveData = JSON.parse(saveDataStr);
+
+    const saveData = await parseSaveFromStorageString(saveDataStr);
     
     // Calculate wave number within group (1-5)
     const wavesPerGroup = 5; // CONFIG.WAVES_PER_GROUP
@@ -167,25 +264,23 @@ export function getSaveInfo(slot = 0) {
 
 /**
  * Get all save slot infos
- * @returns {Array} Array of save info objects
+ * @returns {Promise<Array>} Array of save info objects
  */
-export function getAllSaveInfos() {
+export async function getAllSaveInfos() {
   const saves = [];
-  
-  // Add autosave if it exists
-  const autosaveInfo = getSaveInfo(null);
+
+  const autosaveInfo = await getSaveInfo(null);
   if (autosaveInfo) {
     saves.push(autosaveInfo);
   }
-  
-  // Add manual saves
+
   for (let i = 0; i < MAX_SAVE_SLOTS; i++) {
-    const saveInfo = getSaveInfo(i);
+    const saveInfo = await getSaveInfo(i);
     if (saveInfo) {
       saves.push(saveInfo);
     }
   }
-  
+
   return saves;
 }
 
@@ -270,11 +365,23 @@ export function clearTutorialState() {
 }
 
 /**
- * Serialize game state to a saveable format
- * @param {Object} gameState - Current game state
- * @returns {Object} Serialized save data
+ * Same payload as a save file — for feedback / bug reports (exported for diagnostics).
+ * @param {Object} gameState
+ * @returns {Object}
  */
+export function getSerializedGameStateSnapshot(gameState) {
+  return serializeGameState(gameState);
+}
+
+/** Serialize game state to a saveable format (internal). */
 function serializeGameState(gameState) {
+  const playerTempPowerUps = (gameState.player?.tempPowerUps || []).map((temp) => ({
+    powerUpId: temp.powerUpId,
+    expiresAt:
+      typeof temp.expiresAt === 'number' && Number.isFinite(temp.expiresAt)
+        ? temp.expiresAt
+        : Number(temp.expiresAt),
+  })).filter((t) => t.powerUpId && Number.isFinite(t.expiresAt) && t.expiresAt > 0);
   return {
     version: '2.0',
     timestamp: Date.now(),
@@ -300,6 +407,16 @@ function serializeGameState(gameState) {
     // Temp power-up items
     tempPowerUpItems: serializeTempPowerUpItems(gameState.tempPowerUpItemSystem),
     
+    // Mystery boxes on the map (drops from boxes are water tanks / temp pickups / currency items — those are saved separately)
+    mysteryItems: serializeMysteryItems(gameState.mysteryItemSystem),
+
+    burningVaults: serializeBurningVaults(gameState.burningVaultSystem),
+
+    artifacts: serializeArtifacts(gameState.artifactSystem),
+    
+    // Bonus pickups on the map (money, XP orbs, tokens, shields, upgrade plans from mystery clusters, etc.)
+    currencyItems: serializeCurrencyItems(gameState.currencyItemSystem),
+    
     // Fire spawners
     fireSpawners: serializeFireSpawners(gameState.fireSpawnerSystem),
     
@@ -314,14 +431,16 @@ function serializeGameState(gameState) {
       currency: gameState.player.currency || 0,
       upgradePlans: gameState.player.upgradePlans || 0,
       movementTokens: gameState.player.movementTokens || 0,
+      towerSellbacks: gameState.player.towerSellbacks || 0,
+      towerRepairs: gameState.player.towerRepairs || 0,
+      partsVouchers: gameState.player.partsVouchers || 0,
       inventory: serializeInventory(gameState.player.inventory),
       powerUps: { ...(gameState.player.powerUps || {}) },
-      tempPowerUps: (gameState.player.tempPowerUps || []).map(temp => ({
-        powerUpId: temp.powerUpId,
-        expiresAt: temp.expiresAt,
-      })),
+      tempPowerUps: playerTempPowerUps,
       seenShopItems: Array.from(gameState.player.seenShopItems || []),
     },
+    // Redundant copy for older readers / migration; always mirrors player.tempPowerUps
+    tempPowerUps: playerTempPowerUps,
     
     // Wave state
     wave: {
@@ -336,6 +455,16 @@ function serializeGameState(gameState) {
       scenarioName: gameState.wave.scenarioName || null,
       scenarioWaveDuration: gameState.wave.scenarioWaveDuration || null,
       tempPowerUpMessageShown: gameState.waveSystem?.tempPowerUpMessageShown || false,
+      townBonusAward: gameState.wave.townBonusAward ?? 0,
+      pendingGroupRewards: gameState.wave.pendingGroupRewards || null,
+      // Must persist with logical currentGroup so load restores "waiting for Collect" (paths/spawners still previous group).
+      pendingGroupTransition:
+        gameState.waveSystem?.pendingGroupTransition != null
+          ? {
+              waveGroup: Math.max(1, Math.floor(Number(gameState.waveSystem.pendingGroupTransition.waveGroup)) || 1),
+              waveNumber: Math.max(1, Math.floor(Number(gameState.waveSystem.pendingGroupTransition.waveNumber)) || 1),
+            }
+          : null,
     },
     
     // Town level
@@ -343,6 +472,24 @@ function serializeGameState(gameState) {
     
     // Scenario unlocks
     scenarioUnlockedItems: gameState.scenarioUnlockedItems || null,
+
+    // Campaign / endless (mirrors settings; included in saves)
+    meta: {
+      endlessMode: gameState.meta?.endlessMode ?? false,
+      endlessUnlocked: gameState.meta?.endlessUnlocked ?? false,
+      progression: normalizeMetaProgression(gameState.meta?.progression),
+      activeRunProgression: gameState.meta?.useRunStartMetaProgression
+        ? normalizeMetaProgression(gameState.meta?.activeRunProgression || gameState.meta?.progression)
+        : null,
+      useRunStartMetaProgression: gameState.meta?.useRunStartMetaProgression === true,
+      showFpsCounter: CONFIG.SHOW_FPS_COUNTER === true,
+      maxFiresExtinguishedByWave:
+        gameState.meta?.maxFiresExtinguishedByWave && typeof gameState.meta.maxFiresExtinguishedByWave === 'object'
+          ? { ...gameState.meta.maxFiresExtinguishedByWave }
+          : {},
+    },
+
+    runStats: gameState.runStats?.toJSON?.() ?? null,
   };
 }
 
@@ -413,6 +560,7 @@ function serializeTowers(towerSystem) {
     powerLevel: tower.powerLevel,
     health: tower.health,
     maxHealth: tower.maxHealth,
+    runStatsInstanceId: tower.runStatsInstanceId ?? null,
     shield: tower.shield ? {
       level: tower.shield.level,
       health: tower.shield.health,
@@ -434,6 +582,8 @@ function serializeSuppressionBombs(suppressionBombSystem) {
     q: bomb.q,
     r: bomb.r,
     level: bomb.level,
+    totalUses: bomb.totalUses,
+    usesRemaining: bomb.usesRemaining,
   }));
 }
 
@@ -487,6 +637,61 @@ function serializeTempPowerUpItems(tempPowerUpItemSystem) {
     powerUpId: item.powerUpId,
     health: item.health,
     maxHealth: item.maxHealth,
+    grantPermanent: !!item.grantPermanent,
+  }));
+}
+
+/**
+ * Serialize mystery boxes on the map
+ * @param {*} mysteryItemSystem
+ */
+function serializeMysteryItems(mysteryItemSystem) {
+  if (!mysteryItemSystem || !mysteryItemSystem.getAllItems) return [];
+  return mysteryItemSystem.getAllItems().map((item) => ({
+    q: item.q,
+    r: item.r,
+    itemId: item.itemId,
+    health: item.health,
+    maxHealth: item.maxHealth,
+  }));
+}
+
+function serializeBurningVaults(burningVaultSystem) {
+  if (!burningVaultSystem || !burningVaultSystem.getAllItems) return [];
+  return burningVaultSystem.getAllItems().map((item) => ({
+    q: item.q,
+    r: item.r,
+    health: item.health,
+    maxHealth: item.maxHealth,
+  }));
+}
+
+function serializeArtifacts(artifactSystem) {
+  if (!artifactSystem || !artifactSystem.getAllItems) return [];
+  return artifactSystem.getAllItems().map((item) => ({
+    q: item.q,
+    r: item.r,
+    artifactId: item.artifactId,
+    health: item.health,
+    maxHealth: item.maxHealth,
+    timeLeftSeconds: item.timeLeftSeconds,
+  }));
+}
+
+/**
+ * Serialize currency / bonus map items (mystery cluster drops, etc.)
+ * @param {*} currencyItemSystem
+ */
+function serializeCurrencyItems(currencyItemSystem) {
+  if (!currencyItemSystem || !currencyItemSystem.getAllItems) return [];
+  return currencyItemSystem.getAllItems().map((item) => ({
+    q: item.q,
+    r: item.r,
+    itemType: item.itemType,
+    value: item.value,
+    health: item.health,
+    maxHealth: item.maxHealth,
+    spawnedFromMystery: !!item.spawnedFromMystery,
   }));
 }
 
@@ -541,6 +746,9 @@ function serializeInventory(inventory) {
  * @param {Object} loadedData - Loaded save data
  */
 export function applyLoadedState(gameState, loadedData) {
+  // Avoid a stale pause timestamp from the pre-load session affecting temp power-up expiry / UI
+  gameState.pauseStartTime = null;
+
   // Restore player data
   gameState.player.level = loadedData.player.level;
   gameState.player.xp = loadedData.player.xp;
@@ -548,15 +756,63 @@ export function applyLoadedState(gameState, loadedData) {
   gameState.player.currency = loadedData.player.currency || 0;
   gameState.player.upgradePlans = loadedData.player.upgradePlans || 0;
   gameState.player.movementTokens = loadedData.player.movementTokens || 0;
+  gameState.player.towerSellbacks = loadedData.player.towerSellbacks || 0;
+  gameState.player.towerRepairs = loadedData.player.towerRepairs || 0;
+  gameState.player.partsVouchers = loadedData.player.partsVouchers || 0;
   gameState.player.inventory = loadedData.player.inventory || {};
+  if (!Array.isArray(gameState.player.inventory.collectedArtifactIds)) {
+    gameState.player.inventory.collectedArtifactIds = [];
+  }
+  if (!Array.isArray(gameState.player.inventory.seenCollectedArtifactIds)) {
+    // Saves from before this field: treat existing artifacts as already viewed (no false "new" badges).
+    gameState.player.inventory.seenCollectedArtifactIds = [...gameState.player.inventory.collectedArtifactIds];
+  }
+  if (!Array.isArray(gameState.player.inventory.artifactTraderAcknowledgedIds)) {
+    gameState.player.inventory.artifactTraderAcknowledgedIds = [];
+  }
+  if (!Array.isArray(gameState.player.inventory.artifactTraderCompletedTrades)) {
+    gameState.player.inventory.artifactTraderCompletedTrades = [];
+  }
+  const rawWants = gameState.player.inventory.artifactTraderWants;
+  if (rawWants != null && typeof rawWants !== 'object') {
+    gameState.player.inventory.artifactTraderWants = null;
+  }
   gameState.player.powerUps = loadedData.player.powerUps || {};
-  gameState.player.tempPowerUps = loadedData.player.tempPowerUps || [];
-  gameState.player.seenShopItems = new Set(loadedData.player.seenShopItems || []);
+  migrateLegacyResistancePowerUpIds(gameState.player.powerUps);
+  {
+    const raw =
+      loadedData.player && (loadedData.player.tempPowerUps !== undefined && loadedData.player.tempPowerUps !== null)
+        ? loadedData.player.tempPowerUps
+        : loadedData.tempPowerUps;
+    const arr = Array.isArray(raw) ? raw : [];
+    gameState.player.tempPowerUps = arr
+      .map((t) => {
+        const rawExp = t && t.expiresAt;
+        const expiresAt =
+          typeof rawExp === 'number' && !Number.isNaN(rawExp)
+            ? rawExp
+            : typeof rawExp === 'string' && rawExp.trim() !== ''
+              ? Number(rawExp)
+              : NaN;
+        let powerUpId = t && t.powerUpId != null ? String(t.powerUpId) : '';
+        if (powerUpId === 'damage_resistance') powerUpId = 'fire_resistance';
+        return {
+          powerUpId,
+          expiresAt: Number.isFinite(expiresAt) ? expiresAt : 0,
+        };
+      })
+      .filter((t) => t.powerUpId && t.expiresAt > 0);
+  }
+  gameState.player.seenShopItems = new Set(
+    (loadedData.player.seenShopItems || []).map(mapLegacyResistanceShopItemId)
+  );
   // Initialize newlyUnlockedItems (temporary UI state, not saved)
   if (!gameState.player.newlyUnlockedItems) {
     gameState.player.newlyUnlockedItems = new Set();
   }
   gameState.isMovementTokenMode = false;
+  gameState.isRepairSelectionMode = false;
+  gameState.isPartsRecycleMode = false;
   if (window.hideMovementInstructions) window.hideMovementInstructions();
 
   // Restore wave data
@@ -585,6 +841,33 @@ export function applyLoadedState(gameState, loadedData) {
   }
   gameState.wave.scenarioNumber = loadedData.wave.scenarioNumber || null;
   gameState.wave.scenarioName = loadedData.wave.scenarioName || null;
+  gameState.wave.townBonusAward = loadedData.wave.townBonusAward ?? 0;
+  gameState.wave.pendingGroupRewards = loadedData.wave.pendingGroupRewards ?? null;
+  // Deferred map transition (group-complete modal open): must match logical wave group or UI/rendering diverges from paths/spawners
+  if (gameState.waveSystem) {
+    const rawPending = loadedData.wave.pendingGroupTransition;
+    if (rawPending != null && typeof rawPending === 'object' && rawPending.waveGroup != null) {
+      gameState.waveSystem.pendingGroupTransition = {
+        waveGroup: Math.max(1, Math.floor(Number(rawPending.waveGroup)) || 1),
+        waveNumber: Math.max(1, Math.floor(Number(rawPending.waveNumber ?? loadedData.wave.number)) || 1),
+      };
+    } else {
+      const rewards = loadedData.wave.pendingGroupRewards;
+      const legacyAwaitingCollect =
+        rewards &&
+        !rewards.isVictory &&
+        typeof loadedData.wave.currentGroup === 'number' &&
+        loadedData.wave.currentGroup >= 2;
+      if (legacyAwaitingCollect) {
+        gameState.waveSystem.pendingGroupTransition = {
+          waveGroup: loadedData.wave.currentGroup,
+          waveNumber: Math.max(1, Math.floor(Number(loadedData.wave.number)) || 1),
+        };
+      } else {
+        gameState.waveSystem.pendingGroupTransition = null;
+      }
+    }
+  }
   // Restore scenario wave duration (for old saves, look up from scenario by name)
   if (loadedData.wave.isScenario) {
     gameState.wave.scenarioWaveDuration = loadedData.wave.scenarioWaveDuration
@@ -610,6 +893,37 @@ export function applyLoadedState(gameState, loadedData) {
   
   // Restore scenario unlocks
   gameState.scenarioUnlockedItems = loadedData.scenarioUnlockedItems || null;
+
+  if (loadedData.meta) {
+    gameState.meta = gameState.meta || {};
+    if (typeof loadedData.meta.endlessMode === 'boolean') {
+      gameState.meta.endlessMode = loadedData.meta.endlessMode;
+    }
+    if (typeof loadedData.meta.endlessUnlocked === 'boolean') {
+      gameState.meta.endlessUnlocked = loadedData.meta.endlessUnlocked;
+    }
+    if (loadedData.meta.progression !== undefined) {
+      gameState.meta.progression = normalizeMetaProgression(loadedData.meta.progression);
+    } else {
+      gameState.meta.progression = normalizeMetaProgression(gameState.meta.progression);
+    }
+    gameState.meta.useRunStartMetaProgression = loadedData.meta.useRunStartMetaProgression === true;
+    gameState.meta.activeRunProgression = gameState.meta.useRunStartMetaProgression
+      ? normalizeMetaProgression(loadedData.meta.activeRunProgression || gameState.meta.progression)
+      : null;
+    if (typeof loadedData.meta.showFpsCounter === 'boolean') {
+      CONFIG.SHOW_FPS_COUNTER = loadedData.meta.showFpsCounter;
+    }
+    if (loadedData.meta.maxFiresExtinguishedByWave && typeof loadedData.meta.maxFiresExtinguishedByWave === 'object') {
+      gameState.meta.maxFiresExtinguishedByWave = { ...loadedData.meta.maxFiresExtinguishedByWave };
+    }
+  }
+
+  if (typeof window !== 'undefined' && typeof window.updateFpsCounterVisibility === 'function') {
+    window.updateFpsCounterVisibility();
+  }
+
+  gameState.runStats = RunStatsTracker.hydrate(gameState, loadedData.runStats || null);
   
   // Restore town health
   if (loadedData.town && gameState.gridSystem && gameState.gridSystem.setTownHealth) {
@@ -640,9 +954,16 @@ export function applyLoadedState(gameState, loadedData) {
     gameState.pathSystem.generatePaths(gameState.wave.number);
   }
   
-  // Restore fire system wave group
-  if (loadedData.wave.currentGroup && gameState.fireSystem && gameState.fireSystem.setWaveGroup) {
-    gameState.fireSystem.setWaveGroup(loadedData.wave.currentGroup);
+  // Restore fire progression: if we're waiting on group-complete Collect, stay on the completed group's index
+  // (matches paths/spawners on disk). After Collect, pending is cleared and setWaveGroup(next) runs in applyPendingGroupTransition.
+  if (gameState.fireSystem && gameState.fireSystem.setWaveGroup) {
+    const pending = gameState.waveSystem?.pendingGroupTransition;
+    if (pending != null && pending.waveGroup != null) {
+      const nextG = Math.max(1, Math.floor(Number(pending.waveGroup)));
+      gameState.fireSystem.setWaveGroup(Math.max(1, nextG - 1));
+    } else if (loadedData.wave.currentGroup) {
+      gameState.fireSystem.setWaveGroup(loadedData.wave.currentGroup);
+    }
   }
   
   // Restore fire spawners (after paths are restored so valid locations are available)
@@ -660,8 +981,12 @@ export function applyLoadedState(gameState, loadedData) {
         spawnerType: sp.spawnerType
       }));
     } else {
-      // No saved spawners (old save file) - regenerate based on wave group
+      // No saved spawners (old save file) - regenerate based on effective map group
       let waveGroup = loadedData.wave.currentGroup;
+      const pend = loadedData.wave.pendingGroupTransition;
+      if (pend != null && pend.waveGroup != null) {
+        waveGroup = Math.max(1, Math.floor(Number(pend.waveGroup)) - 1);
+      }
       if (!waveGroup && gameState.waveSystem) {
         const wavesPerGroup = gameState.waveSystem.wavesPerGroup || 5;
         waveGroup = Math.ceil((loadedData.wave.number || 1) / wavesPerGroup);
@@ -673,6 +998,7 @@ export function applyLoadedState(gameState, loadedData) {
   }
   
   // Restore towers
+  gameState.suppressRunStatsHooks = true;
   gameState.towerSystem.clearAllTowers();
   if (loadedData.towers && Array.isArray(loadedData.towers)) {
     loadedData.towers.forEach(towerData => {
@@ -686,6 +1012,7 @@ export function applyLoadedState(gameState, loadedData) {
           rangeLevel: towerData.rangeLevel || 1,
           powerLevel: towerData.powerLevel || 1,
           shield: towerData.shield || null,
+          runStatsInstanceId: towerData.runStatsInstanceId ?? null,
         }
       );
       
@@ -710,6 +1037,7 @@ export function applyLoadedState(gameState, loadedData) {
         }
       }
     });
+    gameState.towerSystem?.refreshAllTowerMaxHealth?.();
   }
   
   // Restore suppression bombs
@@ -722,7 +1050,10 @@ export function applyLoadedState(gameState, loadedData) {
     
     // Place saved bombs
     loadedData.suppressionBombs.forEach(bombData => {
-      gameState.suppressionBombSystem.placeSuppressionBomb(bombData.q, bombData.r, bombData.level);
+      gameState.suppressionBombSystem.placeSuppressionBomb(bombData.q, bombData.r, bombData.level, {
+        totalUses: bombData.totalUses,
+        usesRemaining: bombData.usesRemaining,
+      });
     });
   }
   
@@ -733,7 +1064,9 @@ export function applyLoadedState(gameState, loadedData) {
     
     // Place saved tanks
     loadedData.waterTanks.forEach(tankData => {
-      const tankId = gameState.waterTankSystem.spawnWaterTank(tankData.q, tankData.r);
+      const tankId = gameState.waterTankSystem.spawnWaterTank(tankData.q, tankData.r, {
+        skipSpawnBounce: true,
+      });
       if (tankId && tankData.health !== undefined) {
         const tank = gameState.waterTankSystem.getWaterTank(tankId);
         if (tank) {
@@ -744,15 +1077,14 @@ export function applyLoadedState(gameState, loadedData) {
     });
   }
   
-  // Restore dig sites
+  // Restore dig sites (v2 saves always include digSites as an array, possibly empty — never random-regenerate that case)
   if (gameState.digSiteSystem) {
-    if (loadedData.digSites && Array.isArray(loadedData.digSites) && loadedData.digSites.length > 0) {
-      // Clear existing sites first
+    if (Array.isArray(loadedData.digSites)) {
       gameState.digSiteSystem.clearAllDigSites();
-      
-      // Place saved sites
       loadedData.digSites.forEach(siteData => {
-        const siteId = gameState.digSiteSystem.spawnDigSite(siteData.q, siteData.r, siteData.type);
+        const siteId = gameState.digSiteSystem.spawnDigSite(siteData.q, siteData.r, siteData.type, {
+          skipSpawnBounce: true,
+        });
         if (siteId && siteData.health !== undefined) {
           const site = gameState.digSiteSystem.getDigSite(siteId);
           if (site) {
@@ -762,8 +1094,7 @@ export function applyLoadedState(gameState, loadedData) {
         }
       });
     } else {
-      // No saved dig sites (old save file or new game) - regenerate based on wave group
-      // Clear first to ensure clean state, then generate for current wave
+      // Legacy save without digSites key — approximate prior waves with one random generation (then load flow skips re-roll in startPlacementPhase)
       gameState.digSiteSystem.clearAllDigSites();
       let waveGroup = loadedData.wave.currentGroup;
       if (!waveGroup && gameState.waveSystem) {
@@ -775,6 +1106,8 @@ export function applyLoadedState(gameState, loadedData) {
       }
     }
   }
+
+  gameState.suppressRunStatsHooks = false;
   
   // Restore temp power-up items
   if (gameState.tempPowerUpItemSystem && loadedData.tempPowerUpItems && Array.isArray(loadedData.tempPowerUpItems)) {
@@ -783,7 +1116,10 @@ export function applyLoadedState(gameState, loadedData) {
     
     // Spawn saved items
     loadedData.tempPowerUpItems.forEach(itemData => {
-      const itemId = gameState.tempPowerUpItemSystem.spawnTempPowerUpItem(itemData.q, itemData.r, itemData.powerUpId);
+      const itemId = gameState.tempPowerUpItemSystem.spawnTempPowerUpItem(itemData.q, itemData.r, itemData.powerUpId, {
+        grantPermanent: !!itemData.grantPermanent,
+        skipSpawnBounce: true,
+      });
       if (itemId && itemData.health !== undefined) {
         const item = gameState.tempPowerUpItemSystem.getItem(itemId);
         if (item) {
@@ -792,6 +1128,98 @@ export function applyLoadedState(gameState, loadedData) {
         }
       }
     });
+  }
+  
+  // Restore mystery boxes (always clear first so legacy saves and in-session loads don't leave stale boxes)
+  if (gameState.mysteryItemSystem) {
+    gameState.mysteryItemSystem.clearAllItems();
+    if (Array.isArray(loadedData.mysteryItems)) {
+      loadedData.mysteryItems.forEach((row) => {
+        if (row == null || row.itemId == null || row.q == null || row.r == null) return;
+        const spawnedId = gameState.mysteryItemSystem.spawnMysteryItem(row.q, row.r, String(row.itemId), {
+          skipSpawnBounce: true,
+        });
+        if (spawnedId && row.health !== undefined) {
+          const item = gameState.mysteryItemSystem.getItem(spawnedId);
+          if (item) {
+            item.health = row.health;
+            item.maxHealth = row.maxHealth != null ? row.maxHealth : item.maxHealth;
+          }
+        }
+      });
+    }
+  }
+
+  if (gameState.burningVaultSystem) {
+    gameState.burningVaultSystem.clearAllItems();
+    if (Array.isArray(loadedData.burningVaults)) {
+      loadedData.burningVaults.forEach((row) => {
+        if (row == null || row.q == null || row.r == null) return;
+        const spawnedId = gameState.burningVaultSystem.spawnBurningVault(row.q, row.r, {
+          skipSpawnBounce: true,
+        });
+        if (spawnedId && row.health !== undefined) {
+          const item = gameState.burningVaultSystem.getItem(spawnedId);
+          if (item) {
+            item.health = row.health;
+            item.maxHealth = row.maxHealth != null ? row.maxHealth : item.maxHealth;
+          }
+        }
+      });
+    }
+  }
+
+  if (gameState.artifactSystem) {
+    gameState.artifactSystem.clearAllItems();
+    if (Array.isArray(loadedData.artifacts)) {
+      loadedData.artifacts.forEach((row) => {
+        if (row == null || row.artifactId == null || row.q == null || row.r == null) return;
+        const spawnedId = gameState.artifactSystem.spawnArtifact(row.q, row.r, String(row.artifactId), {
+          health: row.health,
+          timeLeftSeconds: row.timeLeftSeconds,
+          skipSpawnBounce: true,
+        });
+        if (spawnedId) {
+          const item = gameState.artifactSystem.getItem(spawnedId);
+          if (item) {
+            if (row.health !== undefined) item.health = row.health;
+            if (row.maxHealth !== undefined) item.maxHealth = row.maxHealth;
+            if (row.timeLeftSeconds !== undefined && Number.isFinite(Number(row.timeLeftSeconds))) {
+              item.timeLeftSeconds = Math.max(0, Number(row.timeLeftSeconds));
+            }
+          }
+        }
+      });
+    }
+  }
+  
+  // Restore currency / bonus map items (currency, XP, tokens, etc. from mystery clusters)
+  if (gameState.currencyItemSystem) {
+    gameState.currencyItemSystem.clearAllItems();
+    if (Array.isArray(loadedData.currencyItems)) {
+      loadedData.currencyItems.forEach((row) => {
+        if (row == null || row.q == null || row.r == null) return;
+        const rawType = row.itemType != null ? String(row.itemType) : 'currency';
+        const itemType = rawType === 'money' ? 'currency' : rawType;
+        const value =
+          itemType === 'currency' || itemType === 'xp'
+            ? (row.value != null && Number.isFinite(Number(row.value)) ? Number(row.value) : 1)
+            : itemType === 'shield'
+              ? (row.value != null && Number.isFinite(Number(row.value)) ? Number(row.value) : 1)
+              : 1;
+        const fromMystery = !!row.spawnedFromMystery;
+        const spawnedId = gameState.currencyItemSystem.spawnCurrencyItem(row.q, row.r, itemType, value, fromMystery, {
+          skipSpawnBounce: true,
+        });
+        if (spawnedId && row.health !== undefined) {
+          const item = gameState.currencyItemSystem.getItem(spawnedId);
+          if (item) {
+            item.health = row.health;
+            item.maxHealth = row.maxHealth != null ? row.maxHealth : item.maxHealth;
+          }
+        }
+      });
+    }
   }
   
   // Update UI

@@ -29,7 +29,9 @@ export class FireSpawnerSystem {
     const allHexes = this.gridSystem.getAllHexes();
     allHexes.forEach(hex => {
       if (hex.isTown) return;
-      if (hex.isPath) return;
+      // Path hexes are intentionally INCLUDED so spawners can ignite adjacent path hexes
+      // (and rings beyond them via the contiguous-path check). Path-target spawn chance
+      // is boosted in spawnFiresFromSpawners() to mirror normal burning-hex behavior.
       if (hex.hasFireSpawner) return;
       candidates.push(hex);
     });
@@ -59,33 +61,20 @@ export class FireSpawnerSystem {
           case 'firestorm': return CONFIG.FIRE_TYPE_FIRESTORM;
           case 'inferno': return CONFIG.FIRE_TYPE_INFERNO;
           case 'cataclysm': return CONFIG.FIRE_TYPE_CATACLYSM;
+          case 'blackfyre': return CONFIG.FIRE_TYPE_BLACKFYRE;
           default: return typeStr; // Return as-is if already a constant
         }
     };
     
-    // For wave groups 1-20, use the progression array
     if (waveGroupIndex >= 0 && waveGroupIndex < progression.length) {
       const spawnerTypes = progression[waveGroupIndex];
-      return spawnerTypes.map(mapSpawnerType);
+      return spawnerTypes.map(mapSpawnerType).slice(0, MAX_SPAWNERS);
     }
-    
-    // For wave groups beyond 20, start with wave group 20's spawners and add 2 cataclysm per group
+
+    // Beyond the table: same list as the last row (no automatic extra spawners).
     if (progression.length > 0) {
-      const lastEntry = progression[progression.length - 1]; // Wave group 20
-      const baseSpawners = lastEntry.map(mapSpawnerType);
-      
-      // Calculate how many additional cataclysm spawners to add
-      const groupsBeyond20 = waveGroup - progression.length;
-      const additionalCataclysms = groupsBeyond20 * 2;
-      
-      // Create array with base spawners + additional cataclysms
-      const allSpawners = [...baseSpawners];
-      for (let i = 0; i < additionalCataclysms; i++) {
-        allSpawners.push(CONFIG.FIRE_TYPE_CATACLYSM);
-      }
-      
-      // Cap at maximum spawners
-      return allSpawners.slice(0, MAX_SPAWNERS);
+      const lastEntry = progression[progression.length - 1];
+      return lastEntry.map(mapSpawnerType).slice(0, MAX_SPAWNERS);
     }
     
     // Ultimate fallback: single cinder spawner
@@ -103,7 +92,8 @@ export class FireSpawnerSystem {
       CONFIG.FIRE_TYPE_BLAZE,
       CONFIG.FIRE_TYPE_FIRESTORM,
       CONFIG.FIRE_TYPE_INFERNO,
-      CONFIG.FIRE_TYPE_CATACLYSM
+      CONFIG.FIRE_TYPE_CATACLYSM,
+      CONFIG.FIRE_TYPE_BLACKFYRE,
     ];
   }
 
@@ -298,13 +288,22 @@ export class FireSpawnerSystem {
     const validSpawnHexes = this.getSpawnCandidates();
     if (validSpawnHexes.length === 0) return;
 
+    // Two distinct spawner-to-adjacent rates depending on whether the candidate hex is a path.
+    // We REPLACE (not stack) the spawner multiplier when the target is a path: layering both the
+    // spawner-to-adjacent (~53×) and the regular to-path (~80×) multipliers would saturate to
+    // 100% per tick. Instead, paths get their own dedicated rate that's higher than both
+    // (a) spawner→non-path ring 1 and (b) regular burning→path, but well below saturation.
+    const SPAWNER_MULT_NON_PATH = CONFIG.FIRE_SPREAD_MULTIPLIER_SPAWNER_TO_ADJACENT ?? (0.08 / 0.0015);
+    const SPAWNER_MULT_PATH = CONFIG.FIRE_SPREAD_MULTIPLIER_SPAWNER_TO_ADJACENT_PATH ?? (0.24 / 0.0015);
+
     this.currentSpawners.forEach(spawner => {
       const spawnerHex = this.gridSystem.getHex(spawner.q, spawner.r);
       if (!spawnerHex || !spawnerHex.hasFireSpawner) return;
 
-      // Per-spawner-type base rate from FIRE_SPAWN_PROBABILITIES; apply spawner multiplier
-      const baseSpawnChance = getBaseSpreadRate(spawner.spawnerType, waveNumber)
-        * (CONFIG.FIRE_SPREAD_MULTIPLIER_SPAWNER_TO_ADJACENT ?? 0.08 / 0.0015);
+      const spawnerBaseRate = getBaseSpreadRate(spawner.spawnerType, waveNumber);
+      // Pre-compute both per-spawner base chances (only depend on spawner type + wave).
+      const baseSpawnChanceNonPath = spawnerBaseRate * SPAWNER_MULT_NON_PATH;
+      const baseSpawnChancePath = spawnerBaseRate * SPAWNER_MULT_PATH;
 
       const probabilities = this.getSpawnProbabilitiesForSpawnerType(spawner.spawnerType);
 
@@ -319,12 +318,14 @@ export class FireSpawnerSystem {
         // Calculate distance from spawner (ring number)
         const distance = hexDistance(spawner.q, spawner.r, hex.q, hex.r);
 
-        // Spawn chance is reduced by a configurable factor for each ring away from spawner, then multiplied by wave multiplier
+        // Pick the per-spawner base chance that matches the target type, then apply the
+        // ring-distance falloff and the per-wave difficulty multiplier.
         const ringReductionFactor = CONFIG.FIRE_SPAWNER_RING_REDUCTION_FACTOR || 0.5;
         const ringNumber = distance;
+        const baseSpawnChance = currentHex.isPath ? baseSpawnChancePath : baseSpawnChanceNonPath;
         const baseRingSpawnChance = baseSpawnChance * Math.pow(ringReductionFactor, Math.max(0, ringNumber - 1));
         const ringSpawnChance = baseRingSpawnChance * spawnerMultiplier;
-        
+
         // Each hex has a chance to spawn a fire based on its distance from the spawner
         // BUT only if there's a contiguous path of burning hexes from spawner to this hex
         // (For distance 1, no path is needed yet - fires can spawn directly adjacent)

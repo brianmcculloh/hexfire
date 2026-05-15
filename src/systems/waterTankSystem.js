@@ -1,6 +1,6 @@
 // Water Tank System - Manages water tank spawning, health, and explosions
 
-import { CONFIG, getFireTypeConfig } from '../config.js';
+import { CONFIG, getFireTypeConfig, addPlayerScore, getPowerUpMultiplier } from '../config.js';
 import { getNeighbors, getHexesInRing } from '../utils/hexMath.js';
 
 let waterTankIdCounter = 0;
@@ -93,6 +93,10 @@ export class WaterTankSystem {
         
         // Can't spawn on existing mystery items
         if (hex.hasMysteryItem) continue;
+
+        if (hex.hasArtifactItem) continue;
+
+        if (hex.hasBurningVault) continue;
         
         // Can't spawn on existing currency items
         if (hex.hasCurrencyItem) continue;
@@ -115,14 +119,16 @@ export class WaterTankSystem {
    * Spawn a water tank at specific coordinates
    * @param {number} q - Hex q coordinate
    * @param {number} r - Hex r coordinate
+   * @param {{ skipSpawnBounce?: boolean }} [options] - skipSpawnBounce skips drop-in when restoring saves
    * @returns {string|null} Tank ID or null if spawn failed
    */
-  spawnWaterTank(q, r) {
+  spawnWaterTank(q, r, options = {}) {
     const hex = this.gridSystem.getHex(q, r);
     if (!hex) return null;
     
     // Double-check validity
-    if (hex.isTown || hex.hasTower || hex.isBurning || hex.hasWaterTank || hex.hasSuppressionBomb || hex.hasFireSpawner) {
+    if (hex.isTown || hex.hasTower || hex.isBurning || hex.hasWaterTank || hex.hasSuppressionBomb || hex.hasFireSpawner ||
+        hex.hasBurningVault || hex.hasArtifactItem) {
       return null;
     }
     
@@ -135,6 +141,10 @@ export class WaterTankSystem {
       health: CONFIG.WATER_TANK_HEALTH,
       maxHealth: CONFIG.WATER_TANK_HEALTH,
       isActive: true,
+      mysteryLandDropAtMs:
+        options?.skipSpawnBounce || typeof performance === 'undefined'
+          ? undefined
+          : performance.now(),
     };
     
     this.waterTanks.set(tankId, tank);
@@ -206,7 +216,10 @@ export class WaterTankSystem {
       if (tankHex && tankHex.isBurning) {
         // Get fire type damage per second
         const fireConfig = getFireTypeConfig(tankHex.fireType);
-        const damagePerSecond = fireConfig ? fireConfig.damagePerSecond : 1;
+        const powerUps = this.gameState?.player?.powerUps || {};
+        const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+        const fireDamageMult = getPowerUpMultiplier('fireDamage', powerUps, tempPowerUps);
+        const damagePerSecond = (fireConfig ? fireConfig.damagePerSecond : 1) * fireDamageMult;
         const damageThisTick = deltaTime * damagePerSecond;
         
         // Damage the tank
@@ -285,6 +298,7 @@ export class WaterTankSystem {
     const tank = this.waterTanks.get(tankId);
     if (!tank) return;
     
+    this.gameState.runStats?.recordWaterTankLostToFire?.();
     // Mark tank as inactive
     tank.isActive = false;
     
@@ -307,22 +321,23 @@ export class WaterTankSystem {
   explodeWaterTank(tankId) {
     const tank = this.waterTanks.get(tankId);
     if (!tank) return;
+
+    this.gameState.notificationSystem?.addMapCollectedSpriteFloat?.(tank.q, tank.r, {
+      spriteCategory: 'items',
+      spriteFilename: 'water_tank.png',
+    });
     
-    // Award score: 10 points per item collected (water tank triggered by water)
-    this.gameState.player.score = (this.gameState.player.score ?? 0) + 10;
+    this.gameState.runStats?.recordWaterTankCollected?.();
+    addPlayerScore(this.gameState, 10);
     
     // Mark tank as inactive
     tank.isActive = false;
     
-    // Get all hexes in 2 rings (center + ring 1 + ring 2) for the explosion
-    // Ring 0: center hex (1 hex)
-    // Ring 1: adjacent hexes (6 hexes)
-    // Ring 2: second ring (12 hexes)
-    // Total: 19 hexes
-    const explosionHexes = [{ q: tank.q, r: tank.r }]; // Center hex
-    const ring1Hexes = getHexesInRing(tank.q, tank.r, 1); // First ring
-    const ring2Hexes = getHexesInRing(tank.q, tank.r, 2); // Second ring
-    explosionHexes.push(...ring1Hexes, ...ring2Hexes);
+    // Center + rings 1–3 (was 1–2; +1 outer ring)
+    const explosionHexes = [{ q: tank.q, r: tank.r }];
+    for (let ring = 1; ring <= 3; ring++) {
+      explosionHexes.push(...getHexesInRing(tank.q, tank.r, ring));
+    }
     
     // Trigger explosion animation via renderer if available
     try {
@@ -335,6 +350,11 @@ export class WaterTankSystem {
     if (window.AudioManager) {
       window.AudioManager.playSFX('water_tank_explodes');
     }
+
+    const powerUps = this.gameState?.player?.powerUps || {};
+    const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+    const waterPowerMultiplier = getPowerUpMultiplier('waterTowerPower', powerUps, tempPowerUps);
+    const itemWaterDamage = CONFIG.WATER_TANK_EXPLOSION_DAMAGE * waterPowerMultiplier;
     
     // Apply damage to all hexes in explosion radius
     explosionHexes.forEach(explosionHex => {
@@ -364,11 +384,44 @@ export class WaterTankSystem {
           this.explodeWaterTank(otherTank.id);
         }
       }
+
+      // Map pickups / dig sites (same as suppression bomb / tower water)
+      if (!hex) return;
+      if (hex.hasTempPowerUpItem) {
+        hex.isBeingSprayed = true;
+        this.gameState.tempPowerUpItemSystem?.damageItem(explosionHex.q, explosionHex.r, itemWaterDamage);
+        this.gameState.tempPowerUpItemSystem?.checkCollection(explosionHex.q, explosionHex.r);
+      }
+      if (hex.hasMysteryItem) {
+        hex.isBeingSprayed = true;
+        this.gameState.mysteryItemSystem?.damageItem(explosionHex.q, explosionHex.r, itemWaterDamage);
+        this.gameState.mysteryItemSystem?.checkCollection(explosionHex.q, explosionHex.r);
+      }
+      if (hex.hasArtifactItem) {
+        hex.isBeingSprayed = true;
+        this.gameState.artifactSystem?.damageItem(explosionHex.q, explosionHex.r, itemWaterDamage);
+        this.gameState.artifactSystem?.checkCollection(explosionHex.q, explosionHex.r);
+      }
+      if (hex.hasCurrencyItem) {
+        hex.isBeingSprayed = true;
+        this.gameState.currencyItemSystem?.damageItem(explosionHex.q, explosionHex.r, itemWaterDamage);
+        this.gameState.currencyItemSystem?.checkCollection(explosionHex.q, explosionHex.r);
+      }
+      if (hex.hasDigSite) {
+        hex.isBeingSprayed = true;
+        this.gameState.digSiteSystem?.addWaterPower(explosionHex.q, explosionHex.r, itemWaterDamage);
+      }
+      if (hex.hasBurningVault) {
+        hex.isBeingSprayed = true;
+        this.gameState.burningVaultSystem?.addWaterPower(explosionHex.q, explosionHex.r, itemWaterDamage);
+      }
     });
     
     // Remove the tank from the grid and map
     this.gridSystem.removeWaterTank(tank.q, tank.r);
     this.waterTanks.delete(tankId);
+
+    this.gameState.bossSystem?.notifyMapItemCollected?.();
 
     // Notify callback (e.g. for tutorial advancement)
     if (this.onWaterTankExploded) {
@@ -399,6 +452,7 @@ export class WaterTankSystem {
     // Can't place on center town hex (0, 0) or fire spawners
     if (q === 0 && r === 0) return false;
     if (hex.hasFireSpawner) return false;
+    if (hex.hasDigSite) return false;
     
     // Can't place on town or existing towers
     if (hex.isTown || hex.hasTower) {

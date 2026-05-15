@@ -1,11 +1,34 @@
 // Grid System - Manages the hexagonal grid state
 
-import { CONFIG, getFireTypeConfig } from '../config.js';
+import { CONFIG, getFireTypeConfig, getPowerUpMultiplier } from '../config.js';
 import { hexKey, isInBounds, getNeighbors, getHexesInRing } from '../utils/hexMath.js';
 
 /**
  * Creates and manages the hexagonal grid
  */
+// Precomputed town-hex and town-ring-hex lookup sets. These two clusters never
+// move (center grove + its 6 neighbors + the 12 hexes one ring further out), so
+// we encode them as hexKey() strings once at module load and re-use the Sets for
+// every isTownHex / isTownRingHex check. Previously isTownRingHex allocated a
+// 12-element array of {q,r} objects via getHexesInRing on *every* call, and the
+// 1Hz item spawn checks iterate it 441 times per item system per tick.
+const TOWN_HEX_KEYS = new Set([
+  hexKey(0, 0),
+  hexKey(1, 0),
+  hexKey(0, -1),
+  hexKey(-1, 0),
+  hexKey(0, 1),
+  hexKey(1, -1),
+  hexKey(-1, 1),
+]);
+const TOWN_RING_HEX_KEYS = (() => {
+  const set = new Set();
+  for (const { q, r } of getHexesInRing(0, 0, 2)) {
+    set.add(hexKey(q, r));
+  }
+  return set;
+})();
+
 export class GridSystem {
   constructor() {
     this.grid = new Map(); // Map<hexKey, HexData>
@@ -24,38 +47,27 @@ export class GridSystem {
   }
 
   /**
-   * Check if a hex is part of the town (7-hex cluster)
+   * Check if a hex is part of the town (7-hex cluster). Uses a precomputed
+   * key Set so the lookup is O(1) with no per-call allocations.
    * @param {number} q - Hex q coordinate
    * @param {number} r - Hex r coordinate
    * @returns {boolean} True if hex is part of home base
    */
   isTownHex(q, r) {
-    // Town consists of center hex (0,0) plus its 6 immediate neighbors
-    const townHexes = [
-      { q: 0, r: 0 },    // center
-      { q: 1, r: 0 },    // east
-      { q: 0, r: -1 },   // northeast
-      { q: -1, r: 0 },   // west
-      { q: 0, r: 1 },    // southwest
-      { q: 1, r: -1 },   // southeast
-      { q: -1, r: 1 }    // northwest
-    ];
-    
-    return townHexes.some(hex => hex.q === q && hex.r === r);
+    return TOWN_HEX_KEYS.has(hexKey(q, r));
   }
 
   /**
-   * Check if a hex is in the town ring (the 12 hexes surrounding the 7-hex town cluster)
+   * Check if a hex is in the town ring (the 12 hexes surrounding the 7-hex
+   * town cluster). Uses a precomputed key Set so the lookup is O(1) and
+   * doesn't allocate a fresh ring array per call — important because the
+   * 1Hz item-spawn scans hit this 441 times per tick per item system.
    * @param {number} q - Hex q coordinate
    * @param {number} r - Hex r coordinate
    * @returns {boolean} True if hex is in the town ring
    */
   isTownRingHex(q, r) {
-    // Town ring is ring 2 around the center (0,0)
-    // This excludes the center hex (ring 0) and the 6 immediate neighbors (ring 1, which are town hexes)
-    // So ring 2 is the 12 hexes that surround the town
-    const ringHexes = getHexesInRing(0, 0, 2);
-    return ringHexes.some(hex => hex.q === q && hex.r === r);
+    return TOWN_RING_HEX_KEYS.has(hexKey(q, r));
   }
 
   /**
@@ -86,7 +98,8 @@ export class GridSystem {
                 CONFIG.FIRE_TYPE_BLAZE,
                 CONFIG.FIRE_TYPE_FIRESTORM,
                 CONFIG.FIRE_TYPE_INFERNO,
-                CONFIG.FIRE_TYPE_CATACLYSM
+                CONFIG.FIRE_TYPE_CATACLYSM,
+                CONFIG.FIRE_TYPE_BLACKFYRE,
               ];
               fireType = allFireTypes[Math.floor(Math.random() * allFireTypes.length)];
             } else {
@@ -119,6 +132,10 @@ export class GridSystem {
             mysteryItemId: null,
             hasCurrencyItem: false,
             currencyItemId: null,
+            hasBurningVault: false,
+            burningVaultId: null,
+            hasArtifactItem: false,
+            artifactItemId: null,
             hasDigSite: false,
             digSiteId: null,
             townHealth: isTown ? CONFIG.TOWN_HEALTH_BASE : 0,
@@ -255,24 +272,82 @@ export class GridSystem {
         }
       }
 
-      // Only bump structureVersion for changes that affect grid visuals/layout
-      const structuralKeys = [
-        'isPath',
-        'pathColor',
-        'isTown',
-        'hasTower',
-        'hasWaterTank',
-        'hasTempPowerUpItem',
-        'hasMysteryItem',
-        'hasCurrencyItem',
-        'hasSuppressionBomb',
-        'hasFireSpawner',
-        'hasDigSite',
-      ];
-      if (structuralKeys.some(k => Object.prototype.hasOwnProperty.call(data, k))) {
+      // Only bump structureVersion for changes that actually affect cached
+      // structures driven by it. Two consumers read structureVersion:
+      //   1. Renderer's gridStaticCache (offscreen canvas) — drawGrid only
+      //      branches on isPath/pathColor/isTown/hasTower/hasWaterTank, so
+      //      those + hasFireSpawner are the only render-relevant structural
+      //      changes. (hasFireSpawner doesn't appear in drawGrid but it's
+      //      cheap to include and only changes at wave boundaries.)
+      //   2. fireSpawnerSystem.getSpawnCandidates() — filters by
+      //      hex.isTown and hex.hasFireSpawner. Those are already covered.
+      //
+      // Everything else — the per-item "has*" flags (mystery, currency, temp
+      // power-up, burning vault, artifact, suppression bomb, dig site) — has
+      // its own dynamic draw pass on top of the static cache, and isn't
+      // consumed by any structureVersion-keyed cache. Bumping the version on
+      // those previously forced a full ~5–10ms grid-cache rebuild every time
+      // an item spawned or got destroyed by fire. That accumulates badly
+      // during late-game boss waves where purify ignites ~100 hexes every 5s
+      // and items continuously spawn → land on fire → destroy → respawn.
+      if (
+        Object.prototype.hasOwnProperty.call(data, 'isPath') ||
+        Object.prototype.hasOwnProperty.call(data, 'pathColor') ||
+        Object.prototype.hasOwnProperty.call(data, 'isTown') ||
+        Object.prototype.hasOwnProperty.call(data, 'hasTower') ||
+        Object.prototype.hasOwnProperty.call(data, 'hasWaterTank') ||
+        Object.prototype.hasOwnProperty.call(data, 'hasFireSpawner')
+      ) {
         this.structureVersion += 1;
       }
     }
+  }
+
+  /**
+   * Mutate a non-structural field on an existing hex in place.
+   * Skips the spread-copy + cache rewrites that {@link setHex} performs, so it's
+   * safe + fast for hot paths that update high-frequency fields like
+   * `extinguishProgress`, `burnDuration`, `townHealth`, or `isBeingSprayed`.
+   *
+   * IMPORTANT: do NOT use this for keys that affect cached structures. Use
+   * {@link setHex} for:
+   *   - keys that bump structureVersion / invalidate the static grid cache:
+   *     isPath, pathColor, isTown, hasTower, hasWaterTank
+   *   - isBurning (controls burningHexCache membership)
+   *   - any "has*" item flag (hasTempPowerUpItem, hasMysteryItem,
+   *     hasCurrencyItem, hasBurningVault, hasArtifactItem, hasSuppressionBomb,
+   *     hasFireSpawner, hasDigSite) — these no longer bump structureVersion,
+   *     but downstream draw passes still expect setHex's spread-copy semantics
+   *     for the new hex reference.
+   *
+   * @param {number} q
+   * @param {number} r
+   * @param {string} key
+   * @param {*} value
+   * @returns {boolean} True if mutated, false if hex missing.
+   */
+  mutateHex(q, r, key, value) {
+    const hex = this.grid.get(hexKey(q, r));
+    if (!hex) return false;
+    hex[key] = value;
+    return true;
+  }
+
+  /**
+   * Mutate multiple non-structural fields in place. Same constraints as
+   * {@link mutateHex}.
+   * @param {number} q
+   * @param {number} r
+   * @param {Object} partial
+   * @returns {boolean}
+   */
+  mutateHexFields(q, r, partial) {
+    const hex = this.grid.get(hexKey(q, r));
+    if (!hex) return false;
+    for (const k in partial) {
+      hex[k] = partial[k];
+    }
+    return true;
   }
 
   /**
@@ -313,8 +388,8 @@ export class GridSystem {
     if (q === 0 && r === 0) return false;
     if (hex.hasFireSpawner) return false;
     
-    // Can place on any hex except hexes with existing towers or water tanks
-    return !hex.hasTower && !hex.hasWaterTank && !hex.hasTempPowerUpItem && !hex.hasMysteryItem && !hex.hasCurrencyItem;
+    // Can place on any hex except dig sites, hexes with existing towers or water tanks, or collectible hexes
+    return !hex.hasDigSite && !hex.hasTower && !hex.hasWaterTank && !hex.hasTempPowerUpItem && !hex.hasMysteryItem && !hex.hasCurrencyItem && !hex.hasBurningVault && !hex.hasArtifactItem;
   }
 
   /**
@@ -345,9 +420,20 @@ export class GridSystem {
   canPlaceSuppressionBomb(q, r) {
     const hex = this.getHex(q, r);
     if (!hex) return false;
-    
-    // Can't place on town, spawners, existing towers, or existing suppression bombs
-    return !hex.isTown && !hex.hasFireSpawner && !hex.hasTower && !hex.hasSuppressionBomb;
+    // Same footprint as towers: allow the six hexes around the grove center, but not the center hex or spawners
+    if (q === 0 && r === 0) return false;
+    if (hex.hasFireSpawner) return false;
+    return (
+      !hex.hasDigSite &&
+      !hex.hasTower &&
+      !hex.hasWaterTank &&
+      !hex.hasTempPowerUpItem &&
+      !hex.hasMysteryItem &&
+      !hex.hasCurrencyItem &&
+      !hex.hasBurningVault &&
+      !hex.hasArtifactItem &&
+      !hex.hasSuppressionBomb
+    );
   }
 
   /**
@@ -465,6 +551,28 @@ export class GridSystem {
   }
 
   /**
+   * @param {string} vaultId - Burning vault instance id
+   */
+  placeBurningVault(q, r, vaultId) {
+    this.setHex(q, r, { hasBurningVault: true, burningVaultId: vaultId });
+  }
+
+  removeBurningVault(q, r) {
+    this.setHex(q, r, { hasBurningVault: false, burningVaultId: null });
+  }
+
+  /**
+   * @param {string} itemId - Spawned artifact instance id (not config artifact id)
+   */
+  placeArtifact(q, r, itemId) {
+    this.setHex(q, r, { hasArtifactItem: true, artifactItemId: itemId });
+  }
+
+  removeArtifact(q, r) {
+    this.setHex(q, r, { hasArtifactItem: false, artifactItemId: null });
+  }
+
+  /**
    * Set multiple hexes as path hexes
    * @param {Array<Array<{q: number, r: number, pathColor?: string}>>} paths - Array of path arrays with colors
    */
@@ -528,6 +636,21 @@ export class GridSystem {
   }
 
   /**
+   * Fast check whether ANY town hex (7-hex grove cluster) is currently burning.
+   * Iterates the small townHexesCache (≤7 entries) instead of the burningHexCache,
+   * which can grow to several hundred hexes during late waves. Used per-frame
+   * in the render loop and for grove-burning toasts/alarms.
+   * @returns {boolean}
+   */
+  isAnyTownHexBurning() {
+    const townHexes = this.townHexesCache;
+    for (let i = 0; i < townHexes.length; i++) {
+      if (townHexes[i].isBurning) return true;
+    }
+    return false;
+  }
+
+  /**
    * Check if town is destroyed (game over condition)
    * @returns {boolean} True if home base health is 0
    */
@@ -540,9 +663,13 @@ export class GridSystem {
    * Update town health (takes damage from fires burning on town hexes)
    * @param {number} deltaTime - Time elapsed in seconds
    */
-  updateTownHealth(deltaTime) {
+  updateTownHealth(deltaTime, gameState = null) {
     const townCenter = this.getTownCenter();
     if (!townCenter) return;
+    
+    const powerUps = gameState?.player?.powerUps || {};
+    const tempPowerUps = gameState?.player?.tempPowerUps || [];
+    const fireDamageMultiplier = getPowerUpMultiplier('fireDamage', powerUps, tempPowerUps);
     
     // Get all town hexes
     const townHexes = this.getAllTownHexes();
@@ -564,7 +691,7 @@ export class GridSystem {
     burningTownHexes.forEach(fireType => {
       const fireConfig = getFireTypeConfig(fireType);
       const dps = fireConfig ? fireConfig.damagePerSecond : 1;
-      totalDamagePerSecond += dps;
+      totalDamagePerSecond += dps * fireDamageMultiplier;
     });
     
     if (totalDamagePerSecond > 0) {
@@ -572,6 +699,7 @@ export class GridSystem {
       const newHealth = Math.max(0, townCenter.townHealth - (deltaTime * totalDamagePerSecond));
       const damageThisTick = (townCenter.townHealth - newHealth);
       if (damageThisTick > 0) {
+        // Cumulative HP lost while burning (regen does not reduce this); used for grove protection bonus + wave score
         this.townDamageThisWave += damageThisTick;
       }
       // Update health on the center town hex (for UI display)
@@ -593,7 +721,7 @@ export class GridSystem {
   }
 
   /**
-   * Get cumulative town damage taken during the current wave
+   * Cumulative grove HP lost to fire this wave (sum of per-tick damage while burning; not net HP change).
    * @returns {number} Damage amount
    */
   getTownDamageThisWave() {
