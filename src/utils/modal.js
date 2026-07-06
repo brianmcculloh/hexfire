@@ -651,7 +651,7 @@ function getModalShellSwapTargets(overlayEl) {
   if (!overlayEl) return [];
   return Array.from(
     overlayEl.querySelectorAll(
-      ':scope > .modal, :scope > .wave-complete-hero-graphic, :scope > .character-speech-bubble'
+      ':scope > .modal, :scope > .wave-complete-hero-graphic:not(.modal-shell-persist), :scope > .character-speech-bubble:not(.modal-shell-persist)'
     )
   );
 }
@@ -661,10 +661,17 @@ export function clearModalShellSwapAnimationState(overlayEl) {
   if (!overlayEl) return;
   overlayEl.classList.remove('game-modal-shell-swap-out', 'game-modal-shell-swap-in');
   getModalShellSwapTargets(overlayEl).forEach((el) => {
-    // swap-in prep may set inline opacity: 0; removing it alone leaves the shell invisible
-    // once the animation class is torn down, so always restore a visible baseline.
-    el.style.opacity = '1';
-    el.style.removeProperty('transform');
+    const isPersist = el.classList.contains('modal-shell-persist');
+    el.style.removeProperty('animation');
+    if (!isPersist) {
+      // swap-in prep may set inline opacity: 0; restore visible baseline for modal shell only.
+      el.style.opacity = '1';
+      el.style.removeProperty('transform');
+    } else {
+      // Hero portrait: never leave inline opacity/transform — CSS classes own layout.
+      el.style.removeProperty('opacity');
+      el.style.removeProperty('transform');
+    }
   });
 }
 
@@ -702,15 +709,23 @@ export function crossfadeModalShellContent(overlayEl, swapContent, options = {})
 
       // swap-out ends at opacity: 0 (forwards); clear residue before rebuilding DOM.
       getModalShellSwapTargets(overlayEl).forEach((el) => {
+        const isPersist = el.classList.contains('modal-shell-persist');
         el.style.animation = 'none';
-        el.style.opacity = '1';
-        el.style.transform = 'none';
+        if (!isPersist) {
+          el.style.opacity = '1';
+          el.style.transform = 'none';
+        }
       });
       void overlayEl.offsetWidth;
       getModalShellSwapTargets(overlayEl).forEach((el) => {
         el.style.removeProperty('animation');
-        el.style.removeProperty('opacity');
-        el.style.removeProperty('transform');
+        if (!el.classList.contains('modal-shell-persist')) {
+          el.style.removeProperty('opacity');
+          el.style.removeProperty('transform');
+        } else {
+          el.style.removeProperty('opacity');
+          el.style.removeProperty('transform');
+        }
       });
 
       swapContent?.();

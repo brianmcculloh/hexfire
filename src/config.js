@@ -26,16 +26,30 @@ export const CONFIG = {
    */
   COMBO_BATCH_WINDOW_MS: 200,
   /** Floating combo text duration (seconds). */
-  COMBO_FLOAT_DURATION_SEC: 3.5,
+  COMBO_FLOAT_DURATION_SEC: 5.5,
   /**
+   * Hex ring reference (center at ring 0; matches getHexesInRing / MAP_SIZE 21 → radius 10):
+   *   Ring 0 — 1 total (1 on ring)
+   *   Ring 1 — 7 total (6 on ring)
+   *   Ring 2 — 19 total (12 on ring)
+   *   Ring 3 — 37 total (18 on ring)
+   *   Ring 4 — 61 total (24 on ring)
+   *   Ring 5 — 91 total (30 on ring)
+   *   Ring 6 — 127 total (36 on ring)
+   *   Ring 7 — 169 total (42 on ring)
+   *   Ring 8 — 217 total (48 on ring)
+   *   Ring 9 — 271 total (54 on ring)
+   *   Ring 10 — 331 total (60 on ring) — full map
+   *
    * Combo tiers (highest matching minHexes wins). Colors: bright aqua → electric neon green.
    * sfxKey maps to AUDIO_SFX_PATHS; replace paths when unique combo SFX are added.
+   * xp is baseline per wave group (actual award = xp × current wave group; see getComboXpForWaveGroup).
    */
   COMBO_TIERS: [
-    { id: 'god', minHexes: 60, text: 'god combo!', color: '#39FF14', sfxKey: 'combo_god', xp: 100000 },
-    { id: 'ludicrous', minHexes: 50, text: 'ludicrous combo!', color: '#00FF66', sfxKey: 'combo_ludicrous', xp: 50000 },
-    { id: 'monster', minHexes: 40, text: 'monster combo!', color: '#00FFB8', sfxKey: 'combo_monster', xp: 20000 },
-    { id: 'giant', minHexes: 30, text: 'giant combo!', color: '#00F0FF', sfxKey: 'combo_giant', xp: 10000 },
+    { id: 'god', minHexes: 169, text: 'god combo!', color: '#39FF14', sfxKey: 'combo_god', xp: 10000 },
+    { id: 'ludicrous', minHexes: 127, text: 'ludicrous combo!', color: '#00FF66', sfxKey: 'combo_ludicrous', xp: 5000 },
+    { id: 'monster', minHexes: 91, text: 'monster combo!', color: '#00FFB8', sfxKey: 'combo_monster', xp: 2000 },
+    { id: 'giant', minHexes: 61, text: 'giant combo!', color: '#00F0FF', sfxKey: 'combo_giant', xp: 1000 },
   ],
   
   USE_WATER_PARTICLES: true,
@@ -80,14 +94,15 @@ export const CONFIG = {
     
   ],
   
-  // Debug starting items (upgrade plans, suppression bombs, shields, repair supplies, parts vouchers)
-  // Examples: { type: 'upgrade_plan', count: 5 }; { type: 'suppression_bomb', level: 1, count: 2 }; { type: 'shield', level: 2, count: 1 }; { type: 'repair_supplies', count: 6 } (alias: tower_repair); { type: 'parts_voucher', count: 3 }
+  // Debug starting items (upgrade plans, movement tokens, suppression bombs, shields, repair supplies, parts/token vouchers)
+  // Examples: { type: 'upgrade_plan', count: 5 }; { type: 'movement_token', count: 10 }; { type: 'suppression_bomb', level: 1, count: 2 }; { type: 'shield', level: 2, count: 1 }; { type: 'repair_supplies', count: 6 } (alias: tower_repair); { type: 'parts_voucher', count: 3 }; { type: 'token_voucher', count: 1 }
   DEBUG_STARTING_ITEMS: [
     // { type: 'repair_supplies', count: 6 },
     // { type: 'upgrade_plan', count: 99 },
+    // { type: 'movement_token', count: 200 },
   ],
   
-  WAVE_DURATION: 120, // reset to 120
+  WAVE_DURATION: 180, // reset to 180
   SCENARIO_WAVE_DURATION: 300,
   WAVES_PER_GROUP: 5,
   /** Campaign ends after this wave group completes (unless Endless mode is on). */
@@ -102,16 +117,17 @@ export const CONFIG = {
    * Set to 3 for quick portrait testing; production default is 30.
    */
   SURVIVAL_HERO_ROTATION_INTERVAL_SEC: 30,
+  /** First rotating ally on wave group 30 (Sir Wickworthy, hero pattern group 1). */
+  FIRST_SURVIVAL_HERO_GROUP: 1,
   /**
-   * Final survival wave only (30-1): each full in-wave minute adds this
-   * to Blackfyre’s base spread from FIRE_SPAWN_PROBABILITIES (does not edit table rows). Tune here.
-   */
-  BLACKFYRE_FINAL_SURVIVAL_SPREAD_BONUS_PER_MINUTE: 0.0005,
-  /**
-   * Final survival wave (30-1): seconds between each step of per-wave fire spread scaling
-   * (wave-1 rate → wave-2 → … → wave-5, then capped).
+   * Final survival wave (30-1): seconds between each virtual wave-in-group step for spread
+   * scaling ({@link DIFFICULTY_FIRE_SPREAD_INCREMENT_PER_WAVE}) and survival random-ignition steps.
    */
   FINAL_SURVIVAL_FIRE_SPREAD_RAMP_INTERVAL_SEC: 120,
+  /** Final survival wave (30-1): random ignition chance at 0:00 (then +{@link FINAL_SURVIVAL_IGNITION_CHANCE_INCREMENT_PER_STEP} each step). */
+  FINAL_SURVIVAL_IGNITION_CHANCE_START: 0.002,
+  /** Final survival wave (30-1): added to random ignition chance every {@link FINAL_SURVIVAL_FIRE_SPREAD_RAMP_INTERVAL_SEC}. */
+  FINAL_SURVIVAL_IGNITION_CHANCE_INCREMENT_PER_STEP: 0.001,
   WAVE_GROUP_BONUS_REWARD: 1000,
 
   // Wave group names: index 0 = group 1, …, last entry = {@link FINAL_SURVIVAL_WAVE_GROUP}.
@@ -165,7 +181,7 @@ export const CONFIG = {
   PATH_DIRECTION_BIAS_DECAY: 0.95, // Reduces direction bias over path length (1.0 = no decay, < 1.0 = less bias as path grows longer)
   
   // Fire spread: base rate per fire type per wave is in FIRE_SPAWN_PROBABILITIES[][type][1]
-  // Final survival wave (30-1): Blackfyre base also gains BLACKFYRE_FINAL_SURVIVAL_SPREAD_BONUS_PER_MINUTE per full minute (see CONFIG above).
+  // Final survival (30-1): virtual wave-in-group advances every FINAL_SURVIVAL_FIRE_SPREAD_RAMP_INTERVAL_SEC (uncapped).
   // Situation multipliers (applied to base): normal=1, toPath=80, pathToPath=100, pathToTown=160,
   // spawnerToAdjacent≈53 (non-path), spawnerToAdjacentPath=160 (≈2× normal-to-path so spawners
   // ignite adjacent paths faster than both regular fires would AND faster than they ignite their
@@ -215,8 +231,8 @@ export const CONFIG = {
     ['cataclysm', 'cataclysm', 'cataclysm', 'cataclysm', 'blackfyre', 'blackfyre'], // wave group 25
     ['cataclysm', 'cataclysm', 'cataclysm', 'blackfyre', 'blackfyre', 'blackfyre'],
     ['cataclysm', 'cataclysm', 'cataclysm', 'cataclysm', 'blackfyre', 'blackfyre', 'blackfyre'],
-    ['blackfyre', 'blackfyre', 'blackfyre', 'blackfyre'],
-    ['blackfyre', 'blackfyre', 'blackfyre', 'blackfyre', 'blackfyre'],
+    ['cataclysm', 'blackfyre', 'blackfyre', 'blackfyre', 'blackfyre'],
+    ['cataclysm', 'blackfyre', 'blackfyre', 'blackfyre', 'blackfyre', 'blackfyre'],
     ['blackfyre', 'blackfyre', 'blackfyre', 'blackfyre', 'blackfyre', 'blackfyre'], // wave group 30
   ],
 
@@ -262,157 +278,157 @@ export const CONFIG = {
     { cinder: [0.40, 0.0015], flame: [0.60, 0.00145], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
     { cinder: [0.35, 0.0015], flame: [0.65, 0.0015], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
     // Wave Group 5
-    { cinder: [0.29, 0.0015], flame: [0.69, 0.0015], blaze: [0.02, 0.00015], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.23, 0.0015], flame: [0.73, 0.0015], blaze: [0.04, 0.00025], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.17, 0.0015], flame: [0.77, 0.0015], blaze: [0.06, 0.00035], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.11, 0.0015], flame: [0.81, 0.0015], blaze: [0.08, 0.00045], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.05, 0.0015], flame: [0.85, 0.0015], blaze: [0.10, 0.00055], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.29, 0.0016], flame: [0.69, 0.0015], blaze: [0.02, 0.00015], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.23, 0.0017], flame: [0.73, 0.0015], blaze: [0.04, 0.00025], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.17, 0.0018], flame: [0.77, 0.0015], blaze: [0.06, 0.00035], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.11, 0.0019], flame: [0.81, 0.0015], blaze: [0.08, 0.00045], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.05, 0.0020], flame: [0.85, 0.0015], blaze: [0.10, 0.00055], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
     // Wave Group 6
-    { cinder: [0.09, 0.0015], flame: [0.76, 0.0015], blaze: [0.15, 0.00065], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.09, 0.0015], flame: [0.71, 0.0015], blaze: [0.20, 0.00075], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.08, 0.0015], flame: [0.66, 0.0015], blaze: [0.26, 0.00085], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.08, 0.0015], flame: [0.61, 0.0015], blaze: [0.31, 0.00095], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.07, 0.0015], flame: [0.56, 0.0015], blaze: [0.37, 0.00105], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.09, 0.0020], flame: [0.76, 0.0016], blaze: [0.15, 0.00065], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.09, 0.0020], flame: [0.71, 0.0017], blaze: [0.20, 0.00075], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.08, 0.0020], flame: [0.66, 0.0018], blaze: [0.26, 0.00085], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.08, 0.0020], flame: [0.61, 0.0019], blaze: [0.31, 0.00095], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.07, 0.0020], flame: [0.56, 0.0020], blaze: [0.37, 0.00105], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
     // Wave Group 7
-    { cinder: [0.07, 0.0015], flame: [0.55, 0.0015], blaze: [0.38, 0.00115], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.06, 0.0015], flame: [0.50, 0.0015], blaze: [0.44, 0.00125], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.06, 0.0015], flame: [0.45, 0.0015], blaze: [0.49, 0.00135], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.05, 0.0015], flame: [0.40, 0.0015], blaze: [0.55, 0.00145], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.05, 0.0015], flame: [0.35, 0.0015], blaze: [0.60, 0.0015], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.07, 0.0020], flame: [0.55, 0.0021], blaze: [0.38, 0.00115], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.06, 0.0020], flame: [0.50, 0.0021], blaze: [0.44, 0.00125], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.06, 0.0020], flame: [0.45, 0.0021], blaze: [0.49, 0.00135], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.05, 0.0020], flame: [0.40, 0.0021], blaze: [0.55, 0.00145], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.05, 0.0020], flame: [0.35, 0.0021], blaze: [0.60, 0.0015], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0] },
     // Wave Group 8
-    { cinder: [0.04, 0.0015], flame: [0.29, 0.0015], blaze: [0.65, 0.0015], firestorm: [0.02, 0.00015], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.04, 0.0015], flame: [0.23, 0.0015], blaze: [0.69, 0.0015], firestorm: [0.04, 0.00025], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.03, 0.0015], flame: [0.17, 0.0015], blaze: [0.74, 0.0015], firestorm: [0.06, 0.00035], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.02, 0.0015], flame: [0.11, 0.0015], blaze: [0.79, 0.0015], firestorm: [0.08, 0.00045], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.01, 0.0015], flame: [0.05, 0.0015], blaze: [0.84, 0.0015], firestorm: [0.10, 0.00055], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.04, 0.0020], flame: [0.29, 0.0021], blaze: [0.65, 0.0015], firestorm: [0.02, 0.00015], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.04, 0.0020], flame: [0.23, 0.0021], blaze: [0.69, 0.0015], firestorm: [0.04, 0.00025], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.03, 0.0020], flame: [0.17, 0.0021], blaze: [0.74, 0.0015], firestorm: [0.06, 0.00035], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.02, 0.0020], flame: [0.11, 0.0021], blaze: [0.79, 0.0015], firestorm: [0.08, 0.00045], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.01, 0.0020], flame: [0.05, 0.0021], blaze: [0.84, 0.0015], firestorm: [0.10, 0.00055], inferno: [0.00, 0], cataclysm: [0.00, 0] },
     // Wave Group 9
-    { cinder: [0.00, 0], flame: [0.09, 0.0015], blaze: [0.76, 0.0015], firestorm: [0.15, 0.00065], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.09, 0.0015], blaze: [0.70, 0.0015], firestorm: [0.21, 0.00075], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.08, 0.0015], blaze: [0.65, 0.0015], firestorm: [0.27, 0.00085], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.08, 0.0015], blaze: [0.59, 0.0015], firestorm: [0.33, 0.00095], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.07, 0.0015], blaze: [0.54, 0.0015], firestorm: [0.39, 0.00105], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.09, 0.0021], blaze: [0.76, 0.0016], firestorm: [0.15, 0.00065], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.09, 0.0021], blaze: [0.70, 0.0017], firestorm: [0.21, 0.00075], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.08, 0.0021], blaze: [0.65, 0.0018], firestorm: [0.27, 0.00085], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.08, 0.0021], blaze: [0.59, 0.0019], firestorm: [0.33, 0.00095], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.07, 0.0021], blaze: [0.54, 0.0020], firestorm: [0.39, 0.00105], inferno: [0.00, 0], cataclysm: [0.00, 0] },
     // Wave Group 10
-    { cinder: [0.00, 0], flame: [0.07, 0.0015], blaze: [0.48, 0.0015], firestorm: [0.45, 0.00115], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.06, 0.0015], blaze: [0.44, 0.0015], firestorm: [0.50, 0.00125], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.06, 0.0015], blaze: [0.39, 0.0015], firestorm: [0.55, 0.00135], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.05, 0.0015], blaze: [0.35, 0.0015], firestorm: [0.60, 0.00145], inferno: [0.00, 0], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.05, 0.0015], blaze: [0.30, 0.0015], firestorm: [0.65, 0.0015], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.07, 0.0021], blaze: [0.48, 0.0021], firestorm: [0.45, 0.00115], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.06, 0.0021], blaze: [0.44, 0.0022], firestorm: [0.50, 0.00125], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.06, 0.0021], blaze: [0.39, 0.0022], firestorm: [0.55, 0.00135], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.05, 0.0021], blaze: [0.35, 0.0022], firestorm: [0.60, 0.00145], inferno: [0.00, 0], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.05, 0.0021], blaze: [0.30, 0.0022], firestorm: [0.65, 0.0015], inferno: [0.00, 0], cataclysm: [0.00, 0] },
     // Wave Group 11
-    { cinder: [0.00, 0], flame: [0.04, 0.0015], blaze: [0.29, 0.0015], firestorm: [0.65, 0.0015], inferno: [0.02, 0.00015], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.04, 0.0015], blaze: [0.23, 0.0015], firestorm: [0.69, 0.0015], inferno: [0.04, 0.00025], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.03, 0.0015], blaze: [0.17, 0.0015], firestorm: [0.74, 0.0015], inferno: [0.06, 0.00035], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.02, 0.0015], blaze: [0.11, 0.0015], firestorm: [0.79, 0.0015], inferno: [0.08, 0.00045], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.01, 0.0015], blaze: [0.05, 0.0015], firestorm: [0.84, 0.0015], inferno: [0.10, 0.00055], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.04, 0.0021], blaze: [0.29, 0.0022], firestorm: [0.65, 0.0015], inferno: [0.02, 0.00015], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.04, 0.0021], blaze: [0.23, 0.0022], firestorm: [0.69, 0.0015], inferno: [0.04, 0.00025], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.03, 0.0021], blaze: [0.17, 0.0022], firestorm: [0.74, 0.0015], inferno: [0.06, 0.00035], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.02, 0.0021], blaze: [0.11, 0.0022], firestorm: [0.79, 0.0015], inferno: [0.08, 0.00045], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.01, 0.0021], blaze: [0.05, 0.0022], firestorm: [0.84, 0.0015], inferno: [0.10, 0.00055], cataclysm: [0.00, 0] },
     // Wave Group 12
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.09, 0.0015], firestorm: [0.76, 0.0015], inferno: [0.15, 0.00065], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.09, 0.0015], firestorm: [0.70, 0.0015], inferno: [0.21, 0.00075], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.08, 0.0015], firestorm: [0.65, 0.0015], inferno: [0.27, 0.00085], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.08, 0.0015], firestorm: [0.59, 0.0015], inferno: [0.33, 0.00095], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.07, 0.0015], firestorm: [0.54, 0.0015], inferno: [0.39, 0.00105], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.09, 0.0022], firestorm: [0.76, 0.0015], inferno: [0.15, 0.00065], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.09, 0.0022], firestorm: [0.70, 0.0015], inferno: [0.21, 0.00075], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.08, 0.0022], firestorm: [0.65, 0.0015], inferno: [0.27, 0.00085], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.08, 0.0022], firestorm: [0.59, 0.0015], inferno: [0.33, 0.00095], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.07, 0.0022], firestorm: [0.54, 0.0015], inferno: [0.39, 0.00105], cataclysm: [0.00, 0] },
     // Wave Group 13
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.07, 0.0015], firestorm: [0.48, 0.0015], inferno: [0.45, 0.00115], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.06, 0.0015], firestorm: [0.44, 0.0015], inferno: [0.50, 0.00125], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.06, 0.0015], firestorm: [0.39, 0.0015], inferno: [0.55, 0.00135], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.05, 0.0015], firestorm: [0.35, 0.0015], inferno: [0.60, 0.00145], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.05, 0.0015], firestorm: [0.30, 0.0015], inferno: [0.65, 0.0015], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.07, 0.0022], firestorm: [0.48, 0.0016], inferno: [0.45, 0.00115], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.06, 0.0022], firestorm: [0.44, 0.0017], inferno: [0.50, 0.00125], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.06, 0.0022], firestorm: [0.39, 0.0018], inferno: [0.55, 0.00135], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.05, 0.0022], firestorm: [0.35, 0.0019], inferno: [0.60, 0.00145], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.05, 0.0022], firestorm: [0.30, 0.0020], inferno: [0.65, 0.0015], cataclysm: [0.00, 0] },
     // Wave Group 14
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.04, 0.0015], firestorm: [0.30, 0.0015], inferno: [0.66, 0.0015], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.04, 0.0015], firestorm: [0.25, 0.0015], inferno: [0.71, 0.0015], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.03, 0.0015], firestorm: [0.20, 0.0015], inferno: [0.77, 0.0015], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.02, 0.0015], firestorm: [0.15, 0.0015], inferno: [0.83, 0.0015], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.01, 0.0015], firestorm: [0.10, 0.0015], inferno: [0.89, 0.0015], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.04, 0.0022], firestorm: [0.30, 0.0021], inferno: [0.66, 0.0015], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.04, 0.0022], firestorm: [0.25, 0.0022], inferno: [0.71, 0.0015], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.03, 0.0022], firestorm: [0.20, 0.0023], inferno: [0.77, 0.0015], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.02, 0.0022], firestorm: [0.15, 0.0023], inferno: [0.83, 0.0015], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.01, 0.0022], firestorm: [0.10, 0.0023], inferno: [0.89, 0.0015], cataclysm: [0.00, 0] },
     // Wave Group 15
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.09, 0.0015], inferno: [0.91, 0.0015], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.09, 0.0015], inferno: [0.91, 0.0015], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.08, 0.0015], inferno: [0.92, 0.0015], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.08, 0.0015], inferno: [0.92, 0.0015], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.07, 0.0015], inferno: [0.93, 0.0015], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.09, 0.0023], inferno: [0.91, 0.0015], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.09, 0.0023], inferno: [0.91, 0.0015], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.08, 0.0023], inferno: [0.92, 0.0015], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.08, 0.0023], inferno: [0.92, 0.0015], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.07, 0.0023], inferno: [0.93, 0.0015], cataclysm: [0.00, 0] },
     // Wave Group 16
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.07, 0.0015], inferno: [0.93, 0.0015], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.06, 0.0015], inferno: [0.94, 0.0015], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.06, 0.0015], inferno: [0.94, 0.0015], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.05, 0.0015], inferno: [0.95, 0.0015], cataclysm: [0.00, 0] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.05, 0.0015], inferno: [0.95, 0.0015], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.07, 0.0023], inferno: [0.93, 0.0016], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.06, 0.0023], inferno: [0.94, 0.0017], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.06, 0.0023], inferno: [0.94, 0.0018], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.05, 0.0023], inferno: [0.95, 0.0019], cataclysm: [0.00, 0] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.05, 0.0023], inferno: [0.95, 0.0020], cataclysm: [0.00, 0] },
     // Wave Group 17
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.05, 0.0015], inferno: [0.94, 0.0015], cataclysm: [0.01, 0.0001] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.04, 0.0015], inferno: [0.94, 0.0015], cataclysm: [0.02, 0.0002] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.03, 0.0015], inferno: [0.94, 0.0015], cataclysm: [0.03, 0.0003] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.02, 0.0015], inferno: [0.94, 0.0015], cataclysm: [0.04, 0.0004] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.01, 0.0015], inferno: [0.94, 0.0015], cataclysm: [0.05, 0.0005] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.05, 0.0023], inferno: [0.94, 0.0021], cataclysm: [0.01, 0.00015] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.04, 0.0023], inferno: [0.94, 0.0022], cataclysm: [0.02, 0.00025] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.03, 0.0023], inferno: [0.94, 0.0023], cataclysm: [0.03, 0.00035] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.02, 0.0023], inferno: [0.94, 0.0024], cataclysm: [0.04, 0.00045] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.01, 0.0023], inferno: [0.94, 0.0025], cataclysm: [0.05, 0.00055] },
     // Wave Group 18
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.94, 0.0015], cataclysm: [0.06, 0.0006] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.93, 0.0015], cataclysm: [0.07, 0.0006] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.92, 0.0015], cataclysm: [0.08, 0.0007] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.91, 0.0015], cataclysm: [0.09, 0.0007] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.90, 0.0015], cataclysm: [0.10, 0.0008] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.94, 0.0025], cataclysm: [0.06, 0.00065] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.93, 0.0026], cataclysm: [0.07, 0.00075] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.92, 0.0027], cataclysm: [0.08, 0.00085] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.91, 0.0028], cataclysm: [0.09, 0.00095] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.90, 0.0029], cataclysm: [0.10, 0.00105] },
     // Wave Group 19
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.89, 0.0015], cataclysm: [0.11, 0.0008] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.88, 0.0015], cataclysm: [0.12, 0.0009] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.87, 0.0015], cataclysm: [0.13, 0.0009] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.85, 0.0015], cataclysm: [0.14, 0.0010] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.85, 0.0015], cataclysm: [0.15, 0.0010] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.89, 0.0030], cataclysm: [0.11, 0.00115] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.88, 0.0031], cataclysm: [0.12, 0.00125] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.87, 0.0032], cataclysm: [0.13, 0.00135] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.85, 0.0033], cataclysm: [0.14, 0.00145] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.85, 0.0034], cataclysm: [0.15, 0.0015] },
     // Wave Group 20
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.84, 0.0015], cataclysm: [0.16, 0.0011] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.80, 0.0015], cataclysm: [0.20, 0.0011] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.75, 0.0015], cataclysm: [0.25, 0.0012] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.70, 0.0015], cataclysm: [0.30, 0.0012] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.65, 0.0015], cataclysm: [0.35, 0.0013] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.84, 0.0035], cataclysm: [0.16, 0.0016] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.80, 0.0036], cataclysm: [0.20, 0.0017] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.75, 0.0037], cataclysm: [0.25, 0.0018] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.70, 0.0038], cataclysm: [0.30, 0.0019] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.65, 0.0039], cataclysm: [0.35, 0.0020] },
     // Wave Group 21
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.40, 0.0015], cataclysm: [0.60, 0.0013] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.30, 0.0015], cataclysm: [0.70, 0.0014] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.20, 0.0015], cataclysm: [0.80, 0.0014] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.10, 0.0015], cataclysm: [0.90, 0.0015] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.05, 0.0015], cataclysm: [0.95, 0.0015] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.40, 0.0040], cataclysm: [0.60, 0.0021] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.30, 0.0041], cataclysm: [0.70, 0.0022] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.20, 0.0042], cataclysm: [0.80, 0.0023] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.10, 0.0043], cataclysm: [0.90, 0.0024] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.05, 0.0044], cataclysm: [0.95, 0.0025] },
     // Wave Group 22
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.95, 0.0016], blackfyre: [0.05, 0.00004] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.90, 0.0016], blackfyre: [0.10, 0.00006] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.85, 0.0017], blackfyre: [0.15, 0.00008] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.80, 0.0017], blackfyre: [0.20, 0.00010] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.75, 0.0018], blackfyre: [0.25, 0.00012] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.95, 0.0026], blackfyre: [0.05, 0.00004] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.90, 0.0027], blackfyre: [0.10, 0.00006] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.85, 0.0028], blackfyre: [0.15, 0.00008] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.80, 0.0029], blackfyre: [0.20, 0.00010] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.75, 0.0030], blackfyre: [0.25, 0.00012] },
     // Wave Group 23
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.70, 0.0018], blackfyre: [0.30, 0.00014] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.65, 0.0018], blackfyre: [0.35, 0.00016] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.60, 0.0019], blackfyre: [0.40, 0.00018] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.55, 0.0019], blackfyre: [0.45, 0.00020] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.50, 0.0020], blackfyre: [0.50, 0.00022] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.70, 0.0031], blackfyre: [0.30, 0.00014] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.65, 0.0031], blackfyre: [0.35, 0.00016] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.60, 0.0031], blackfyre: [0.40, 0.00018] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.55, 0.0031], blackfyre: [0.45, 0.00020] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.50, 0.0031], blackfyre: [0.50, 0.00022] },
     // Wave Group 24
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.45, 0.0021], blackfyre: [0.55, 0.00024] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.40, 0.0022], blackfyre: [0.60, 0.00026] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.35, 0.0023], blackfyre: [0.65, 0.00028] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.30, 0.0024], blackfyre: [0.70, 0.00030] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.25, 0.0025], blackfyre: [0.75, 0.00032] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.45, 0.0032], blackfyre: [0.55, 0.00024] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.40, 0.0032], blackfyre: [0.60, 0.00026] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.35, 0.0032], blackfyre: [0.65, 0.00028] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.30, 0.0032], blackfyre: [0.70, 0.00030] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.25, 0.0032], blackfyre: [0.75, 0.00032] },
     // Wave Group 25
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.25, 0.0026], blackfyre: [0.75, 0.00034] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.25, 0.0027], blackfyre: [0.75, 0.00036] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.25, 0.0028], blackfyre: [0.75, 0.00038] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.25, 0.0029], blackfyre: [0.75, 0.00040] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.25, 0.0030], blackfyre: [0.75, 0.00042] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.25, 0.0033], blackfyre: [0.75, 0.00034] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.25, 0.0033], blackfyre: [0.75, 0.00036] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.25, 0.0033], blackfyre: [0.75, 0.00038] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.25, 0.0033], blackfyre: [0.75, 0.00040] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.25, 0.0033], blackfyre: [0.75, 0.00042] },
     // Wave Group 26
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.20, 0.0030], blackfyre: [0.80, 0.00044] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.20, 0.0030], blackfyre: [0.80, 0.00046] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.20, 0.0030], blackfyre: [0.80, 0.00048] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.20, 0.0030], blackfyre: [0.80, 0.00050] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.20, 0.0030], blackfyre: [0.80, 0.00052] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.20, 0.0034], blackfyre: [0.80, 0.00044] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.20, 0.0034], blackfyre: [0.80, 0.00046] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.20, 0.0034], blackfyre: [0.80, 0.00048] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.20, 0.0034], blackfyre: [0.80, 0.00050] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.20, 0.0034], blackfyre: [0.80, 0.00052] },
     // Wave Group 27
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.15, 0.0030], blackfyre: [0.85, 0.00054] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.15, 0.0030], blackfyre: [0.85, 0.00056] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.15, 0.0030], blackfyre: [0.85, 0.00058] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.15, 0.0030], blackfyre: [0.85, 0.00060] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.15, 0.0030], blackfyre: [0.85, 0.00062] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.15, 0.0035], blackfyre: [0.85, 0.00054] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.15, 0.0036], blackfyre: [0.85, 0.00056] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.15, 0.0037], blackfyre: [0.85, 0.00058] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.15, 0.0038], blackfyre: [0.85, 0.00060] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.15, 0.0039], blackfyre: [0.85, 0.00062] },
     // Wave Group 28
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.10, 0.0030], blackfyre: [0.90, 0.00064] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.10, 0.0030], blackfyre: [0.90, 0.00067] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.10, 0.0030], blackfyre: [0.90, 0.00070] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.10, 0.0030], blackfyre: [0.90, 0.00073] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.10, 0.0030], blackfyre: [0.90, 0.00076] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.10, 0.0040], blackfyre: [0.90, 0.00064] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.10, 0.0041], blackfyre: [0.90, 0.00067] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.10, 0.0042], blackfyre: [0.90, 0.00070] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.10, 0.0043], blackfyre: [0.90, 0.00073] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.10, 0.0044], blackfyre: [0.90, 0.00076] },
     // Wave Group 29
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.05, 0.0030], blackfyre: [0.95, 0.00085] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.05, 0.0030], blackfyre: [0.95, 0.00095] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.05, 0.0030], blackfyre: [0.95, 0.00105] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.05, 0.0030], blackfyre: [0.95, 0.00115] },
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.05, 0.0030], blackfyre: [0.95, 0.00125] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.05, 0.0045], blackfyre: [0.95, 0.00085] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.05, 0.0046], blackfyre: [0.95, 0.00095] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.05, 0.0047], blackfyre: [0.95, 0.00105] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.05, 0.0048], blackfyre: [0.95, 0.00115] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.05, 0.0049], blackfyre: [0.95, 0.00125] },
     // Wave Group 30
-    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0.0030], blackfyre: [1.00, 0.00130] },
+    { cinder: [0.00, 0], flame: [0.00, 0], blaze: [0.00, 0], firestorm: [0.00, 0], inferno: [0.00, 0], cataclysm: [0.00, 0.0050], blackfyre: [1.00, 0.00130] },
 
   ],
   
@@ -429,7 +445,7 @@ export const CONFIG = {
       name: 'Water Bucket',
       sprite: 'water_bucket.png',
       health: 16,
-      explosionDamage: 64,
+      explosionDamage: 32,
       explosionRings: 3,
       spawnChance: 0.003,
       minWaveGroup: 1,
@@ -440,7 +456,7 @@ export const CONFIG = {
       name: 'Water Tank',
       sprite: 'water_tank.png',
       health: 24,
-      explosionDamage: 64,
+      explosionDamage: 32,
       explosionRings: 4,
       spawnChance: 0.001,
       minWaveGroup: 3,
@@ -451,7 +467,7 @@ export const CONFIG = {
       name: 'Water Vat',
       sprite: 'water_vat.png',
       health: 32,
-      explosionDamage: 64,
+      explosionDamage: 32,
       explosionRings: 5,
       spawnChance: 0.00035,
       minWaveGroup: 7,
@@ -462,30 +478,107 @@ export const CONFIG = {
   /** Map sprites and placement modal icons: 1.25 = 25% larger than the temp pickup baseline. */
   WATER_TANK_DISPLAY_SCALE: 1.25,
 
-  FIRE_EXTINGUISH_TIME_CINDER: 1,
-  FIRE_EXTINGUISH_TIME_FLAME: 2,
-  FIRE_EXTINGUISH_TIME_BLAZE: 4,
-  FIRE_EXTINGUISH_TIME_FIRESTORM: 8,
-  FIRE_EXTINGUISH_TIME_INFERNO: 16,
-  FIRE_EXTINGUISH_TIME_CATACLYSM: 64,
-  FIRE_EXTINGUISH_TIME_BLACKFYRE: 1000,
+  FIRE_EXTINGUISH_TIME_CINDER: 5,
+  FIRE_EXTINGUISH_TIME_FLAME: 7, // +2
+  FIRE_EXTINGUISH_TIME_BLAZE: 10, // +3
+  FIRE_EXTINGUISH_TIME_FIRESTORM: 15, // +5
+  FIRE_EXTINGUISH_TIME_INFERNO: 22, // +7
+  FIRE_EXTINGUISH_TIME_CATACLYSM: 32, // +10
+  FIRE_EXTINGUISH_TIME_BLACKFYRE: 320, // x10
   
   FIRE_REGROW_RATE: 0.5,
   
   FIRE_DAMAGE_PER_SECOND_CINDER: 2,
   FIRE_DAMAGE_PER_SECOND_FLAME: 4, // +2
   FIRE_DAMAGE_PER_SECOND_BLAZE: 7, // +3
-  FIRE_DAMAGE_PER_SECOND_FIRESTORM: 11, // +4
-  FIRE_DAMAGE_PER_SECOND_INFERNO: 16, // +5
-  FIRE_DAMAGE_PER_SECOND_CATACLYSM: 22, // +6
-  FIRE_DAMAGE_PER_SECOND_BLACKFYRE: 29, // +7
+  FIRE_DAMAGE_PER_SECOND_FIRESTORM: 12, // +5
+  FIRE_DAMAGE_PER_SECOND_INFERNO: 19, // +7
+  FIRE_DAMAGE_PER_SECOND_CATACLYSM: 29, // +10
+  FIRE_DAMAGE_PER_SECOND_BLACKFYRE: 42, // +13
+
+  XP_CINDER: 2, // reset to 2
+  XP_FLAME: 4,
+  XP_BLAZE: 8,
+  XP_FIRESTORM: 16,
+  XP_INFERNO: 32,
+  XP_CATACLYSM: 64,
+  XP_BLACKFYRE: 1000,
+  
+  LEVEL_BASE_XP: 100,
+  /** Each level after 2, the marginal XP requirement is this factor times the previous marginal. */
+  LEVEL_XP_MULTIPLIER: 1.20,
   
   /** Multiplier for all score gains (extinguish bonuses, items, wave completion). */
   SCORE_RATE_MULTIPLIER: 0.5,
 
   STARTING_TOWERS: 1,
-  STARTING_CURRENCY: 4000,
+  STARTING_CURRENCY: 6000,
   STARTING_UPGRADE_PLANS: 0, // RESET TO 0
+  STARTING_SPECIALTY_PLANS: 0,
+
+  /** Specialty research tree — four paths, five levels each (balance-tweakable bonuses).
+   *  Each level's `bonus` is the **total** effect at that tier (not an increment over the prior level). */
+  SPECIALTIES: {
+    time: {
+      id: 'time',
+      name: 'Time',
+      summary: 'Temporary power-ups last longer.',
+      levels: [
+        { level: 1, roman: 'I', bonus: 1 },
+        { level: 2, roman: 'II', bonus: 2 },
+        { level: 3, roman: 'III', bonus: 4 },
+        { level: 4, roman: 'IV', bonus: 7 },
+        { level: 5, roman: 'V', bonus: 11 },
+      ],
+    },
+    power: {
+      id: 'power',
+      name: 'Power',
+      summary: 'Permanent power-ups are more effective.',
+      levels: [
+        { level: 1, roman: 'I', bonus: 1 },
+        { level: 2, roman: 'II', bonus: 2 },
+        { level: 3, roman: 'III', bonus: 4 },
+        { level: 4, roman: 'IV', bonus: 7 },
+        { level: 5, roman: 'V', bonus: 11 },
+      ],
+    },
+    money: {
+      id: 'money',
+      name: 'Money',
+      summary: 'Earn more currency from all sources.',
+      levels: [
+        { level: 1, roman: 'I', bonus: 10 },
+        { level: 2, roman: 'II', bonus: 20 },
+        { level: 3, roman: 'III', bonus: 40 },
+        { level: 4, roman: 'IV', bonus: 70 },
+        { level: 5, roman: 'V', bonus: 110 },
+      ],
+    },
+    health: {
+      id: 'health',
+      name: 'Health',
+      summary: 'Towers and the grove regenerate health faster when not burning.',
+      levels: [
+        { level: 1, roman: 'I', bonus: 20 },
+        { level: 2, roman: 'II', bonus: 40 },
+        { level: 3, roman: 'III', bonus: 70 },
+        { level: 4, roman: 'IV', bonus: 110 },
+        { level: 5, roman: 'V', bonus: 160 },
+      ],
+    },
+  },
+
+  /** Display keywords for specialty levels I–V (shared across all paths). */
+  SPECIALTY_LEVEL_KEYWORDS: ['APPRENTICE', 'JOURNEYMAN', 'ADVANCED', 'EXPERT', 'MASTER'],
+
+  /** Bonus rewards granted when completing level V in each specialty path. */
+  SPECIALTY_MILESTONE_REWARDS: {
+    time: { permanentPowerUpCount: 5 },
+    power: { upgradePlans: 7 },
+    money: { currency: 15000 },
+    health: { treeJuice: 10 },
+  },
   
   TOWER_TYPE_JET: 'jet',
   TOWER_TYPE_SPREAD: 'spread',
@@ -493,13 +586,17 @@ export const CONFIG = {
   TOWER_TYPE_RAIN: 'rain',
   TOWER_TYPE_BOMBER: 'bomber',
   TOWER_TYPE_SENTINEL: 'sentinel',
+  TOWER_TYPE_PERIMETER: 'perimeter',
+  TOWER_TYPE_CHARGE: 'charge',
   
-  TOWER_COST_JET: 1000,     // x1.00 relative power to jet
-  TOWER_COST_SPREAD: 3000,  // x1.80 relative power to jet
-  TOWER_COST_RAIN: 4000,    // x2.44 relative power to jet
-  TOWER_COST_PULSING: 6000, // x4.20 relative power to jet
-  TOWER_COST_BOMBER: 18000,  // x7.32 relative power to jet
-  TOWER_COST_SENTINEL: 32000, 
+  TOWER_COST_JET: 1000,     // baseline single-line DPS anchor (L1 ≈ 6/sec)
+  TOWER_COST_SPREAD: 3000,  // ~3× jet; 5-line coverage at ~½ DPS per line
+  TOWER_COST_RAIN: 4000,    // ~4× jet; multi-hex AoE (~5 DPS/hex)
+  TOWER_COST_PULSING: 6000, // ~6× jet; ring burst (~10 DPS/hex avg at L1)
+  TOWER_COST_PERIMETER: 15000, // ring-targeted water bombs; one hex per shot around selected ring
+  TOWER_COST_BOMBER: 18000, // long-range AoE bombs; per-hit DPS low, utility high
+  TOWER_COST_CHARGE: 30000, // directional unlimited-range charge shots; fixed 7-hex impact cluster
+  TOWER_COST_SENTINEL: 35000, // multi-target bombs; map-wide support
   
   TOWER_RANGE_LEVEL_1: 3,
   TOWER_RANGE_LEVEL_2: 5,
@@ -512,33 +609,33 @@ export const CONFIG = {
   SPREAD_TOWER_RANGE_LEVEL_4: 5,
   
   // Jet tower (single-line spray) power per second
-  TOWER_POWER_LEVEL_1: 2.0,
-  TOWER_POWER_LEVEL_2: 4.0,
-  TOWER_POWER_LEVEL_3: 8.0,
-  TOWER_POWER_LEVEL_4: 16.0,
+  TOWER_POWER_LEVEL_1: 6.0,
+  TOWER_POWER_LEVEL_2: 8.0,
+  TOWER_POWER_LEVEL_3: 10.0,
+  TOWER_POWER_LEVEL_4: 12.0,
   // Spread tower (multi-hex fan) keeps its own lower baseline
-  SPREAD_TOWER_POWER_LEVEL_1: 1.0,
-  SPREAD_TOWER_POWER_LEVEL_2: 2.0,
-  SPREAD_TOWER_POWER_LEVEL_3: 4.0,
-  SPREAD_TOWER_POWER_LEVEL_4: 8.0,
+  SPREAD_TOWER_POWER_LEVEL_1: 5.0,
+  SPREAD_TOWER_POWER_LEVEL_2: 6.5,
+  SPREAD_TOWER_POWER_LEVEL_3: 8.0,
+  SPREAD_TOWER_POWER_LEVEL_4: 9.5,
   
   PULSING_ATTACK_INTERVAL_LEVEL_1: 4,
   PULSING_ATTACK_INTERVAL_LEVEL_2: 3,
   PULSING_ATTACK_INTERVAL_LEVEL_3: 2,
   PULSING_ATTACK_INTERVAL_LEVEL_4: 1,
-  PULSING_POWER_LEVEL_1: 3.0,
-  PULSING_POWER_LEVEL_2: 6.0,
-  PULSING_POWER_LEVEL_3: 12.0,
-  PULSING_POWER_LEVEL_4: 24.0,
+  PULSING_POWER_LEVEL_1: 10.0,
+  PULSING_POWER_LEVEL_2: 14.0,
+  PULSING_POWER_LEVEL_3: 19.0,
+  PULSING_POWER_LEVEL_4: 25.0,
   
   RAIN_RANGE_LEVEL_1: 1,
   RAIN_RANGE_LEVEL_2: 2,
   RAIN_RANGE_LEVEL_3: 3,
   RAIN_RANGE_LEVEL_4: 4,
-  RAIN_POWER_LEVEL_1: 0.8,
-  RAIN_POWER_LEVEL_2: 1.6,
-  RAIN_POWER_LEVEL_3: 3.2,
-  RAIN_POWER_LEVEL_4: 6.4,
+  RAIN_POWER_LEVEL_1: 3,
+  RAIN_POWER_LEVEL_2: 4,
+  RAIN_POWER_LEVEL_3: 5,
+  RAIN_POWER_LEVEL_4: 6,
   
   BOMBER_ATTACK_INTERVAL_LEVEL_1: 4,
   BOMBER_ATTACK_INTERVAL_LEVEL_2: 3,
@@ -546,19 +643,72 @@ export const CONFIG = {
   BOMBER_ATTACK_INTERVAL_LEVEL_4: 1,
   /** Floor (seconds) for pulsing/bomber cadence after Tower Speed — avoids near-zero intervals */
   TOWER_ATTACK_INTERVAL_MIN_SECONDS: 0.20,
-  BOMBER_BASE_POWER: 16,
+  BOMBER_BASE_POWER: 12,
   BOMBER_MIN_DISTANCE: 5,
   BOMBER_MAX_DISTANCE: 10,
   BOMBER_TRAVEL_SPEED: 2,
+  /** Multiplier on bomber/sentinel water-bomb explosion particle + center hex flash opacity (0–1). */
+  BOMBER_WATER_EXPLOSION_ALPHA_SCALE: 0.5,
+  /** Multiplier on pulsing tower burst water particle opacity (0–1). */
+  PULSING_WATER_BURST_ALPHA_SCALE: 0.5,
 
   SENTINEL_ATTACK_INTERVAL_LEVEL_1: 4,
   SENTINEL_ATTACK_INTERVAL_LEVEL_2: 3,
   SENTINEL_ATTACK_INTERVAL_LEVEL_3: 2,
   SENTINEL_ATTACK_INTERVAL_LEVEL_4: 1,
-  SENTINEL_POWER_LEVEL_1: 3.0,
-  SENTINEL_POWER_LEVEL_2: 6.0,
-  SENTINEL_POWER_LEVEL_3: 12.0,
-  SENTINEL_POWER_LEVEL_4: 24.0,
+  SENTINEL_POWER_LEVEL_1: 8,
+  SENTINEL_POWER_LEVEL_2: 10,
+  SENTINEL_POWER_LEVEL_3: 12,
+  SENTINEL_POWER_LEVEL_4: 14,
+
+  /** Perimeter tower: ms between successive shots along the selected hex ring. */
+  PERIMETER_SHOT_INTERVAL_MS_LEVEL_1: 250,
+  PERIMETER_SHOT_INTERVAL_MS_LEVEL_2: 200,
+  PERIMETER_SHOT_INTERVAL_MS_LEVEL_3: 150,
+  PERIMETER_SHOT_INTERVAL_MS_LEVEL_4: 100,
+  /** Floor (seconds) for perimeter cadence after Tower Speed — lower than TOWER_ATTACK_INTERVAL_MIN_SECONDS so L3/L4 intervals are not clamped to 0.2s. */
+  PERIMETER_ATTACK_INTERVAL_MIN_SECONDS: 0.025,
+  PERIMETER_POWER_LEVEL_1: 10,
+  PERIMETER_POWER_LEVEL_2: 14,
+  PERIMETER_POWER_LEVEL_3: 19,
+  PERIMETER_POWER_LEVEL_4: 25,
+  /** 4.5× {@link BOMBER_TRAVEL_SPEED} (3× base, then +50% travel speed). */
+  PERIMETER_TRAVEL_SPEED: 9,
+  /** In-flight bomb radius scale vs level-1 bomber bombs (~0.6). */
+  PERIMETER_BOMB_SIZE_SCALE: 0.46875,
+  PERIMETER_RING_DEFAULT: 2,
+  PERIMETER_RING_MIN: 1,
+  PERIMETER_RING_MAX: 10,
+  /** Subtract from turret aim (degrees) so barrel lines up with in-flight bombs; tweak in-game feel. */
+  PERIMETER_TURRET_AIM_LAG_DEG: 10,
+
+  CHARGE_ATTACK_INTERVAL_LEVEL_1: 4,
+  CHARGE_ATTACK_INTERVAL_LEVEL_2: 3,
+  CHARGE_ATTACK_INTERVAL_LEVEL_3: 2,
+  CHARGE_ATTACK_INTERVAL_LEVEL_4: 1,
+  CHARGE_POWER_LEVEL_1: 10,
+  CHARGE_POWER_LEVEL_2: 13,
+  CHARGE_POWER_LEVEL_3: 16,
+  CHARGE_POWER_LEVEL_4: 19,
+  CHARGE_TRAVEL_SPEED: 2,
+  CHARGE_TARGET_DEFAULT: 5,
+  CHARGE_TARGET_MIN: 1,
+  CHARGE_TARGET_MAX: 20,
+
+  CHARGE_MODE_AREA: 'area',
+  CHARGE_MODE_BALANCED: 'balanced',
+  CHARGE_MODE_POWER: 'power',
+  CHARGE_MODE_DEFAULT: 'balanced',
+  /** Per-hex power multiplier by impact mode (balanced = 1.0; applied to every hex in the zone). */
+  CHARGE_MODE_TOTAL_HP_MULTIPLIER_POWER: 1.1,
+  CHARGE_MODE_TOTAL_HP_MULTIPLIER_BALANCED: 1.0,
+  CHARGE_MODE_TOTAL_HP_MULTIPLIER_AREA: 0.9,
+
+  CHARGE_MODES: [
+    { id: 'area', label: 'Area', icon: 'assets/images/misc/impact.png', tooltip: '4-ring splash (37 hexes); less power per hex.' },
+    { id: 'balanced', label: 'Balance', icon: 'assets/images/misc/range.png', tooltip: '3-ring splash (19 hexes); standard power per hex.' },
+    { id: 'power', label: 'Power', icon: 'assets/images/misc/power.png', tooltip: '2-ring splash (7 hexes); more power per hex.' },
+  ],
 
   SENTINEL_MODE_GIFTS: 'gifts',
   SENTINEL_MODE_BURNING_VAULTS: 'burning_vaults',
@@ -583,6 +733,8 @@ export const CONFIG = {
   ],
   
   TOWER_HEALTH: 30,
+  /** HP per second restored when a tower or the grove is not burning. */
+  HEALTH_REGROW_RATE: 0.5,
   
   TOWN_HEALTH_BASE: 150, // reset to 150
   TOWN_HEALTH_PER_UPGRADE: 50,
@@ -591,15 +743,27 @@ export const CONFIG = {
   UPGRADE_PLAN_COST: 3000,
   MOVEMENT_TOKEN_COST: 150,
   TOWER_SELLBACK_COST: 2000,
+  /** Shop: unlocks selling movement tokens back to the shop from inventory. */
+  TOKEN_VOUCHER_COST: 2000,
+  /**
+   * Movement token sellback bundles (requires Token Voucher purchased this run).
+   * Each entry: { tokens, payout } — player spends `tokens` from inventory for `payout` currency.
+   */
+  MOVEMENT_TOKEN_SELLBACK_BUNDLES: [
+    { tokens: 10, payout: 1000 },
+    { tokens: 25, payout: 3000 },
+    { tokens: 50, payout: 7000 },
+    { tokens: 100, payout: 15000 },
+  ],
   PARTS_VOUCHER_COST: 100,
   PARTS_VOUCHER_VALUE_TIERS: [
-    { weight: 50, min: 90, max: 110 },
+    { weight: 50, min: 90, max: 120 },
     { weight: 15, min: 80, max: 89 },
-    { weight: 15, min: 111, max: 120 },
+    { weight: 15, min: 150, max: 250 },
     { weight: 5, min: 10, max: 79 },
-    { weight: 5, min: 121, max: 200 },
+    { weight: 5, min: 250, max: 300 },
     { weight: 5, min: 1, max: 9 },
-    { weight: 5, min: 201, max: 300 },
+    { weight: 5, min: 300, max: 400 },
   ],
   /** Shop item: restores one broken tower (inventory). Not gated by player level — unlocks by wave group (see {@link isTowerRepairShopUnlocked}). */
   TOWER_REPAIR_COST: 2000,
@@ -618,6 +782,8 @@ export const CONFIG = {
     { type: 'pulsing', unlockLevel: 15 },
     { type: 'bomber', unlockLevel: 20 },
     { type: 'sentinel', unlockLevel: 25 },
+    { type: 'perimeter', unlockLevel: 30 },
+    { type: 'charge', unlockLevel: 35 },
     { type: 'shield', level: 1, unlockLevel: 10 },
     { type: 'shield', level: 2, unlockLevel: 20 },
     { type: 'shield', level: 3, unlockLevel: 30 },
@@ -626,6 +792,7 @@ export const CONFIG = {
     { type: 'town_health', unlockLevel: 24 },
     { type: 'tower_sellback', unlockLevel: 35 },
     { type: 'parts_voucher', unlockLevel: 35 },
+    { type: 'token_voucher', unlockLevel: 45 },
     { type: 'upgrade_plan', unlockLevel: 40 },
     { type: 'water_pressure', unlockLevel: 12 },
     { type: 'xp_boost', unlockLevel: 17 },
@@ -687,6 +854,13 @@ export const CONFIG = {
       iconCategory: 'items',
       iconSprite: 'parts_voucher.png',
     },
+    token_voucher: {
+      name: 'Token Voucher',
+      description: 'Token Vouchers can now be purchased to sell movement tokens back to the shop.',
+      requiredCompletedWaveGroup: 21,
+      iconCategory: 'items',
+      iconSprite: 'token_voucher.png',
+    },
     burning_vaults: {
       name: 'Burning Vaults',
       description: 'Burning Vaults can now appear on the map with high-value rewards inside.',
@@ -707,6 +881,20 @@ export const CONFIG = {
       requiredCompletedWaveGroup: 16,
       iconType: 'tower',
       towerType: 'sentinel',
+    },
+    perimeter_tower: {
+      name: 'Perimeter Tower',
+      description: 'The Perimeter Tower is now part of the shop once your run level unlocks it.',
+      requiredCompletedWaveGroup: 22,
+      iconType: 'tower',
+      towerType: 'perimeter',
+    },
+    charge_tower: {
+      name: 'Charge Tower',
+      description: 'The Charge Tower is now part of the shop once your run level unlocks it.',
+      requiredCompletedWaveGroup: 23,
+      iconType: 'tower',
+      towerType: 'charge',
     },
     spread_resistance: {
       name: 'Spread Resistance',
@@ -760,7 +948,7 @@ export const CONFIG = {
   SUPPRESSION_BOMB_USES_LEVEL_3: 6,
   SUPPRESSION_BOMB_USES_LEVEL_4: 10,
   SUPPRESSION_BOMB_EXPLOSION_DELAY: 4, // Countdown: 3, 2, 1... (was 2, now 4)
-  SUPPRESSION_BOMB_POWER: 128,
+  SUPPRESSION_BOMB_POWER: 32,
   
   SHIELD_COST_LEVEL_1: 100,
   SHIELD_COST_LEVEL_2: 200,
@@ -770,19 +958,6 @@ export const CONFIG = {
   SHIELD_HEALTH_LEVEL_2: 70, // +40
   SHIELD_HEALTH_LEVEL_3: 120, // +50
   SHIELD_HEALTH_LEVEL_4: 180, // +60
-  
-  
-  XP_CINDER: 2, // reset to 2
-  XP_FLAME: 6,
-  XP_BLAZE: 16,
-  XP_FIRESTORM: 56,
-  XP_INFERNO: 256,
-  XP_CATACLYSM: 1472,
-  XP_BLACKFYRE: 10000,
-  
-  LEVEL_BASE_XP: 100,
-  /** Each level after 2, the marginal XP requirement is this factor times the previous marginal. */
-  LEVEL_XP_MULTIPLIER: 1.25,
   
   ENABLE_EDGE_SCROLLING: false,
   SCROLL_ZONE_SIZE: 60,
@@ -798,6 +973,8 @@ export const CONFIG = {
   SHOW_FPS_COUNTER: false,
   /** When true, hover tooltips are never shown (persisted in user settings). */
   DISABLE_GAME_TOOLTIPS: false,
+  /** When true, toast notifications are never shown (persisted in user settings). */
+  DISABLE_NOTIFICATIONS: false,
   /** When true, tower water beams/streams and water particles draw at reduced opacity (persisted in user settings). */
   SIMPLIFIED_WATER_VISUALS: false,
   /**
@@ -825,7 +1002,12 @@ export const CONFIG = {
   /** Applied to every SFX whose path contains `/bosses/` (boss abilities). Use {@link AUDIO_BOSS_ABILITY_SFX_VOLUME_BY_KEY} to tune individual abilities. */
   AUDIO_BOSS_ABILITY_SFX_VOLUME_MULTIPLIER: 1.25,
   /** Optional per-key multipliers (multiply together with AUDIO_BOSS_ABILITY_SFX_VOLUME_MULTIPLIER). Keys match AUDIO_SFX_PATHS / ability types (e.g. scatter-strike). */
-  AUDIO_BOSS_ABILITY_SFX_VOLUME_BY_KEY: {},
+  AUDIO_BOSS_ABILITY_SFX_VOLUME_BY_KEY: {
+    'fire-breathe': 1.5,
+    'fire-breathe-2': 1.5,
+  },
+  /** Multiplier on global SFX volume for lightning strike sounds (thunder1–7, thunder_hit1–3). */
+  AUDIO_LIGHTNING_SFX_VOLUME_MULTIPLIER: 1.25,
   /** Uniform scale for RTS-style world health bars (width/height and vertical offset). */
   HEALTH_BAR_RENDER_SCALE: 1.25,
   // Use Web Audio API for music (seamless looping). Set to false to restore HTMLAudioElement if issues occur.
@@ -848,6 +1030,7 @@ export const CONFIG = {
     wave_complete: 'assets/sounds/sfx/wave-complete.wav?v=4',
     group_complete: 'assets/sounds/sfx/group-complete.wav?v=7',
     hero_appears: 'assets/sounds/sfx/hero-appears.wav',
+    summon: 'assets/sounds/sfx/summon.wav',
     game_over: 'assets/sounds/sfx/game-over.wav?v=2',
     new_game: 'assets/sounds/sfx/new-game.wav',
     confirm: 'assets/sounds/sfx/confirm.wav',
@@ -855,6 +1038,7 @@ export const CONFIG = {
     purchase: 'assets/sounds/sfx/purchase.wav',
     earn: 'assets/sounds/sfx/earn.wav',
     upgrade: 'assets/sounds/sfx/upgrade.wav',
+    mode_selected: 'assets/sounds/sfx/mode-selected.wav',
     destroyed: 'assets/sounds/sfx/destroyed.wav',
     destroyed_dig_site: 'assets/sounds/sfx/destroyed-dig-site.wav',
     suppression_bomb_explodes: 'assets/sounds/sfx/suppression-bomb-explodes.wav',
@@ -870,10 +1054,10 @@ export const CONFIG = {
     artifact_vanishes: 'assets/sounds/sfx/artifact-vanishes.wav',
     artifact_collected: 'assets/sounds/sfx/artifact-collected.wav',
     // Combo SFX (placeholder: artifact collected until unique clips are assigned)
-    combo_giant: 'assets/sounds/sfx/artifact-collected.wav',
-    combo_monster: 'assets/sounds/sfx/artifact-collected.wav',
-    combo_ludicrous: 'assets/sounds/sfx/artifact-collected.wav',
-    combo_god: 'assets/sounds/sfx/artifact-collected.wav',
+    combo_giant: 'assets/sounds/sfx/combo-giant.wav',
+    combo_monster: 'assets/sounds/sfx/combo-monster.wav',
+    combo_ludicrous: 'assets/sounds/sfx/combo-ludicrous.wav',
+    combo_god: 'assets/sounds/sfx/combo-god.wav',
     loan: 'assets/sounds/sfx/loan.wav',
     repair1: 'assets/sounds/sfx/repair1.wav',
     repair2: 'assets/sounds/sfx/repair2.wav',
@@ -894,6 +1078,9 @@ export const CONFIG = {
     open: 'assets/sounds/sfx/open.wav',
     close: 'assets/sounds/sfx/close.wav',
     upgrade_plans: 'assets/sounds/sfx/upgrade-plans.wav',
+    specialty_level_up_1: 'assets/sounds/sfx/specialty-level-up-1.wav',
+    specialty_level_up_2: 'assets/sounds/sfx/specialty-level-up-2.wav',
+    mastery: 'assets/sounds/sfx/mastery.wav',
     burning: 'assets/sounds/sfx/burning.wav',
     alarm: 'assets/sounds/sfx/alarm.wav',
     alarm_tower: 'assets/sounds/sfx/alarm-tower.wav',
@@ -939,6 +1126,8 @@ export const CONFIG = {
     'array-of-flames': 'assets/sounds/sfx/bosses/array-of-flames.wav',
     'doomfire': 'assets/sounds/sfx/bosses/doomfire.wav',
     firelash: 'assets/sounds/sfx/bosses/firelash.wav',
+    'fire-breathe': 'assets/sounds/sfx/bosses/fire-breathe.wav',
+    'fire-breathe-2': 'assets/sounds/sfx/bosses/fire-breathe-2.wav',
     'purify-a': 'assets/sounds/sfx/bosses/purify-a.wav',
     'purify-b': 'assets/sounds/sfx/bosses/purify-b.wav',
     'purify-c': 'assets/sounds/sfx/bosses/purify-c.wav',
@@ -1033,7 +1222,10 @@ export const CONFIG = {
   COLOR_VALID_PLACEMENT_AOE_CENTER_STROKE: 'rgba(255, 255, 255, 0.85)',
   /** Placement-phase & drag-preview AOE rings for rain (teal) / pulsing (orange) */
   AOE_HEX_OVERLAY_RAIN: 'rgba(0, 191, 191, 0.32)',
-  AOE_HEX_OVERLAY_PULSING: 'rgba(255, 107, 53, 0.32)',
+  AOE_HEX_OVERLAY_PULSING: 'rgba(255, 95, 25, 0.36)',
+  /** Deep royal blue — perimeter tower target ring (placement + hover). */
+  AOE_HEX_OVERLAY_PERIMETER: 'rgba(32, 58, 168, 0.38)',
+  AOE_HEX_OVERLAY_CHARGE_IMPACT: 'rgba(85, 255, 95, 0.34)',
   AOE_HEX_OVERLAY_BOMBER_IMPACT: 'rgba(0, 140, 255, 0.22)',
   COLOR_PREVIEW: 'rgba(255, 255, 255, 0.2)',
   
@@ -1269,12 +1461,14 @@ export const CONFIG = {
       maxItems: 4, // Maximum number of items that can drop
       dropPool: [
         { type: 'currency', weight: 120, minValue: 60, maxValue: 100 },
-        { type: 'xp', weight: 20, minValue: 10000, maxValue: 100000 },
+        { type: 'xp', weight: 20, minValue: 1000, maxValue: 10000 },
         { type: 'temp_power_up', weight: 20 },
-        { type: 'shield', level: 1, weight: 8 },
+        { type: 'shield', level: 1, weight: 4 },
         { type: 'shield', level: 2, weight: 2 },
+        { type: 'suppression_bomb', level: 2, weight: 2 },
+        { type: 'suppression_bomb', level: 3, weight: 1 },
         { type: 'upgrade_plans', weight: 1 },
-        { type: 'water_tank', weight: 5 },
+        { type: 'water_tank', weight: 4 },
         { type: 'water_vat', weight: 3 },
       ],
     },
@@ -1291,9 +1485,11 @@ export const CONFIG = {
       dropPool: [
         { type: 'currency', weight: 120, minValue: 100, maxValue: 150 },
         { type: 'currency', weight: 40, minValue: 200, maxValue: 300 },
-        { type: 'shield', level: 3, weight: 15 },
-        { type: 'shield', level: 4, weight: 10 },
-        { type: 'permanent_power_up_random', weight: 2 },
+        { type: 'shield', level: 3, weight: 12 },
+        { type: 'shield', level: 4, weight: 6 },
+        { type: 'suppression_bomb', level: 3, weight: 4 },
+        { type: 'suppression_bomb', level: 4, weight: 2 },
+        { type: 'permanent_power_up_random', weight: 1 },
         { type: 'artifact_random', weight: 4 },
         { type: 'upgrade_plans', weight: 5 },
         { type: 'water_vat', weight: 5 },
@@ -1545,6 +1741,188 @@ export const CONFIG = {
       lore: 'Swirl too fast and it winks at you. Flavor: copper optimism with a head—promises a crit if you are brave and a good story if you are not.',
       health: 5,
     },
+    // --- fruits (4) ---
+    {
+      id: 'fruit_apple',
+      set: 'fruits',
+      name: 'Glass Apple',
+      sprite: 'fruit_apple.png',
+      lore: 'A perfect crimson globe you could ping like a bell—if bells tasted like remembered orchards and denial. Seeds inside are frozen mid-fall, eternally almost landing.',
+      health: 5,
+    },
+    {
+      id: 'fruit_banana',
+      set: 'fruits',
+      name: 'Glass Banana',
+      sprite: 'fruit_banana.png',
+      lore: 'Curved sunshine trapped in silica, peel suggested by a shy yellow gradient. Monkeys in folklore refuse it on principle; sprites peel it with their eyes.',
+      health: 5,
+    },
+    {
+      id: 'fruit_grapes',
+      set: 'fruits',
+      name: 'Glass Grapes',
+      sprite: 'fruit_grapes.png',
+      lore: 'A cluster of tiny purple lenses, each reflecting a different excuse for missing the last wave bonus. Stems twist into a knot only sommeliers of chaos can untie.',
+      health: 5,
+    },
+    {
+      id: 'fruit_orange',
+      set: 'fruits',
+      name: 'Glass Orange',
+      sprite: 'fruit_orange.png',
+      lore: 'Segment lines etched like longitude on a pocket sun. Smells convincingly of citrus until you hold it to your ear—then it whispers pulp gossip from other timelines.',
+      health: 5,
+    },
+    // --- pets (4) ---
+    {
+      id: 'animal_dog',
+      set: 'pets',
+      name: 'Porcelain Dog',
+      sprite: 'animal_dog.png',
+      lore: 'Tail frozen mid-wag, glaze warm as a hearth that forgot to go out. It never barks, but your towers arrange themselves slightly straighter when it is in the collection.',
+      health: 5,
+    },
+    {
+      id: 'animal_cat',
+      set: 'pets',
+      name: 'Porcelain Cat',
+      sprite: 'animal_cat.png',
+      lore: 'Eyes half-lidded in permanent verdict. Knocked nothing off your shelf because it has never acknowledged your shelf exists—only your priorities, which it finds quaint.',
+      health: 5,
+    },
+    {
+      id: 'animal_bird',
+      set: 'pets',
+      name: 'Porcelain Bird',
+      sprite: 'animal_bird.png',
+      lore: 'Wings spread as if mid-sermon on the dignity of seeds. Beak painted the color of dawn apologizing for being late; song not included, attitude abundant.',
+      health: 5,
+    },
+    {
+      id: 'animal_fish',
+      set: 'pets',
+      name: 'Porcelain Fish',
+      sprite: 'animal_fish.png',
+      lore: 'Scales like pressed tin foil under milk-glass water that is not wet. Mouth open in eternal surprise at how dry the hex grid remains—fair, honestly.',
+      health: 5,
+    },
+    // --- medals (3) ---
+    {
+      id: 'medal_1',
+      set: 'medals',
+      name: 'First Ember Laureate',
+      sprite: 'medal_1.png',
+      lore: 'Ribbon slightly singed at the edges, as if the ceremony was held inside a polite bonfire. Engraving reads “participant” in a font that means “hero” if you squint.',
+      health: 5,
+    },
+    {
+      id: 'medal_2',
+      set: 'medals',
+      name: 'Second Ember Laureate',
+      sprite: 'medal_2.png',
+      lore: 'Heavier disc, cooler metal—like applause that learned restraint. The clasp clicks with the sound of a ledger closing on a debt you did not know you paid.',
+      health: 5,
+    },
+    {
+      id: 'medal_3',
+      set: 'medals',
+      name: 'Third Ember Laureate',
+      sprite: 'medal_3.png',
+      lore: 'Brightest of the trio, almost smug about it. Light pools in its enamel like a tiny parade that only marches when nobody is looking directly at it.',
+      health: 5,
+    },
+    // --- armor (4) ---
+    {
+      id: 'armor_1',
+      set: 'armor',
+      name: 'Russet Scale Hauberk',
+      sprite: 'armor_1.png',
+      lore: 'Breastplate the color of autumn armorers blushing. Scales overlap in a pattern that suggests the wearer once blocked a metaphor, not a blow.',
+      health: 5,
+    },
+    {
+      id: 'armor_2',
+      set: 'armor',
+      name: 'Verdigris Scale Hauberk',
+      sprite: 'armor_2.png',
+      lore: 'Green patina like moss with opinions. Straps creak in a key that harmonizes with distant tower gears—coincidence, unless you believe in cooperative rust.',
+      health: 5,
+    },
+    {
+      id: 'armor_3',
+      set: 'armor',
+      name: 'Oxide Scale Hauberk',
+      sprite: 'armor_3.png',
+      lore: 'Darker plates, edges worn smooth by invisible parades. Fits no body you have; fits the idea of standing your ground while smoke negotiates around you.',
+      health: 5,
+    },
+    {
+      id: 'armor_4',
+      set: 'armor',
+      name: 'Polished Scale Hauberk',
+      sprite: 'armor_4.png',
+      lore: 'Mirror-bright scales that reflect fires smaller than they are, which is how morale works. Buckle engraved with a motto: “again, but smugger.”',
+      health: 5,
+    },
+    // --- flags (4) ---
+    {
+      id: 'flag_blue',
+      set: 'flags',
+      name: 'Azure Watch Pennant',
+      sprite: 'flag_blue.png',
+      lore: 'Fabric stiff as a salute, color of sky before it commits to weather. Pole not included; conviction included in uncomfortable amounts.',
+      health: 5,
+    },
+    {
+      id: 'flag_red',
+      set: 'flags',
+      name: 'Scarlet Watch Pennant',
+      sprite: 'flag_red.png',
+      lore: 'Flutters in wind you cannot feel, as if protesting the lack of breeze. Dye deep enough to make embers feel underdressed at a party.',
+      health: 5,
+    },
+    {
+      id: 'flag_green',
+      set: 'flags',
+      name: 'Verdant Watch Pennant',
+      sprite: 'flag_green.png',
+      lore: 'Green of new leaves negotiating with ash. Stitching spells a rallying cry in a language composed entirely of stubborn regrowth.',
+      health: 5,
+    },
+    {
+      id: 'flag_yellow',
+      set: 'flags',
+      name: 'Gilded Watch Pennant',
+      sprite: 'flag_yellow.png',
+      lore: 'Yellow loud as a trumpet with something to prove. Catches light like it is billing the sun for overtime every time a wave ends cleanly.',
+      health: 5,
+    },
+    // --- hourglasses (3) ---
+    {
+      id: 'hourglass_emerald',
+      set: 'hourglasses',
+      name: 'Emerald Dawdle Glass',
+      sprite: 'hourglass-emerald.png',
+      lore: 'Sand the color of jealous patience, falling at a rate that insults stopwatches. Flip it and nearby fires briefly forget they were in a hurry.',
+      health: 5,
+    },
+    {
+      id: 'hourglass_silver',
+      set: 'hourglasses',
+      name: 'Silver Dawdle Glass',
+      sprite: 'hourglass-silver.png',
+      lore: 'Frames cool as moonlit railings; grains whisper tally marks only accountants of dreams can read. Half-empty and half-full agree to disagree forever.',
+      health: 5,
+    },
+    {
+      id: 'hourglass_bronze',
+      set: 'hourglasses',
+      name: 'Bronze Dawdle Glass',
+      sprite: 'hourgladd-bronze.png',
+      lore: 'Warm metal, slow sand, the tempo of someone explaining a plan while the grove is already on fire. The bottom bulb fills with “eventually,” which is a unit of time here.',
+      health: 5,
+    },
   ],
 
   /**
@@ -1761,6 +2139,45 @@ export function getComboTierForHexCount(hexCount) {
     if (hexCount >= tier.minHexes) return tier;
   }
   return null;
+}
+
+/**
+ * Combo XP for the current wave group: tier baseline × wave group (min 1).
+ * @param {number} tierXp - Baseline xp from {@link CONFIG.COMBO_TIERS}
+ * @param {number} waveGroup - Current 1-based wave group
+ * @returns {number}
+ */
+export function getComboXpForWaveGroup(tierXp, waveGroup) {
+  const base = Math.max(0, Math.round(Number(tierXp)) || 0);
+  const group = Math.max(1, Math.floor(Number(waveGroup)) || 1);
+  return base * group;
+}
+
+/**
+ * Floating combo phrase including contiguous hex count (e.g. "god combo! 174").
+ * @param {{ text?: string }|string} tierOrPhrase - Tier object or phrase from {@link CONFIG.COMBO_TIERS}
+ * @param {number} hexCount
+ * @returns {string}
+ */
+export function getComboDisplayText(tierOrPhrase, hexCount) {
+  const phrase =
+    typeof tierOrPhrase === 'string' ? tierOrPhrase : tierOrPhrase?.text || 'combo!';
+  const n = Math.max(0, Math.floor(Number(hexCount)) || 0);
+  return `${phrase.trim()} ${n}`;
+}
+
+/**
+ * Label for run history / UI from tier id + hex count.
+ * @param {string|null|undefined} tierId
+ * @param {number} hexCount
+ * @returns {string|null}
+ */
+export function getComboHistoryLabel(tierId, hexCount) {
+  const n = Math.max(0, Math.floor(Number(hexCount)) || 0);
+  if (n <= 0) return null;
+  const id = String(tierId || '').toLowerCase();
+  const tier = (CONFIG.COMBO_TIERS || []).find((t) => t.id === id);
+  return getComboDisplayText(tier || id || 'combo', n);
 }
 
 /** Full cycle duration for Blackfyre display colors (4 stops, piecewise blend). */
@@ -2002,6 +2419,214 @@ export function getSentinelPower(level) {
   }
 }
 
+export function getPerimeterShotIntervalMs(level) {
+  switch (level) {
+    case 1: return CONFIG.PERIMETER_SHOT_INTERVAL_MS_LEVEL_1;
+    case 2: return CONFIG.PERIMETER_SHOT_INTERVAL_MS_LEVEL_2;
+    case 3: return CONFIG.PERIMETER_SHOT_INTERVAL_MS_LEVEL_3;
+    case 4: return CONFIG.PERIMETER_SHOT_INTERVAL_MS_LEVEL_4;
+    default: return CONFIG.PERIMETER_SHOT_INTERVAL_MS_LEVEL_1;
+  }
+}
+
+/** Perimeter cadence in seconds (for tooltip / upgrade previews). */
+export function getPerimeterShotIntervalSeconds(level) {
+  return getPerimeterShotIntervalMs(level) / 1000;
+}
+
+/**
+ * Effective perimeter shot interval (seconds) after Tower Speed, using a lower floor than
+ * pulsing/bomber so speed levels 3–4 (150ms / 100ms) and speed stacks are not clamped to 0.2s.
+ */
+export function getEffectivePerimeterAttackInterval(
+  rangeLevel,
+  powerUps = {},
+  tempPowerUps = [],
+  now = Date.now()
+) {
+  const base = getPerimeterShotIntervalSeconds(rangeLevel);
+  const scale = getTowerAttackIntervalScale(powerUps, tempPowerUps, now);
+  const minSec = CONFIG.PERIMETER_ATTACK_INTERVAL_MIN_SECONDS ?? 0.025;
+  return Math.max(minSec, base * scale);
+}
+
+/** Seconds for one full clockwise lap around a ring at the given speed level. */
+export function getPerimeterRevolutionSeconds(rangeLevel, ringHexCount) {
+  const hexCount = Math.max(1, Math.floor(ringHexCount) || 1);
+  return getPerimeterShotIntervalSeconds(rangeLevel) * hexCount;
+}
+
+export function getPerimeterPower(level) {
+  switch (level) {
+    case 1: return CONFIG.PERIMETER_POWER_LEVEL_1;
+    case 2: return CONFIG.PERIMETER_POWER_LEVEL_2;
+    case 3: return CONFIG.PERIMETER_POWER_LEVEL_3;
+    case 4: return CONFIG.PERIMETER_POWER_LEVEL_4;
+    default: return CONFIG.PERIMETER_POWER_LEVEL_1;
+  }
+}
+
+/** Perimeter turret display scale by speed (range) level — mirrors sentinel sizing. */
+export function getPerimeterTurretSizeMultiplier(rangeLevel) {
+  return getSentinelTurretSizeMultiplier(rangeLevel);
+}
+
+/** Forward shift (px) for perimeter cannon pivot — matches jet/bomber rotatable turret offsets. */
+export function getPerimeterTurretOffsetPx(rangeLevel) {
+  switch (rangeLevel) {
+    case 1: return 15;
+    case 2: return 18;
+    case 3: return 15;
+    case 4: return 15;
+    default: return 15;
+  }
+}
+
+/** Fixed aim lag (radians) so turret barrel trails projectiles slightly; see PERIMETER_TURRET_AIM_LAG_DEG. */
+export function getPerimeterTurretAimLagRadians() {
+  return ((CONFIG.PERIMETER_TURRET_AIM_LAG_DEG ?? 0) * Math.PI) / 180;
+}
+
+/** Clamp and validate a perimeter target ring (1–10). */
+export function clampPerimeterRing(ring) {
+  const min = CONFIG.PERIMETER_RING_MIN ?? 1;
+  const max = CONFIG.PERIMETER_RING_MAX ?? 10;
+  return Math.min(max, Math.max(min, Math.floor(Number(ring) || min)));
+}
+
+export function getChargeAttackInterval(level) {
+  switch (level) {
+    case 1: return CONFIG.CHARGE_ATTACK_INTERVAL_LEVEL_1;
+    case 2: return CONFIG.CHARGE_ATTACK_INTERVAL_LEVEL_2;
+    case 3: return CONFIG.CHARGE_ATTACK_INTERVAL_LEVEL_3;
+    case 4: return CONFIG.CHARGE_ATTACK_INTERVAL_LEVEL_4;
+    default: return CONFIG.CHARGE_ATTACK_INTERVAL_LEVEL_1;
+  }
+}
+
+export function getChargePower(level) {
+  switch (level) {
+    case 1: return CONFIG.CHARGE_POWER_LEVEL_1;
+    case 2: return CONFIG.CHARGE_POWER_LEVEL_2;
+    case 3: return CONFIG.CHARGE_POWER_LEVEL_3;
+    case 4: return CONFIG.CHARGE_POWER_LEVEL_4;
+    default: return CONFIG.CHARGE_POWER_LEVEL_1;
+  }
+}
+
+/** Bomber total HP dealt per bomb at a given impact (power) level, including ring falloff. */
+export function getBomberTotalHpPerBomb(powerLevel) {
+  const level = Math.min(4, Math.max(1, Math.floor(Number(powerLevel)) || 1));
+  const base = getBomberPower(level);
+  const zone = getBomberImpactZone(0, 0, level, 0);
+  return zone.reduce((sum, hex) => sum + base * hex.powerMultiplier, 0);
+}
+
+/** Per-hex power multiplier by charge impact mode (balanced = 1.0). */
+export function getChargeModeTotalHpMultiplier(mode) {
+  switch (normalizeChargeMode(mode)) {
+    case CONFIG.CHARGE_MODE_AREA: return CONFIG.CHARGE_MODE_TOTAL_HP_MULTIPLIER_AREA ?? 0.9;
+    case CONFIG.CHARGE_MODE_BALANCED: return CONFIG.CHARGE_MODE_TOTAL_HP_MULTIPLIER_BALANCED ?? 1.0;
+    case CONFIG.CHARGE_MODE_POWER:
+    default: return CONFIG.CHARGE_MODE_TOTAL_HP_MULTIPLIER_POWER ?? 1.1;
+  }
+}
+
+/** Charge total HP per bomb (per-hex power × hex count in the impact zone). */
+export function getChargeTotalHpPerBomb(powerLevel, mode = CONFIG.CHARGE_MODE_DEFAULT) {
+  const zone = getChargeImpactZone(0, 0, mode);
+  const hexCount = zone.length || 1;
+  return getChargePerHexPower(powerLevel, mode) * hexCount;
+}
+
+/** Per-hex power for a charge shot (CHARGE_POWER_LEVEL_* × mode multiplier on every hex). */
+export function getChargePerHexPower(powerLevel, mode = CONFIG.CHARGE_MODE_DEFAULT) {
+  const level = Math.min(4, Math.max(1, Math.floor(Number(powerLevel)) || 1));
+  return getChargePower(level) * getChargeModeTotalHpMultiplier(mode);
+}
+
+/** Clamp charge target distance along facing direction (1–20, capped by maxReach). */
+export function clampChargeTargetDistance(distance, maxReach = CONFIG.CHARGE_TARGET_MAX) {
+  const min = CONFIG.CHARGE_TARGET_MIN ?? 1;
+  const cap = Math.min(CONFIG.CHARGE_TARGET_MAX ?? 20, Math.max(min, Math.floor(Number(maxReach) || CONFIG.CHARGE_TARGET_MAX)));
+  return Math.min(cap, Math.max(min, Math.floor(Number(distance) || CONFIG.CHARGE_TARGET_DEFAULT)));
+}
+
+/** Normalize charge impact mode id. */
+export function normalizeChargeMode(mode) {
+  const id = String(mode || CONFIG.CHARGE_MODE_DEFAULT || 'power').toLowerCase();
+  if (id === CONFIG.CHARGE_MODE_AREA || id === CONFIG.CHARGE_MODE_BALANCED || id === CONFIG.CHARGE_MODE_POWER) {
+    return id;
+  }
+  return CONFIG.CHARGE_MODE_DEFAULT || CONFIG.CHARGE_MODE_POWER;
+}
+
+/** Bomber impact level for a charge mode (2/3/4 rings → levels 2/3/4). */
+export function getChargeImpactLevel(mode) {
+  switch (normalizeChargeMode(mode)) {
+    case CONFIG.CHARGE_MODE_AREA: return 4;
+    case CONFIG.CHARGE_MODE_BALANCED: return 3;
+    case CONFIG.CHARGE_MODE_POWER:
+    default: return 2;
+  }
+}
+
+/** @deprecated Use {@link getChargeModeTotalHpMultiplier}. */
+export function getChargeModePowerMultiplier(mode) {
+  return getChargeModeTotalHpMultiplier(mode);
+}
+
+/** Human-readable label for a charge impact mode id. */
+export function getChargeModeLabel(mode) {
+  const entry = (CONFIG.CHARGE_MODES || []).find((m) => m.id === normalizeChargeMode(mode));
+  return entry?.label || 'Power';
+}
+
+/** Icon path for a charge impact mode id. */
+export function getChargeModeIcon(mode) {
+  const entry = (CONFIG.CHARGE_MODES || []).find((m) => m.id === normalizeChargeMode(mode));
+  return entry?.icon || 'assets/images/misc/power.png';
+}
+
+/** Charge splash hexes for the given impact mode (no Range Extender bonus; full power on every hex). */
+export function getChargeImpactZone(centerQ, centerR, mode = CONFIG.CHARGE_MODE_DEFAULT) {
+  return getBomberImpactZone(centerQ, centerR, getChargeImpactLevel(mode), 0).map((hex) => ({
+    ...hex,
+    powerMultiplier: 1,
+  }));
+}
+
+/** Fixed on-screen charge turret height (applied to draw width; turrets rotate 90° on map). */
+export function getChargeTurretHeightMultiplier() {
+  return 1.84797223453125 * 0.5 * 1.2 * 1.1 * 1.1;
+}
+
+/** Charge range sprite width:height for inventory layout (assets/images/towers/charge_range_*.png). */
+const CHARGE_TURRET_SPRITE_WIDTH_PX = 208;
+const CHARGE_TURRET_SPRITE_HEIGHT_PX_BY_LEVEL = {
+  1: 266,
+  2: 297,
+  3: 346,
+  4: 376,
+};
+
+/** Width ÷ height for charge speed-level turret art (fixed display height → variable width). */
+export function getChargeTurretAspectRatio(rangeLevel) {
+  const level = Math.min(4, Math.max(1, Math.floor(Number(rangeLevel)) || 1));
+  const spriteHeight = CHARGE_TURRET_SPRITE_HEIGHT_PX_BY_LEVEL[level] ?? CHARGE_TURRET_SPRITE_HEIGHT_PX_BY_LEVEL[1];
+  return CHARGE_TURRET_SPRITE_WIDTH_PX / spriteHeight;
+}
+
+/** Forward shift (px) for charge turret sprites along facing direction. */
+export function getChargeTurretOffsetPx(rangeLevel) {
+  switch (rangeLevel) {
+    case 2: return 17;
+    case 3: return 20;
+    case 4: return 23;
+    default: return 15;
+  }
+}
+
 /** Sentinel turret display scale by speed (range) level. Level 2 is baseline; art swaps per level. */
 export function getSentinelTurretSizeMultiplier(rangeLevel) {
   const baseline = 1.84797223453125 * 0.85 * 1.1;
@@ -2012,6 +2637,30 @@ export function getSentinelTurretSizeMultiplier(rangeLevel) {
     case 4: return baseline * 1.32;
     default: return baseline * 0.9;
   }
+}
+
+const TOWER_DISPLAY_NAMES = {
+  jet: 'Jet Tower',
+  spread: 'Spread Tower',
+  pulsing: 'Pulsing Tower',
+  rain: 'Rain Tower',
+  bomber: 'Bomber Tower',
+  bomber_tower: 'Bomber Tower',
+  sentinel: 'Sentinel Tower',
+  sentinel_tower: 'Sentinel Tower',
+  perimeter: 'Perimeter Tower',
+  perimeter_tower: 'Perimeter Tower',
+  charge: 'Charge Tower',
+  charge_tower: 'Charge Tower',
+  token_voucher: 'Token Voucher',
+  tower_sellback: 'Tower Sellback',
+  parts_voucher: 'Parts Voucher',
+};
+
+/** Human-readable shop/map name for a placed tower type slug. */
+export function getTowerDisplayName(towerType) {
+  if (!towerType) return null;
+  return TOWER_DISPLAY_NAMES[towerType] ?? null;
 }
 
 /** Human-readable label for a sentinel targeting mode id. */
@@ -2051,6 +2700,11 @@ export function getSentinelConcreteTargetModes() {
  */
 export function getSentinelImpactZone(centerQ, centerR) {
   return getBomberImpactZone(centerQ, centerR, 2, 0);
+}
+
+/** Perimeter bomb splash: single struck hex only. */
+export function getPerimeterImpactZone(centerQ, centerR) {
+  return [{ q: centerQ, r: centerR, powerMultiplier: 1 }];
 }
 
 // Helper function to get bomber tower max distance by power level
@@ -2613,6 +3267,16 @@ export function getHeroPowerPulsingTowerMultiplier(gameState) {
   return getHeroPowerParamMultiplier(gameState, 'pulsingTowerPowerMultiplier');
 }
 
+/** Perimeter tower power multiplier from the active hero power (1 when inactive). */
+export function getHeroPowerPerimeterTowerMultiplier(gameState) {
+  return getHeroPowerParamMultiplier(gameState, 'perimeterTowerPowerMultiplier');
+}
+
+/** Charge tower power multiplier from the active hero power (1 when inactive). */
+export function getHeroPowerChargeTowerMultiplier(gameState) {
+  return getHeroPowerParamMultiplier(gameState, 'chargeTowerPowerMultiplier');
+}
+
 /** Permanent shop power-up effect strength multiplier from the active hero power (1 when inactive). */
 export function getHeroPowerPermanentPowerUpEffectMultiplier(gameState) {
   return getHeroPowerParamMultiplier(gameState, 'permanentPowerUpEffectMultiplier');
@@ -2626,6 +3290,11 @@ export function getHeroPowerRareSpawnMultiplier(gameState) {
 /** Bomber attack interval scale from the active hero power (1 when inactive; 0.8 = 25% faster). */
 export function getHeroPowerBomberAttackIntervalScale(gameState) {
   return getHeroPowerParamMultiplier(gameState, 'bomberAttackIntervalScale');
+}
+
+/** Charge attack interval scale from the active hero power (1 when inactive; 0.8 = 25% faster). */
+export function getHeroPowerChargeAttackIntervalScale(gameState) {
+  return getHeroPowerParamMultiplier(gameState, 'chargeAttackIntervalScale');
 }
 
 /** Pulsing attack interval scale from the active hero power (1 when inactive; 0.8 = 25% faster). */
@@ -2661,6 +3330,135 @@ export function getHeroPowerFireRegrowMultiplier(gameState) {
 /** Extra seconds added to temp power-up duration from the active hero power (0 when inactive). */
 export function getHeroPowerTempPowerUpBonusDurationSec(gameState) {
   return getHeroPowerParamBonus(gameState, 'tempPowerUpBonusDurationSec', 0);
+}
+
+/** Research-tree specialty definitions (levels I–V per path). Values are balance-tweakable. */
+export const SPECIALTY_ROMAN = ['I', 'II', 'III', 'IV', 'V'];
+
+/**
+ * @typedef {'time'|'power'|'money'|'health'} SpecialtyId
+ */
+
+/** @returns {Record<SpecialtyId, { id: SpecialtyId, name: string, summary: string, levels: { level: number, roman: string, bonus: number }[] }>} */
+export function getSpecialtyDefinitions() {
+  return CONFIG.SPECIALTIES;
+}
+
+/**
+ * @param {import('./main.js').GameState | null | undefined} gameState
+ * @returns {Record<SpecialtyId, number>}
+ */
+export function getSpecialtyLevels(gameState) {
+  const raw = gameState?.player?.specialties || {};
+  return {
+    time: Math.max(0, Math.min(5, Math.floor(Number(raw.time) || 0))),
+    power: Math.max(0, Math.min(5, Math.floor(Number(raw.power) || 0))),
+    money: Math.max(0, Math.min(5, Math.floor(Number(raw.money ?? raw.savvy) || 0))),
+    health: Math.max(0, Math.min(5, Math.floor(Number(raw.health) || 0))),
+  };
+}
+
+/**
+ * @param {import('./main.js').GameState | null | undefined} gameState
+ * @param {SpecialtyId} specialtyId
+ * @returns {number}
+ */
+export function getSpecialtyLevel(gameState, specialtyId) {
+  return getSpecialtyLevels(gameState)[specialtyId] ?? 0;
+}
+
+/**
+ * Total specialty bonus at a completed level (each level's `bonus` in CONFIG.SPECIALTIES is cumulative, not incremental).
+ * @param {SpecialtyId} specialtyId
+ * @param {number} currentLevel - completed levels in this path (0–5)
+ * @returns {number}
+ */
+function getSpecialtyTotalBonusAtLevel(specialtyId, currentLevel) {
+  const spec = CONFIG.SPECIALTIES?.[specialtyId];
+  if (!spec || currentLevel <= 0) return 0;
+  const idx = Math.min(currentLevel, spec.levels.length) - 1;
+  return spec.levels[idx]?.bonus ?? 0;
+}
+
+/**
+ * @param {SpecialtyId} specialtyId
+ * @param {number} levelIndex - 1-based level (I=1 … V=5)
+ * @returns {{ level: number, roman: string, bonus: number } | null}
+ */
+export function getSpecialtyLevelDef(specialtyId, levelIndex) {
+  const spec = CONFIG.SPECIALTIES?.[specialtyId];
+  if (!spec) return null;
+  return spec.levels.find(l => l.level === levelIndex) ?? null;
+}
+
+/** @param {number} levelIndex - 1-based level (I=1 … V=5) */
+export function getSpecialtyLevelKeyword(levelIndex) {
+  return CONFIG.SPECIALTY_LEVEL_KEYWORDS?.[levelIndex - 1] ?? '';
+}
+
+/** Total bonus seconds added to temporary power-up duration at current Time path level. */
+export function getSpecialtyTimeBonusSec(gameState) {
+  return getSpecialtyTotalBonusAtLevel('time', getSpecialtyLevel(gameState, 'time'));
+}
+
+/** Total fractional boost to permanent power-up effectiveness (0.01 = +1%). */
+export function getSpecialtyPowerBonusFraction(gameState) {
+  return getSpecialtyTotalBonusAtLevel('power', getSpecialtyLevel(gameState, 'power')) / 100;
+}
+
+/** Multiplier applied to currency gained (map pickups, wave rewards, etc.). */
+export function getSpecialtyMoneyBonusMultiplier(gameState) {
+  return 1 + getSpecialtyTotalBonusAtLevel('money', getSpecialtyLevel(gameState, 'money')) / 100;
+}
+
+/** Multiplier applied to tower and grove health regrow rate (1.2 = +20%). */
+export function getSpecialtyHealthRegrowMultiplier(gameState) {
+  return 1 + getSpecialtyTotalBonusAtLevel('health', getSpecialtyLevel(gameState, 'health')) / 100;
+}
+
+/** HP/sec restored when towers or the grove are not burning (base rate × Health specialty). */
+export function getEffectiveHealthRegrowRate(gameState) {
+  const base = CONFIG.HEALTH_REGROW_RATE ?? 0.5;
+  return base * getSpecialtyHealthRegrowMultiplier(gameState);
+}
+
+/**
+ * @param {number} baseAmount
+ * @param {import('./main.js').GameState | null | undefined} gameState
+ * @returns {number}
+ */
+export function applyCurrencyGainBonuses(baseAmount, gameState) {
+  let amt = Math.round(Number(baseAmount) || 0);
+  amt = Math.round(amt * getHeroPowerMapCurrencyMultiplier(gameState));
+  amt = Math.round(amt * getSpecialtyMoneyBonusMultiplier(gameState));
+  return amt;
+}
+
+/**
+ * @param {import('./main.js').GameState | null | undefined} gameState
+ * @param {SpecialtyId} specialtyId
+ * @param {number} levelIndex - 1-based
+ * @returns {string}
+ */
+export function getSpecialtyLevelEffectDescription(specialtyId, levelIndex) {
+  const def = getSpecialtyLevelDef(specialtyId, levelIndex);
+  const spec = CONFIG.SPECIALTIES?.[specialtyId];
+  if (!def || !spec) return '';
+  const total = def.bonus;
+  if (specialtyId === 'time') {
+    const totalSec = total === 1 ? '1 second' : `${total} seconds`;
+    return `Raises temporary power-up duration bonus to +${totalSec}.`;
+  }
+  if (specialtyId === 'power') {
+    return `Raises permanent power-up effectiveness to +${total}%.`;
+  }
+  if (specialtyId === 'money') {
+    return `Raises currency gained to +${total}%.`;
+  }
+  if (specialtyId === 'health') {
+    return `Raises health regrow rate to +${total}%.`;
+  }
+  return '';
 }
 
 /**
@@ -2943,13 +3741,45 @@ export function getBackgroundWaveGroupIndex(gameState) {
 }
 
 /**
+ * Wave-in-group index for random ignition scaling on timed waves ({@link CONFIG.DIFFICULTY_IGNITION_CHANCE_INCREMENT_PER_WAVE}).
+ * @param {object} gameState
+ * @returns {number}
+ */
+export function getFireIgnitionScalingWaveInGroup(gameState) {
+  const ws = gameState?.waveSystem;
+  return Math.max(1, Math.floor(Number(ws?.waveInGroup ?? gameState?.wave?.waveInGroup ?? 1)) || 1);
+}
+
+/**
+ * Random ignition chance for the current wave.
+ * Timed waves: base × per-wave-in-group multiplier. Final survival (30-1): linear ramp every 2 min, uncapped.
+ * @param {object} gameState
+ * @returns {number}
+ */
+export function getEffectiveIgnitionChance(gameState) {
+  if (isFinalSurvivalBossWave(gameState)) {
+    const intervalSec = Math.max(1, Number(CONFIG.FINAL_SURVIVAL_FIRE_SPREAD_RAMP_INTERVAL_SEC) || 120);
+    const elapsed = Math.max(0, Number(gameState.wave?.survivalElapsed) || 0);
+    const rampSteps = Math.floor(elapsed / intervalSec);
+    const start = Number(CONFIG.FINAL_SURVIVAL_IGNITION_CHANCE_START) || 0.002;
+    const stepInc = Number(CONFIG.FINAL_SURVIVAL_IGNITION_CHANCE_INCREMENT_PER_STEP) || 0.001;
+    return start + rampSteps * stepInc;
+  }
+
+  const base = CONFIG.DIFFICULTY_BASE_IGNITION_CHANCE ?? 0;
+  const incPct = CONFIG.DIFFICULTY_IGNITION_CHANCE_INCREMENT_PER_WAVE ?? 0;
+  const waveInGroup = getFireIgnitionScalingWaveInGroup(gameState);
+  const multiplier = 1 + (Math.max(1, waveInGroup) - 1) * incPct;
+  return base * multiplier;
+}
+
+/**
  * Wave-in-group index for per-wave fire spread scaling ({@link CONFIG.DIFFICULTY_FIRE_SPREAD_INCREMENT_PER_WAVE}).
- * Final survival (30-1) ramps every {@link CONFIG.FINAL_SURVIVAL_FIRE_SPREAD_RAMP_INTERVAL_SEC} up to wave-5 rate.
+ * Final survival (30-1): +1 virtual wave every {@link CONFIG.FINAL_SURVIVAL_FIRE_SPREAD_RAMP_INTERVAL_SEC}, uncapped.
  * @param {object} gameState
  * @returns {number}
  */
 export function getFireSpreadScalingWaveInGroup(gameState) {
-  const wavesPerGroup = CONFIG.WAVES_PER_GROUP || 5;
   const ws = gameState?.waveSystem;
   const actualWig = Math.max(1, Math.floor(Number(ws?.waveInGroup ?? gameState?.wave?.waveInGroup ?? 1)) || 1);
 
@@ -2957,7 +3787,7 @@ export function getFireSpreadScalingWaveInGroup(gameState) {
     const intervalSec = Math.max(1, Number(CONFIG.FINAL_SURVIVAL_FIRE_SPREAD_RAMP_INTERVAL_SEC) || 120);
     const elapsed = Math.max(0, Number(gameState.wave?.survivalElapsed) || 0);
     const rampSteps = Math.floor(elapsed / intervalSec);
-    return Math.min(wavesPerGroup, actualWig + rampSteps);
+    return actualWig + rampSteps;
   }
 
   return actualWig;
@@ -2970,19 +3800,6 @@ export function getFireSpreadScalingWaveInGroup(gameState) {
  */
 export function isFinalSurvivalBossWave(gameState) {
   return !!gameState?.wave?.isActive && isFinalSurvivalBossWaveGroup(gameState);
-}
-
-/**
- * Extra blackfyre base spread on the final survival wave: +{@link CONFIG.BLACKFYRE_FINAL_SURVIVAL_SPREAD_BONUS_PER_MINUTE} per full minute survived.
- * @param {object} gameState
- * @returns {number}
- */
-export function getBlackfyreFinalSurvivalSpreadBonus(gameState) {
-  if (!isFinalSurvivalBossWave(gameState)) return 0;
-  const elapsed = Math.max(0, Number(gameState.wave?.survivalElapsed) || 0);
-  const perMin = Number(CONFIG.BLACKFYRE_FINAL_SURVIVAL_SPREAD_BONUS_PER_MINUTE) || 0;
-  if (!(perMin > 0)) return 0;
-  return Math.floor(elapsed / 60) * perMin;
 }
 
 /** Compact clock for survival timers and run history, e.g. "12:05". */
@@ -3081,16 +3898,16 @@ export function getLevelThreshold(level) {
  */
 export function getLevelTierSpriteFilename(level) {
   const lv = Math.max(1, Math.floor(Number(level)) || 1);
-  if (lv <= 4) return 'level1.png';
-  if (lv <= 9) return 'level2.png';
-  if (lv <= 14) return 'level3.png';
-  if (lv <= 19) return 'level4.png';
-  if (lv <= 24) return 'level5.png';
-  if (lv <= 29) return 'level6.png';
-  if (lv <= 39) return 'level7.png';
-  if (lv <= 49) return 'level8.png';
-  if (lv <= 59) return 'level9.png';
-  if (lv <= 69) return 'level10.png';
+  if (lv <= 15) return 'level1.png';
+  if (lv <= 20) return 'level2.png';
+  if (lv <= 25) return 'level3.png';
+  if (lv <= 30) return 'level4.png';
+  if (lv <= 35) return 'level5.png';
+  if (lv <= 40) return 'level6.png';
+  if (lv <= 45) return 'level7.png';
+  if (lv <= 50) return 'level8.png';
+  if (lv <= 55) return 'level9.png';
+  if (lv <= 60) return 'level10.png';
   return 'level11.png';
 }
 
@@ -3157,10 +3974,15 @@ function isConfigMetaProgressionUnlocked(itemId) {
     bomber_tower: 'bomber_tower',
     sentinel: 'sentinel_tower',
     sentinel_tower: 'sentinel_tower',
+    perimeter: 'perimeter_tower',
+    perimeter_tower: 'perimeter_tower',
+    charge: 'charge_tower',
+    charge_tower: 'charge_tower',
     temp_power_up_spawn_boost: 'power_up_magnet',
     increased_rares: 'increased_rares',
     spread_resistance: 'spread_resistance',
     fire_resistance: 'fire_resistance',
+    token_voucher: 'token_voucher',
   };
   const unlockId = aliases[itemId];
   if (!unlockId) return true;
@@ -3192,20 +4014,39 @@ export function formatWaterDamageRate(value) {
   return formatDisplayHundredths(value);
 }
 
+/**
+ * RTS health-bar fill color from normalized health (1 = full/green, 0.5 = yellow, 0 = red).
+ * Shared by map grove/tower bars and the top-left grove HP panel.
+ * @param {number} healthPercent 0–1
+ * @returns {string} CSS rgb() color
+ */
+export function getHealthBarFillColor(healthPercent) {
+  const p = Math.max(0, Math.min(1, healthPercent));
+  if (p > 0.5) {
+    const ratio = (p - 0.5) / 0.5;
+    const r = Math.round(255 * (1 - ratio));
+    return `rgb(${r}, 255, 0)`;
+  }
+  const ratio = p / 0.5;
+  const g = Math.round(255 * ratio);
+  return `rgb(255, ${g}, 0)`;
+}
+
 /** True when a display-rounded duration/interval equals exactly 1 (use singular unit). */
 export function isDisplaySingular(value) {
   if (value == null || !Number.isFinite(Number(value))) return false;
   return Math.round(Number(value) * 100) / 100 === 1;
 }
 
-/** "second" or "seconds" for a duration/interval shown with {@link formatDisplayHundredths}. */
-export function formatIntervalTimeUnit(seconds) {
+/** "second", "seconds", or abbreviated "sec" for a duration/interval shown with {@link formatDisplayHundredths}. */
+export function formatIntervalTimeUnit(seconds, { abbrev = false } = {}) {
+  if (abbrev) return 'sec';
   return isDisplaySingular(seconds) ? 'second' : 'seconds';
 }
 
-/** "every 2 seconds" / "every 1 second" */
-export function formatEveryInterval(seconds) {
-  return `every ${formatDisplayHundredths(seconds)} ${formatIntervalTimeUnit(seconds)}`;
+/** "every 2 seconds" / "every 1 second" / "every 0.25 sec" when abbreviated */
+export function formatEveryInterval(seconds, { abbrev = false } = {}) {
+  return `every ${formatDisplayHundredths(seconds)} ${formatIntervalTimeUnit(seconds, { abbrev })}`;
 }
 
 /** "20 seconds" / "1 second" */
@@ -3341,7 +4182,8 @@ export function getPowerUpMultiplier(effectType, powerUps = {}, tempPowerUps = [
   let multiplier = 1.0;
   const gs = gameState
     ?? (typeof window !== 'undefined' ? window.gameLoop?.gameState : null);
-  const permEffectBoost = getHeroPowerPermanentPowerUpEffectMultiplier(gs);
+  const permEffectBoost = getHeroPowerPermanentPowerUpEffectMultiplier(gs)
+    * (1 + getSpecialtyPowerBonusFraction(gs));
   
   // Apply permanent power-ups
   Object.entries(powerUps).forEach(([powerUpId, count]) => {
@@ -3401,7 +4243,8 @@ export function getTowerMaxHealth(powerUps = {}, tempPowerUps = [], baseHealth =
 export const TOWER_ATTACK_INTERVAL_EFFECT = 'towerAttackInterval';
 
 /**
- * Multiplier applied to pulsing/bomber base attack interval (1 = unchanged, 0.9 = 10% faster per stack).
+ * Multiplier applied to duration-tower base attack interval (1 = unchanged, 0.9 = 10% faster per stack).
+ * Applies to pulsing, bomber, sentinel, perimeter, and charge towers.
  * Same compounding rule as fire spread / fire DPS: each permanent stack multiplies by perStack^count;
  * each active temp Tower Speed multiplies by its perStack once (multiple temps = product of factors).
  */
@@ -3432,7 +4275,8 @@ export function getTowerAttackIntervalScale(powerUps = {}, tempPowerUps = [], no
 }
 
 /**
- * Effective attack interval (seconds) for pulsing/bomber after Tower Speed, clamped to a minimum.
+ * Effective attack interval (seconds) for duration towers after Tower Speed, clamped to a minimum.
+ * Used by pulsing, bomber, sentinel, perimeter, and charge towers.
  */
 export function getEffectiveDurationTowerAttackInterval(
   baseIntervalSeconds,
@@ -3443,6 +4287,38 @@ export function getEffectiveDurationTowerAttackInterval(
   const scale = getTowerAttackIntervalScale(powerUps, tempPowerUps, now);
   const minSec = CONFIG.TOWER_ATTACK_INTERVAL_MIN_SECONDS ?? 0.15;
   return Math.max(minSec, baseIntervalSeconds * scale);
+}
+
+/**
+ * Duration-tower attack interval after Tower Speed and active hero attack-speed powers.
+ * Used by bomber, charge, sentinel, and pulsing towers (matches towerSystem firing logic).
+ */
+export function getEffectiveDurationTowerAttackIntervalWithHeroPower(
+  baseIntervalSeconds,
+  powerUps,
+  tempPowerUps,
+  towerType,
+  gameState,
+  now = Date.now()
+) {
+  let interval = getEffectiveDurationTowerAttackInterval(
+    baseIntervalSeconds,
+    powerUps,
+    tempPowerUps,
+    now
+  );
+  if (towerType === CONFIG.TOWER_TYPE_BOMBER) {
+    interval *= getHeroPowerBomberAttackIntervalScale(gameState);
+  } else if (towerType === CONFIG.TOWER_TYPE_CHARGE) {
+    interval *= getHeroPowerBomberAttackIntervalScale(gameState);
+    interval *= getHeroPowerChargeAttackIntervalScale(gameState);
+  } else if (towerType === CONFIG.TOWER_TYPE_SENTINEL) {
+    interval *= getHeroPowerSentinelAttackIntervalScale(gameState);
+  } else if (towerType === CONFIG.TOWER_TYPE_PULSING) {
+    interval *= getHeroPowerPulsingAttackIntervalScale(gameState);
+  }
+  const minSec = CONFIG.TOWER_ATTACK_INTERVAL_MIN_SECONDS ?? 0.15;
+  return Math.max(minSec, interval);
 }
 
 /**
@@ -3563,7 +4439,20 @@ export function isTowerRepairShopUnlocked(gameState) {
 }
 
 /** Valid {@link CONFIG.ARTIFACTS}[].set values for trader / UI logic. */
-export const ARTIFACT_SET_IDS = Object.freeze(['aces', 'backpacks', 'books', 'dice', 'keys', 'potions']);
+export const ARTIFACT_SET_IDS = Object.freeze([
+  'aces',
+  'armor',
+  'backpacks',
+  'books',
+  'dice',
+  'flags',
+  'fruits',
+  'hourglasses',
+  'keys',
+  'medals',
+  'pets',
+  'potions',
+]);
 
 /** @param {string} setId */
 export function getArtifactsBySet(setId) {

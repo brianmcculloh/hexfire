@@ -1,6 +1,6 @@
 // Shared DOM for wave group complete + victory modals (reward grid + total earned)
 
-import { CONFIG } from '../config.js';
+import { CONFIG, applyCurrencyGainBonuses } from '../config.js';
 
 /** @param {unknown} raw */
 export function normalizeMaxFiresExtinguishedByWave(raw) {
@@ -18,6 +18,15 @@ const FIRES_PB_GOLD_BASE =
 
 const FIRES_PB_GREY_BASE =
   'font-size: 12px; font-weight: normal; font-family: "Exo 2", sans-serif; line-height: 1.2; color: rgba(148, 163, 184, 0.92); margin-top: 4px; text-transform: none;';
+
+/** @param {HTMLElement} el @param {string[]} lines */
+function setBrLines(el, lines) {
+  el.replaceChildren();
+  for (let i = 0; i < lines.length; i++) {
+    if (i > 0) el.appendChild(document.createElement('br'));
+    el.appendChild(document.createTextNode(lines[i]));
+  }
+}
 
 /**
  * Wave-complete fires stat: PB ribbon / compare line (shared by single-wave and group modals).
@@ -44,7 +53,7 @@ export function appendFiresExtinguishedPersonalBestLine(firesTextContainer, fire
   if (fireSub.isNewHigh && !skipPersonalBestRibbon) {
     const firesGold = document.createElement('div');
     firesGold.className = 'wave-complete-stat-celebrate';
-    firesGold.innerHTML = 'new personal<br>best!';
+    setBrLines(firesGold, ['new personal', 'best!']);
     firesGold.style.cssText = `${FIRES_PB_GOLD_BASE} font-size: 12px;`;
     firesTextContainer.appendChild(firesGold);
     return;
@@ -52,7 +61,7 @@ export function appendFiresExtinguishedPersonalBestLine(firesTextContainer, fire
   if (fireSub.equaledBest) {
     const firesGold = document.createElement('div');
     firesGold.className = 'wave-complete-stat-celebrate';
-    firesGold.innerHTML = 'Matched personal<br>best!';
+    setBrLines(firesGold, ['Matched personal', 'best!']);
     firesGold.style.cssText = `${FIRES_PB_GOLD_BASE} font-size: 11px;`;
     firesTextContainer.appendChild(firesGold);
     return;
@@ -75,14 +84,18 @@ export function appendFiresExtinguishedPersonalBestLine(firesTextContainer, fire
  * @param {Array} digSiteRewards
  */
 export function buildWaveGroupCompleteStatsContainer(ws, digSiteRewards = []) {
-  const townBonusCurrency = Math.max(0, Math.round(ws.gameState.wave.townBonusAward || 0));
-  const groupBonusCurrency = CONFIG.WAVE_GROUP_BONUS_REWARD;
-  const totalExtinguished = ws.gameState.fireSystem?.getTotalFiresExtinguishedThisWave() || 0;
+  const gs = ws.gameState;
+  const townBonusCurrency = applyCurrencyGainBonuses(
+    Math.max(0, Math.round(gs.wave.townBonusAward || 0)),
+    gs,
+  );
+  const groupBonusCurrency = applyCurrencyGainBonuses(CONFIG.WAVE_GROUP_BONUS_REWARD, gs);
+  const totalExtinguished = gs.fireSystem?.getTotalFiresExtinguishedThisWave() || 0;
   const digSiteCurrencyTotal = digSiteRewards.reduce((s, e) => {
     let row = 0;
-    if (e.reward?.type === 'currency') row += e.reward.amount ?? 0;
+    if (e.reward?.type === 'currency') row += applyCurrencyGainBonuses(e.reward.amount ?? 0, gs);
     const nd = e.noDamageBonusCurrency;
-    if (typeof nd === 'number' && nd > 0) row += nd;
+    if (typeof nd === 'number' && nd > 0) row += applyCurrencyGainBonuses(nd, gs);
     return s + row;
   }, 0);
   const totalEarned = groupBonusCurrency + townBonusCurrency + digSiteCurrencyTotal;
@@ -136,7 +149,7 @@ export function buildWaveGroupCompleteStatsContainer(ws, digSiteRewards = []) {
   firesTextContainer.appendChild(firesNumberWrap);
 
   const firesLabel = document.createElement('div');
-  firesLabel.innerHTML = 'FIRES<br>EXTINGUISHED';
+  setBrLines(firesLabel, ['FIRES', 'EXTINGUISHED']);
   firesLabel.style.cssText = 'color: #FFFFFF; font-size: 14px; font-weight: normal; font-family: "Exo 2", sans-serif; text-transform: uppercase; line-height: 1.2;';
   firesTextContainer.appendChild(firesLabel);
 
@@ -171,7 +184,7 @@ export function buildWaveGroupCompleteStatsContainer(ws, digSiteRewards = []) {
   townTextContainer.appendChild(townAmount);
 
   const townLabel = document.createElement('div');
-  townLabel.innerHTML = 'ANCIENT GROVE<br>PROTECTION BONUS';
+  setBrLines(townLabel, ['ANCIENT GROVE', 'PROTECTION BONUS']);
   townLabel.style.cssText = 'color: #FFFFFF; font-size: 14px; font-weight: normal; font-family: "Exo 2", sans-serif; text-transform: uppercase; line-height: 1.2;';
   townTextContainer.appendChild(townLabel);
 
@@ -201,7 +214,7 @@ export function buildWaveGroupCompleteStatsContainer(ws, digSiteRewards = []) {
   const tokenAmountRef = tokenAmount;
 
   const tokenLabel = document.createElement('div');
-  tokenLabel.innerHTML = 'UPGRADE<br>PLANS';
+  setBrLines(tokenLabel, ['UPGRADE', 'PLANS']);
   tokenLabel.style.cssText = 'color: #FFFFFF; font-size: 14px; font-weight: normal; font-family: "Exo 2", sans-serif; text-transform: uppercase; line-height: 1.2;';
   tokenTextContainer.appendChild(tokenLabel);
 
@@ -229,7 +242,7 @@ export function buildWaveGroupCompleteStatsContainer(ws, digSiteRewards = []) {
   groupBonusTextContainer.appendChild(groupBonusAmount);
 
   const groupBonusLabel = document.createElement('div');
-  groupBonusLabel.innerHTML = 'BOSS<br>BONUS';
+  setBrLines(groupBonusLabel, ['BOSS', 'BONUS']);
   groupBonusLabel.style.cssText = 'color: #FFFFFF; font-size: 14px; font-weight: normal; font-family: "Exo 2", sans-serif; text-transform: uppercase; line-height: 1.2;';
   groupBonusTextContainer.appendChild(groupBonusLabel);
 
@@ -244,8 +257,7 @@ export function buildWaveGroupCompleteStatsContainer(ws, digSiteRewards = []) {
       : 0;
     const siteConfig = CONFIG.DIG_SITE_TYPES?.[siteType];
     const sprite = siteConfig?.sprite ?? 'dig_site_1.png';
-    const bonusLabel = (siteName ?? 'Dig Site') + ' Protection Bonus';
-    const bonusLabelHtml = bonusLabel.toUpperCase().replace(/ PROTECTION BONUS$/, '<br>PROTECTION BONUS');
+    const bonusLabelName = (siteName ?? 'Dig Site').toUpperCase();
 
     const card = document.createElement('div');
     card.style.cssText = 'display: flex; flex-direction: row; align-items: center; gap: 16px; width: 270px;';
@@ -345,8 +357,9 @@ export function buildWaveGroupCompleteStatsContainer(ws, digSiteRewards = []) {
       valueRow.appendChild(valueSpan);
       textContainer.appendChild(valueRow);
     } else if (reward.type === 'currency') {
-      const baseAmt = reward.amount ?? 0;
+      const baseAmt = applyCurrencyGainBonuses(reward.amount ?? 0, gs);
       if (noDamageExtra > 0) {
+        const bonusAmt = applyCurrencyGainBonuses(noDamageExtra, gs);
         const pairFs = '22px';
         const pairText = `font-size: ${pairFs}; font-weight: bold; font-family: "Exo 2", sans-serif; color: #00FF88;`;
         const valueEl = document.createElement('div');
@@ -360,7 +373,7 @@ export function buildWaveGroupCompleteStatsContainer(ws, digSiteRewards = []) {
         plus.style.cssText = `font-size: ${pairFs}; font-weight: 800; font-family: "Exo 2", sans-serif; color: #E2E8F0;`;
         valueEl.appendChild(plus);
         const bonusSpan = document.createElement('span');
-        bonusSpan.textContent = `$${noDamageExtra}`;
+        bonusSpan.textContent = `$${bonusAmt}`;
         bonusSpan.style.cssText = pairText;
         valueEl.appendChild(bonusSpan);
         textContainer.appendChild(valueEl);
@@ -383,17 +396,17 @@ export function buildWaveGroupCompleteStatsContainer(ws, digSiteRewards = []) {
       ndRow.style.cssText = 'display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; width: 100%;';
       const ndAmt = document.createElement('div');
       ndAmt.style.cssText = 'font-size: 22px; font-weight: bold; font-family: "Exo 2", sans-serif; line-height: 1.1; color: #00FF88; flex-shrink: 0;';
-      ndAmt.textContent = `+$${noDamageExtra}`;
+      ndAmt.textContent = `+$${applyCurrencyGainBonuses(noDamageExtra, gs)}`;
       ndRow.appendChild(ndAmt);
       const ndTag = document.createElement('div');
-      ndTag.innerHTML = 'No damage<br>bonus!';
+      setBrLines(ndTag, ['No damage', 'bonus!']);
       ndTag.style.cssText = 'color: #FFE566; font-size: 11px; font-weight: bold; font-family: "Exo 2", sans-serif; line-height: 1.15; text-transform: none; text-align: left; flex: 0 1 auto;';
       ndRow.appendChild(ndTag);
       textContainer.appendChild(ndRow);
     }
 
     const labelEl = document.createElement('div');
-    labelEl.innerHTML = bonusLabelHtml;
+    setBrLines(labelEl, [bonusLabelName, 'PROTECTION BONUS']);
     labelEl.style.cssText = 'color: #FFFFFF; font-size: 14px; font-weight: normal; font-family: "Exo 2", sans-serif; text-transform: uppercase; line-height: 1.2;';
     textContainer.appendChild(labelEl);
 

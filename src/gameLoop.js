@@ -1,6 +1,6 @@
 // Game Loop - Manages rendering and game ticks
 
-import { CONFIG, formatActiveWaveTimerText } from './config.js';
+import { CONFIG, formatActiveWaveTimerText, getTowerDisplayName } from './config.js';
 import { AudioManager } from './utils/audioManager.js';
 import { updateTowerStatusPanel } from './utils/towerStatusPanel.js';
 
@@ -43,10 +43,8 @@ function fpsValueColor(fps) {
   return _lerpColor('#FF0000', '#FF5500', t);
 }
 
-/** @param {any} progression */
-function towerBurnToastLabel(progression, towerType) {
-  const name = progression?.getItemDisplayName?.(towerType);
-  return name && name !== 'Item' ? name : 'Tower';
+function towerBurnToastLabel(towerType) {
+  return getTowerDisplayName(towerType) || 'Tower';
 }
 
 export class GameLoop {
@@ -194,8 +192,15 @@ export class GameLoop {
         }
       }
       
-      // Always render, even when paused (so player can see towers during placement)
-      this.render();
+      // Always render, even when paused (so player can see towers during placement).
+      // Guard the frame so a single thrown error can't break the requestAnimationFrame
+      // chain — without this, one bad frame permanently freezes the game (FPS → 0) until
+      // a manual refresh. We log (throttled) and keep the loop alive instead.
+      try {
+        this.render();
+      } catch (err) {
+        this._reportRenderError(err);
+      }
       this.animationFrameId = requestAnimationFrame(render);
     };
     render(performance.now());
@@ -341,6 +346,12 @@ export class GameLoop {
           }
           
         }
+
+        // Keep the compact floating top stats timer ticking when the left
+        // overlays are hidden (no-op while they're visible).
+        if (window.updateFloatingTopStats) {
+          window.updateFloatingTopStats();
+        }
         
         // Start looping alarm sound when grove is burning (but not after game over), and only when wave is not paused
         if (isAnyTownHexBurning && !this.gameState.gameOver && !isEffectivelyPaused) {
@@ -388,10 +399,9 @@ export class GameLoop {
         ) {
           ns.showToast('The Ancient Grove is burning!', 3000, 'negative');
         }
-        const prog = this.gameState.progressionSystem;
         for (const tower of burningTowersNow.values()) {
           if (!this._burnToastPrevTowerIds.has(tower.id)) {
-            const label = towerBurnToastLabel(prog, tower.type);
+            const label = towerBurnToastLabel(tower.type);
             ns.showToast(`Your ${label} is burning!`, 3000, 'negative');
           }
         }
@@ -488,7 +498,13 @@ export class GameLoop {
     
     // Update renderer with deltaTime for smooth animations
     this.renderer.render(frameDelta);
-    
+
+    const mapRevealAlpha = this.renderer.getMapRevealAlpha();
+    if (mapRevealAlpha < 1) {
+      this.renderer.ctx.save();
+      this.renderer.ctx.globalAlpha = mapRevealAlpha;
+    }
+
     // Draw grid
     if (this.gameState.gridSystem) {
       this.renderer.drawGrid(this.gameState.gridSystem);
@@ -592,8 +608,6 @@ export class GameLoop {
     // Draw all tower turrets (after water particles for proper z-index)
     if (this.gameState.towerSystem) {
       this.renderer.drawAllTowerTurrets(this.gameState.towerSystem);
-      // Shield hex tint on top of base + turret (opacity scales with shield HP / level)
-      this.renderer.drawAllTowerShieldOverlays(this.gameState.towerSystem);
     }
 
     // Draw all fire particles (after water particles, before notifications)
@@ -602,13 +616,13 @@ export class GameLoop {
     // Bomber aim trajectory — draw after sprays, water particles, turrets, and fire particles (canvas z = paint order)
     if (this.gameState.towerSystem) {
       this.renderer.drawAllBomberTrajectoryOverlays(this.gameState.towerSystem);
+      this.renderer.drawAllChargeTrajectoryOverlays(this.gameState.towerSystem);
+      this.renderer.drawAllPerimeterRingOverlays(this.gameState.towerSystem);
+      this.renderer.drawAllChargeImpactOverlays(this.gameState.towerSystem);
     }
 
     // Final survival wave: rotating hero allies (group 30)
     this.renderer.drawSurvivalRotatingHero();
-
-    // Boss-wave hero power portrait (bottom-left, under HP bars and DOM UI)
-    this.renderer.drawHeroPowerPortrait();
 
     // Map HP bars after water + fire FX so sprays/particles never obscure them
     this.renderer.drawAllWorldHealthBarsAfterParticles(this.gameState);
@@ -656,6 +670,13 @@ export class GameLoop {
     if (this.renderer?.towerPierceHint) {
       this.renderer.drawTowerPierceHint();
     }
+
+    if (mapRevealAlpha < 1) {
+      this.renderer.ctx.restore();
+    }
+
+    // Boss-wave hero power portrait (bottom-left, under HP bars and DOM UI)
+    this.renderer.drawHeroPowerPortrait();
     
     // Draw boss image (high z-index, after everything else)
     // Boss ability text is drawn inside drawBossImage() so it appears above the creature
@@ -673,6 +694,29 @@ export class GameLoop {
     this.gameState?.inputHandler?.tickTowerPierceDwell?.();
 
     updateTowerStatusPanel(this.gameState);
+  }
+
+  /**
+   * Log a render-loop exception without spamming the console. A broken frame can recur
+   * every frame (60×/s), so we coalesce identical errors and only emit once per second,
+   * with a running count so the underlying issue is still visible for debugging.
+   * @param {unknown} err
+   */
+  _reportRenderError(err) {
+    const now = performance.now();
+    const message = err?.stack || err?.message || String(err);
+    if (message === this._lastRenderErrorMessage && now - (this._lastRenderErrorLoggedAt || 0) < 1000) {
+      this._renderErrorRepeatCount = (this._renderErrorRepeatCount || 0) + 1;
+      return;
+    }
+    const repeats = this._renderErrorRepeatCount || 0;
+    const suffix = message === this._lastRenderErrorMessage && repeats > 0
+      ? ` (repeated ${repeats}× since last log)`
+      : '';
+    console.error(`🛑 Render frame error (loop kept alive)${suffix}:`, err);
+    this._lastRenderErrorMessage = message;
+    this._lastRenderErrorLoggedAt = now;
+    this._renderErrorRepeatCount = 0;
   }
 
   /**

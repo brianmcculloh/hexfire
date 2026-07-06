@@ -424,12 +424,13 @@ export const BOSS_PATTERNS = {
         {
           type: 'doomfire',
           name: 'Doomfire',
-          description: 'Increases area of the strongest burning fire type (or ignites 10 hexes with that fire type) every 10 seconds',
+          description: 'Increases area of the strongest burning fire type (or ignites 10 hexes with that fire type) every 10 seconds, with a 3-strike pattern every 3rd activation',
           interval: 10,
           soundMode: 'once',
           params: {
             staggerPerHex: 50,
             fallbackHexCount: 10, // Random hexes struck when no strongest-type hexes are burning
+            tripleStaggerMs: 500, // Stagger between the 3 strikes when it fires the triple (every 3rd activation)
           }
         },
       ]
@@ -447,10 +448,10 @@ export const BOSS_PATTERNS = {
           type: 'firelash',
           name: 'Firelash',
           description: 'Ignites a 3-wide slash across the map, increasing in frequency over time',
-          interval: 25, // First fire at 25s; then 20, 15, 10, 8, 6, 5, 4, 3, 2, 1...
+          interval: 20, // First fire at 25s; then 20, 15, 10, 8, 6, 5, 4, 3, 2, 1...
           soundMode: 'once',
           params: {
-            intervals: [20, 18, 16, 14, 12, 10, 8, 6, 5, 4, 3, 2, 2], // Seconds between activations (indexed by activation count)
+            intervals: [19, 18, 17, 16, 15, 13, 11, 10, 9, 8, 7, 6, 4, 3, 2, 2], // Seconds between activations (indexed by activation count)
             staggerPerGroup: 30, // ms between each group of 3 hexes along the slash (total slash < 2s)
           }
         },
@@ -945,7 +946,7 @@ export const HERO_PATTERNS = {
         complete: 'I\'m almost done with my next song!' 
       },
       { 
-        placement: 'I knew it! <span class="text-fire text-jitter-fast">Jest</span> has heard my unfinished verses! Karma\'s a bi.....t of a problem for me. Will <span class="text-grove text-glow-pulse">The Grove</span> exist 2 minutes from now? That\'s up to you!!', 
+        placement: 'I knew it! <span class="text-fire text-jitter-fast">Jest</span> has heard my unfinished verses! Karma\'s a bi.....t of a problem for me. Will <span class="text-grove text-glow-pulse">The Grove</span> exist 3 minutes from now? That\'s up to you!!', 
         complete: 'My savior! The songs... the lyrics... the verses that will be sung in your honor! They\'re literally writing themselves faster than I can sing them! Quick - parchment, quill and ink!' 
       },
     ]},
@@ -1253,10 +1254,10 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'bolster',
       name: 'Bolster',
-      description: 'Bomber towers attack 25% faster.',
-      params: { bomberAttackIntervalScale: 0.8 },
+      description: 'Perimeter towers do 25% more damage.',
+      params: { perimeterTowerPowerMultiplier: 1.25 },
     }],
-    bossWaveSpeech: 'My song will <span class="text-water text-wave">Bolster</span> your bombers — let them fly faster!',
+    bossWaveSpeech: 'My song will <span class="text-water text-wave">Bolster</span> your perimeter towers — let them sweep stronger!',
     speechBubbles: [
       { 
         placement: 'I haven\'t seen anyone for ages! I have almost forgotten how to talk. Only my songs keep me company in these <span class="text-gradient-upgrade test-wave">winding halls</span>.', 
@@ -1283,10 +1284,10 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'punch',
       name: 'Punch',
-      description: 'Pulsing towers attack 25% faster.',
-      params: { pulsingAttackIntervalScale: 0.8 },
+      description: 'Charge towers do 25% more damage.',
+      params: { chargeTowerPowerMultiplier: 1.25 },
     }],
-    bossWaveSpeech: '<span class="text-gradient-upgrade">Punch</span> punch! Sprigget makes pulsing towers go fast fast!',
+    bossWaveSpeech: '<span class="text-gradient-upgrade">Punch</span> punch! Sprigget makes charge towers hit harder!',
     speechBubbles: [
       { 
         placement: '<span class="text-gradient-upgrade">Sprigget</span> runs fast! <span class="text-gradient-upgrade">Sprigget</span> climbs high! <span class="text-gradient-upgrade">Sprigget</span> digs deep!', 

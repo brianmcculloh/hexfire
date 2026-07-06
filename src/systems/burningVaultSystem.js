@@ -82,7 +82,7 @@ export class BurningVaultSystem {
         window.AudioManager.playSFX('burning_vault_appears', { volume: 0.72, dedupeMs: 500 });
       }
       this.gameState.notificationSystem?.showToast(
-        'A Burning Vault appeared on the map!',
+        'A Burning Vault appeared!',
         4500,
         'warning'
       );
@@ -201,6 +201,16 @@ export class BurningVaultSystem {
       }
       const id = this.gameState.currencyItemSystem?.spawnCurrencyItem(q, r, 'shield', level, true);
       return { ok: !!id, preview: id ? itemPreview(`shield_${level}.png`) : null };
+    }
+    if (type === 'suppression_bomb') {
+      let level = 1;
+      if (selected.level != null && Number.isFinite(Number(selected.level))) {
+        level = Math.min(4, Math.max(1, Math.round(Number(selected.level))));
+      } else {
+        level = Math.floor(Math.random() * 4) + 1;
+      }
+      const id = this.gameState.currencyItemSystem?.spawnCurrencyItem(q, r, 'suppression_bomb', level, true);
+      return { ok: !!id, preview: id ? itemPreview(`suppression_${level}.png`) : null };
     }
     if (type === 'currency' || type === 'money' || type === 'xp' || type === 'movement_token' || type === 'upgrade_plans' || type === 'tree_juice') {
       let value = 1;

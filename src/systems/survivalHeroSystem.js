@@ -28,17 +28,20 @@ export class SurvivalHeroSystem {
     this.powerHeroGroup = null;
     /** @type {'idle' | 'rising' | 'sinking' | null} */
     this.phase = null;
+    /** Wall-clock start of placement-phase rise only (not used during active wave). */
     this.phaseStartMs = null;
-    /** Wall-clock start of the current 30s slot (rise begins); transitions count inside the interval. */
-    this.slotAnchorMs = null;
+    /** @type {Record<number, number>} Slot index → hero group (0 = first 30s). */
+    this.slotHeroByIndex = {};
+    /** Highest slot index assigned in {@link slotHeroByIndex}. */
+    this.assignedMaxSlot = -1;
     /** @type {number[]} Shuffled sprite groups (1–campaignEnd) remaining in the current cycle. */
     this.heroShuffleQueue = [];
-    /** When true, slot anchor syncs to wave-start epoch when placement rise finishes. */
-    this.resetSlotAnchorOnIdle = false;
-    /** @type {number | null} Wall-clock when the survival wave timer started (after countdown). */
-    this.rotationEpochMs = null;
-    /** True for the first 30s slot (Grove Incarnate) before random rotation begins. */
-    this.isGroveIncarnateSlot = false;
+    /** Last slot index that triggered the rise SFX (avoids repeats within one rise window). */
+    this.lastRiseForSlot = -1;
+    /** Last slot index that received a transition speech line. */
+    this.lastSpeechSlot = -1;
+    /** True while the first timer slot (0:00–0:30) is the active power slot. */
+    this.isFirstSurvivalHeroSlot = false;
     /** First intro line waits until Start Wave (countdown), not placement reveal. */
     this.pendingIntroSpeech = false;
     this.waveStartSpeechRequested = false;
@@ -62,18 +65,77 @@ export class SurvivalHeroSystem {
     return this.started && this.displayHeroGroup != null && this.phase != null;
   }
 
+  /** @returns {number} */
+  _getSlotIntervalSec() {
+    return Math.max(1, Number(CONFIG.SURVIVAL_HERO_ROTATION_INTERVAL_SEC) || 30);
+  }
+
+  /** @returns {number} */
+  _getSurvivalElapsedSec() {
+    return Math.max(0, Number(this.gameState.wave?.survivalElapsed) || 0);
+  }
+
+  /**
+   * True during the last {@link TRANSITION_DURATION_SEC} before each 30s boundary.
+   * @param {number} elapsedSec
+   * @returns {boolean}
+   */
+  _isInPreBoundaryRise(elapsedSec) {
+    const interval = this._getSlotIntervalSec();
+    const phaseInSlot = elapsedSec % interval;
+    const timeToNext = interval - phaseInSlot;
+    return timeToNext <= TRANSITION_DURATION_SEC && elapsedSec > 0;
+  }
+
+  /**
+   * Which 30s slot's portrait should be visible (may be +1 during pre-boundary rise).
+   * @param {number} elapsedSec
+   * @returns {number}
+   */
+  _getDisplaySlotIndex(elapsedSec) {
+    const base = Math.floor(elapsedSec / this._getSlotIntervalSec());
+    return this._isInPreBoundaryRise(elapsedSec) ? base + 1 : base;
+  }
+
+  /**
+   * Which 30s slot's power is active (always the current timer bucket).
+   * @param {number} elapsedSec
+   * @returns {number}
+   */
+  _getPowerSlotIndex(elapsedSec) {
+    return Math.floor(elapsedSec / this._getSlotIntervalSec());
+  }
+
+  /** @param {number} targetSlot */
+  _ensureSlotsAssignedThrough(targetSlot) {
+    if (this.assignedMaxSlot < 0) {
+      this.slotHeroByIndex[0] = CONFIG.FIRST_SURVIVAL_HERO_GROUP || 1;
+      this.assignedMaxSlot = 0;
+      this.gameState.renderer?.ensureHeroSpriteForGroup?.(this.slotHeroByIndex[0]);
+    }
+    while (this.assignedMaxSlot < targetSlot) {
+      const nextSlot = this.assignedMaxSlot + 1;
+      const leaving = this.slotHeroByIndex[this.assignedMaxSlot];
+      this.slotHeroByIndex[nextSlot] = this._popNextHeroFromShuffle(leaving);
+      this.assignedMaxSlot = nextSlot;
+      this.gameState.renderer?.ensureHeroSpriteForGroup?.(this.slotHeroByIndex[nextSlot]);
+    }
+  }
+
   /** Called when the player enters tower placement on group 30. */
   onEnterPlacement() {
     if (!this.isSurvivalContext()) return;
     this.reset();
     this.started = true;
-    this.isGroveIncarnateSlot = true;
-    const groveGroup = getGroveIncarnateHeroPatternGroup();
-    this.displayHeroGroup = groveGroup;
+    this.isFirstSurvivalHeroSlot = true;
+    const firstHeroGroup = CONFIG.FIRST_SURVIVAL_HERO_GROUP || 1;
+    this.slotHeroByIndex[0] = firstHeroGroup;
+    this.assignedMaxSlot = 0;
+    this.displayHeroGroup = firstHeroGroup;
+    this.powerHeroGroup = null;
     this.phase = 'rising';
     this.phaseStartMs = Date.now();
-    this.slotAnchorMs = Date.now();
-    this.gameState.renderer?.ensureHeroSpriteForGroup?.(getGroveIncarnateHeroSpriteGroup());
+    this.gameState.renderer?.ensureHeroSpriteForGroup?.(firstHeroGroup);
     this._playHeroAppearsSfx();
   }
 
@@ -83,63 +145,95 @@ export class SurvivalHeroSystem {
     if (!this.started) {
       this.onEnterPlacement();
     }
-    this.rotationEpochMs = Date.now();
-    if (this.phase === 'idle') {
-      this.slotAnchorMs = this.rotationEpochMs;
-      this._beginPowerSlot();
-    } else if (this.phase === 'rising') {
-      this.resetSlotAnchorOnIdle = true;
-    }
-  }
-
-  /** @returns {number} */
-  _getSlotIntervalMs() {
-    return (Number(CONFIG.SURVIVAL_HERO_ROTATION_INTERVAL_SEC) || 30) * 1000;
+    this._ensureSlotsAssignedThrough(0);
+    this.displayHeroGroup = this.slotHeroByIndex[0];
+    this.powerHeroGroup = this.slotHeroByIndex[0];
+    this.phase = 'idle';
+    this.phaseStartMs = null;
+    this.lastRiseForSlot = -1;
+    this.lastSpeechSlot = this.waveStartSpeechRequested ? 0 : -1;
+    this.isFirstSurvivalHeroSlot = true;
   }
 
   /** Show deferred intro speech when Start Wave is clicked (during countdown). */
   showIntroSpeechOnStartWave() {
     if (!this.isSurvivalContext() || !this.started) return;
     this.waveStartSpeechRequested = true;
-    if (this.phase === 'idle' && this.displayHeroGroup != null) {
-      this._showTransitionSpeech(this.displayHeroGroup);
+    const hero = this.slotHeroByIndex[0] ?? this.displayHeroGroup;
+    if (hero != null) {
+      this._showTransitionSpeech(hero);
+      this.lastSpeechSlot = 0;
       this.pendingIntroSpeech = false;
     }
   }
 
-  /**
-   * @param {number} deltaTime seconds
-   * @param {boolean} [advanceSlot] When true, count toward the 30s rotation interval.
-   */
-  update(deltaTime, advanceSlot = false) {
-    if (!this.started || !this.isSurvivalContext()) return;
-
-    this._advanceTransition();
-
-    if (!advanceSlot || this.slotAnchorMs == null) return;
-
-    const intervalMs = this._getSlotIntervalMs();
-    const transitionMs = TRANSITION_DURATION_SEC * 1000;
-    const handoffStartMs = this.slotAnchorMs + intervalMs - transitionMs;
-    const now = Date.now();
-
-    // Catch up if frames lagged or the tab was backgrounded (strict 30s boundaries).
-    let guard = 0;
-    while (now >= this.slotAnchorMs + intervalMs && guard < 8) {
-      guard++;
-      if (this.phase === 'idle') {
-        this._startHandoffToNextHero();
-      } else if (this.phase === 'rising') {
-        this._snapRisingToIdleForCatchUp();
-        this._startHandoffToNextHero();
+  /** Advance placement-phase rise animation (wall clock only). */
+  _updatePlacementVisuals() {
+    if (this.phase !== 'rising' || this.phaseStartMs == null) return;
+    const elapsed = (Date.now() - this.phaseStartMs) / 1000;
+    if (elapsed >= TRANSITION_DURATION_SEC) {
+      this.phase = 'idle';
+      this.phaseStartMs = null;
+      if (this.waveStartSpeechRequested && this.displayHeroGroup != null) {
+        this._showTransitionSpeech(this.displayHeroGroup);
+        this.lastSpeechSlot = 0;
+        this.pendingIntroSpeech = false;
       } else {
-        break;
+        this.pendingIntroSpeech = true;
       }
     }
+  }
 
-    if (this.phase === 'idle' && now >= handoffStartMs) {
-      this._startHandoffToNextHero();
+  /**
+   * Sync portrait + power to {@link gameState.wave.survivalElapsed} (authoritative 30s grid).
+   */
+  _syncToSurvivalTimer() {
+    const elapsed = this._getSurvivalElapsedSec();
+    const powerSlot = this._getPowerSlotIndex(elapsed);
+    const displaySlot = this._getDisplaySlotIndex(elapsed);
+
+    this._ensureSlotsAssignedThrough(displaySlot);
+
+    const nextPowerHero = this.slotHeroByIndex[powerSlot] ?? null;
+    const nextDisplayHero = this.slotHeroByIndex[displaySlot] ?? null;
+
+    if (nextDisplayHero != null && this.displayHeroGroup !== nextDisplayHero) {
+      if (this._isInPreBoundaryRise(elapsed) && displaySlot > powerSlot && this.lastRiseForSlot !== displaySlot) {
+        this.lastRiseForSlot = displaySlot;
+        this._playHeroAppearsSfx();
+      }
+      this.displayHeroGroup = nextDisplayHero;
     }
+
+    this.phase = this._isInPreBoundaryRise(elapsed) ? 'rising' : 'idle';
+    this.powerHeroGroup = nextPowerHero;
+    this.isFirstSurvivalHeroSlot = powerSlot === 0;
+
+    if (powerSlot !== this.lastSpeechSlot && nextPowerHero != null) {
+      if (powerSlot > 0 || this.waveStartSpeechRequested) {
+        this._showTransitionSpeech(nextPowerHero);
+      }
+      this.lastSpeechSlot = powerSlot;
+    }
+  }
+
+  /**
+   * @param {number} _deltaTime seconds
+   * @param {boolean} [advanceSlot] When true, sync to survival timer slot boundaries.
+   */
+  update(_deltaTime, advanceSlot = false) {
+    if (!this.started || !this.isSurvivalContext()) return;
+
+    const waveActive = !!this.gameState.wave?.isActive && !this.gameState.wave?.isPlacementPhase;
+
+    if (!waveActive) {
+      this._updatePlacementVisuals();
+      return;
+    }
+
+    if (!advanceSlot) return;
+
+    this._syncToSurvivalTimer();
   }
 
   /** @returns {number | null} Hero group to draw (portrait sprite index). */
@@ -150,32 +244,39 @@ export class SurvivalHeroSystem {
   /** @returns {number | null} Hero group whose power applies right now. */
   getPowerHeroGroup() {
     if (!isFinalSurvivalBossWave(this.gameState)) return null;
-    if (this.phase !== 'idle') return null;
     return this.powerHeroGroup;
   }
 
   /**
    * Vertical reveal offset for the bottom-left portrait (matches boss-wave hero reveal).
+   * Active wave: derived from survival timer, not animation wall clock.
    * @param {number} imageHeight
    * @returns {number}
    */
   getRevealOffsetY(imageHeight) {
-    if (!this.phase || this.phaseStartMs == null) return 0;
+    const wave = this.gameState.wave;
+    const inPlacement = !wave?.isActive || wave?.isPlacementPhase;
 
-    const elapsed = (Date.now() - this.phaseStartMs) / 1000;
-    const progress = Math.min(elapsed / TRANSITION_DURATION_SEC, 1);
-    const eased = 1 - (1 - progress) ** 3;
-    const startBelow = imageHeight * 0.55;
-
-    if (this.phase === 'rising') {
+    if (inPlacement && this.phase === 'rising' && this.phaseStartMs != null) {
+      const elapsed = (Date.now() - this.phaseStartMs) / 1000;
+      const progress = Math.min(elapsed / TRANSITION_DURATION_SEC, 1);
+      const eased = 1 - (1 - progress) ** 3;
+      const startBelow = imageHeight * 0.55;
       if (progress >= 1) return 0;
       return startBelow * (1 - eased);
     }
-    if (this.phase === 'sinking') {
-      if (progress >= 1) return startBelow;
-      return startBelow * eased;
-    }
-    return 0;
+
+    const elapsed = this._getSurvivalElapsedSec();
+    if (!this._isInPreBoundaryRise(elapsed)) return 0;
+
+    const interval = this._getSlotIntervalSec();
+    const timeToNext = interval - (elapsed % interval);
+    const riseElapsed = TRANSITION_DURATION_SEC - timeToNext;
+    const progress = Math.min(Math.max(riseElapsed / TRANSITION_DURATION_SEC, 0), 1);
+    const eased = 1 - (1 - progress) ** 3;
+    const startBelow = imageHeight * 0.55;
+    if (progress >= 1) return 0;
+    return startBelow * (1 - eased);
   }
 
   /** @returns {boolean} True while portrait should be considered on-screen for hit tests. */
@@ -219,80 +320,10 @@ export class SurvivalHeroSystem {
     return next ?? 1;
   }
 
-  _advanceTransition() {
-    if (this.phase !== 'rising' && this.phase !== 'sinking') return;
-    if (this.phaseStartMs == null) return;
-
-    const elapsed = (Date.now() - this.phaseStartMs) / 1000;
-    if (elapsed < TRANSITION_DURATION_SEC) return;
-
-    if (this.phase === 'rising') {
-      this.phase = 'idle';
-      this.phaseStartMs = null;
-      const wave = this.gameState.wave;
-      const inPlacement = !wave?.isActive || wave?.isPlacementPhase;
-      if (inPlacement) {
-        this.pendingIntroSpeech = true;
-        if (this.waveStartSpeechRequested && this.displayHeroGroup != null) {
-          this._showTransitionSpeech(this.displayHeroGroup);
-          this.pendingIntroSpeech = false;
-        }
-      } else if (this.displayHeroGroup != null) {
-        this._showTransitionSpeech(this.displayHeroGroup);
-      }
-      if (wave?.isActive && !wave?.isPlacementPhase) {
-        if (this.resetSlotAnchorOnIdle) {
-          this.slotAnchorMs = this.rotationEpochMs ?? Date.now();
-          this.resetSlotAnchorOnIdle = false;
-        }
-        this._beginPowerSlot();
-      }
-      return;
-    }
-  }
-
-  /** End rise early so a missed boundary can catch up on the next 30s tick. */
-  _snapRisingToIdleForCatchUp() {
-    if (this.phase !== 'rising') return;
-    this.phase = 'idle';
-    this.phaseStartMs = null;
-    const wave = this.gameState.wave;
-    if (wave?.isActive && !wave?.isPlacementPhase) {
-      this._beginPowerSlot();
-    }
-  }
-
-  /**
-   * Begin the last 1.1s of a slot: incoming hero rises (exit is immediate swap).
-   * Advances slotAnchorMs by exactly 30s so rotations stay on 0:30, 1:00, 1:30…
-   */
-  _startHandoffToNextHero() {
-    if (this.phase !== 'idle') return;
-
-    const leavingGrove = this.isGroveIncarnateSlot;
-    const leavingHero = this.displayHeroGroup;
-    const nextHero = this._popNextHeroFromShuffle(leavingHero);
-    if (leavingGrove) {
-      this.isGroveIncarnateSlot = false;
-    }
-
-    this.displayHeroGroup = nextHero;
-    this.powerHeroGroup = null;
-    this.phase = 'rising';
-    this.phaseStartMs = Date.now();
-    this.slotAnchorMs += this._getSlotIntervalMs();
-    this.gameState.renderer?.ensureHeroSpriteForGroup?.(nextHero);
-    this._playHeroAppearsSfx();
-  }
-
   _playHeroAppearsSfx() {
     if (typeof window !== 'undefined' && window.AudioManager) {
       window.AudioManager.playSFX('hero_appears');
     }
-  }
-
-  _beginPowerSlot() {
-    this.powerHeroGroup = this.displayHeroGroup;
   }
 
   /** @param {number | null} heroGroup */
@@ -310,7 +341,7 @@ export class SurvivalHeroSystem {
     const bubble = document.createElement('div');
     bubble.className = 'character-speech-bubble character-speech-bubble-hero hero-power-speech-bubble survival-hero-speech-bubble';
     bubble.innerHTML = text;
-    bubble.style.cssText = 'position: fixed; opacity: 0; transition: opacity 0.3s ease-in-out; z-index: 99999;';
+    bubble.style.cssText = 'position: fixed; opacity: 0; transition: opacity 0.3s ease-in-out; z-index: 9000;';
     document.body.appendChild(bubble);
     this.speechBubble = bubble;
 
@@ -388,6 +419,114 @@ export class SurvivalHeroSystem {
       this.speechBubble.remove();
     }
     this.speechBubble = null;
+  }
+
+  _ensureHeroSpritesLoaded() {
+    const groups = new Set();
+    if (this.displayHeroGroup != null) groups.add(this.displayHeroGroup);
+    if (this.powerHeroGroup != null) groups.add(this.powerHeroGroup);
+    for (const g of Object.values(this.slotHeroByIndex)) {
+      if (g != null) groups.add(g);
+    }
+    for (const g of groups) {
+      this.gameState.renderer?.ensureHeroSpriteForGroup?.(g);
+    }
+  }
+
+  /** @returns {object | null} Serializable rotation state for group-30 saves. */
+  serializeState() {
+    if (!this.isSurvivalContext() || !this.started) return null;
+    return {
+      displayHeroGroup: this.displayHeroGroup,
+      powerHeroGroup: this.powerHeroGroup,
+      phase: this.phase,
+      phaseStartMs: this.phaseStartMs,
+      slotHeroByIndex: { ...this.slotHeroByIndex },
+      assignedMaxSlot: this.assignedMaxSlot,
+      heroShuffleQueue: [...this.heroShuffleQueue],
+      lastRiseForSlot: this.lastRiseForSlot,
+      lastSpeechSlot: this.lastSpeechSlot,
+      isFirstSurvivalHeroSlot: this.isFirstSurvivalHeroSlot,
+      waveStartSpeechRequested: this.waveStartSpeechRequested,
+      pendingIntroSpeech: this.pendingIntroSpeech,
+    };
+  }
+
+  /**
+   * Restore rotating allies after load, or bootstrap a fresh rotation for legacy saves.
+   * @param {object | null | undefined} saved
+   */
+  restoreAfterLoad(saved) {
+    if (!this.isSurvivalContext()) return;
+
+    const hasValidSave = saved
+      && typeof saved === 'object'
+      && saved.displayHeroGroup != null
+      && saved.slotHeroByIndex
+      && typeof saved.slotHeroByIndex === 'object';
+
+    if (hasValidSave) {
+      this._applySerializedState(saved);
+      return;
+    }
+
+    this._bootstrapForLoadedGame();
+  }
+
+  /** @param {object} saved */
+  _applySerializedState(saved) {
+    this.reset();
+    this.started = true;
+    this.displayHeroGroup = saved.displayHeroGroup ?? null;
+    this.powerHeroGroup = saved.powerHeroGroup ?? null;
+    this.phase = saved.phase ?? 'idle';
+    this.phaseStartMs = saved.phaseStartMs ?? null;
+    this.slotHeroByIndex = { ...saved.slotHeroByIndex };
+    this.assignedMaxSlot = Number.isFinite(saved.assignedMaxSlot) ? saved.assignedMaxSlot : -1;
+    this.heroShuffleQueue = Array.isArray(saved.heroShuffleQueue) ? [...saved.heroShuffleQueue] : [];
+    this.lastRiseForSlot = saved.lastRiseForSlot ?? -1;
+    this.lastSpeechSlot = saved.lastSpeechSlot ?? -1;
+    this.isFirstSurvivalHeroSlot = !!saved.isFirstSurvivalHeroSlot;
+    this.waveStartSpeechRequested = !!saved.waveStartSpeechRequested;
+    this.pendingIntroSpeech = !!saved.pendingIntroSpeech;
+
+    this._ensureHeroSpritesLoaded();
+
+    const wave = this.gameState.wave;
+    if (wave?.isActive && !wave?.isPlacementPhase) {
+      this._syncToSurvivalTimer();
+      this.lastSpeechSlot = this._getPowerSlotIndex(this._getSurvivalElapsedSec());
+    }
+  }
+
+  /** Rebuild rotation when no hero state was stored (legacy saves). */
+  _bootstrapForLoadedGame() {
+    this.reset();
+    const wave = this.gameState.wave;
+    const inPlacement = !wave?.isActive || wave?.isPlacementPhase;
+
+    if (inPlacement) {
+      this.onEnterPlacement();
+      return;
+    }
+
+    this.started = true;
+    this.waveStartSpeechRequested = true;
+    this.slotHeroByIndex[0] = CONFIG.FIRST_SURVIVAL_HERO_GROUP || 1;
+    this.assignedMaxSlot = 0;
+
+    const elapsed = this._getSurvivalElapsedSec();
+    const displaySlot = this._getDisplaySlotIndex(elapsed);
+    const powerSlot = this._getPowerSlotIndex(elapsed);
+    this._ensureSlotsAssignedThrough(Math.max(displaySlot, powerSlot));
+
+    this.displayHeroGroup = this.slotHeroByIndex[displaySlot] ?? null;
+    this.powerHeroGroup = this.slotHeroByIndex[powerSlot] ?? null;
+    this.phase = this._isInPreBoundaryRise(elapsed) ? 'rising' : 'idle';
+    this.isFirstSurvivalHeroSlot = powerSlot === 0;
+    this.lastSpeechSlot = powerSlot;
+
+    this._ensureHeroSpritesLoaded();
   }
 
   /** Tear down when leaving group 30 or resetting the run. */

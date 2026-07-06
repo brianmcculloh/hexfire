@@ -39,7 +39,7 @@ function buildTowerCardInnerHtml(tower) {
   const shieldIconLevel = hasShield ? Math.min(4, Math.max(1, sh.level || 1)) : 1;
 
   const iconSlotClass =
-    tower.type === 'rain' || tower.type === 'pulsing' || tower.type === 'sentinel'
+    tower.type === 'rain' || tower.type === 'pulsing' || tower.type === 'sentinel' || tower.type === 'perimeter' || tower.type === 'charge'
       ? 'tower-status-icon-slot tower-status-icon--centered'
       : 'tower-status-icon-slot';
 

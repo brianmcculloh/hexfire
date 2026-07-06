@@ -82,7 +82,7 @@ export class BurningVaultSystem {
         window.AudioManager.playSFX('burning_vault_appears', { volume: 0.72, dedupeMs: 500 });
       }
       this.gameState.notificationSystem?.showToast(
-        'A Burning Vault appeared on the map!',
+        'A Burning Vault appeared!',
         4500,
         'warning'
       );

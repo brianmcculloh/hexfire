@@ -1,6 +1,6 @@
 // Grid System - Manages the hexagonal grid state
 
-import { CONFIG, getExpectedTownMaxHealth, getFireTypeConfig, getPowerUpMultiplier, getHeroPowerTownFireDamageMultiplier, getHeroPowerFireDamageResistanceMultiplier } from '../config.js';
+import { CONFIG, getExpectedTownMaxHealth, getFireTypeConfig, getPowerUpMultiplier, getHeroPowerTownFireDamageMultiplier, getHeroPowerFireDamageResistanceMultiplier, getEffectiveHealthRegrowRate } from '../config.js';
 import { hexKey, isInBounds, getNeighbors, getHexesInRing } from '../utils/hexMath.js';
 
 /**
@@ -756,7 +756,8 @@ export class GridSystem {
       this.syncTownHealthFields(newHealth, maxHealth);
     } else if (!this.isAnyTownHexBurning()) {
       // Regenerate only when no town hexes are burning
-      const newHealth = Math.min(maxHealth, (center.townHealth ?? 0) + deltaTime * 0.5);
+      const regrowRate = getEffectiveHealthRegrowRate(gameState);
+      const newHealth = Math.min(maxHealth, (center.townHealth ?? 0) + deltaTime * regrowRate);
       this.syncTownHealthFields(newHealth, maxHealth);
     }
   }

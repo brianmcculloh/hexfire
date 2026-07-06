@@ -1,7 +1,32 @@
 // Fire System - Manages fire ignition, spreading, and extinguishing
 
-import { CONFIG, getFireTypeConfig, getFireSpawnProbabilities, getFireTypeStrengthRank, getBaseSpreadRate, getPowerUpMultiplier, getNextFireType, isFinalSurvivalBossWave, getBlackfyreFinalSurvivalSpreadBonus, getFireSpreadScalingWaveInGroup, getHeroPowerPathFireSpreadMultiplier, getHeroPowerFireSpreadResistanceMultiplier, getHeroPowerFireRegrowMultiplier } from '../config.js';
+import { CONFIG, getFireTypeConfig, getFireSpawnProbabilities, getFireTypeStrengthRank, getBaseSpreadRate, getPowerUpMultiplier, getNextFireType, getFireSpreadScalingWaveInGroup, getEffectiveIgnitionChance, getHeroPowerPathFireSpreadMultiplier, getHeroPowerFireSpreadResistanceMultiplier, getHeroPowerFireRegrowMultiplier } from '../config.js';
 import { hexDistance, getHexesInRing } from '../utils/hexMath.js';
+
+function getLightningStrikeSfxVolume() {
+  const base =
+    (typeof window !== 'undefined' && window.__audioConfig?.sfxVolume != null)
+      ? window.__audioConfig.sfxVolume
+      : (CONFIG.AUDIO_SFX_VOLUME ?? 0.8);
+  const mul = CONFIG.AUDIO_LIGHTNING_SFX_VOLUME_MULTIPLIER ?? 1.25;
+  return Math.min(1, base * mul);
+}
+
+function playLightningStrikeSfx(hex) {
+  if (!hex || typeof window === 'undefined' || !window.AudioManager) return;
+  const isOccupied = hex.hasTower || hex.hasWaterTank || hex.hasTempPowerUpItem
+    || hex.hasMysteryItem || hex.hasCurrencyItem || hex.hasSuppressionBomb
+    || hex.hasBurningVault || hex.hasArtifactItem
+    || hex.isPath;
+  const volume = getLightningStrikeSfxVolume();
+  if (isOccupied) {
+    const hitIndex = Math.floor(Math.random() * 3) + 1;
+    window.AudioManager.playSFX(`thunder_hit${hitIndex}`, { maxConcurrent: 1, volume });
+  } else {
+    const thunderIndex = Math.floor(Math.random() * 7) + 1;
+    window.AudioManager.playSFX(`thunder${thunderIndex}`, { maxConcurrent: 1, volume });
+  }
+}
 
 export class FireSystem {
   constructor(gridSystem, pathSystem, gameState = null) {
@@ -111,6 +136,14 @@ export class FireSystem {
     }
   }
 
+  /** Random ignition chance (recomputed each tick so survival wave ramps during the wave). */
+  getCurrentIgnitionChance() {
+    if (this.gameState) {
+      return getEffectiveIgnitionChance(this.gameState);
+    }
+    return this.currentIgnitionChance;
+  }
+
   /**
    * Get the current dynamic spread multiplier for spawner fires
    * This multiplier increases per wave based on DIFFICULTY_FIRE_SPREAD_INCREMENT_PER_WAVE
@@ -137,13 +170,12 @@ export class FireSystem {
     const hexes = this.gridSystem.getAllHexes();
     
     hexes.forEach(hex => {
-      // Skip if already burning, is town, or is in the town ring
-      // Allow random ignition on towers
-      // Prevent fires from spawning on fire spawners (spawners are indestructible)
-      if (hex.isBurning || hex.isTown || this.gridSystem.isTownRingHex(hex.q, hex.r) || hex.hasFireSpawner) return;
+      // Skip if already burning or on a fire spawner (spawners are indestructible).
+      // Allow random ignition on towers, Ancient Grove, and the 12-hex town ring.
+      if (hex.isBurning || hex.hasFireSpawner) return;
       
       // Random ignition chance (dynamic per wave)
-      if (Math.random() < this.currentIgnitionChance) {
+      if (Math.random() < this.getCurrentIgnitionChance()) {
         const fireType = this.getRandomFireType();
         this.igniteHex(hex.q, hex.r, fireType, true); // isSpawn: true for random ignition
       }
@@ -297,23 +329,12 @@ export class FireSystem {
     const SPAWNER_RING_REDUCTION = CONFIG.FIRE_SPAWNER_RING_REDUCTION_FACTOR || 0.4;
 
     // Cache base spread rate per fire type (function call -> CONFIG row lookup).
-    // Hoist the once-per-spreadFires "are we in the final survival wave?" check so we
-    // don't re-evaluate `isFinalSurvivalBossWave(gameState)` for every burning hex.
-    // Late-wave maps can hit this thousands of times per tick (wave 23-5 onwards is
-    // 95–100% blackfyre, so the survival branch was firing the wave check per hex).
-    const inSurvivalWave = isFinalSurvivalBossWave(this.gameState);
-    const survivalBlackfyreBonus = inSurvivalWave
-      ? getBlackfyreFinalSurvivalSpreadBonus(this.gameState)
-      : 0;
     /** @type {Object<string, number>} */
     const baseSpreadRateByType = Object.create(null);
     const getBaseRate = (fireType) => {
       let r = baseSpreadRateByType[fireType];
       if (r === undefined) {
         r = getBaseSpreadRate(fireType, waveNumber);
-        if (inSurvivalWave && fireType === CONFIG.FIRE_TYPE_BLACKFYRE) {
-          r += survivalBlackfyreBonus;
-        }
         baseSpreadRateByType[fireType] = r;
       }
       return r;
@@ -529,17 +550,7 @@ export class FireSystem {
             // ignore render side errors
           }
           if (typeof window !== 'undefined' && window.AudioManager) {
-            const isOccupied = hex.hasTower || hex.hasWaterTank || hex.hasTempPowerUpItem ||
-                               hex.hasMysteryItem || hex.hasCurrencyItem || hex.hasSuppressionBomb ||
-                               hex.hasBurningVault || hex.hasArtifactItem ||
-                               hex.isPath;
-            if (isOccupied) {
-              const hitIndex = Math.floor(Math.random() * 3) + 1;
-              window.AudioManager.playSFX(`thunder_hit${hitIndex}`, { maxConcurrent: 1 });
-            } else {
-              const thunderIndex = Math.floor(Math.random() * 7) + 1;
-              window.AudioManager.playSFX(`thunder${thunderIndex}`, { maxConcurrent: 1 });
-            }
+            playLightningStrikeSfx(hex);
           }
         }
         return;
@@ -584,19 +595,7 @@ export class FireSystem {
       }
       
       // Play thunder sound - use thunder-hit for non-empty hexes, regular thunder for empty
-      if (typeof window !== 'undefined' && window.AudioManager) {
-        const isOccupied = hex.hasTower || hex.hasWaterTank || hex.hasTempPowerUpItem || 
-                           hex.hasMysteryItem || hex.hasCurrencyItem || hex.hasSuppressionBomb ||
-                           hex.hasBurningVault || hex.hasArtifactItem ||
-                           hex.isPath;
-        if (isOccupied) {
-          const hitIndex = Math.floor(Math.random() * 3) + 1;
-          window.AudioManager.playSFX(`thunder_hit${hitIndex}`, { maxConcurrent: 1 });
-        } else {
-          const thunderIndex = Math.floor(Math.random() * 7) + 1;
-          window.AudioManager.playSFX(`thunder${thunderIndex}`, { maxConcurrent: 1 });
-        }
-      }
+      playLightningStrikeSfx(hex);
     }
     
     // Play burning sound segment (maxConcurrent: 1 prevents stacking across multiple ignitions per tick)

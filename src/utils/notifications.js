@@ -43,6 +43,10 @@ export class NotificationSystem {
    * @param {'negative'|'positive'|'neutral'|'warning'} [tone='neutral'] - Visual theme: bad / good / info / caution (yellow)
    */
   showToast(message, displayDurationMs = 3000, tone = 'neutral') {
+    if (CONFIG.DISABLE_NOTIFICATIONS === true) {
+      return;
+    }
+
     if (!this.toastContainer) {
       this.initializeToastContainer();
     }
@@ -82,6 +86,22 @@ export class NotificationSystem {
     setTimeout(() => {
       this.removeToast(toastId);
     }, toast.displayDuration + toast.fadeInDuration);
+  }
+
+  /**
+   * Remove all active toast notifications immediately.
+   */
+  clearToasts() {
+    const toasts = [...this.activeToasts];
+    for (const toast of toasts) {
+      if (toast.element && toast.element.parentNode) {
+        toast.element.parentNode.removeChild(toast.element);
+      }
+    }
+    this.activeToasts = [];
+    if (this.toastContainer) {
+      this.toastContainer.innerHTML = '';
+    }
   }
 
   /**

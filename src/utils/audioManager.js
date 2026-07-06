@@ -104,8 +104,8 @@ const MUSIC_VOLUME_SCALE = 0.5;
 const LAST_UNIQUE_WAVE_GROUP_MUSIC = 30;
 /** Loop for wave groups beyond {@link LAST_UNIQUE_WAVE_GROUP_MUSIC} (endless). */
 const ENDLESS_WAVE_GROUP_MUSIC = 30;
-/** Extra gain on group30-loop (final survival track): 2× base, +20% = 2.4×. */
-const GROUP_30_LOOP_VOLUME_MULTIPLIER = 2.4;
+/** Extra gain on group30-loop (final survival track): was 2.4×; +25% → 3.0×. */
+const GROUP_30_LOOP_VOLUME_MULTIPLIER = 3.0;
 
 /**
  * Map gameplay wave group → music file index (groupN-loop.wav).

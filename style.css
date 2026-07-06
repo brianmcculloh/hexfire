@@ -1502,7 +1502,7 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
 }
 
 /* Inventory tab only: shift upgrade plan scroll art down (shop unchanged) */
-#upgrade-plan-inventory > .icon, #movement-token-inventory > .icon {
+#upgrade-plan-inventory > .icon, #movement-token-inventory > .icon, #specialty-plan-inventory > .icon {
     margin-top: 10px;
 }
 
@@ -1551,7 +1551,7 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
     left: 0;
     display: flex;
     gap: 0;
-    z-index: 1000;
+    z-index: 10010; /* Above bottom-edge power-up indicators (9999) */
 }
 
 .control-btn:not(.cta-button) {
@@ -1653,18 +1653,63 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
 
 #waveCompleteModal.artifact-trader-modal .modal {
     z-index: 3;
-    max-width: min(960px, calc(100vw - 40px));
+    max-width: calc(100vw - 48px);
     width: 100%;
 }
 
-/* Trader portrait sits bottom-left; without a higher z-index the modal frame (z-index 3) paints over the hero (default z-index 1). Bubble stays above the portrait. */
-#waveCompleteModal.artifact-trader-modal > .wave-complete-hero-graphic {
+/* Trader portrait — scoped to artifact-trader modal + portrait class only (campaign heroes unchanged) */
+#waveCompleteModal.artifact-trader-modal > .wave-complete-hero-graphic.artifact-trader-portrait {
     z-index: 4;
+    left: 0;
+    width: 260px !important;
+    /* img + pill are position:absolute, so height:auto collapses to 0 and paints the sprite below the viewport */
+    height: min(48vh, 380px) !important;
+    min-height: 280px;
+    max-height: min(52vh, 420px);
+    overflow: visible;
+    transform-origin: bottom left;
     transform: translateX(-100%) scale(1);
+    opacity: 0;
 }
 
-#waveCompleteModal.artifact-trader-modal > .wave-complete-hero-graphic.shifted-in {
+#waveCompleteModal.artifact-trader-modal > .wave-complete-hero-graphic.artifact-trader-portrait.shifted-in {
+    opacity: 1;
     transform: translateX(0) scale(1);
+}
+
+#waveCompleteModal.artifact-trader-modal > .wave-complete-hero-graphic.artifact-trader-portrait img {
+    width: 240px !important;
+    max-height: calc(100% - 52px);
+    height: auto;
+    left: 0 !important;
+    top: auto;
+    bottom: 52px;
+    object-fit: contain;
+    object-position: left bottom;
+    transform: scaleX(-1);
+    transform-origin: center bottom;
+}
+
+#waveCompleteModal.artifact-trader-modal > .wave-complete-hero-graphic.artifact-trader-portrait img.pulsing {
+    animation: waveCompleteHeroPulseArtifactTrader 2s ease-in-out infinite;
+}
+
+@keyframes waveCompleteHeroPulseArtifactTrader {
+    0%, 100% {
+        transform: scaleX(-1) translateY(0);
+    }
+    50% {
+        transform: scaleX(-1) translateY(-8px);
+    }
+}
+
+#waveCompleteModal.artifact-trader-modal > .wave-complete-hero-graphic.artifact-trader-portrait .wave-complete-hero-pill {
+    left: 28px;
+}
+
+#waveCompleteModal.artifact-trader-modal .character-speech-bubble.character-speech-bubble-hero,
+#waveCompleteModal.placement-phase .character-speech-bubble.character-speech-bubble-hero {
+    z-index: 5;
 }
 
 /* Wave complete hero graphic - bottom left, fixed pixel dimensions (no viewport scaling) */
@@ -1684,12 +1729,22 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
     opacity: 0;
     transform-origin: bottom left;
     transform: translateX(-100%) scale(1.2);
-    transition: opacity 0.4s ease-in, transform 0.4s ease-in;
+    transition:
+        opacity 0.4s ease-in,
+        transform 0.4s ease-in,
+        width 0.35s ease-in-out,
+        height 0.35s ease-in-out;
 }
 
 .wave-complete-hero-graphic.shifted-in {
     opacity: 1;
     transform: translateX(0) scale(1.2);
+}
+
+/* Instant swap during artifact-trader ↔ placement morph (no width/height/transform tween) */
+.wave-complete-hero-graphic.hero-portrait-instant-swap,
+.wave-complete-hero-graphic.hero-portrait-instant-swap img {
+    transition: none !important;
 }
 
 .wave-complete-hero-graphic img.pulsing {
@@ -1730,30 +1785,7 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
     object-position: top left;
     image-rendering: crisp-edges;
     transform: scaleX(-1);
-}
-
-/* Artifact trader: same placement/classes as wave 1 hero; slightly smaller than full hero-size-110 (width-driven so it isn’t hidden under the modal) */
-#waveCompleteModal.artifact-trader-modal .wave-complete-hero-graphic img {
-    width: 300px;
-    transform: scaleX(-1);
-    transform-origin: center bottom;
-}
-
-#waveCompleteModal.artifact-trader-modal .wave-complete-hero-graphic img.pulsing {
-    animation: waveCompleteHeroPulseArtifactTrader 2s ease-in-out infinite;
-}
-
-@keyframes waveCompleteHeroPulseArtifactTrader {
-    0%, 100% {
-        transform: scaleX(-1) translateY(0);
-    }
-    50% {
-        transform: scaleX(-1) translateY(-10px);
-    }
-}
-
-#waveCompleteModal.artifact-trader-modal .character-speech-bubble.character-speech-bubble-hero {
-    z-index: 5;
+    transition: width 0.35s ease-in-out, opacity 0.25s ease-in-out;
 }
 
 /* Hero size variants - container/img only; pill stays fixed size */
@@ -1998,6 +2030,11 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
 .character-speech-bubble-hero::after {
     left: 50%;
     margin-left: -20px;
+}
+
+/* Group 30 rotating allies: stay below hero portrait tooltips */
+.survival-hero-speech-bubble {
+    z-index: 9000;
 }
 
 /* Boss speech bubble: shrinks to fit content, black text (story classes can override for effects) */
@@ -3541,7 +3578,8 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 .modal-overlay.game-modal-enter > .modal,
 .modal-overlay.game-modal-enter > .splash-modal,
 .modal-overlay.game-modal-enter > .story-screen-container,
-.modal-overlay.game-modal-enter .map-progression-screen {
+.modal-overlay.game-modal-enter .map-progression-screen,
+.modal-overlay.game-modal-enter .specialty-screen {
     animation: gameModalContentFadeIn 0.338s ease-out forwards;
 }
 
@@ -3553,21 +3591,22 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 .modal-overlay.game-modal-exit > .modal,
 .modal-overlay.game-modal-exit > .splash-modal,
 .modal-overlay.game-modal-exit > .story-screen-container,
-.modal-overlay.game-modal-exit .map-progression-screen {
+.modal-overlay.game-modal-exit .map-progression-screen,
+.modal-overlay.game-modal-exit .specialty-screen {
     animation: gameModalContentFadeOut 0.263s ease-in forwards;
 }
 
 /* Same overlay, new content — backdrop stays opaque (e.g. artifact trader → placement) */
 .modal-overlay.game-modal-shell-swap-out > .modal,
-.modal-overlay.game-modal-shell-swap-out > .wave-complete-hero-graphic,
-.modal-overlay.game-modal-shell-swap-out > .character-speech-bubble {
+.modal-overlay.game-modal-shell-swap-out > .wave-complete-hero-graphic:not(.modal-shell-persist),
+.modal-overlay.game-modal-shell-swap-out > .character-speech-bubble:not(.modal-shell-persist) {
     animation: gameModalContentFadeOut 0.263s ease-in forwards;
     pointer-events: none;
 }
 
 .modal-overlay.game-modal-shell-swap-in > .modal,
-.modal-overlay.game-modal-shell-swap-in > .wave-complete-hero-graphic,
-.modal-overlay.game-modal-shell-swap-in > .character-speech-bubble {
+.modal-overlay.game-modal-shell-swap-in > .wave-complete-hero-graphic:not(.modal-shell-persist),
+.modal-overlay.game-modal-shell-swap-in > .character-speech-bubble:not(.modal-shell-persist) {
     animation: gameModalContentFadeIn 0.338s ease-out forwards;
 }
 
@@ -3580,16 +3619,18 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     .modal-overlay.game-modal-enter > .splash-modal,
     .modal-overlay.game-modal-enter > .story-screen-container,
     .modal-overlay.game-modal-enter .map-progression-screen,
+    .modal-overlay.game-modal-enter .specialty-screen,
     .modal-overlay.game-modal-exit > .modal,
     .modal-overlay.game-modal-exit > .splash-modal,
     .modal-overlay.game-modal-exit > .story-screen-container,
     .modal-overlay.game-modal-exit .map-progression-screen,
+    .modal-overlay.game-modal-exit .specialty-screen,
     .modal-overlay.game-modal-shell-swap-out > .modal,
-    .modal-overlay.game-modal-shell-swap-out > .wave-complete-hero-graphic,
-    .modal-overlay.game-modal-shell-swap-out > .character-speech-bubble,
+    .modal-overlay.game-modal-shell-swap-out > .wave-complete-hero-graphic:not(.modal-shell-persist),
+    .modal-overlay.game-modal-shell-swap-out > .character-speech-bubble:not(.modal-shell-persist),
     .modal-overlay.game-modal-shell-swap-in > .modal,
-    .modal-overlay.game-modal-shell-swap-in > .wave-complete-hero-graphic,
-    .modal-overlay.game-modal-shell-swap-in > .character-speech-bubble {
+    .modal-overlay.game-modal-shell-swap-in > .wave-complete-hero-graphic:not(.modal-shell-persist),
+    .modal-overlay.game-modal-shell-swap-in > .character-speech-bubble:not(.modal-shell-persist) {
         animation: none;
     }
 }
@@ -3821,14 +3862,14 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 
 #waveCompleteModal.artifact-trader-modal .artifact-trader-body {
     width: 100%;
-    max-width: min(960px, 100%);
+    max-width: 100%;
     margin: 0 auto;
     text-align: center;
     box-sizing: border-box;
     overflow-x: visible;
 }
 
-/* Horizontal scroll only when columns exceed viewport; hidden scrollbar (same as overlay vertical) */
+/* Horizontal scroll only when trade columns exceed viewport; hidden scrollbar */
 #waveCompleteModal.artifact-trader-modal .artifact-trader-columns-scroll {
     width: 100%;
     max-width: 100%;
@@ -3836,6 +3877,7 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     overflow-y: visible;
     scrollbar-width: none;
     -ms-overflow-style: none;
+    box-sizing: border-box;
 }
 
 #waveCompleteModal.artifact-trader-modal .artifact-trader-columns-scroll::-webkit-scrollbar {
@@ -3850,10 +3892,11 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     flex-wrap: nowrap;
     justify-content: center;
     align-items: flex-start;
-    gap: 22px 82px;
-    width: max-content;
-    max-width: none;
+    gap: 22px 36px;
+    width: 100%;
+    max-width: 100%;
     margin: 0 auto;
+    box-sizing: border-box;
 }
 
 #waveCompleteModal.artifact-trader-modal .artifact-trader-continue-wrap {
@@ -3880,6 +3923,19 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 #waveCompleteModal.artifact-trader-modal .artifact-trader-reward-row {
     width: 100%;
     margin-bottom: 0;
+}
+
+/* All reward icons in one row — continuous overlap across types and counts */
+#waveCompleteModal.artifact-trader-modal .artifact-trader-reward-stack {
+    display: inline-flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    overflow: visible;
+}
+
+#waveCompleteModal.artifact-trader-modal .artifact-trader-reward-stack img {
+    flex-shrink: 0;
 }
 
 #waveCompleteModal.artifact-trader-modal .artifact-trader-reward-part {
@@ -3987,6 +4043,7 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     background: rgba(12, 18, 36, 0.94);
     border: 2px solid rgba(255, 215, 0, 0.55);
     box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+    cursor: var(--cursor-default);
 }
 
 .sentinel-mode-title {
@@ -4011,7 +4068,7 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     border-radius: 6px;
     padding: 6px 8px;
     min-height: 48px;
-    cursor: pointer;
+    cursor: var(--cursor-default);
     transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
 }
 
@@ -4041,6 +4098,482 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     background: rgba(255, 196, 29, 0.2);
     border-color: rgba(255, 215, 0, 0.5);
     color: #fff;
+}
+
+.perimeter-mode-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 12000;
+    pointer-events: none;
+}
+
+.perimeter-mode-panel {
+    position: fixed;
+    pointer-events: auto;
+    min-width: 140px;
+    padding: 10px 12px 12px;
+    border-radius: 10px;
+    background: rgba(12, 18, 36, 0.94);
+    border: 2px solid rgba(55, 90, 200, 0.72);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55), 0 0 18px rgba(32, 58, 168, 0.22);
+    cursor: var(--cursor-default);
+}
+
+.perimeter-mode-title {
+    color: #8eb4f0;
+    font-size: 13px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    text-align: center;
+}
+
+.perimeter-mode-buttons {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+}
+
+.perimeter-mode-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid transparent;
+    border-radius: 6px;
+    padding: 6px 8px;
+    min-height: 48px;
+    cursor: var(--cursor-default);
+    transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.perimeter-mode-btn-label {
+    font-size: 18px;
+    font-weight: 700;
+    color: #5a7fd4;
+    line-height: 1;
+    pointer-events: none;
+}
+
+.perimeter-mode-btn--active {
+    background: rgba(32, 58, 168, 0.38);
+    border-color: #5a7fd4;
+    color: #fff;
+}
+
+.perimeter-mode-btn--active .perimeter-mode-btn-label {
+    color: #b8d4ff;
+}
+
+.perimeter-mode-btn--inactive {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(55, 90, 200, 0.35);
+    color: rgba(255, 255, 255, 0.72);
+}
+
+.perimeter-mode-btn--inactive:hover {
+    background: rgba(32, 58, 168, 0.28);
+    border-color: rgba(90, 127, 212, 0.85);
+    color: #fff;
+}
+
+.perimeter-mode-btn--inactive:hover .perimeter-mode-btn-label {
+    color: #8eb4f0;
+}
+
+.charge-mode-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 12000;
+    pointer-events: none;
+}
+
+.charge-mode-panel {
+    position: fixed;
+    pointer-events: auto;
+    min-width: 220px;
+    max-width: min(92vw, 360px);
+    padding: 10px 12px 12px;
+    border-radius: 10px;
+    background: rgba(12, 18, 36, 0.94);
+    border: 2px solid rgba(85, 255, 95, 0.72);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55), 0 0 18px rgba(55, 255, 70, 0.28);
+    cursor: var(--cursor-default);
+}
+
+.charge-mode-title {
+    color: #9aff8e;
+    font-size: 13px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    text-align: center;
+}
+
+.charge-mode-buttons {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 5px;
+}
+
+.charge-mode-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid transparent;
+    border-radius: 6px;
+    padding: 4px 2px;
+    min-height: 36px;
+    cursor: var(--cursor-default);
+    transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.charge-mode-btn-label {
+    font-size: 14px;
+    font-weight: 700;
+    color: #55ff5a;
+    line-height: 1;
+    pointer-events: none;
+}
+
+.charge-mode-btn--active {
+    background: rgba(45, 200, 55, 0.38);
+    border-color: #6cff62;
+    color: #fff;
+}
+
+.charge-mode-btn--active .charge-mode-btn-label {
+    color: #d4ffd0;
+}
+
+.charge-mode-btn--inactive {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(85, 255, 95, 0.35);
+    color: rgba(255, 255, 255, 0.72);
+}
+
+.charge-mode-btn--inactive:hover {
+    background: rgba(45, 200, 55, 0.28);
+    border-color: rgba(90, 255, 100, 0.85);
+    color: #fff;
+}
+
+.charge-mode-btn--inactive:hover .charge-mode-btn-label {
+    color: #9aff8e;
+}
+
+.charge-mode-btn--disabled,
+.charge-mode-btn:disabled {
+    background: rgba(255, 255, 255, 0.03);
+    border-color: rgba(255, 255, 255, 0.08);
+    cursor: var(--cursor-x) !important;
+    opacity: 0.35;
+}
+
+.charge-mode-title--spaced {
+    margin-top: 10px;
+}
+
+.charge-mode-impact-buttons {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    margin-bottom: 4px;
+}
+
+.charge-mode-impact-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid transparent;
+    border-radius: 6px;
+    padding: 6px 8px;
+    min-height: 48px;
+    cursor: var(--cursor-default);
+    transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.charge-mode-impact-btn-icon {
+    display: block;
+    width: auto;
+    height: 34px;
+    max-width: 43px;
+    object-fit: contain;
+    image-rendering: pixelated;
+    pointer-events: none;
+    transition: opacity 0.15s ease, filter 0.15s ease;
+}
+
+.charge-mode-impact-btn--active .charge-mode-impact-btn-icon {
+    opacity: 1;
+    filter: none;
+}
+
+.charge-mode-impact-btn--inactive .charge-mode-impact-btn-icon {
+    opacity: 0.71;
+    filter: brightness(0.75) saturate(0.83);
+}
+
+.charge-mode-impact-btn--inactive:hover .charge-mode-impact-btn-icon {
+    opacity: 1;
+    filter: none;
+}
+
+.charge-mode-impact-btn-label {
+    font-size: 13px;
+    font-weight: 700;
+    color: #55ff5a;
+    line-height: 1.1;
+    text-align: center;
+    pointer-events: none;
+}
+
+.charge-mode-impact-btn--active {
+    color: #fff;
+}
+
+.charge-mode-impact-btn--active .charge-mode-impact-btn-label {
+    color: #d4ffd0;
+}
+
+.charge-mode-impact-btn--inactive {
+    background: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.72);
+}
+
+.charge-mode-impact-btn--inactive:hover {
+    color: #fff;
+}
+
+.charge-mode-impact-btn--inactive:hover .charge-mode-impact-btn-label {
+    color: #9aff8e;
+}
+
+/* Area — red */
+.charge-mode-impact-btn--area.charge-mode-impact-btn--active {
+    background: rgba(247, 55, 92, 0.38);
+    border-color: #ff6b85;
+}
+
+.charge-mode-impact-btn--area.charge-mode-impact-btn--active .charge-mode-impact-btn-label {
+    color: #ffd0d8;
+}
+
+.charge-mode-impact-btn--area.charge-mode-impact-btn--inactive {
+    border-color: rgba(247, 55, 92, 0.35);
+}
+
+.charge-mode-impact-btn--area.charge-mode-impact-btn--inactive:hover {
+    background: rgba(247, 55, 92, 0.28);
+    border-color: rgba(255, 107, 133, 0.85);
+}
+
+.charge-mode-impact-btn--area.charge-mode-impact-btn--inactive:hover .charge-mode-impact-btn-label {
+    color: #ff9eb0;
+}
+
+/* Balance — green */
+.charge-mode-impact-btn--balanced.charge-mode-impact-btn--active {
+    background: rgba(45, 200, 55, 0.38);
+    border-color: #6cff62;
+}
+
+.charge-mode-impact-btn--balanced.charge-mode-impact-btn--active .charge-mode-impact-btn-label {
+    color: #d4ffd0;
+}
+
+.charge-mode-impact-btn--balanced.charge-mode-impact-btn--inactive {
+    border-color: rgba(85, 255, 95, 0.35);
+}
+
+.charge-mode-impact-btn--balanced.charge-mode-impact-btn--inactive:hover {
+    background: rgba(45, 200, 55, 0.28);
+    border-color: rgba(90, 255, 100, 0.85);
+}
+
+.charge-mode-impact-btn--balanced.charge-mode-impact-btn--inactive:hover .charge-mode-impact-btn-label {
+    color: #9aff8e;
+}
+
+/* Power — blue */
+.charge-mode-impact-btn--power.charge-mode-impact-btn--active {
+    background: rgba(0, 217, 255, 0.32);
+    border-color: #5ce8ff;
+}
+
+.charge-mode-impact-btn--power.charge-mode-impact-btn--active .charge-mode-impact-btn-label {
+    color: #d0f8ff;
+}
+
+.charge-mode-impact-btn--power.charge-mode-impact-btn--inactive {
+    border-color: rgba(0, 217, 255, 0.35);
+}
+
+.charge-mode-impact-btn--power.charge-mode-impact-btn--inactive:hover {
+    background: rgba(0, 217, 255, 0.24);
+    border-color: rgba(92, 232, 255, 0.85);
+}
+
+.charge-mode-impact-btn--power.charge-mode-impact-btn--inactive:hover .charge-mode-impact-btn-label {
+    color: #9eefff;
+}
+
+.charge-mode-btn--disabled .charge-mode-btn-label {
+    color: rgba(255, 255, 255, 0.35);
+}
+
+/* Token Voucher — movement token sellback picker (inventory) */
+.token-voucher-sellback-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 25000;
+    pointer-events: none;
+}
+
+.token-voucher-sellback-panel {
+    pointer-events: auto;
+    cursor: var(--cursor-default);
+    background: rgba(18, 22, 38, 0.96);
+    border: 2px solid #9c51f2;
+    border-radius: 10px;
+    padding: 12px 14px 14px;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+    min-width: 260px;
+}
+
+.token-voucher-sellback-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 10px;
+    letter-spacing: 0.02em;
+}
+
+.token-voucher-sellback-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.token-voucher-sellback-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 2px solid rgba(79, 195, 247, 0.55);
+    background: rgba(79, 195, 247, 0.12);
+    color: #fff;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: var(--cursor-default) !important;
+    transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.token-voucher-sellback-btn:hover:not(.token-voucher-sellback-btn--disabled) {
+    background: rgba(79, 195, 247, 0.22);
+    border-color: #4FC3F7;
+    cursor: var(--cursor-default) !important;
+}
+
+.token-voucher-sellback-btn--disabled {
+    opacity: 0.42;
+    border-color: rgba(255, 60, 60, 0.45);
+    background: rgba(120, 24, 24, 0.22);
+    color: rgba(255, 180, 180, 0.85);
+    cursor: var(--cursor-x) !important;
+}
+
+.token-voucher-sellback-btn--disabled:hover {
+    cursor: var(--cursor-x) !important;
+}
+
+.token-voucher-bundle-part {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* Movement token inventory — sellback corner button (Token Voucher purchased) */
+.movement-token-sellback-btn {
+    position: absolute;
+    top: 14px;
+    left: 12px;
+    width: 38px;
+    height: auto;
+    padding: 0;
+    border: none;
+    background: transparent;
+    cursor: var(--cursor-default);
+    z-index: 35;
+    line-height: 0;
+    opacity: 1;
+    transform: translateY(0);
+    transition: transform 0.15s ease, opacity 0.15s ease;
+}
+
+.movement-token-sellback-btn:hover {
+    opacity: 0.7;
+    transform: translateY(-3px);
+}
+
+.movement-token-sellback-btn img {
+    width: 100%;
+    height: auto;
+    display: block;
+    image-rendering: pixelated;
+    pointer-events: none;
+}
+
+.token-voucher-bundle-icon {
+    width: 34px;
+    height: auto;
+    image-rendering: pixelated;
+    object-fit: contain;
+}
+
+.token-voucher-bundle-currency-icon {
+    width: 30px;
+    height: auto;
+    image-rendering: crisp-edges;
+    object-fit: contain;
+}
+
+.token-voucher-bundle-qty,
+.token-voucher-bundle-payout {
+    font-size: 16px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.token-voucher-bundle-payout {
+    color: #00FF88;
+}
+
+.token-voucher-bundle-arrow {
+    color: rgba(255, 255, 255, 0.65);
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: -0.04em;
+}
+
+.token-voucher-confirm-exchange {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.token-voucher-confirm-exchange .token-voucher-bundle-payout {
+    font-size: 22px;
+}
+
+.token-voucher-confirm-exchange .token-voucher-bundle-icon {
+    width: 48px;
+}
+
+.token-voucher-confirm-exchange .token-voucher-bundle-currency-icon {
+    width: 40px;
 }
 
 /* Custom scrollbar styling for modals */
@@ -4729,7 +5262,17 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 }
 
 #advancedSettingsModal .modal-choices-advanced-footer {
-    flex-wrap: wrap;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    gap: 8px;
+}
+
+#advancedSettingsModal .modal-choices-advanced-footer-row {
+    display: flex;
+    flex-wrap: nowrap;
     width: 100%;
     max-width: 100%;
     box-sizing: border-box;
@@ -4737,9 +5280,14 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 }
 
 #settingsModalInner .modal-choices-settings-footer .choice-btn,
-#advancedSettingsModal .modal-choices-advanced-footer .choice-btn {
+#advancedSettingsModal .modal-choices-advanced-footer-row .choice-btn {
     flex: 1 1 0;
     min-width: 0;
+}
+
+#advancedSettingsModal .modal-choices-advanced-footer-row--done .choice-btn {
+    flex: 1 1 100%;
+    width: 100%;
 }
 
 /* Settings Panel Styles */
@@ -4894,12 +5442,25 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 }
 
 #upgradeButtons {
-    .upgrade-modal-btn:first-child {
-        transform:translateX(20px);
+    .upgrade-option-column:first-child {
+        transform: translateX(20px);
     }
-    .upgrade-modal-btn:last-child {
-        transform:translateX(-20px);
+    .upgrade-option-column:last-child {
+        transform: translateX(-20px);
     }
+}
+
+.tower-upgrade-max-btn.choice-btn.cta-button {
+    margin-top: 2px;
+    width: auto;
+    align-self: center;
+}
+
+.tower-upgrade-max-btn--disabled,
+.tower-upgrade-max-btn--disabled:hover {
+    opacity: 0.5;
+    filter: brightness(0.6) !important;
+    cursor: var(--cursor-x) !important;
 }
 
 /* CTA buttons use filter hover effect, not background colors - defined earlier in file */
@@ -5493,6 +6054,37 @@ body.game-over-map-locked #sidePanelToggle {
     white-space: nowrap;
 }
 
+/* Shop — one-time purchase already owned this run */
+.inventory-item.shop-sold-out {
+    cursor: var(--cursor-x);
+}
+
+.inventory-item.shop-sold-out:hover {
+    cursor: var(--cursor-x);
+}
+
+.inventory-item.shop-sold-out .icon,
+.inventory-item.shop-sold-out > div {
+    opacity: 0.72;
+    filter: saturate(0.75);
+}
+
+.inventory-item.shop-sold-out::after {
+    content: 'SOLD OUT';
+    position: absolute;
+    top: 12px;
+    right: -8px;
+    font-size: 11px;
+    font-weight: bold;
+    color: #FFD700;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 1);
+    transform: rotate(40deg);
+    z-index: 2;
+    pointer-events: none;
+    letter-spacing: 0px;
+    white-space: nowrap;
+}
+
 /* Overlay Panels */
 .overlay-panel {
     position: absolute;
@@ -5564,6 +6156,145 @@ body.game-not-started .controls {
     max-width: 210px;
 }
 
+/* Collapsible wrapper for the left-side overlays (panel + FPS + tower status).
+   Slides off-screen to the left when the player hides the overlays. */
+.overlay-left-collapsible {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0;
+    transition: transform 0.3s ease, opacity 0.3s ease;
+    will-change: transform;
+}
+body.left-overlays-collapsed .overlay-left-collapsible {
+    transform: translateX(-115%);
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* Stack still occupies layout space when panels slide off — disable hit testing on the
+   empty column so the canvas receives mouse events; re-enable only on the toggle. */
+body.left-overlays-collapsed .overlay-top-left-stack {
+    pointer-events: none;
+}
+body.left-overlays-collapsed .overlay-left-toggle {
+    pointer-events: auto;
+}
+body.left-overlays-collapsed .tower-status-panel {
+    pointer-events: none;
+}
+
+/* Toggle button overlapping the stats panel's bottom-right corner.
+   JS keeps its position aligned to the panel and animates `left`. */
+.overlay-left-toggle {
+    position: absolute;
+    left: 150px;
+    top: 362px;
+    width: 46px;
+    height: 52px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #0C1A30;
+    border: 2px solid #22456C;
+    border-radius: 8px;
+    cursor: var(--cursor-default);
+    z-index: 3; /* Above the panel background, overlapping its bottom-right corner */
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+    transition: left 0.3s ease, background 0.2s ease, transform 0.1s ease;
+}
+.overlay-left-toggle:hover {
+    background: #1a2c48;
+}
+.overlay-left-toggle:active {
+    transform: scale(0.94);
+}
+.overlay-left-toggle-arrow {
+    width: auto;
+    height: 26px;
+    object-fit: contain;
+    image-rendering: crisp-edges;
+    transform: rotate(0deg); /* native art points left while overlays are open */
+    transition: transform 0.3s ease;
+    pointer-events: none;
+}
+body.left-overlays-collapsed .overlay-left-toggle-arrow {
+    transform: rotate(180deg); /* points right while overlays are hidden */
+}
+
+/* Floating compact stats along the very top, over the canvas, shown when
+   the left overlays are hidden. No background — just text/graphics. */
+.overlay-top-stats {
+    position: absolute;
+    top: 10px;
+    left: 16px;
+    display: none;
+    align-items: center;
+    gap: 17px;
+    z-index: 90;
+    pointer-events: none;
+    font-family: "Exo 2", sans-serif;
+    white-space: nowrap;
+}
+body.left-overlays-collapsed .overlay-top-stats {
+    display: flex;
+}
+body.game-not-started .overlay-top-stats {
+    display: none !important;
+}
+.overlay-top-stats .floating-stat {
+    font-size: 16px;
+    font-weight: 700;
+    color: #fff;
+    line-height: 1;
+    text-shadow: 0 0 2px rgba(0, 0, 0, 0.6), 0 1px 4px rgba(0, 0, 0, 0.7), 0 0 10px rgba(0, 0, 0, 0.5);
+}
+.overlay-top-stats .floating-stat-timer {
+    font-size: 22px;
+}
+.overlay-top-stats .floating-stat-currency {
+    color: #00FF88;
+}
+.overlay-top-stats .floating-stat-level {
+    display: inline-flex;
+    align-items: center;
+}
+
+/* Parent bar is pointer-events: none so stats don't block the map; re-enable on level hex trigger */
+.overlay-top-stats .floating-stat-level.specialty-tree-trigger {
+    pointer-events: auto;
+}
+.floating-level-hex-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    transform: translateY(2px);
+}
+.floating-level-hex {
+    width: 34px;
+    height: 34px;
+    object-fit: contain;
+    image-rendering: pixelated;
+    display: block;
+    filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.6));
+}
+.floating-level-value {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -67%);
+    font-size: 14px;
+    font-weight: 700;
+    color: #ffc654;
+    line-height: 1;
+    pointer-events: none;
+    text-shadow: 0 0 1px rgba(0, 0, 0, 0.6), 0 0 4px rgba(0, 0, 0, 0.6);
+}
+
 .fps-counter-floating {
     font-family: "Exo 2", ui-monospace, monospace;
     font-size: 12px;
@@ -5612,7 +6343,10 @@ body.game-not-started .controls {
 }
 
 .tower-status-scroll-area {
-    height: calc(100vh - 580px);
+    /* Grow only as tall as the towers need; start scrolling once it fills the available space.
+       Using max-height (not a fixed height) keeps the empty area below the cards from covering
+       the canvas — so the bottom-left hero portrait stays hoverable when only a few towers exist. */
+    max-height: calc(100vh - 580px);
     overflow-y: auto;
     overflow-x: hidden;
     padding-right: 2px;
@@ -6175,9 +6909,9 @@ body.game-not-started .controls {
     color: #FCD619; /* Yellow to match XP fill */
 }
 
-/* HP label - green to match fill */
+/* HP label - matches current grove HP color */
 .overlay-hp-container .overlay-progress-label {
-    color: #80FF22; /* Green to match HP fill */
+    color: var(--grove-hp-color, rgb(0, 255, 0));
 }
 
 .overlay-progress-bar {
@@ -6198,9 +6932,9 @@ body.game-not-started .controls {
     border-color: #FCD619; /* Yellow border to match XP fill */
 }
 
-/* HP bar border - green to match fill */
+/* HP bar border - matches current grove HP color */
 .overlay-hp-container .overlay-progress-bar {
-    border-color: #80FF22; /* Green border to match HP fill */
+    border-color: var(--grove-hp-color, rgb(0, 255, 0));
 }
 
 /* If using background images from UI kit, uncomment and adjust these: */
@@ -6248,7 +6982,25 @@ body.game-not-started .controls {
 }
 
 .overlay-hp-fill {
-    background: #80FF22; /* Solid green color for HP bar */
+    background: var(--grove-hp-color, rgb(0, 255, 0));
+}
+
+@keyframes overlayGroveHpFillFlash {
+    0%, 100% { background: var(--grove-hp-color, rgb(0, 255, 0)); }
+    50% { background: #FF2233; }
+}
+
+@keyframes overlayGroveHpBorderFlash {
+    0%, 100% { border-color: var(--grove-hp-color, rgb(0, 255, 0)); }
+    50% { border-color: #FF2233; }
+}
+
+.overlay-hp-container.grove-on-fire .overlay-hp-fill {
+    animation: overlayGroveHpFillFlash 0.4s ease-in-out infinite;
+}
+
+.overlay-hp-container.grove-on-fire .overlay-progress-bar {
+    animation: overlayGroveHpBorderFlash 0.4s ease-in-out infinite;
 }
 
 .overlay-progress-text {
@@ -6322,7 +7074,7 @@ body.game-not-started .controls {
 /* Toast Notification Styles — fixed to viewport + high z-index so toasts show above modals (main menu, etc.) */
 .toast-notification-container {
     position: fixed;
-    bottom: 8px;
+    bottom: 70px;
     left: 176px; /* offset from left edge; clears Tower Status panel */
     z-index: 50000 !important;
     pointer-events: none;
@@ -6330,6 +7082,9 @@ body.game-not-started .controls {
     flex-direction: column;
     align-items: flex-start;
     gap: 8px;
+}
+body.left-overlays-collapsed .toast-notification-container {
+    left: 8px;
 }
 
 .toast-notification {
@@ -6527,6 +7282,10 @@ body.game-not-started .controls {
     z-index: 99999 !important;
 }
 
+#game-tooltip.game-tooltip--hero-portrait {
+    z-index: 250000 !important;
+}
+
 /* Blur layer behind the tooltip - same pattern as modals */
 #game-tooltip::before {
     content: '';
@@ -6584,6 +7343,98 @@ body.game-not-started .controls {
 #game-tooltip .game-tooltip-blackfyre-stats-row {
     flex-wrap: nowrap;
     align-items: center;
+}
+
+/* Map tooltip HP row: [heart] [bar] current / max */
+.tooltip-health-row {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr);
+    column-gap: 5px;
+    align-items: center;
+    min-width: 0;
+    width: 100%;
+    color: #fff;
+    line-height: 1.2;
+}
+
+.tooltip-health-row__icon {
+    grid-column: 1;
+    width: 16px;
+    height: 16px;
+    object-fit: contain;
+    image-rendering: pixelated;
+}
+
+.tooltip-health-row__bar-group {
+    grid-column: 2;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) calc(13ch - 30px);
+    column-gap: 6px;
+    align-items: center;
+    min-width: 0;
+}
+
+.tooltip-health-row__track {
+    width: 100%;
+    min-width: 0;
+    height: 6px;
+    border-radius: 3px;
+    background: rgba(0, 0, 0, 0.55);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+    overflow: hidden;
+}
+
+.tooltip-health-row__fill {
+    display: block;
+    height: 100%;
+    min-width: 0;
+    border-radius: 2px;
+}
+
+.tooltip-health-row__text {
+    white-space: nowrap;
+    font-size: 12px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    text-align: left;
+    min-width: 0;
+}
+
+.tooltip-hp-stack {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr);
+    column-gap: 5px;
+    row-gap: 2px;
+    width: 100%;
+}
+
+.tooltip-hp-stack > .tooltip-health-row {
+    display: contents;
+}
+
+.tooltip-health-meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+}
+
+.tooltip-health-meta-row .tooltip-health-row {
+    flex: 1 1 140px;
+    width: auto;
+}
+
+.tooltip-health-row--spaced {
+    margin-bottom: 8px;
+}
+
+.tooltip-shield-row__fill {
+    background: #ff30cf;
+}
+
+.tooltip-shield-row__text {
+    color: #ff30cf;
 }
 
 /* Wave Countdown Timer Styles */
@@ -7622,6 +8473,24 @@ body.game-not-started .controls {
     min-width: 100px; /* Maintain minimum width for consistent appearance */
 }
 
+.level-up-actions {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    width: 100%;
+}
+
+.level-up-actions .level-up-action-btn {
+    width: auto !important;
+    flex: 0 0 auto;
+    flex-shrink: 0;
+    height: 66px;
+    min-height: 66px;
+    white-space: nowrap;
+}
+
 /* Placement Phase Modal Styles */
 .placement-header-container {
     position: relative;
@@ -8535,6 +9404,8 @@ body.game-not-started .controls {
 .placement-start-button-container {
     display: flex;
     justify-content: center;
+    align-items: center;
+    gap: 12px;
     width: 100%;
     flex-shrink: 0;
 }
@@ -8543,6 +9414,13 @@ body.game-not-started .controls {
     width: auto !important;
     min-width: auto !important;
     max-width: none !important;
+}
+
+.placement-modal-back-btn .control-btn-icon {
+    width: 18px;
+    height: 18px;
+    margin-right: 6px;
+    vertical-align: middle;
 }
 
 /* Map progression overlay (minimap click) */
@@ -8953,3 +9831,714 @@ body.game-not-started .controls {
     margin-top: 8px;
     font-style: italic;
 }
+
+/* Specialty research tree modal */
+#specialtyModal.specialty-overlay {
+    z-index: 1600;
+    background: rgba(0, 0, 0, 0.85);
+    padding: 24px 20px 32px;
+    align-items: stretch;
+    justify-content: center;
+    overflow: hidden;
+}
+
+#specialtyModal.specialty-overlay.active {
+    display: flex;
+}
+
+/* Confirm unlock stays above specialty modal (confirm modal is z-index 3000) */
+body:has(#specialtyModal.active) #confirmModal.modal-overlay.active {
+    z-index: 3100 !important;
+}
+
+.specialty-screen {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    width: 100%;
+    max-width: 920px;
+    height: 100%;
+    min-height: 0;
+    margin: 0 auto;
+    pointer-events: auto;
+}
+
+.specialty-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    flex-shrink: 0;
+    width: 100%;
+    margin-bottom: 6px;
+}
+
+.specialty-screen-title {
+    margin-bottom: 0;
+    color: #FDA801;
+}
+
+.specialty-plans-cluster {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    transform: translateY(-4px);
+    margin-right: -6px;
+}
+
+.specialty-plans-icon {
+    width: 40px;
+    height: auto;
+    image-rendering: pixelated;
+}
+
+.specialty-plans-badge {
+    color: #FDA801;
+    font-family: "Exo 2", sans-serif;
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.specialty-tree-wrap {
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+    overflow-y: auto;
+    padding: 4px 8px 12px;
+}
+
+.specialty-tree-wrap::-webkit-scrollbar {
+    width: 8px;
+}
+
+.specialty-tree-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 31px;
+    width: 100%;
+    max-width: 720px;
+    margin: 0 auto;
+}
+
+.specialty-column {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+}
+
+.specialty-column-icon {
+    width: 80px;
+    height: auto;
+    object-fit: contain;
+    image-rendering: pixelated;
+    flex-shrink: 0;
+    margin-bottom: -8px;
+}
+
+.specialty-column-header {
+    font-family: "Exo 2", sans-serif;
+    font-size: 18px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    text-align: center;
+}
+
+.specialty-column--time .specialty-column-header {
+    color: #FFD700;
+}
+
+.specialty-column--power .specialty-column-header {
+    color: #00D4FF;
+}
+
+.specialty-column--money .specialty-column-header {
+    color: #00FF88;
+}
+
+.specialty-column--health .specialty-column-header {
+    color: #FF4757;
+}
+
+.specialty-levels {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    width: 100%;
+}
+
+.specialty-connector {
+    width: 2px;
+    height: 15px;
+    flex-shrink: 0;
+    align-self: center;
+    pointer-events: none;
+}
+
+.specialty-connector--dim {
+    background-color: rgba(255, 255, 255, 0.08);
+}
+
+.specialty-column--time .specialty-connector--bright {
+    background-color: #FFE066;
+}
+
+.specialty-column--power .specialty-connector--bright {
+    background-color: #66E5FF;
+}
+
+.specialty-column--money .specialty-connector--bright {
+    background-color: #5CFFB0;
+}
+
+.specialty-column--health .specialty-connector--bright {
+    background-color: #FF8A94;
+}
+
+.specialty-level-card {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-height: 62px;
+    border: 2px solid transparent;
+    border-radius: 8px;
+    padding: 5px 6px;
+    background: transparent;
+    transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease, filter 0.15s ease;
+    cursor: var(--cursor-default);
+}
+
+.specialty-level-card-text {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    pointer-events: none;
+    text-align: center;
+}
+
+.specialty-level-card-level {
+    font-family: "Exo 2", sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1.1;
+    letter-spacing: 0.04em;
+}
+
+.specialty-level-card-keyword {
+    font-family: "Exo 2", sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.1;
+    letter-spacing: 0.06em;
+}
+
+.specialty-level-card--earned {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+.specialty-level-card--earned .specialty-level-card-text {
+    color: rgba(255, 255, 255, 0.85);
+}
+
+.specialty-column--time .specialty-level-card--earned {
+    background: rgba(255, 215, 0, 0.28);
+    border-color: #FFE066;
+}
+
+.specialty-column--time .specialty-level-card--earned .specialty-level-card-text {
+    color: #FFF3BF;
+}
+
+.specialty-column--power .specialty-level-card--earned {
+    background: rgba(0, 212, 255, 0.28);
+    border-color: #66E5FF;
+}
+
+.specialty-column--power .specialty-level-card--earned .specialty-level-card-text {
+    color: #C8F7FF;
+}
+
+.specialty-column--money .specialty-level-card--earned {
+    background: rgba(0, 255, 136, 0.22);
+    border-color: #5CFFB0;
+}
+
+.specialty-column--money .specialty-level-card--earned .specialty-level-card-text {
+    color: #CCFFE8;
+}
+
+.specialty-column--health .specialty-level-card--earned {
+    background: rgba(255, 71, 87, 0.28);
+    border-color: #FF8A94;
+}
+
+.specialty-column--health .specialty-level-card--earned .specialty-level-card-text {
+    color: #FFD0D5;
+}
+
+.specialty-level-card--available {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.18);
+}
+
+.specialty-level-card--available .specialty-level-card-text {
+    color: rgba(255, 255, 255, 0.72);
+}
+
+.specialty-column--time .specialty-level-card--available {
+    border-color: rgba(255, 215, 0, 0.45);
+}
+
+.specialty-column--time .specialty-level-card--available .specialty-level-card-text {
+    color: #FFD700;
+}
+
+.specialty-column--power .specialty-level-card--available {
+    border-color: rgba(0, 212, 255, 0.45);
+}
+
+.specialty-column--power .specialty-level-card--available .specialty-level-card-text {
+    color: #00D4FF;
+}
+
+.specialty-column--money .specialty-level-card--available {
+    border-color: rgba(0, 255, 136, 0.45);
+}
+
+.specialty-column--money .specialty-level-card--available .specialty-level-card-text {
+    color: #00FF88;
+}
+
+.specialty-column--health .specialty-level-card--available {
+    border-color: rgba(255, 71, 87, 0.45);
+}
+
+.specialty-column--health .specialty-level-card--available .specialty-level-card-text {
+    color: #FF4757;
+}
+
+.specialty-level-card--available.specialty-level-card--clickable {
+    cursor: var(--cursor-default);
+}
+
+.specialty-column--time .specialty-level-card--available.specialty-level-card--clickable:hover {
+    background: rgba(255, 215, 0, 0.22);
+    border-color: rgba(255, 224, 102, 0.9);
+}
+
+.specialty-column--time .specialty-level-card--available.specialty-level-card--clickable:hover .specialty-level-card-text {
+    color: #FFFDE0;
+}
+
+.specialty-column--power .specialty-level-card--available.specialty-level-card--clickable:hover {
+    background: rgba(0, 212, 255, 0.22);
+    border-color: rgba(102, 229, 255, 0.9);
+}
+
+.specialty-column--power .specialty-level-card--available.specialty-level-card--clickable:hover .specialty-level-card-text {
+    color: #E8FAFF;
+}
+
+.specialty-column--money .specialty-level-card--available.specialty-level-card--clickable:hover {
+    background: rgba(0, 255, 136, 0.18);
+    border-color: rgba(92, 255, 176, 0.9);
+}
+
+.specialty-column--money .specialty-level-card--available.specialty-level-card--clickable:hover .specialty-level-card-text {
+    color: #E8FFF4;
+}
+
+.specialty-column--health .specialty-level-card--available.specialty-level-card--clickable:hover {
+    background: rgba(255, 71, 87, 0.22);
+    border-color: rgba(255, 138, 148, 0.9);
+}
+
+.specialty-column--health .specialty-level-card--available.specialty-level-card--clickable:hover .specialty-level-card-text {
+    color: #FFE8EB;
+}
+
+.specialty-level-card--locked {
+    background: rgba(255, 255, 255, 0.03);
+    border-color: rgba(255, 255, 255, 0.08);
+    opacity: 0.48;
+    filter: brightness(0.64) saturate(0.36);
+}
+
+.specialty-level-card--locked .specialty-level-card-text {
+    color: rgba(255, 255, 255, 0.48);
+}
+
+.specialty-level-card--available:not(.specialty-level-card--clickable) {
+    opacity: 0.64;
+    filter: brightness(0.76) saturate(0.56);
+}
+
+.specialty-milestone-card {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 92px;
+    min-height: 92px;
+    box-sizing: border-box;
+    border: 2px solid transparent;
+    border-radius: 8px;
+    padding: 10px 6px;
+    background: rgba(255, 255, 255, 0.03);
+    cursor: var(--cursor-default);
+}
+
+.specialty-milestone-card--locked {
+    opacity: 0.48;
+    filter: brightness(0.64) saturate(0.36);
+    border-color: rgba(255, 255, 255, 0.08);
+}
+
+.specialty-milestone-card--earned {
+    opacity: 1;
+    filter: none;
+}
+
+.specialty-column--time .specialty-milestone-card--earned {
+    background: rgba(255, 215, 0, 0.2);
+    border-color: rgba(255, 224, 102, 0.55);
+}
+
+.specialty-column--power .specialty-milestone-card--earned {
+    background: rgba(0, 212, 255, 0.2);
+    border-color: rgba(102, 229, 255, 0.55);
+}
+
+.specialty-column--money .specialty-milestone-card--earned {
+    background: rgba(0, 255, 136, 0.16);
+    border-color: rgba(92, 255, 176, 0.55);
+}
+
+.specialty-column--health .specialty-milestone-card--earned {
+    background: rgba(255, 71, 87, 0.2);
+    border-color: rgba(255, 138, 148, 0.55);
+}
+
+.specialty-milestone-preview {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+}
+
+.specialty-milestone-reward-row {
+    pointer-events: none;
+}
+
+#specialtyModal .artifact-trader-reward-stack {
+    display: inline-flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    overflow: visible;
+}
+
+#specialtyModal .artifact-trader-reward-stack img {
+    height: 40px;
+    width: auto;
+    flex-shrink: 0;
+}
+
+/* Time mastery: five power-ups — half the default trader stack overlap */
+.specialty-column--time .specialty-milestone-card .artifact-trader-reward-stack img:not(:first-child) {
+    margin-left: -7.5px !important;
+}
+
+.specialty-milestone-staggered-grid {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    line-height: 0;
+}
+
+.specialty-milestone-staggered-inner {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+}
+
+.specialty-milestone-staggered-row {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    position: relative;
+}
+
+.specialty-milestone-staggered-row--back {
+    z-index: 1;
+}
+
+.specialty-milestone-staggered-row--front {
+    z-index: 2;
+    margin-top: -12px;
+    margin-left: 14px;
+}
+
+#specialtyModal .specialty-milestone-staggered-grid .artifact-trader-reward-stack img:not(:first-child) {
+    margin-left: -7.5px !important;
+}
+
+.specialty-milestone-money {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+}
+
+.specialty-milestone-money-icon {
+    height: 40px;
+    width: auto;
+    image-rendering: pixelated;
+}
+
+.specialty-milestone-money-amount {
+    color: #00FF88;
+    font-family: "Exo 2", sans-serif;
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1.1;
+    text-align: center;
+}
+
+.specialty-footer {
+    flex-shrink: 0;
+    margin-top: 12px;
+}
+
+.specialty-footer .choice-btn.cta-button {
+    width: auto;
+    min-width: 140px;
+}
+
+.specialty-tree-trigger {
+    cursor: var(--cursor-default);
+}
+
+.specialty-tree-trigger:hover {
+    filter: brightness(1.06);
+}
+
+/* Tower statistics modal (Towers On Map header) — button reset only; typography from .label */
+button.tower-stats-header-trigger.label {
+    margin: 0;
+    padding: 0 46px 0 17px;
+    border: none;
+    background: transparent;
+    cursor: var(--cursor-default);
+    -webkit-appearance: none;
+    appearance: none;
+    /* Preserve .label typography (font: inherit was resetting size/weight/transform) */
+    font-family: 'Exo 2', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: normal;
+    line-height: normal;
+}
+
+.tower-stats-header-trigger:hover,
+.tower-stats-header-trigger:focus-visible {
+    filter: brightness(1.08);
+}
+
+.tower-stats-header-trigger:focus-visible {
+    outline: 1px solid rgba(255, 255, 255, 0.45);
+    outline-offset: 2px;
+}
+
+#towerStatsModal.tower-stats-overlay {
+    z-index: 1700; /* Above settings (1500) and advanced-settings sub-modals (1600–1650) */
+    background: rgba(0, 0, 0, 0.85);
+    padding: 24px 20px 32px;
+    align-items: stretch;
+    justify-content: center;
+    overflow: hidden;
+}
+
+#towerStatsModal.tower-stats-overlay.active {
+    display: flex;
+}
+
+.tower-stats-screen {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    width: 100%;
+    max-width: 1120px;
+    height: 100%;
+    min-height: 0;
+    margin: 0 auto;
+    pointer-events: auto;
+}
+
+.tower-stats-list-wrap {
+    flex: 1 1 auto;
+    width: 100%;
+    min-height: 0;
+    overflow: auto;
+    padding: 8px 12px 20px;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(120, 180, 255, 0.45) rgba(0, 0, 0, 0.25);
+}
+
+.tower-stats-list {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px 16px;
+    width: 100%;
+}
+
+.tower-stats-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 34px;
+    padding: 20px 12px 30px 22px;
+    border-radius: 8px;
+    background: rgba(12, 18, 28, 0.72);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.tower-stats-icon-slot {
+    flex-shrink: 0;
+    width: 64px;
+    min-width: 64px;
+    height: 64px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: var(--cursor-default);
+}
+
+.tower-stats-icon-slot > div {
+    transform: scale(0.92);
+    transform-origin: center center;
+}
+
+.tower-stats-icon-slot--centered > div {
+    transform: scale(0.92) translateY(2px);
+}
+
+.tower-stats-icon-slot--mystery {
+    font-family: "Exo 2", sans-serif;
+    font-size: 44px;
+    font-weight: 700;
+    line-height: 1;
+    color: rgba(255, 255, 255, 0.38);
+    cursor: default;
+    user-select: none;
+}
+
+.tower-stats-row--mystery .tower-stats-row-title {
+    color: rgba(255, 255, 255, 0.45);
+    letter-spacing: 2px;
+}
+
+.tower-stats-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-top: 2px;
+}
+
+.tower-stats-row-title {
+    color: #ffffff;
+    font-family: "Exo 2", sans-serif;
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    margin-bottom: 2px;
+}
+
+.tower-stats-metric {
+    display: grid;
+    grid-template-columns: 54px 268px minmax(0, 1fr);
+    align-items: center;
+    column-gap: 6px;
+}
+
+.tower-stats-metric-label {
+    font-family: "Exo 2", sans-serif;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    line-height: 1.15;
+    width: 54px;
+    flex-shrink: 0;
+}
+
+.tower-stats-metric-bar-wrap {
+    width: 268px;
+    flex-shrink: 0;
+}
+
+.tower-stats-metric-track {
+    display: block;
+    width: 100%;
+    height: 10px;
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+}
+
+.tower-stats-metric-value {
+    font-family: "Exo 2", sans-serif;
+    font-size: 10px;
+    font-weight: 600;
+    white-space: nowrap;
+    flex-shrink: 0;
+    padding-left: 2px;
+}
+
+.tower-stats-metric-value--varies {
+    cursor: help;
+}
+
+.tower-stats-usage {
+    margin-top: 4px;
+    padding-top: 6px;
+    color: rgba(203, 213, 225, 0.92);
+    font-family: "Exo 2", sans-serif;
+    font-size: 14px;
+    font-weight: 400;
+    line-height: 1.35;
+}
+
+.tower-stats-usage-label {
+    font-weight: 700;
+}
+
+.tower-stats-metric-fill {
+    display: block;
+    height: 100%;
+    border-radius: 5px;
+    min-width: 0;
+    transition: width 0.35s ease;
+}
+
+.tower-stats-footer {
+    flex-shrink: 0;
+    margin-top: 8px;
+}
+

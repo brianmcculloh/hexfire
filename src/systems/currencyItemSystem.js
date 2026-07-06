@@ -1,6 +1,6 @@
 // Currency Item System - Manages currency items that spawn from mystery boxes
 
-import { CONFIG, getFireTypeConfig, addPlayerScore, getPowerUpMultiplier, resolveWaterTankTypeIdFromPoolRow, getHeroPowerMapCurrencyMultiplier, getHeroPowerFireDamageResistanceMultiplier } from '../config.js';
+import { CONFIG, getFireTypeConfig, addPlayerScore, getPowerUpMultiplier, resolveWaterTankTypeIdFromPoolRow, getHeroPowerFireDamageResistanceMultiplier, getSuppressionBombTotalUses, applyCurrencyGainBonuses } from '../config.js';
 import { getNeighbors } from '../utils/hexMath.js';
 import { filterWeightedRewardPool, isWeightedRewardUnlockedInRun } from '../utils/rewardPoolUnlocks.js';
 
@@ -45,6 +45,10 @@ function getCurrencyItemCollectSpriteSpec(item) {
       const level = Math.min(4, Math.max(1, item.value || 1));
       return { spriteCategory: 'items', spriteFilename: `shield_${level}.png` };
     }
+    case 'suppression_bomb': {
+      const level = Math.min(4, Math.max(1, item.value || 1));
+      return { spriteCategory: 'items', spriteFilename: `suppression_${level}.png` };
+    }
     case 'upgrade_plans':
       return { spriteCategory: 'items', spriteFilename: 'upgrade_token.png' };
     case 'tree_juice':
@@ -74,8 +78,8 @@ export class CurrencyItemSystem {
    * Spawn a bonus item at a location (currency, movement token, shield, upgrade_plans)
    * @param {number} q - Hex q coordinate
    * @param {number} r - Hex r coordinate
-   * @param {string} itemType - Type of item: 'currency', 'xp', 'movement_token', 'shield', 'upgrade_plans', 'tree_juice'
-   * @param {number} value - Value for currency/xp (amount), shield level (1-4), or 1 for movement_token/upgrade_plans
+   * @param {string} itemType - Type of item: 'currency', 'xp', 'movement_token', 'shield', 'suppression_bomb', 'upgrade_plans', 'tree_juice'
+   * @param {number} value - Value for currency/xp (amount), shield/suppression_bomb level (1-4), or 1 for movement_token/upgrade_plans
    * @param {boolean} fromMystery - True when spawned from a mystery box cluster (for boss triggers)
    * @param {{ skipSpawnBounce?: boolean }} [spawnOptions] - Set skipSpawnBounce when restoring from save (no drop-in animation)
    * @returns {string|null} Item ID or null if spawn failed
@@ -113,8 +117,12 @@ export class CurrencyItemSystem {
       id: itemId,
       q,
       r,
-      itemType: normalizedType, // 'currency', 'xp', 'movement_token', 'shield', 'upgrade_plans', 'tree_juice'
-      value: (normalizedType === 'currency' || normalizedType === 'xp' ? (value || 1) : normalizedType === 'shield' ? (value || 1) : null),
+      itemType: normalizedType, // 'currency', 'xp', 'movement_token', 'shield', 'suppression_bomb', 'upgrade_plans', 'tree_juice'
+      value: (normalizedType === 'currency' || normalizedType === 'xp'
+        ? (value || 1)
+        : normalizedType === 'shield' || normalizedType === 'suppression_bomb'
+          ? (value || 1)
+          : null),
       health: 4, // Same health as mystery boxes
       maxHealth: 4,
       isActive: true,
@@ -138,7 +146,7 @@ export class CurrencyItemSystem {
    * @param {number} count - Number of items to spawn (1 to max)
    * @param {Array} dropPool - Array of {type, weight, minValue?, maxValue?, level?} objects.
    *   For type 'xp', minValue/maxValue define inclusive random XP (like money).
-   *   For type 'shield', set level (1–4) per entry; multiple rows = weighted levels. If level is omitted, a random level 1–4 is used.
+   *   For type 'shield' or 'suppression_bomb', set level (1–4) per entry; multiple rows = weighted levels. If level is omitted, a random level 1–4 is used.
    * @returns {number} Number of items actually spawned
    */
   spawnCurrencyItemsInCluster(centerQ, centerR, count, dropPool) {
@@ -226,6 +234,14 @@ export class CurrencyItemSystem {
           level = Math.floor(Math.random() * 4) + 1;
         }
         didSpawn = !!this.spawnCurrencyItem(q, r, 'shield', level, true);
+      } else if (selectedItem.type === 'suppression_bomb') {
+        let level;
+        if (selectedItem.level != null && Number.isFinite(Number(selectedItem.level))) {
+          level = Math.min(4, Math.max(1, Math.round(Number(selectedItem.level))));
+        } else {
+          level = Math.floor(Math.random() * 4) + 1;
+        }
+        didSpawn = !!this.spawnCurrencyItem(q, r, 'suppression_bomb', level, true);
       } else {
         // currency, xp, movement_token, upgrade_plans, etc. go through currency items
         let value = 1;
@@ -295,7 +311,7 @@ export class CurrencyItemSystem {
     const collectSpriteSpec = getCurrencyItemCollectSpriteSpec(item);
     let floatSpec = collectSpriteSpec ? { ...collectSpriteSpec } : null;
     if (floatSpec && (item.itemType === 'currency' || item.itemType === 'money')) {
-      currencyValue = Math.round(currencyValue * getHeroPowerMapCurrencyMultiplier(this.gameState));
+      currencyValue = applyCurrencyGainBonuses(currencyValue, this.gameState);
       floatSpec.valueText = `+$${currencyValue}`;
       floatSpec.valueColor = '#00FF88';
     } else if (floatSpec && item.itemType === 'xp') {
@@ -323,6 +339,18 @@ export class CurrencyItemSystem {
       }
       const level = Math.min(4, Math.max(1, item.value || 1));
       this.gameState.player.inventory.purchasedShields.push({ type: 'shield', level });
+    } else if (item.itemType === 'suppression_bomb') {
+      if (!this.gameState.player.inventory.purchasedSuppressionBombs) {
+        this.gameState.player.inventory.purchasedSuppressionBombs = [];
+      }
+      const level = Math.min(4, Math.max(1, item.value || 1));
+      const totalUses = getSuppressionBombTotalUses(level);
+      this.gameState.player.inventory.purchasedSuppressionBombs.push({
+        type: 'suppression_bomb',
+        level,
+        totalUses,
+        usesRemaining: totalUses,
+      });
     } else if (item.itemType === 'upgrade_plans') {
       // Award upgrade plan
       this.gameState.player.upgradePlans = (this.gameState.player.upgradePlans || 0) + 1;

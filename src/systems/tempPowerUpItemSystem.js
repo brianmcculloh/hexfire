@@ -1,6 +1,6 @@
 // Temporary Power-up Item System - Manages temporary power-up items that spawn on the map
 
-import { CONFIG, getFireTypeConfig, addPlayerScore, getPowerUpMultiplier, getPowerUpGraphicFilename, getTowerUnlockStatus, getHeroPowerRareSpawnMultiplier, getHeroPowerTempPowerUpSpawnMultiplier, getHeroPowerTempPowerUpBonusDurationSec, getHeroPowerFireDamageResistanceMultiplier } from '../config.js';
+import { CONFIG, getFireTypeConfig, addPlayerScore, getPowerUpMultiplier, getPowerUpGraphicFilename, getTowerUnlockStatus, getHeroPowerRareSpawnMultiplier, getHeroPowerTempPowerUpSpawnMultiplier, getHeroPowerTempPowerUpBonusDurationSec, getHeroPowerFireDamageResistanceMultiplier, getSpecialtyTimeBonusSec } from '../config.js';
 import { isValidMysteryDropHex } from './currencyItemSystem.js';
 import { getNeighbors } from '../utils/hexMath.js';
 import { isMetaItemUnlocked } from '../utils/metaProgression.js';
@@ -374,7 +374,7 @@ export class TempPowerUpItemSystem {
       });
     }
 
-    const duration = itemConfig.duration + getHeroPowerTempPowerUpBonusDurationSec(this.gameState);
+    const duration = itemConfig.duration + getHeroPowerTempPowerUpBonusDurationSec(this.gameState) + getSpecialtyTimeBonusSec(this.gameState);
     const expiresAt = Date.now() + (duration * 1000);
     
     // Add to temporary power-ups list

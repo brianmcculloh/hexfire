@@ -20,7 +20,9 @@ const BOSS_ACTIVATION_COUNTER_KEYS = [
   'arrayOfFlamesActivationCount',
   'firelashActivationCount',
   'fireBreatheHexIndex',
+  'fireBreatheSoundIndex',
   'purifyActivationCount',
+  'doomfireActivationCount',
 ];
 
 export class BossSystem {
@@ -44,6 +46,7 @@ export class BossSystem {
     this.arrayOfFlamesActivationCount = 0; // Tracks rotation pattern for array of flames (0, 1, 2, 0, ...)
     this.firelashActivationCount = 0; // Tracks firelash activations for progressive interval
     this.fireBreatheHexIndex = 0; // Position in row-by-row sweep for fire-breathe
+    this.fireBreatheSoundIndex = 0; // Alternates fire-breathe / fire-breathe-2 SFX each cast
     this.purifyActivationCount = 0; // Every 3rd firing does triple strike
     this.castingState = 'idle'; // 'idle', 'entering', 'active', 'exiting'
     this.castingAnimationStart = 0; // When current animation phase started
@@ -57,6 +60,31 @@ export class BossSystem {
     this._savedMainActivationCounters = null;
     /** Provoked burn: delay offset so multiple map pickups in one tick chain separate grove strikes */
     this.provokedBurnChainOffsetMs = 0;
+    /** Scheduled provoked-burn SFX timeouts (cancelled on wave end). */
+    this._provokedBurnSfxTimeoutIds = [];
+  }
+
+  /** Cancel queued/playing provoked-burn SFX (wave end, load, retry). */
+  cancelProvokedBurnSfx() {
+    for (const id of this._provokedBurnSfxTimeoutIds) {
+      clearTimeout(id);
+    }
+    this._provokedBurnSfxTimeoutIds.length = 0;
+    if (typeof window !== 'undefined' && window.AudioManager?.stopSFXKey) {
+      window.AudioManager.stopSFXKey('provoked-burn');
+    }
+  }
+
+  /**
+   * Drop in-flight boss wave effects when a wave ends (scheduled SFX, pending ignitions).
+   */
+  onWaveCompleteCleanup() {
+    this.cancelProvokedBurnSfx();
+    this.pendingIgnitions = [];
+    this.pendingStokes = [];
+    this.provokedBurnChainOffsetMs = 0;
+    this.resetBossCastingVisualState();
+    this.resetSummonedCastingVisualState();
   }
 
   /**
@@ -184,6 +212,7 @@ export class BossSystem {
     if (!this.gameState?.wave?.isActive) {
       // Boss wave placement / between-waves: update() used to return here without advancing
       // casting animation, so the boss could stay visually "mid-cast" from the prior wave or session.
+      this.cancelProvokedBurnSfx();
       this.resetBossCastingVisualState();
       this.resetSummonedCastingVisualState();
       return;
@@ -318,6 +347,7 @@ export class BossSystem {
    * Counters always restart when the player begins the wave via startActiveWave.
    */
   resetBossWaveForLoadOrRetry() {
+    this.cancelProvokedBurnSfx();
     this.resetActivationCounters();
     this.isBossWave = false;
     this.lastWaveNumber = 0;
@@ -501,6 +531,11 @@ export class BossSystem {
       currentCastingAbility: null,
     };
     this.initSummonedAbilityTimers();
+
+    if (typeof window !== 'undefined' && window.AudioManager) {
+      const baseVol = window.__audioConfig?.sfxVolume ?? CONFIG.AUDIO_SFX_VOLUME ?? 0.8;
+      window.AudioManager.playSFX('summon', { volume: Math.min(1, baseVol * 2) });
+    }
 
   }
 
@@ -721,7 +756,7 @@ export class BossSystem {
       // Abilities with custom timing (distraction, provoked-burn, heat-seek, piercing-flame, surround) handle SFX in their cast methods
       const soundMode = ability.soundMode ?? 'once';
       const soundKey = (ability.type === 'stoke') ? 'hell-stoke' : ability.type;
-      if (soundMode === 'once' && !['distraction', 'heat-seek', 'piercing-flame', 'surround', 'collapsing-fire', 'barrage-of-flames', 'purify', 'provoked-burn'].includes(ability.type)) {
+      if (soundMode === 'once' && !['distraction', 'heat-seek', 'piercing-flame', 'surround', 'collapsing-fire', 'barrage-of-flames', 'purify', 'doomfire', 'provoked-burn', 'fire-breathe'].includes(ability.type)) {
         if (typeof window !== 'undefined' && window.AudioManager) {
           window.AudioManager.playSFX(soundKey);
         }
@@ -736,7 +771,7 @@ export class BossSystem {
       }
 
       // Screen shake effect (heat-seek: per-path shakes; surround/hell-stoke: sustained shake for full duration)
-      // Purify: single shake here; triple-strike casts do three shakes inside castPurify.
+      // Purify / Doomfire: single shake here; triple-strike casts do three shakes inside their cast methods.
       if (
         CONFIG.SCREEN_SHAKE_ENABLED !== false &&
         ability.type !== 'heat-seek' &&
@@ -745,6 +780,7 @@ export class BossSystem {
         ability.type !== 'stoke' &&
         ability.type !== 'barrage-of-flames' &&
         ability.type !== 'purify' &&
+        ability.type !== 'doomfire' &&
         typeof document !== 'undefined'
       ) {
         const canvas = document.getElementById('gameCanvas');
@@ -1368,9 +1404,13 @@ export class BossSystem {
     const soundMode = ability.soundMode ?? 'once';
     if (soundMode === 'once' && typeof window !== 'undefined' && window.AudioManager) {
       const sfxDelayMs = chainBase + delayMs;
-      setTimeout(() => {
+      const timeoutId = setTimeout(() => {
+        const idx = this._provokedBurnSfxTimeoutIds.indexOf(timeoutId);
+        if (idx >= 0) this._provokedBurnSfxTimeoutIds.splice(idx, 1);
+        if (!this.gameState?.wave?.isActive) return;
         window.AudioManager?.playSFX('provoked-burn');
       }, sfxDelayMs);
+      this._provokedBurnSfxTimeoutIds.push(timeoutId);
     }
 
     // Pick a random direction (0-5); each direction gives a unique line through center
@@ -1675,9 +1715,9 @@ export class BossSystem {
   }
 
   /**
-   * Cast collapsing fire ability - ignites 3 rings (outer, then next inward, then next inward)
-   * with staggerPerRing ms between each ring. Each activation steps one ring inward; after the
-   * center, the sequence wraps back to the outermost ring.
+   * Cast collapsing fire ability - ignites 3 rings stepping inward each activation.
+   * Each activation advances the starting ring inward; at the center the trio wraps to the
+   * outer rings (e.g. center + two outermost). After a full cycle, the sequence restarts.
    * @param {Object} params - Ability parameters {staggerPerRing}
    */
   castCollapsingFire(params) {
@@ -1689,8 +1729,11 @@ export class BossSystem {
     const startRing = halfSize - cycleIndex;
     this.collapsingFireActivationCount++;
 
-    // Hit 3 rings: startRing (outer), startRing-1 (middle), startRing-2 (inner)
-    const rings = [startRing, startRing - 1, startRing - 2].filter(r => r >= 0);
+    // Hit 3 rings stepping inward; after center, wrap to outer rings (e.g. 0 → 10 → 9).
+    const rings = [];
+    for (let i = 0; i < 3; i++) {
+      rings.push((startRing - i + ringCount) % ringCount);
+    }
 
     // Fire types by position: inner=strongest, middle=2nd strongest, outer=weakest
     // If <3 types: outer two use 2nd strongest; if 1 type: all use it
@@ -1993,6 +2036,13 @@ export class BossSystem {
    * @param {Object} params - Ability parameters {hexCount, staggerMs}
    */
   castFireBreathe(params) {
+    const fireBreatheSounds = ['fire-breathe', 'fire-breathe-2'];
+    const soundKey = fireBreatheSounds[this.fireBreatheSoundIndex % fireBreatheSounds.length];
+    this.fireBreatheSoundIndex = (this.fireBreatheSoundIndex + 1) % fireBreatheSounds.length;
+    if (typeof window !== 'undefined' && window.AudioManager) {
+      window.AudioManager.playSFX(soundKey);
+    }
+
     const hexCount = params.hexCount ?? 15;
     const staggerMs = params.staggerMs ?? 40;
     const halfSize = Math.floor(CONFIG.MAP_SIZE / 2);
@@ -2080,27 +2130,24 @@ export class BossSystem {
   }
 
   /**
-   * Cast doomfire - targets every hex of the strongest fire type on the map.
-   * For each hex (or cluster of adjacent hexes) of that type, strikes the adjacent "ring"
-   * around it with the same fire type. staggerPerHex = delay between each cluster.
-   * Fallback: if no hexes of the strongest type are burning, randomly strike fallbackHexCount hexes with it.
+   * Core doomfire strike — targets rings around strongest-fire clusters (or random fallback hexes).
    * @param {Object} params - Ability parameters {staggerPerHex, fallbackHexCount}
+   * @param {number} [baseDelayMs=0] - Added to every ignition delay (for chained triple strikes)
+   * @returns {number} Estimated strike duration in seconds
    */
-  castDoomfire(params) {
+  _executeDoomfireStrike(params, baseDelayMs = 0) {
     const staggerPerHex = params.staggerPerHex ?? 150;
     const strongestType = this.getAvailableFireTypesRanked()[0];
     const burningHexes = this.gridSystem.getBurningHexes();
 
-    // Get all hexes burning the strongest type (available for this wave)
     const strongestHexes = burningHexes
       .filter(h => h.fireType === strongestType)
       .map(h => ({ q: h.q, r: h.r }));
 
     if (strongestHexes.length === 0) {
-      // Fallback: no hexes of strongest type burning - randomly strike N hexes with it
       const fallbackHexCount = params.fallbackHexCount ?? 5;
       const validHexes = this.getValidHexes();
-      if (validHexes.length === 0) return;
+      if (validHexes.length === 0) return 0.3;
       const count = Math.min(fallbackHexCount, validHexes.length);
       const available = [...validHexes];
       for (let i = 0; i < count; i++) {
@@ -2109,15 +2156,13 @@ export class BossSystem {
         this.pendingIgnitions.push({
           q: hex.q,
           r: hex.r,
-          delay: i * staggerPerHex,
+          delay: baseDelayMs + i * staggerPerHex,
           fireType: strongestType,
         });
       }
-      this.castingDuration = ((count - 1) * staggerPerHex) / 1000 + 0.3;
-      return;
+      return count > 0 ? ((count - 1) * staggerPerHex) / 1000 + 0.3 : 0.3;
     }
 
-    // Cluster: group adjacent hexes of same type (BFS)
     const hexSet = new Set(strongestHexes.map(h => hexKey(h.q, h.r)));
     const clusters = [];
     const visited = new Set();
@@ -2144,7 +2189,6 @@ export class BossSystem {
       clusters.push(cluster);
     }
 
-    // For each cluster: get ring (neighbors of cluster, excluding cluster itself), strike them
     clusters.forEach((cluster, clusterIndex) => {
       const ringSet = new Set();
       for (const { q, r } of cluster) {
@@ -2164,14 +2208,56 @@ export class BossSystem {
         return { q, r };
       });
 
-      const delay = clusterIndex * staggerPerHex;
+      const delay = baseDelayMs + clusterIndex * staggerPerHex;
       ringHexes.forEach(({ q, r }) => {
         this.pendingIgnitions.push({ q, r, delay, fireType: strongestType });
       });
     });
 
-    if (clusters.length > 0) {
-      this.castingDuration = ((clusters.length - 1) * staggerPerHex) / 1000 + 0.3;
+    return clusters.length > 0 ? ((clusters.length - 1) * staggerPerHex) / 1000 + 0.3 : 0.3;
+  }
+
+  /**
+   * Cast doomfire - targets every hex of the strongest fire type on the map.
+   * Every 3rd activation fires 3 times in quick succession (like King of Flame's Purify).
+   * @param {Object} params - Ability parameters {staggerPerHex, fallbackHexCount, tripleStaggerMs}
+   */
+  castDoomfire(params) {
+    this.doomfireActivationCount++;
+    const tripleStaggerMs = params.tripleStaggerMs ?? 500;
+
+    const triggerDoomfireScreenShake = () => {
+      if (CONFIG.SCREEN_SHAKE_ENABLED === false || typeof document === 'undefined') return;
+      const canvas = document.getElementById('gameCanvas');
+      if (!canvas) return;
+      canvas.classList.remove('screen-shake');
+      void canvas.offsetWidth;
+      canvas.classList.add('screen-shake');
+    };
+
+    const playDoomfireSound = () => {
+      if (typeof window !== 'undefined' && window.AudioManager) {
+        window.AudioManager.playSFX('doomfire');
+      }
+    };
+
+    if (this.doomfireActivationCount % 3 === 0) {
+      playDoomfireSound();
+      triggerDoomfireScreenShake();
+      if (typeof window !== 'undefined') {
+        setTimeout(() => playDoomfireSound(), tripleStaggerMs);
+        setTimeout(() => triggerDoomfireScreenShake(), tripleStaggerMs);
+        setTimeout(() => playDoomfireSound(), tripleStaggerMs * 2);
+        setTimeout(() => triggerDoomfireScreenShake(), tripleStaggerMs * 2);
+      }
+      const strikeDuration = this._executeDoomfireStrike(params, 0);
+      this._executeDoomfireStrike(params, tripleStaggerMs);
+      this._executeDoomfireStrike(params, tripleStaggerMs * 2);
+      this.castingDuration = (tripleStaggerMs * 2) / 1000 + strikeDuration;
+    } else {
+      playDoomfireSound();
+      triggerDoomfireScreenShake();
+      this.castingDuration = this._executeDoomfireStrike(params, 0);
     }
   }
 

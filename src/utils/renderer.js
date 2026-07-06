@@ -1,10 +1,12 @@
 // Renderer - Handles all canvas drawing operations
 
-import { CONFIG, getFireTypeDisplayColor, getShieldColorRgba, getShieldOverlayAlphaFromHp, getTowerRange, getSpreadTowerRange, getSuppressionBombImpactZone, getRainRange, getPowerUpGraphicFilename, getArtifactById, getBomberMinDistance, getBossPatternForWaveGroup, getBossPatternForSpeech, getHeroPatternForWaveGroup, getWaterTankTypeConfig, getWaterTankMapSpriteSize, getArtifactMapSpriteSize, getMapCollectibleSpriteBaseSize, isWaterTankSpriteFilename, isArtifactSpriteFilename, getCampaignEndWaveGroup, getGroveIncarnateHeroSpriteGroup, isGroveIncarnateHeroPatternGroup, getBackgroundWaveGroupIndex, getSentinelTurretSizeMultiplier } from '../config.js';
+import { CONFIG, getFireTypeDisplayColor, getShieldColorRgba, getHealthBarFillColor, getTowerRange, getSpreadTowerRange, getSuppressionBombImpactZone, getRainRange, getPowerUpGraphicFilename, getArtifactById, getBomberMinDistance, getBossPatternForWaveGroup, getBossPatternForSpeech, getHeroPatternForWaveGroup, getWaterTankTypeConfig, getWaterTankMapSpriteSize, getArtifactMapSpriteSize, getMapCollectibleSpriteBaseSize, isWaterTankSpriteFilename, isArtifactSpriteFilename, getCampaignEndWaveGroup, getGroveIncarnateHeroSpriteGroup, isGroveIncarnateHeroPatternGroup, getBackgroundWaveGroupIndex, getSentinelTurretSizeMultiplier, getPerimeterTurretSizeMultiplier, getPerimeterTurretOffsetPx, getChargeTurretHeightMultiplier, getChargeTurretOffsetPx, clampPerimeterRing, getChargeImpactZone, clampChargeTargetDistance, normalizeChargeMode } from '../config.js';
 import { getTowerRangeHexBonusForGameState } from './tempPowerUpClock.js';
+import { getPerimeterModeModalTowerId, getPerimeterModePreviewRing } from './perimeterModeUI.js';
+import { getChargeModeModalTowerId, getChargeModePreviewDistance, getChargeModePreviewImpactMode } from './chargeModeUI.js';
 import { assetUrl, assetCacheKey } from './assetUrl.js';
 import { getTempPowerUpTimeReference } from './tempPowerUpClock.js';
-import { axialToPixel, pixelToAxial, getHexVertices, getDirectionAngle, getDirectionAngle12, getHexInDirection, getHexLineFromAngle, getSpreadTowerTargets, getSpreadTowerSprayEndpoints, getNeighbors, getHexesInRadius, isInBounds } from './hexMath.js';
+import { axialToPixel, pixelToAxial, getHexVertices, getDirectionAngle, getDirectionAngle12, getHexInDirection, getHexLineFromAngle, getSpreadTowerTargets, getSpreadTowerSprayEndpoints, getNeighbors, getHexesInRadius, getHexesInRing, isInBounds } from './hexMath.js';
 
 function getSpawnerDrawColor(hex) {
   if (hex.fireSpawnerType === CONFIG.FIRE_TYPE_BLACKFYRE) {
@@ -12,6 +14,16 @@ function getSpawnerDrawColor(hex) {
   }
   return hex.fireSpawnerColor || CONFIG.COLOR_FIRE_CINDER;
 }
+
+/** Ancient Grove map HP bar corner radius; tower map bars use one pixel less. */
+const GROVE_MAP_HEALTH_BAR_CORNER_RADIUS = 3;
+const TOWER_MAP_STATUS_BAR_CORNER_RADIUS = GROVE_MAP_HEALTH_BAR_CORNER_RADIUS - 1;
+
+/** Bomber projectile + explosion palette: scale chroma to this fraction of boosted color (lower = closer to white). */
+const BOMBER_WATER_CHROMA_SCALE = 0.28;
+/** After desaturation, lerp RGB toward white for luminance without adding much hue. */
+const BOMBER_WATER_BRIGHTNESS_LIFT = 0.26;
+const BOMBER_WATER_CORE_BRIGHTNESS_LIFT = 0.4;
 
 /** Burning hexes with a tower or map pickup get a late-pass draining fire border (see drawBurningOccupiedHexBorders). */
 function hexQualifiesForDrainingFireBorder(hex) {
@@ -67,6 +79,8 @@ export class Renderer {
     
     // Water particle system
     this.waterParticles = new Map(); // Map<towerId, Array<Particle>>
+    /** Last tower.flashTime seen per tower — pulsing bursts spawn particles once when flashTime jumps up. */
+    this._pulsingLastFlashTimeByTower = new Map();
     this.particlePool = []; // Reusable particle objects
     this.glowFrameSkip = 0; // Frame counter for glow rendering optimization
     // Pre-rendered water particle sprites keyed by cachedColorBase. Each entry is an
@@ -77,6 +91,9 @@ export class Renderer {
     // boss FX — generating on demand keeps startup cheap and bounds memory by the
     // number of distinct base colors actually used in play (~12-15 entries).
     this._waterParticleSpriteCache = new Map(); // Map<colorBase, { canvas, refRadiusPx }>
+    // Hard cap on distinct cached particle-color sprites. With quantized colors the real
+    // count is a few dozen; this is a safety valve against any unbounded color source.
+    this._waterParticleSpriteCacheMax = 256;
     // Explosion particles (keyed by explosion id)
     this.explosionParticles = new Map(); // Map<explosionId, Array<Particle>>
     // Fire particle system (for fire/smoke explosions)
@@ -190,6 +207,11 @@ export class Renderer {
     this.heroPlacementRevealDuration = 0.9;
     this._heroPlacementRevealOffsetY = 0;
 
+    /** Hex map fade-in after START PLACEMENT (background art stays visible underneath). */
+    this.mapAwaitingReveal = false;
+    this.mapRevealStartMs = null;
+    this.mapRevealDurationSec = 3;
+
     // Minimap sidebar transition animation
     this.minimapSidebarOffset = 0; // Current animated offset
     this.minimapSidebarTargetOffset = 0; // Target offset
@@ -209,6 +231,54 @@ export class Renderer {
     this.loadBossSprites();
     this.loadHeroSprites();
     this.loadNameplateFrames();
+    this.setupContextLossRecovery();
+  }
+
+  /**
+   * Recover gracefully if the browser loses the 2D canvas context (e.g. GPU memory
+   * pressure or a tab-switch reset). Without this, a lost context leaves the map blank
+   * or garbled and the only fix is a manual refresh. We acknowledge the loss (so the
+   * browser will fire a restore), then on restore we re-run setupCanvas and drop every
+   * offscreen-canvas-backed cache so they rebuild against the fresh context.
+   */
+  setupContextLossRecovery() {
+    if (!this.canvas?.addEventListener) return;
+
+    this.canvas.addEventListener('webglcontextlost', (e) => e.preventDefault());
+
+    this.canvas.addEventListener('contextlost', (e) => {
+      // preventDefault tells the UA we intend to restore, which makes it fire contextrestored.
+      e.preventDefault();
+      this._contextLost = true;
+      console.warn('🛑 Canvas 2D context lost — pausing draws until restored.');
+    });
+
+    this.canvas.addEventListener('contextrestored', () => {
+      this._contextLost = false;
+      try {
+        this.ctx = this.canvas.getContext('2d');
+        this._invalidateCanvasBackedCaches();
+        this.setupCanvas();
+        console.warn('✅ Canvas 2D context restored — caches rebuilt.');
+      } catch (err) {
+        console.error('Failed to recover from canvas context restore:', err);
+      }
+    });
+  }
+
+  /**
+   * Drop every cache that stores an offscreen <canvas>. After a context loss those
+   * backing surfaces are invalid, so they must be regenerated lazily against the new
+   * context. Position-only caches are also reset so the next frame rebuilds cleanly.
+   */
+  _invalidateCanvasBackedCaches() {
+    this.darkenedTowerSpriteCache?.clear?.();
+    this.brightenedTurretSpriteCache?.clear?.();
+    this.smoothScaledTowerSpriteCache?.clear?.();
+    this._waterParticleSpriteCache?.clear?.();
+    this.backgroundCache = null;
+    this.gridStaticCache = null;
+    this.gridRenderCache = null;
   }
 
   /**
@@ -273,6 +343,178 @@ export class Renderer {
     ];
     
     return colors[Math.floor(Math.random() * colors.length)];
+  }
+
+  /**
+   * Snap a color channel to a coarse step and clamp to [0,255].
+   *
+   * CRITICAL: water-particle draw caches one offscreen canvas per distinct color base
+   * (see _getWaterParticleSprite / _waterParticleSpriteCache). The explosion color
+   * generators below jitter RGB continuously, so without quantization every droplet
+   * would mint a unique color base and a new never-evicted offscreen canvas — an
+   * unbounded GPU-memory leak that eventually loses the canvas context (blank/garbled
+   * map, FPS → 0). Snapping to a 16-step grid bounds the distinct colors to a few dozen
+   * per generator while preserving the organic color spread.
+   * @param {number} value
+   * @param {number} [step]
+   * @returns {number}
+   */
+  _quantizeColorChannel(value, step = 16) {
+    const snapped = Math.round(value / step) * step;
+    return snapped < 0 ? 0 : snapped > 255 ? 255 : snapped;
+  }
+
+  /**
+   * Nudge RGB toward its hue (higher saturation) without large luminance shifts.
+   * @param {number} r
+   * @param {number} g
+   * @param {number} b
+   * @param {number} [factor=1.24]
+   * @param {number} [chromaScale=1] - Post-boost chroma multiplier (e.g. 0.5 halves saturation).
+   * @returns {[number, number, number]}
+   */
+  _boostWaterBombSaturation(r, g, b, factor = 1.24, chromaScale = 1) {
+    const avg = (r + g + b) / 3;
+    const clamp = (v) => (v < 0 ? 0 : v > 255 ? 255 : v);
+    let cr = avg + (r - avg) * factor;
+    let cg = avg + (g - avg) * factor;
+    let cb = avg + (b - avg) * factor;
+    if (chromaScale !== 1) {
+      const avg2 = (cr + cg + cb) / 3;
+      cr = avg2 + (cr - avg2) * chromaScale;
+      cg = avg2 + (cg - avg2) * chromaScale;
+      cb = avg2 + (cb - avg2) * chromaScale;
+    }
+    return [
+      Math.round(clamp(cr)),
+      Math.round(clamp(cg)),
+      Math.round(clamp(cb)),
+    ];
+  }
+
+  /**
+   * Desaturated bomber water tone with optional lift toward white (brightness without extra saturation).
+   * @param {number} r
+   * @param {number} g
+   * @param {number} b
+   * @param {number} [factor=1.35]
+   * @param {number} [brightnessLift=BOMBER_WATER_BRIGHTNESS_LIFT]
+   * @returns {[number, number, number]}
+   */
+  _toneBomberWaterColor(r, g, b, factor = 1.35, brightnessLift = BOMBER_WATER_BRIGHTNESS_LIFT) {
+    const [cr, cg, cb] = this._boostWaterBombSaturation(r, g, b, factor, BOMBER_WATER_CHROMA_SCALE);
+    if (brightnessLift <= 0) return [cr, cg, cb];
+    const clamp = (v) => (v < 0 ? 0 : v > 255 ? 255 : v);
+    return [
+      Math.round(clamp(cr + (255 - cr) * brightnessLift)),
+      Math.round(clamp(cg + (255 - cg) * brightnessLift)),
+      Math.round(clamp(cb + (255 - cb) * brightnessLift)),
+    ];
+  }
+
+  /**
+   * Random explosion droplet color matching bomber in-flight bomb hue (electric pink/fuchsia).
+   * RGB is quantized so the particle-sprite cache stays bounded (see _quantizeColorChannel).
+   * @returns {string} RGBA color string
+   */
+  getRandomBomberExplosionColor() {
+    const phase = Math.random();
+    const jitter = () => (Math.random() - 0.5) * 18;
+    const [r, g, b] = this._toneBomberWaterColor(
+      255,
+      35 + phase * 55 + jitter(),
+      185 + phase * 70 + jitter() * 0.5,
+      1.35,
+    );
+    const qr = this._quantizeColorChannel(r);
+    const qg = this._quantizeColorChannel(g);
+    const qb = this._quantizeColorChannel(b);
+    const a = (0.86 + Math.random() * 0.12).toFixed(2);
+    return `rgba(${qr}, ${qg}, ${qb}, ${a})`;
+  }
+
+  /**
+   * Random explosion droplet color matching sentinel in-flight bomb hue (cool lemon/chartreuse).
+   * RGB is quantized so the particle-sprite cache stays bounded (see _quantizeColorChannel).
+   * @returns {string} RGBA color string
+   */
+  getRandomSentinelExplosionColor() {
+    const phase = Math.random();
+    const jitter = () => (Math.random() - 0.5) * 20;
+    const [r, g, b] = this._boostWaterBombSaturation(
+      200 + phase * 45 + jitter(),
+      238 + phase * 17 + jitter() * 0.75,
+      145 + phase * 95 + jitter(),
+    );
+    const qr = this._quantizeColorChannel(r);
+    const qg = this._quantizeColorChannel(g);
+    const qb = this._quantizeColorChannel(b);
+    const a = (0.72 + Math.random() * 0.18).toFixed(2);
+    return `rgba(${qr}, ${qg}, ${qb}, ${a})`;
+  }
+
+  /**
+   * Random explosion droplet color matching perimeter in-flight bomb hue (electric neon blue).
+   * RGB is quantized so the particle-sprite cache stays bounded (see _quantizeColorChannel).
+   * @returns {string} RGBA color string
+   */
+  getRandomPerimeterExplosionColor() {
+    const phase = Math.random();
+    const jitter = () => (Math.random() - 0.5) * 16;
+    const [r, g, b] = this._boostWaterBombSaturation(
+      20 + phase * 40 + jitter(),
+      195 + phase * 60 + jitter() * 0.7,
+      255,
+      1.35,
+    );
+    const qr = this._quantizeColorChannel(r);
+    const qg = this._quantizeColorChannel(g);
+    const qb = this._quantizeColorChannel(b);
+    const a = (0.78 + Math.random() * 0.18).toFixed(2);
+    return `rgba(${qr}, ${qg}, ${qb}, ${a})`;
+  }
+
+  /**
+   * Random explosion droplet color matching charge in-flight bomb hue (electric neon green).
+   * @returns {string} RGBA color string
+   */
+  getRandomChargeExplosionColor() {
+    const phase = Math.random();
+    const jitter = () => (Math.random() - 0.5) * 20;
+    const [r, g, b] = this._boostWaterBombSaturation(
+      55 + phase * 45 + jitter(),
+      255,
+      70 + phase * 50 + jitter(),
+      1.35,
+    );
+    const qr = this._quantizeColorChannel(r);
+    const qg = this._quantizeColorChannel(g);
+    const qb = this._quantizeColorChannel(b);
+    const a = (0.78 + Math.random() * 0.18).toFixed(2);
+    return `rgba(${qr}, ${qg}, ${qb}, ${a})`;
+  }
+
+  /**
+   * Pulsing tower burst particles — bright electric orange tint to match pulsing tower graphics.
+   * RGB is quantized so the particle-sprite cache stays bounded (see _quantizeColorChannel).
+   * Without quantization the ~60‑80 unique random colors per burst thrashed the sprite
+   * cache (fresh offscreen canvas + fill per particle), dropping FPS with just 2 towers.
+   * @returns {string} RGBA color string
+   */
+  getRandomPulsingBurstColor() {
+    const phase = Math.random();
+    const jitter = () => (Math.random() - 0.5) * 22;
+    const [r, g, b] = this._boostWaterBombSaturation(
+      255,
+      95 + phase * 75 + jitter(),
+      25 + phase * 45 + jitter() * 0.6,
+      1.38,
+    );
+    const qr = this._quantizeColorChannel(r);
+    const qg = this._quantizeColorChannel(g);
+    const qb = this._quantizeColorChannel(b);
+    const a = (0.84 + Math.random() * 0.12).toFixed(2);
+    return `rgba(${qr}, ${qg}, ${qb}, ${a})`;
   }
 
   /**
@@ -738,6 +980,7 @@ export class Renderer {
     /** @type {Record<number, { scaleMult?: number, offsetY?: number }>} */
     const byGroup = {
       3: { scaleMult: 0.6 },
+      5: { scaleMult: 0.9 }, // Starseed — 10% smaller
       7: { offsetY: -80 },
       9: { offsetY: -40 },
       11: { scaleMult: 1.2, offsetY: -50 },
@@ -821,6 +1064,41 @@ export class Renderer {
     this._heroPlacementRevealOffsetY = 0;
     this.heroNameplateRevealStartMs = null;
     this._heroNameplatesAwaitStart = false;
+  }
+
+  /** Hide hex map until {@link startMapReveal} (wave 1 of a group, before START PLACEMENT). */
+  hideMapUntilReveal() {
+    this.mapAwaitingReveal = true;
+    this.mapRevealStartMs = null;
+  }
+
+  /** Begin hex-map fade-in (background art remains at full opacity). */
+  startMapReveal() {
+    this.mapAwaitingReveal = true;
+    this.mapRevealStartMs = Date.now();
+  }
+
+  resetMapReveal() {
+    this.mapAwaitingReveal = false;
+    this.mapRevealStartMs = null;
+  }
+
+  /**
+   * @returns {number} 0–1 alpha for map-layer draws (grid, towers, items, map FX).
+   */
+  getMapRevealAlpha() {
+    if (this.mapAwaitingReveal && this.mapRevealStartMs == null) return 0;
+    if (this.mapRevealStartMs == null) return 1;
+
+    const elapsed = (Date.now() - this.mapRevealStartMs) / 1000;
+    const duration = this.mapRevealDurationSec ?? 3;
+    const t = Math.min(elapsed / duration, 1);
+    if (t >= 1) {
+      this.mapAwaitingReveal = false;
+      this.mapRevealStartMs = null;
+      return 1;
+    }
+    return 1 - (1 - t) ** 2;
   }
 
   /** Begin fading in hero name + power plates after Start Wave is clicked. */
@@ -1007,6 +1285,34 @@ export class Renderer {
   }
 
   /**
+   * Fixed bottom-left slot for survival hero tooltips — same size/position for every ally
+   * regardless of per-hero draw tuning (scaleMult, offsetX, offsetY).
+   * @param {number} [revealOffsetY]
+   * @returns {{ imageWidth: number, imageHeight: number, x: number, y: number, scale: number } | null}
+   */
+  _getSurvivalHeroTooltipHitLayout(revealOffsetY = 0) {
+    const canvasWidth = this.canvasCssWidth ?? (this.canvas.width / (this.dpr || 1));
+    const canvasHeight = this.canvasCssHeight ?? (this.canvas.height / (this.dpr || 1));
+    const imageWidth = canvasWidth * 0.3 * (this.survivalHeroSizeScale || 1);
+    const refKey = this.getHeroSpriteKeyForPortraitGroup(1);
+    const refSprite = this.heroSprites.get(refKey);
+    const aspect = refSprite?.complete && refSprite.naturalWidth > 0
+      ? refSprite.naturalWidth / refSprite.naturalHeight
+      : 0.72;
+    const imageHeight = imageWidth / aspect;
+    const visibleHeight = imageHeight * 0.5;
+    const pulseOffset = Math.sin((this.bossPulseTime || 0) * Math.PI * 2 * 0.5) * 10;
+    const overflowX = imageWidth * 0.2;
+    const canvasRect = this.canvas.getBoundingClientRect();
+    const x = Math.max(0, (this.heroPowerLeftViewportPx || 140) - canvasRect.left) - overflowX;
+    const y = canvasHeight - visibleHeight + pulseOffset + revealOffsetY
+      + (this.heroPowerVerticalOffsetPx || 0)
+      + (this.survivalHeroVerticalOffsetPx || 0);
+
+    return { imageWidth, imageHeight, x, y, scale: 1 };
+  }
+
+  /**
    * Viewport position for survival rotating hero (speech bubble, hit tests).
    * @returns {{ centerX: number, top: number } | null}
    */
@@ -1040,9 +1346,10 @@ export class Renderer {
    * @param {{ imageWidth: number, imageHeight: number, visibleHeight?: number, x: number, y: number, scale?: number }} layout
    * @param {number} canvasMouseX
    * @param {number} canvasMouseY
+   * @param {{ left?: number, right?: number, top?: number, bottom?: number }} [hitPadding]
    * @returns {boolean}
    */
-  _isCanvasPointOverBottomLeftHeroLayout(layout, canvasMouseX, canvasMouseY) {
+  _isCanvasPointOverBottomLeftHeroLayout(layout, canvasMouseX, canvasMouseY, hitPadding = null) {
     const { x, y, imageWidth, imageHeight, scale = 1 } = layout;
     const scaledWidth = imageWidth * scale;
     const scaledHeight = imageHeight * scale;
@@ -1055,15 +1362,26 @@ export class Renderer {
     const heroTop = translateY;
     const heroBottom = translateY + scaledHeight;
 
-    const paddingLeft = 10;
-    const paddingRight = -120;
-    const paddingBottom = 10;
-    const paddingTop = 120;
+    // Cover the entire drawn hero graphic. The portrait is anchored so its lower half sits
+    // below the visible canvas, so extend the hit area down to the canvas bottom edge.
+    const paddingLeft = hitPadding?.left ?? 16;
+    const paddingRight = hitPadding?.right ?? 16;
+    const paddingTop = hitPadding?.top ?? 24;
+    const paddingBottom = hitPadding?.bottom ?? 0;
 
-    return canvasMouseX >= (heroLeft - paddingLeft)
-      && canvasMouseX <= (heroRight + paddingRight)
-      && canvasMouseY >= (heroTop - paddingTop)
-      && canvasMouseY <= (heroBottom + paddingBottom);
+    const canvasHeight = layout.canvasHeight
+      ?? this.canvasCssHeight
+      ?? (this.canvas.height / (this.dpr || 1));
+
+    const left = heroLeft - paddingLeft;
+    const right = heroRight + paddingRight;
+    const top = heroTop - paddingTop;
+    const bottom = Math.max(heroBottom + paddingBottom, canvasHeight);
+
+    return canvasMouseX >= left
+      && canvasMouseX <= right
+      && canvasMouseY >= top
+      && canvasMouseY <= bottom;
   }
 
   /**
@@ -1075,18 +1393,18 @@ export class Renderer {
     const sys = this.gameState?.survivalHeroSystem;
     if (!sys?.isPortraitInteractive?.()) return false;
 
-    const heroGroup = sys.getDisplayHeroGroup();
-    if (!heroGroup) return false;
-
-    const heroSpriteKey = this.getEffectiveHeroSpriteKey(heroGroup);
-    const heroSprite = this.heroSprites.get(heroSpriteKey);
-    if (!heroSprite?.complete || heroSprite.naturalWidth === 0) return false;
+    if (!sys.getDisplayHeroGroup()) return false;
 
     const canvasWidth = this.canvasCssWidth ?? (this.canvas.width / (this.dpr || 1));
-    const imageWidth = canvasWidth * 0.3 * (this.survivalHeroSizeScale || 1);
-    const imageHeight = imageWidth / (heroSprite.naturalWidth / heroSprite.naturalHeight);
-    const revealOffsetY = sys.getRevealOffsetY?.(imageHeight) ?? 0;
-    const layout = this._getBottomLeftHeroPortraitLayout(heroGroup, revealOffsetY);
+    const nominalWidth = canvasWidth * 0.3 * (this.survivalHeroSizeScale || 1);
+    const refKey = this.getHeroSpriteKeyForPortraitGroup(1);
+    const refSprite = this.heroSprites.get(refKey);
+    const aspect = refSprite?.complete && refSprite.naturalWidth > 0
+      ? refSprite.naturalWidth / refSprite.naturalHeight
+      : 0.72;
+    const nominalHeight = nominalWidth / aspect;
+    const revealOffsetY = sys.getRevealOffsetY?.(nominalHeight) ?? 0;
+    const layout = this._getSurvivalHeroTooltipHitLayout(revealOffsetY);
     if (!layout) return false;
 
     return this._isCanvasPointOverBottomLeftHeroLayout(layout, canvasMouseX, canvasMouseY);
@@ -1220,6 +1538,7 @@ export class Renderer {
 
     if (!bossSprite || !bossSprite.complete || bossSprite.naturalWidth === 0) {
       // Still a boss wave: tick ability text animations so they can finish while sprite loads
+      this._updateBossSidebarOffset();
       this.drawBossAbilityTexts();
       return; // No boss sprite loaded yet
     }
@@ -1430,6 +1749,40 @@ export class Renderer {
     const maxCenterX = window.innerWidth - halfVisual - padding;
     if (minCenterX > maxCenterX) return centerX;
     return Math.max(minCenterX, Math.min(maxCenterX, centerX));
+  }
+
+  /** Minimum `right` inset (px) so ability labels stay left of the shop sidebar when it is open. */
+  _getBossAbilityTextMinRightInset(canvasWidthPx) {
+    const padding = 16;
+    let minRight = padding;
+    const sidePanel = document.getElementById('sidePanel');
+    if (sidePanel && !sidePanel.classList.contains('collapsed')) {
+      const canvasRect = this.canvas?.getBoundingClientRect?.();
+      const panelRect = sidePanel.getBoundingClientRect();
+      if (canvasRect) {
+        const overlapPx = canvasRect.right - panelRect.left;
+        if (overlapPx > 0) {
+          minRight = Math.max(minRight, overlapPx + padding);
+        }
+      } else {
+        minRight = Math.max(minRight, (sidePanel.offsetWidth || 350) + padding);
+      }
+    }
+    return minRight;
+  }
+
+  /**
+   * Clamp boss ability float text `right` offset so the full label stays inside the canvas
+   * (and clears the sidebar when it is open).
+   */
+  _clampBossAbilityTextRight(preferredRightPx, textWidthPx, canvasWidthPx) {
+    const padding = 16;
+    const minRight = this._getBossAbilityTextMinRightInset(canvasWidthPx);
+    const safeWidth = Math.max(0, Number(textWidthPx) || 0);
+    const maxRight = Math.max(minRight, canvasWidthPx - safeWidth - padding);
+    const preferred = Number(preferredRightPx);
+    const baseRight = Number.isFinite(preferred) ? preferred : minRight;
+    return Math.max(minRight, Math.min(maxRight, baseRight));
   }
 
   _resolvePowerActivationSpeeches(speechPattern, viewportOptions = {}) {
@@ -2072,6 +2425,7 @@ export class Renderer {
     }
     
     const now = Date.now();
+    this._updateBossSidebarOffset();
     // Use CSS dimensions directly (container matches canvas size)
     const canvasWidth = this.canvasCssWidth ?? (this.canvas.width / (this.dpr || 1));
     const canvasHeight = this.canvasCssHeight ?? (this.canvas.height / (this.dpr || 1));
@@ -2112,10 +2466,19 @@ export class Renderer {
       const baseStartY = layer === 'summoned' ? summonedFixedStartY : fixedStartY;
       const y = baseStartY - floatDistance;
       const opacity = 1 - progress;
-      const rightPos = canvasWidth - baseX;
-      const bottomPos = canvasHeight - y;
       const zIndex = layer === 'summoned' ? 100000 : 100001;
       const fontSize = layer === 'summoned' ? 58 : 75;
+
+      // Measure at final font size so long names (e.g. SERPENTINE CHAR) clamp correctly.
+      textAnim.element.style.fontFamily = "'Exo 2', sans-serif";
+      textAnim.element.style.fontSize = `${fontSize}px`;
+      textAnim.element.style.whiteSpace = 'nowrap';
+      const textWidth = textAnim.element.offsetWidth
+        || textAnim.element.getBoundingClientRect().width
+        || 0;
+      const preferredRight = canvasWidth - baseX;
+      const rightPos = this._clampBossAbilityTextRight(preferredRight, textWidth, canvasWidth);
+      const bottomPos = canvasHeight - y;
       
       // Update element styles - text-fire text-glow-pulse text-jitter for color/glow/jitter
       // Keep large size and float-up-fade behavior; transform-origin so fireFlicker scale anchors at bottom-right
@@ -2506,6 +2869,7 @@ export class Renderer {
    * @param {number} screenCenterY - Tower center Y position
    */
   generatePulsingParticles(tower, screenCenterX, screenCenterY) {
+    const burstAlphaScale = CONFIG.PULSING_WATER_BURST_ALPHA_SCALE ?? 0.5;
     // Scale particle intensity based on power level (1-4) with more dramatic differences
     const powerLevel = tower.powerLevel || 1;
     let intensityMultiplier;
@@ -2543,6 +2907,14 @@ export class Renderer {
         ];
 
     const perDirectionScale = burstTargets.length > 6 ? 6 / burstTargets.length : 1;
+
+    // Resolve tower particle bucket once; without this the hot inner loop did a
+    // has/set/get triple per particle push (3 Map ops × ~70+ particles per burst).
+    let towerBucket = this.waterParticles.get(tower.id);
+    if (!towerBucket) {
+      towerBucket = [];
+      this.waterParticles.set(tower.id, towerBucket);
+    }
 
     directions.forEach((direction) => {
       const targetDistance = (direction.distance || adjacentDistance) * 1.05;
@@ -2599,7 +2971,7 @@ export class Renderer {
           velocityX,
           velocityY,
           0.4 + Math.random() * 0.3, // 0.4-0.7 seconds (reduced from 0.4-0.8)
-          this.getRandomWaterColor(), // Random water color
+          this.getRandomPulsingBurstColor(),
           tower.q, // Pass tower hex coordinates
           tower.r
         );
@@ -2610,12 +2982,9 @@ export class Renderer {
         particle.maxDistance = targetDistance * (0.92 + Math.random() * 0.12);
         particle.startOffsetX = particle.offsetX;
         particle.startOffsetY = particle.offsetY;
+        particle.alphaScale = burstAlphaScale;
         
-        // Add to tower's particle array
-        if (!this.waterParticles.has(tower.id)) {
-          this.waterParticles.set(tower.id, []);
-        }
-        this.waterParticles.get(tower.id).push(particle);
+        towerBucket.push(particle);
       }
     });
     
@@ -2641,7 +3010,7 @@ export class Renderer {
         velocityX,
         velocityY,
         0.5 + Math.random() * 0.2, // 0.5-0.7 seconds (reduced from 0.5-0.8)
-        this.getRandomWaterColor(), // Random water color
+        this.getRandomPulsingBurstColor(),
         tower.q, // Pass tower hex coordinates
         tower.r
       );
@@ -2650,11 +3019,9 @@ export class Renderer {
       particle.maxDistance = adjacentDistance * (1.1 + Math.random() * 0.4); // 110-150% of adjacent distance (middle ground)
       particle.startOffsetX = particle.offsetX;
       particle.startOffsetY = particle.offsetY;
+      particle.alphaScale = burstAlphaScale;
       
-      if (!this.waterParticles.has(tower.id)) {
-        this.waterParticles.set(tower.id, []);
-      }
-      this.waterParticles.get(tower.id).push(particle);
+      towerBucket.push(particle);
     }
     
     // Add inner ring particles for levels 2, 3, and 4 to fill empty space between center and outer ring
@@ -2683,7 +3050,7 @@ export class Renderer {
           velocityX,
           velocityY,
           0.3 + Math.random() * 0.2, // Shorter lifetime (0.3-0.5 seconds)
-          this.getRandomWaterColor(),
+          this.getRandomPulsingBurstColor(),
           tower.q, // Pass tower hex coordinates
           tower.r
         );
@@ -2692,11 +3059,9 @@ export class Renderer {
         particle.maxDistance = adjacentDistance * (0.5 + Math.random() * 0.5); // Travel to adjacent distance
         particle.startOffsetX = particle.offsetX;
         particle.startOffsetY = particle.offsetY;
+        particle.alphaScale = burstAlphaScale;
         
-        if (!this.waterParticles.has(tower.id)) {
-          this.waterParticles.set(tower.id, []);
-        }
-        this.waterParticles.get(tower.id).push(particle);
+        towerBucket.push(particle);
       }
     }
   }
@@ -2970,6 +3335,7 @@ export class Renderer {
     particle.gravity = 0.3; // Gravity effect
     particle.friction = 0.98; // Air resistance
     particle.color = color; // Store particle color
+    particle.alphaScale = undefined;
     
     // Cache color string with base alpha for performance (avoid regex on every frame)
     if (color) {
@@ -5187,51 +5553,38 @@ export class Renderer {
     // Collect all path hexes that need border redraw
     hexes.forEach(hex => {
       if (hex.isPath && !hex.isTown) {
-        // Check if this path hex has a shielded tower - if so, skip drawing path border
-        // Shield borders take precedence over path borders
-        let hasShieldedTower = false;
-        if (hex.hasTower && this.gameState?.towerSystem) {
+        // Always redraw path hex borders (including those with towers/water tanks)
+        pathHexesToRedraw.add(`${hex.q},${hex.r}`);
+
+        // Check if this path hex needs to flash (only if it has the tower/water tank itself)
+        let shouldFlash = false;
+        let flashColor = null;
+
+        // Check for water tank first (since a hex can't have both tower and water tank)
+        if (hex.hasWaterTank && this.gameState?.waterTankSystem) {
+          const tank = this.gameState.waterTankSystem.getWaterTankAt(hex.q, hex.r);
+          if (tank) {
+            const tankHex = gridSystem.getHex(hex.q, hex.r);
+            const isBeingHitByWater = tankHex && tankHex.isBeingSprayed && this.isWaveActiveForSprayHitVisuals();
+            if (isBeingHitByWater) {
+              shouldFlash = true;
+              flashColor = CONFIG.COLOR_TOWER; // Bright blue
+            }
+          }
+        } else if (hex.hasTower && this.gameState?.towerSystem) {
           const tower = this.gameState.towerSystem.getTowerAt(hex.q, hex.r);
-          if (tower && tower.shield && tower.shield.health > 0) {
-            hasShieldedTower = true;
+          if (tower) {
+            const towerHex = gridSystem.getHex(hex.q, hex.r);
+            const isOnFire = towerHex && towerHex.isBurning;
+            if (isOnFire && !hexQualifiesForDrainingFireBorder(towerHex)) {
+              shouldFlash = true;
+              flashColor = '#FF0000'; // Red
+            }
           }
         }
-        
-        // Skip path hexes with shielded towers - shield border will be drawn instead
-        if (!hasShieldedTower) {
-          // Always redraw path hex borders (including those with towers/water tanks)
-          pathHexesToRedraw.add(`${hex.q},${hex.r}`);
-          
-          // Check if this path hex needs to flash (only if it has the tower/water tank itself)
-          let shouldFlash = false;
-          let flashColor = null;
-          
-          // Check for water tank first (since a hex can't have both tower and water tank)
-          if (hex.hasWaterTank && this.gameState?.waterTankSystem) {
-            const tank = this.gameState.waterTankSystem.getWaterTankAt(hex.q, hex.r);
-            if (tank) {
-              const tankHex = gridSystem.getHex(hex.q, hex.r);
-              const isBeingHitByWater = tankHex && tankHex.isBeingSprayed && this.isWaveActiveForSprayHitVisuals();
-              if (isBeingHitByWater) {
-                shouldFlash = true;
-                flashColor = CONFIG.COLOR_TOWER; // Bright blue
-              }
-            }
-          } else if (hex.hasTower && this.gameState?.towerSystem) {
-            const tower = this.gameState.towerSystem.getTowerAt(hex.q, hex.r);
-            if (tower) {
-              const towerHex = gridSystem.getHex(hex.q, hex.r);
-              const isOnFire = towerHex && towerHex.isBurning;
-              if (isOnFire && !hexQualifiesForDrainingFireBorder(towerHex)) {
-                shouldFlash = true;
-                flashColor = '#FF0000'; // Red
-              }
-            }
-          }
-          
-          if (shouldFlash && flashColor) {
-            flashingHexes.add(`${hex.q},${hex.r}:${flashColor}`);
-          }
+
+        if (shouldFlash && flashColor) {
+          flashingHexes.add(`${hex.q},${hex.r}:${flashColor}`);
         }
       }
       
@@ -5670,6 +6023,48 @@ export class Renderer {
   }
 
   /**
+   * Draw a single RTS map bar at an explicit top-left Y (shared by tower health/shield stacks).
+   * @param {number} [cornerRadius] When > 0, draws rounded corners (grove map bar).
+   */
+  _drawMapStatusBar(barX, barY, barWidth, barHeight, fillPercent, fillColor, cornerRadius = 0) {
+    const r = cornerRadius > 0
+      ? Math.min(cornerRadius, barWidth / 2, barHeight / 2)
+      : 0;
+
+    this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+    if (r > 0) {
+      this.ctx.beginPath();
+      this.ctx.roundRect(barX - 1, barY - 1, barWidth + 2, barHeight + 2, r + 0.5);
+      this.ctx.fill();
+    } else {
+      this.ctx.fillRect(barX - 1, barY - 1, barWidth + 2, barHeight + 2);
+    }
+
+    const fillWidth = barWidth * fillPercent;
+    if (fillWidth > 0) {
+      this.ctx.save();
+      if (r > 0) {
+        this.ctx.beginPath();
+        this.ctx.roundRect(barX, barY, barWidth, barHeight, r);
+        this.ctx.clip();
+      }
+      this.ctx.fillStyle = fillColor;
+      this.ctx.fillRect(barX, barY, fillWidth, barHeight);
+      this.ctx.restore();
+    }
+
+    this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+    this.ctx.lineWidth = 1;
+    if (r > 0) {
+      this.ctx.beginPath();
+      this.ctx.roundRect(barX, barY, barWidth, barHeight, r);
+      this.ctx.stroke();
+    } else {
+      this.ctx.strokeRect(barX, barY, barWidth, barHeight);
+    }
+  }
+
+  /**
    * Draw an RTS-style health bar
    * @param {number} x - Center x coordinate
    * @param {number} y - Center y coordinate (bar will be drawn above this)
@@ -5678,8 +6073,9 @@ export class Renderer {
    * @param {number} barWidth - Width of the health bar in pixels
    * @param {number} barHeight - Height of the health bar in pixels
    * @param {string|null} [animationKey] - When set, fill width eases toward target (same as fire drain)
+   * @param {{ cornerRadius?: number }} [options]
    */
-  drawHealthBar(x, y, currentHealth, maxHealth, barWidth = 40, barHeight = 4, animationKey = null) {
+  drawHealthBar(x, y, currentHealth, maxHealth, barWidth = 40, barHeight = 4, animationKey = null, options = {}) {
     // Don't draw health bar if at 100% health
     if (currentHealth >= maxHealth) {
       if (animationKey) {
@@ -5698,40 +6094,10 @@ export class Renderer {
       : targetPercent;
     const barX = x - barWidth / 2;
     const barY = y - 8 * scale; // Position above the anchor point
-    
-    // Draw background (dark/black)
-    this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-    this.ctx.fillRect(barX - 1, barY - 1, barWidth + 2, barHeight + 2);
-    
-    // Draw health fill (green to red gradient based on health)
-    const fillWidth = barWidth * healthPercent;
-    if (fillWidth > 0) {
-      // Color transitions from green (100%) to yellow (50%) to red (0%)
-      let fillColor;
-      if (healthPercent > 0.5) {
-        // Green to yellow (healthPercent 1.0 to 0.5)
-        const ratio = (healthPercent - 0.5) / 0.5; // 1.0 at 100%, 0.0 at 50%
-        const r = Math.round(255 * (1 - ratio));
-        const g = 255;
-        const b = 0;
-        fillColor = `rgb(${r}, ${g}, ${b})`;
-      } else {
-        // Yellow to red (healthPercent 0.5 to 0.0)
-        const ratio = healthPercent / 0.5; // 1.0 at 50%, 0.0 at 0%
-        const r = 255;
-        const g = Math.round(255 * ratio);
-        const b = 0;
-        fillColor = `rgb(${r}, ${g}, ${b})`;
-      }
-      
-      this.ctx.fillStyle = fillColor;
-      this.ctx.fillRect(barX, barY, fillWidth, barHeight);
-    }
-    
-    // Draw border
-    this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
-    this.ctx.lineWidth = 1;
-    this.ctx.strokeRect(barX, barY, barWidth, barHeight);
+
+    const fillColor = getHealthBarFillColor(healthPercent);
+    const cornerRadius = options.cornerRadius ?? 0;
+    this._drawMapStatusBar(barX, barY, barWidth, barHeight, healthPercent, fillColor, cornerRadius);
   }
 
   /**
@@ -6068,9 +6434,6 @@ export class Renderer {
     const towerHex = this.gameState?.gridSystem?.getHex(tower.q, tower.r);
     const isOnFire = towerHex && towerHex.isBurning;
     
-    // Check if tower has an active shield
-    const hasActiveShield = tower.shield && tower.shield.health > 0;
-    
     // Draw hex background with appropriate color based on hex type
     // The background was already drawn in drawGrid(), but we need to ensure the border is correct
     let baseBorderColor = CONFIG.COLOR_HEX_NORMAL_BORDER;
@@ -6099,7 +6462,7 @@ export class Renderer {
       this.drawHex(screenX, screenY, null, borderColor, finalBorderWidth);
     }
     
-    if (tower.type === CONFIG.TOWER_TYPE_PULSING || tower.type === CONFIG.TOWER_TYPE_RAIN || tower.type === CONFIG.TOWER_TYPE_SPREAD || tower.type === CONFIG.TOWER_TYPE_JET || tower.type === CONFIG.TOWER_TYPE_BOMBER || tower.type === CONFIG.TOWER_TYPE_SENTINEL) {
+    if (tower.type === CONFIG.TOWER_TYPE_PULSING || tower.type === CONFIG.TOWER_TYPE_RAIN || tower.type === CONFIG.TOWER_TYPE_SPREAD || tower.type === CONFIG.TOWER_TYPE_JET || tower.type === CONFIG.TOWER_TYPE_BOMBER || tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER || tower.type === CONFIG.TOWER_TYPE_CHARGE) {
       // Draw tower with base + turret sprites (all types use same base + turret system)
       const rangeLevel = tower.rangeLevel || 1;
       const powerLevel = tower.powerLevel || 1;
@@ -6130,14 +6493,15 @@ export class Renderer {
         const baseDrawSize = Math.round(baseSize);
         
         // Rain and pulsing power level 1: shift up 3px
-        const baseOffsetY = ((tower.type === CONFIG.TOWER_TYPE_RAIN || tower.type === CONFIG.TOWER_TYPE_PULSING || tower.type === CONFIG.TOWER_TYPE_SENTINEL) && powerLevel === 1) ? -3 : 0;
+        const baseOffsetY = ((tower.type === CONFIG.TOWER_TYPE_RAIN || tower.type === CONFIG.TOWER_TYPE_PULSING || tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER) && powerLevel === 1) ? -3 : 0;
         
         // Darken base: 40% for jet/spread/bomber, 20% for rain/pulsing (half as much darkening)
-        const isRainOrPulsing = tower.type === CONFIG.TOWER_TYPE_RAIN || tower.type === CONFIG.TOWER_TYPE_PULSING || tower.type === CONFIG.TOWER_TYPE_SENTINEL;
+        const isRainOrPulsing = tower.type === CONFIG.TOWER_TYPE_RAIN || tower.type === CONFIG.TOWER_TYPE_PULSING || tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER;
         const shouldDarkenBase =
           tower.type === CONFIG.TOWER_TYPE_JET ||
           tower.type === CONFIG.TOWER_TYPE_SPREAD ||
           tower.type === CONFIG.TOWER_TYPE_BOMBER ||
+          tower.type === CONFIG.TOWER_TYPE_CHARGE ||
           isRainOrPulsing;
         
         if (shouldDarkenBase) {
@@ -6147,11 +6511,11 @@ export class Renderer {
             brightnessMultiplier = 0.8; // 20% darker
           } else if (tower.type === CONFIG.TOWER_TYPE_PULSING) {
             brightnessMultiplier = 0.9; // 10% darker (half of rain's darkening)
-          } else if (tower.type === CONFIG.TOWER_TYPE_SENTINEL) {
+          } else if (tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER) {
             brightnessMultiplier = 0.8; // Same as rain
           }
           
-          if (tower.type === CONFIG.TOWER_TYPE_SENTINEL) {
+          if (tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER) {
             this._drawSmoothTowerSprite(
               baseSprite,
               -baseDrawSize / 2,
@@ -6170,7 +6534,7 @@ export class Renderer {
           }
         } else {
           // Draw base sprite normally (shouldn't happen with current logic)
-          if (tower.type === CONFIG.TOWER_TYPE_SENTINEL) {
+          if (tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER) {
             this._drawSmoothTowerSprite(
               baseSprite,
               -baseDrawSize / 2,
@@ -6190,8 +6554,7 @@ export class Renderer {
       // Turret will be drawn later in drawAllTowerTurrets() (after water particles for proper z-index)
     }
     
-    // Tower + shield HP bars are drawn in drawAllWorldHealthBarsAfterParticles()
-    // Shield hex overlay is drawn in drawAllTowerShieldOverlays() after turrets
+    // Tower HP bars are drawn in drawAllWorldHealthBarsAfterParticles()
     
     // Update upgrade/sellback/movement-token rings (but draw them later after path borders)
     if (this.gameState?.isTowerSellbackMode) {
@@ -6639,37 +7002,6 @@ export class Renderer {
   }
 
   /**
-   * Draw shield overlay for towers with shields
-   * @param {number} screenX - Screen X coordinate
-   * @param {number} screenY - Screen Y coordinate
-   * @param {Object} shield - Shield data { level, health, maxHealth }
-   */
-  drawTowerShield(screenX, screenY, shield) {
-    const alpha = getShieldOverlayAlphaFromHp(shield.health);
-
-    this.ctx.save();
-    const shieldColor = getShieldColorRgba(alpha);
-    const shieldBorder = getShieldColorRgba(Math.min(1, alpha + 0.08));
-    // Same hex size/center as the occupied tile (drawHex uses CONFIG.HEX_RADIUS at screenX/screenY).
-    this.drawHex(screenX, screenY, shieldColor, null);
-    this.drawHex(screenX, screenY, null, shieldBorder, 3);
-    this.ctx.restore();
-  }
-
-  /**
-   * Shield tint on the tower tile (after turrets so fill sits on top of base + turret art).
-   * @param {import('../systems/towerSystem.js').TowerSystem} towerSystem
-   */
-  drawAllTowerShieldOverlays(towerSystem) {
-    if (!towerSystem) return;
-    towerSystem.getAllTowers().forEach((tower) => {
-      if (!tower.shield || tower.shield.health <= 0) return;
-      const { x, y } = axialToPixel(tower.q, tower.r);
-      this.drawTowerShield(x + this.offsetX, y + this.offsetY, tower.shield);
-    });
-  }
-
-  /**
    * Draw tower spray (water line)
    * @param {Object} tower - Tower data
    * @param {Array} affectedHexes - Hexes being sprayed
@@ -6754,8 +7086,8 @@ export class Renderer {
       return;
     }
 
-    // Bomber aim markers are drawn later in drawAllBomberTrajectoryOverlays() (above sprays, particles, turrets)
-    if (tower.type === CONFIG.TOWER_TYPE_BOMBER) return;
+    // Bomber / charge aim markers are drawn later in drawAllBomberTrajectoryOverlays / drawAllChargeTrajectoryOverlays
+    if (tower.type === CONFIG.TOWER_TYPE_BOMBER || tower.type === CONFIG.TOWER_TYPE_CHARGE) return;
 
     const wVis = this.getWaterVisualAlphaScale();
 
@@ -6793,24 +7125,36 @@ export class Renderer {
       }
     }
 
-    this.ctx.save();
-    this.ctx.globalAlpha *= wVis;
-
+    // Rain and pulsing towers don't paint anything in this function — they only
+    // spawn particles that drawAllWaterParticles() renders later. Skip the ctx
+    // save/restore + globalAlpha mutation entirely for them (60 Hz × N towers
+    // adds up when nothing is being drawn between the save and restore).
     if (tower.type === CONFIG.TOWER_TYPE_RAIN) {
-      // Generate rain particles for visual effect (only during active wave)
       if (CONFIG.USE_WATER_PARTICLES && this.gameState?.wave?.isActive) {
         this.generateRainParticles(tower, affectedHexes);
       }
-      
-      // Particle updates are handled globally in Renderer.render() to avoid double-updating.
-    } else if (tower.type === CONFIG.TOWER_TYPE_PULSING) {
-      // Generate pulsing particles when tower attacks (only during active wave)
-      if (tower.flashTime > 0 && CONFIG.USE_WATER_PARTICLES && this.gameState?.wave?.isActive) {
-        this.generatePulsingParticles(tower, screenStartX, screenStartY);
+      return;
+    }
+    if (tower.type === CONFIG.TOWER_TYPE_PULSING) {
+      // Generate pulsing particles once per attack burst (flashTime jumps to 0.3 then decays).
+      if (CONFIG.USE_WATER_PARTICLES && this.gameState?.wave?.isActive && tower.flashTime > 0) {
+        const prevFlash = this._pulsingLastFlashTimeByTower.get(tower.id) ?? 0;
+        if (tower.flashTime > prevFlash) {
+          this.generatePulsingParticles(tower, screenStartX, screenStartY);
+        }
+        this._pulsingLastFlashTimeByTower.set(tower.id, tower.flashTime);
+      } else if (this._pulsingLastFlashTimeByTower.has(tower.id)) {
+        // Avoid a Map.delete() call every frame when the tower is idle; only
+        // clear when the entry actually exists.
+        this._pulsingLastFlashTimeByTower.delete(tower.id);
       }
-      
-      // Particle updates are handled globally in Renderer.render() to avoid double-updating.
-    } else if (tower.type === CONFIG.TOWER_TYPE_SPREAD) {
+      return;
+    }
+
+    this.ctx.save();
+    this.ctx.globalAlpha *= wVis;
+
+    if (tower.type === CONFIG.TOWER_TYPE_SPREAD) {
       // Draw spread tower spray: 5 jets (main + 4 flanking at ±15° and ±30°)
       if (CONFIG.USE_WATER_PARTICLES) {
       const range = getSpreadTowerRange(tower.rangeLevel) + rangeHexBonus;
@@ -6916,6 +7260,196 @@ export class Renderer {
   }
 
   /**
+   * Valid on-map hexes for a perimeter tower's selected target ring.
+   * @param {number} q
+   * @param {number} r
+   * @param {number} ring
+   * @returns {Array<{q: number, r: number}>}
+   */
+  _getPerimeterRingHexes(q, r, ring) {
+    const clamped = clampPerimeterRing(ring ?? CONFIG.PERIMETER_RING_DEFAULT);
+    return getHexesInRing(q, r, clamped).filter((hex) => this.gameState?.gridSystem?.getHex(hex.q, hex.r));
+  }
+
+  /**
+   * Deep royal-blue tint on a perimeter target ring.
+   * @param {Array<{q: number, r: number}>} ringHexes
+   */
+  _drawPerimeterRingOverlay(ringHexes) {
+    if (!ringHexes?.length) return;
+    const fill = CONFIG.AOE_HEX_OVERLAY_PERIMETER;
+    ringHexes.forEach((hex) => {
+      const { x, y } = axialToPixel(hex.q, hex.r);
+      this.drawHex(x + this.offsetX, y + this.offsetY, fill, null);
+    });
+  }
+
+  /**
+   * Perimeter target ring: always during placement; on hover during active waves.
+   * @param {import('../systems/towerSystem.js').TowerSystem} towerSystem
+   */
+  drawAllPerimeterRingOverlays(towerSystem) {
+    if (!towerSystem?.getAllTowers) return;
+    const gs = this.gameState;
+    const isPlacement = !!gs?.wave?.isPlacementPhase;
+    const isWaveActive = !!gs?.wave?.isActive && !isPlacement;
+    const hovered = gs?.inputHandler?.hoveredHex;
+    const modalTowerId = getPerimeterModeModalTowerId();
+    const previewRing = getPerimeterModePreviewRing();
+
+    for (const tower of towerSystem.getAllTowers()) {
+      if (tower.type !== CONFIG.TOWER_TYPE_PERIMETER) continue;
+
+      let ringToDraw = null;
+      if (tower.id === modalTowerId) {
+        ringToDraw = previewRing != null ? previewRing : tower.perimeterRing;
+      } else if (isPlacement) {
+        ringToDraw = tower.perimeterRing;
+      } else if (isWaveActive && hovered && hovered.q === tower.q && hovered.r === tower.r) {
+        ringToDraw = tower.perimeterRing;
+      }
+
+      if (ringToDraw == null) continue;
+
+      const { x, y } = axialToPixel(tower.q, tower.r);
+      const screenX = x + this.offsetX;
+      const screenY = y + this.offsetY;
+      const skipViewportCheck = tower.id === modalTowerId || isPlacement
+        || (hovered && hovered.q === tower.q && hovered.r === tower.r);
+      if (!skipViewportCheck && !this.isHexInViewport(screenX, screenY, CONFIG.PARTICLE_CULL_MARGIN)) {
+        continue;
+      }
+
+      const ringHexes = this._getPerimeterRingHexes(tower.q, tower.r, ringToDraw);
+      this._drawPerimeterRingOverlay(ringHexes);
+    }
+  }
+
+  /**
+   * Charge aim trajectory (water-bomb markers along the full path — no bomber dead zone).
+   * @param {object} towerSystem
+   */
+  drawAllChargeTrajectoryOverlays(towerSystem) {
+    if (!towerSystem?.getAllTowers) return;
+    const towers = towerSystem.getAllTowers();
+    const gs = this.gameState;
+    const wVis = this.getWaterVisualAlphaScale();
+
+    for (const tower of towers) {
+      if (tower.type !== CONFIG.TOWER_TYPE_CHARGE) continue;
+      const affectedHexes = tower.affectedHexes;
+      if (!affectedHexes || affectedHexes.length <= 1) continue;
+
+      const { x: startX, y: startY } = axialToPixel(tower.q, tower.r);
+      const screenStartX = startX + this.offsetX;
+      const screenStartY = startY + this.offsetY;
+      const isSelected = tower.id === gs?.selectedTowerId;
+      const isDragging = gs?.inputHandler?.isDragging && gs?.inputHandler?.dragData?.towerId === tower.id;
+      if (!isSelected && !isDragging && !this.isHexInViewport(screenStartX, screenStartY, CONFIG.PARTICLE_CULL_MARGIN)) {
+        continue;
+      }
+
+      const hovered = gs?.inputHandler?.hoveredHex;
+      const isHoveredTower = hovered && hovered.q === tower.q && hovered.r === tower.r;
+      const shouldShowTrajectory =
+        isSelected || isDragging || isHoveredTower || gs?.wave?.isPlacementPhase;
+      if (!shouldShowTrajectory) continue;
+
+      this.ctx.save();
+      this.ctx.lineCap = 'round';
+      this.ctx.lineJoin = 'round';
+      this.ctx.globalAlpha = Math.min(1, wVis * 1.22 + 0.06);
+
+      const impactLevel = tower.powerLevel || 1;
+      const markerScale = 0.4;
+      const towerSalt = (tower.id?.length || 0) * 0.31;
+
+      for (let i = 1; i < affectedHexes.length; i++) {
+        const hex = affectedHexes[i];
+        const prevHex = affectedHexes[i - 1];
+        const { x: prevX, y: prevY } = axialToPixel(prevHex.q, prevHex.r);
+        const { x, y } = axialToPixel(hex.q, hex.r);
+        const screenX = x + this.offsetX;
+        const screenY = y + this.offsetY;
+        const travelAngle = Math.atan2(y - prevY, x - prevX);
+        this._drawBomberWaterProjectile(screenX, screenY, {
+          idSalt: towerSalt + i * 0.19,
+          impactLevel,
+          timeOffset: i * 0.72,
+          sizeScale: markerScale,
+          jitter: false,
+          animationDamp: 0.5,
+          chargeTint: true,
+          travelAngle,
+        });
+      }
+      this.ctx.restore();
+    }
+  }
+
+  /**
+   * 7-hex impact cluster at the charge tower's selected target hex.
+   * @param {Array<{q: number, r: number}>} impactHexes
+   */
+  _drawChargeImpactOverlay(impactHexes) {
+    if (!impactHexes?.length) return;
+    const fill = CONFIG.AOE_HEX_OVERLAY_CHARGE_IMPACT;
+    impactHexes.forEach((hex) => {
+      if (!this.gameState?.gridSystem?.getHex(hex.q, hex.r)) return;
+      const { x, y } = axialToPixel(hex.q, hex.r);
+      this.drawHex(x + this.offsetX, y + this.offsetY, fill, null);
+    });
+  }
+
+  /**
+   * Charge target impact zone: placement phase, hover, selection, and target picker preview.
+   * @param {import('../systems/towerSystem.js').TowerSystem} towerSystem
+   */
+  drawAllChargeImpactOverlays(towerSystem) {
+    if (!towerSystem?.getAllTowers) return;
+    const gs = this.gameState;
+    const isPlacement = !!gs?.wave?.isPlacementPhase;
+    const isWaveActive = !!gs?.wave?.isActive && !isPlacement;
+    const hovered = gs?.inputHandler?.hoveredHex;
+    const modalTowerId = getChargeModeModalTowerId();
+    const previewDistance = getChargeModePreviewDistance();
+    const previewImpactMode = getChargeModePreviewImpactMode();
+
+    for (const tower of towerSystem.getAllTowers()) {
+      if (tower.type !== CONFIG.TOWER_TYPE_CHARGE) continue;
+
+      let distanceToDraw = null;
+      let impactModeToDraw = normalizeChargeMode(tower.chargeMode ?? CONFIG.CHARGE_MODE_DEFAULT);
+      if (tower.id === modalTowerId) {
+        const maxReach = towerSystem.getMaxChargeStepsInDirection(tower.q, tower.r, tower.direction);
+        const current = clampChargeTargetDistance(
+          tower.chargeTargetDistance ?? CONFIG.CHARGE_TARGET_DEFAULT,
+          maxReach
+        );
+        distanceToDraw = previewDistance != null
+          ? clampChargeTargetDistance(previewDistance, maxReach)
+          : current;
+        if (previewImpactMode != null) {
+          impactModeToDraw = previewImpactMode;
+        }
+      } else if (isPlacement) {
+        distanceToDraw = tower.chargeTargetDistance ?? CONFIG.CHARGE_TARGET_DEFAULT;
+      } else if (isWaveActive && hovered && hovered.q === tower.q && hovered.r === tower.r) {
+        distanceToDraw = tower.chargeTargetDistance ?? CONFIG.CHARGE_TARGET_DEFAULT;
+      } else if (tower.id === gs?.selectedTowerId) {
+        distanceToDraw = tower.chargeTargetDistance ?? CONFIG.CHARGE_TARGET_DEFAULT;
+      }
+
+      if (distanceToDraw == null) continue;
+
+      const targetHex = getHexInDirection(tower.q, tower.r, tower.direction, distanceToDraw);
+      if (!targetHex || !this.gameState?.gridSystem?.getHex(targetHex.q, targetHex.r)) continue;
+      const impactHexes = getChargeImpactZone(targetHex.q, targetHex.r, impactModeToDraw);
+      this._drawChargeImpactOverlay(impactHexes);
+    }
+  }
+
+  /**
    * Bomber aim trajectory (mini water-bomb markers). Drawn late so it stacks above beams, particles, and turret sprites.
    * @param {object} towerSystem
    */
@@ -6957,9 +7491,12 @@ export class Renderer {
 
       for (let i = 1; i < affectedHexes.length; i++) {
         const hex = affectedHexes[i];
+        const prevHex = affectedHexes[i - 1];
+        const { x: prevX, y: prevY } = axialToPixel(prevHex.q, prevHex.r);
         const { x, y } = axialToPixel(hex.q, hex.r);
         const screenX = x + this.offsetX;
         const screenY = y + this.offsetY;
+        const travelAngle = Math.atan2(y - prevY, x - prevX);
         const stepDistance = i;
         if (stepDistance < minDetonateDistance) {
           this._drawBomberTrajectoryDeadZoneMarker(screenX, screenY, {
@@ -6977,6 +7514,7 @@ export class Renderer {
             sizeScale: markerScale,
             jitter: false,
             animationDamp: 0.5,
+            travelAngle,
           });
         }
       }
@@ -7054,13 +7592,69 @@ export class Renderer {
   }
 
   /**
+   * Soft comet tail behind a water projectile — drawn before the head so direction reads when paused.
+   * @param {number} drawX
+   * @param {number} drawY
+   * @param {number} r - Head radius (px)
+   * @param {number} travelAngle - Radians; +X in rotated space is flight direction
+   * @param {number} br
+   * @param {number} bg
+   * @param {number} bb
+   * @param {number} [intensity=1]
+   */
+  _drawWaterProjectileTail(drawX, drawY, r, travelAngle, br, bg, bb, intensity = 1) {
+    const tailSizeScale = 0.85;
+    const tailLen = r * 5.2 * tailSizeScale;
+    const tailWidth = r * 1.38 * tailSizeScale;
+    const peakA = 0.82 * intensity;
+    const underA = peakA * 0.52;
+
+    this.ctx.save();
+    this.ctx.translate(drawX, drawY);
+    this.ctx.rotate(travelAngle);
+
+    // Wider soft under-streak (behind) so the tail reads at a glance when paused.
+    const underGrad = this.ctx.createLinearGradient(-tailLen * 1.15, 0, r * 0.4, 0);
+    underGrad.addColorStop(0, `rgba(${br}, ${bg}, ${bb}, 0)`);
+    underGrad.addColorStop(0.3, `rgba(${br}, ${bg}, ${bb}, ${underA * 0.38})`);
+    underGrad.addColorStop(0.62, `rgba(${br}, ${bg}, ${bb}, ${underA * 0.78})`);
+    underGrad.addColorStop(1, `rgba(${br}, ${bg}, ${bb}, ${underA})`);
+    this.ctx.beginPath();
+    this.ctx.moveTo(r * 0.42, 0);
+    this.ctx.bezierCurveTo(r * 0.04, -tailWidth * 0.88, -tailLen * 0.92, -tailWidth * 0.62, -tailLen * 1.15, 0);
+    this.ctx.bezierCurveTo(-tailLen * 0.92, tailWidth * 0.62, r * 0.04, tailWidth * 0.88, r * 0.42, 0);
+    this.ctx.closePath();
+    this.ctx.fillStyle = underGrad;
+    this.ctx.fill();
+
+    const grad = this.ctx.createLinearGradient(-tailLen, 0, r * 0.58, 0);
+    grad.addColorStop(0, `rgba(${br}, ${bg}, ${bb}, 0)`);
+    grad.addColorStop(0.28, `rgba(${br}, ${bg}, ${bb}, ${peakA * 0.38})`);
+    grad.addColorStop(0.55, `rgba(${br}, ${bg}, ${bb}, ${peakA * 0.72})`);
+    grad.addColorStop(0.8, `rgba(${br}, ${bg}, ${bb}, ${peakA * 0.94})`);
+    grad.addColorStop(1, `rgba(${br}, ${bg}, ${bb}, ${peakA})`);
+
+    this.ctx.beginPath();
+    this.ctx.moveTo(r * 0.55, 0);
+    this.ctx.bezierCurveTo(r * 0.08, -tailWidth * 0.62, -tailLen * 0.8, -tailWidth * 0.48, -tailLen, 0);
+    this.ctx.bezierCurveTo(-tailLen * 0.8, tailWidth * 0.48, r * 0.08, tailWidth * 0.62, r * 0.55, 0);
+    this.ctx.closePath();
+    this.ctx.fillStyle = grad;
+    this.ctx.fill();
+
+    this.ctx.restore();
+  }
+
+  /**
    * In-flight water bombs and trajectory markers: layered circles with tower-tinted pulse.
-   * Bomber: cool violet-magenta water; Sentinel: cool bright lemon/chartreuse water.
+   * Bomber: electric pink/fuchsia water; Sentinel: cool bright lemon/chartreuse water; Charge: electric neon green; Perimeter: electric neon blue.
    * @param {number} screenX
    * @param {number} screenY
-   * @param {{ idSalt?: number, impactLevel?: number, timeOffset?: number, sizeScale?: number, jitter?: boolean, animationDamp?: number, sentinelTint?: boolean }} [opts]
+   * @param {{ idSalt?: number, impactLevel?: number, timeOffset?: number, sizeScale?: number, jitter?: boolean, animationDamp?: number, sentinelTint?: boolean, perimeterTint?: boolean, chargeTint?: boolean, travelAngle?: number }} [opts]
+   * @param {number} [opts.travelAngle] - Flight direction (radians); draws a subtle comet tail when set.
    * @param {number} [opts.animationDamp] - 1 = full motion (in-flight bombs). Lower for aim line only (e.g. 0.5 = half movement & half color-cycle speed).
    * @param {boolean} [opts.sentinelTint] - Cool lemon/chartreuse palette (sentinel); default is cool violet-magenta (bomber).
+   * @param {boolean} [opts.chargeTint] - Electric neon green palette (charge tower).
    */
   _drawBomberWaterProjectile(screenX, screenY, opts = {}) {
     const idSalt = opts.idSalt ?? 0;
@@ -7097,32 +7691,63 @@ export class Renderer {
     const baseRadius = BASE_RADIUS_AT_IMPACT_3 * impactSizeMult * sizeScale;
     const r = baseRadius * wobble;
 
-    const maxR = baseRadius * 1.45 * 1.35 + (useJitter ? jitterAmp : 0);
+    const travelAngle = opts.travelAngle;
+    const hasTail = Number.isFinite(travelAngle);
+    const tailExtent = hasTail ? r * 5.5 * 0.85 : 0;
+    const maxR = baseRadius * 1.45 * 1.35 + tailExtent + (useJitter ? jitterAmp : 0);
     if (!this.isInViewport(screenX, screenY, maxR)) {
       return;
     }
 
     const colorPhase = (Math.sin(t * 3.4 * d) + 1) / 2;
     const sentinelTint = opts.sentinelTint === true;
+    const perimeterTint = opts.perimeterTint === true;
+    const chargeTint = opts.chargeTint === true;
     let br;
     let bg;
     let bb;
-    if (sentinelTint) {
-      // Cool bright lemon/chartreuse — less warm yellow, max luminance (high G/B, moderate R).
-      br = Math.round(200 + colorPhase * 45);
-      bg = Math.round(238 + colorPhase * 17);
-      bb = Math.round(145 + colorPhase * 95);
+    if (perimeterTint) {
+      [br, bg, bb] = this._boostWaterBombSaturation(
+        20 + colorPhase * 40,
+        195 + colorPhase * 60,
+        255,
+        1.35,
+      );
+    } else if (sentinelTint) {
+      [br, bg, bb] = this._boostWaterBombSaturation(
+        200 + colorPhase * 45,
+        238 + colorPhase * 17,
+        145 + colorPhase * 95,
+      );
+    } else if (chargeTint) {
+      [br, bg, bb] = this._boostWaterBombSaturation(
+        55 + colorPhase * 45,
+        255,
+        70 + colorPhase * 50,
+      );
     } else {
-      // Cool bright violet-magenta — nudged toward purple/magenta, still max luminance.
-      br = Math.round(178 + colorPhase * 58);
-      bg = Math.round(168 + colorPhase * 48);
-      bb = Math.round(246 + colorPhase * 9);
+      [br, bg, bb] = this._toneBomberWaterColor(
+        255,
+        35 + colorPhase * 55,
+        185 + colorPhase * 70,
+        1.35,
+      );
     }
+
+    if (hasTail) {
+      const tailIntensity = useJitter ? 1 : 0.95;
+      this._drawWaterProjectileTail(drawX, drawY, r, travelAngle, br, bg, bb, tailIntensity);
+    }
+
     const bombColor = `rgb(${br}, ${bg}, ${bb})`;
 
-    const glowA = sentinelTint
-      ? (useJitter ? 0.6 : 0.5)
-      : (useJitter ? 0.56 : 0.46);
+    const glowA = perimeterTint
+      ? (useJitter ? 0.68 : 0.58)
+      : sentinelTint
+      ? (useJitter ? 0.66 : 0.56)
+      : chargeTint
+      ? (useJitter ? 0.68 : 0.58)
+      : (useJitter ? 0.78 : 0.68);
     this.ctx.beginPath();
     this.ctx.arc(drawX, drawY, r * 1.42, 0, 2 * Math.PI);
     this.ctx.fillStyle = `rgba(${br}, ${bg}, ${bb}, ${glowA})`;
@@ -7135,30 +7760,60 @@ export class Renderer {
 
     this.ctx.beginPath();
     this.ctx.arc(drawX, drawY, r * 0.38, 0, 2 * Math.PI);
-    if (sentinelTint) {
-      this.ctx.fillStyle = `rgba(215, 255, ${185 + colorPhase * 55}, ${0.5 + 0.34 * colorPhase})`;
+    if (perimeterTint) {
+      const [ir, ig, ib] = this._boostWaterBombSaturation(130 + colorPhase * 90, 235 + colorPhase * 20, 255, 1.35);
+      this.ctx.fillStyle = `rgba(${ir}, ${ig}, ${ib}, ${0.54 + 0.32 * colorPhase})`;
+    } else if (sentinelTint) {
+      const [ir, ig, ib] = this._boostWaterBombSaturation(215, 255, 185 + colorPhase * 55);
+      this.ctx.fillStyle = `rgba(${ir}, ${ig}, ${ib}, ${0.5 + 0.34 * colorPhase})`;
+    } else if (chargeTint) {
+      const [ir, ig, ib] = this._boostWaterBombSaturation(190 + colorPhase * 65, 255, 130 + colorPhase * 60);
+      this.ctx.fillStyle = `rgba(${ir}, ${ig}, ${ib}, ${0.52 + 0.34 * colorPhase})`;
     } else {
-      this.ctx.fillStyle = `rgba(${238 + colorPhase * 17}, ${200 + colorPhase * 30}, 255, ${0.48 + 0.34 * colorPhase})`;
+      const [ir, ig, ib] = this._toneBomberWaterColor(
+        255,
+        130 + colorPhase * 80,
+        220 + colorPhase * 35,
+        1.35,
+        BOMBER_WATER_CORE_BRIGHTNESS_LIFT,
+      );
+      this.ctx.fillStyle = `rgba(${ir}, ${ig}, ${ib}, ${0.58 + 0.34 * colorPhase})`;
     }
     this.ctx.fill();
 
     const rimR = r * (1.18 + d * 0.07 * Math.sin(t * 2.1 * d));
     this.ctx.beginPath();
     this.ctx.arc(drawX, drawY, rimR, 0, 2 * Math.PI);
-    if (sentinelTint) {
-      this.ctx.strokeStyle = `rgba(185, 255, 175, ${0.82 + 0.14 * useJitter})`;
+    if (perimeterTint) {
+      const [rr, rg, rb] = this._boostWaterBombSaturation(50, 205, 255, 1.35);
+      this.ctx.strokeStyle = `rgba(${rr}, ${rg}, ${rb}, ${0.86 + 0.12 * useJitter})`;
+    } else if (sentinelTint) {
+      const [rr, rg, rb] = this._boostWaterBombSaturation(185, 255, 175);
+      this.ctx.strokeStyle = `rgba(${rr}, ${rg}, ${rb}, ${0.82 + 0.14 * useJitter})`;
+    } else if (chargeTint) {
+      const [rr, rg, rb] = this._boostWaterBombSaturation(85, 255, 95);
+      this.ctx.strokeStyle = `rgba(${rr}, ${rg}, ${rb}, ${0.84 + 0.14 * useJitter})`;
     } else {
-      this.ctx.strokeStyle = `rgba(200, 145, 255, ${0.8 + 0.16 * useJitter})`;
+      const [rr, rg, rb] = this._toneBomberWaterColor(255, 75, 210, 1.35);
+      this.ctx.strokeStyle = `rgba(${rr}, ${rg}, ${rb}, ${0.9 + 0.12 * useJitter})`;
     }
     this.ctx.lineWidth = Math.max(0.9, 2.5 * sizeScale);
     this.ctx.stroke();
 
     this.ctx.beginPath();
     this.ctx.arc(drawX, drawY, r * 0.72, 0, 2 * Math.PI);
-    if (sentinelTint) {
-      this.ctx.strokeStyle = `rgba(170, 250, 190, ${0.46 + d * 0.26 * Math.sin(t * 3 * d)})`;
+    if (perimeterTint) {
+      const [er, eg, eb] = this._boostWaterBombSaturation(30, 175, 255, 1.35);
+      this.ctx.strokeStyle = `rgba(${er}, ${eg}, ${eb}, ${0.5 + d * 0.26 * Math.sin(t * 3 * d)})`;
+    } else if (sentinelTint) {
+      const [er, eg, eb] = this._boostWaterBombSaturation(170, 250, 190);
+      this.ctx.strokeStyle = `rgba(${er}, ${eg}, ${eb}, ${0.46 + d * 0.26 * Math.sin(t * 3 * d)})`;
+    } else if (chargeTint) {
+      const [er, eg, eb] = this._boostWaterBombSaturation(55, 245, 65);
+      this.ctx.strokeStyle = `rgba(${er}, ${eg}, ${eb}, ${0.48 + d * 0.26 * Math.sin(t * 3 * d)})`;
     } else {
-      this.ctx.strokeStyle = `rgba(185, 135, 255, ${0.42 + d * 0.24 * Math.sin(t * 3 * d)})`;
+      const [er, eg, eb] = this._toneBomberWaterColor(255, 45, 185, 1.35);
+      this.ctx.strokeStyle = `rgba(${er}, ${eg}, ${eb}, ${0.54 + d * 0.28 * Math.sin(t * 3 * d)})`;
     }
     this.ctx.lineWidth = Math.max(0.55, 1.25 * sizeScale);
     this.ctx.stroke();
@@ -7182,14 +7837,21 @@ export class Renderer {
         const { x, y } = axialToPixel(bomb.currentQ, bomb.currentR);
         const screenX = x + this.offsetX;
         const screenY = y + this.offsetY;
+        const { x: startX, y: startY } = axialToPixel(bomb.startQ, bomb.startR);
+        const { x: targetX, y: targetY } = axialToPixel(bomb.targetQ, bomb.targetR);
+        const travelAngle = Math.atan2(targetY - startY, targetX - startX);
         const idSalt = (bomb.id?.length || 0) * 0.31;
         const impactLevel = Math.floor(bomb.impactLevel || bomb.powerLevel || 3);
+        const isPerimeter = bomb.isPerimeter === true;
         this._drawBomberWaterProjectile(screenX, screenY, {
           idSalt,
           impactLevel,
           jitter: true,
-          sizeScale: 1,
+          sizeScale: isPerimeter ? (CONFIG.PERIMETER_BOMB_SIZE_SCALE ?? 0.48) : 1,
           sentinelTint: bomb.isSentinel === true,
+          perimeterTint: isPerimeter,
+          chargeTint: bomb.isCharge === true,
+          travelAngle,
         });
       });
     }
@@ -7303,6 +7965,24 @@ export class Renderer {
    */
   spawnBomberExplosionParticles(bomb, impactHexes) {
     if (!bomb || !impactHexes || impactHexes.length === 0) return;
+    const explosionAlphaScale = CONFIG.BOMBER_WATER_EXPLOSION_ALPHA_SCALE ?? 0.5;
+    const isSentinel = bomb.isSentinel === true;
+    const isPerimeter = bomb.isPerimeter === true;
+    const isCharge = bomb.isCharge === true;
+    const pickExplosionColor = isCharge
+      ? () => this.getRandomChargeExplosionColor()
+      : isPerimeter
+      ? () => this.getRandomPerimeterExplosionColor()
+      : isSentinel
+      ? () => this.getRandomSentinelExplosionColor()
+      : () => this.getRandomBomberExplosionColor();
+    const centerFlashColor = isCharge
+      ? 'charge-green'
+      : isPerimeter
+      ? 'perimeter-blue'
+      : isSentinel
+      ? 'sentinel-chartreuse'
+      : 'bomber-fuchsia';
     const explosionId = `explosion_${bomb.id}`;
     // Mark group in explosionParticles so updater renders it
     if (!this.explosionParticles.has(explosionId)) {
@@ -7323,7 +8003,8 @@ export class Renderer {
         this.hexFlashes.set(hexKey, {
           startTime: performance.now(),
           duration: 800, // 800ms flash (longer)
-          color: 'blue' // blue explosion flash
+          color: centerFlashColor,
+          opacityScale: explosionAlphaScale,
         });
       }
       
@@ -7347,7 +8028,7 @@ export class Renderer {
         
         // Wider size variation and slightly longer lifetime with random color
         // Pass hex coordinates so particles are anchored to the hex
-        const p = this.createWaterParticle(px, py, vx, vy, 0.55 + Math.random() * 0.35, this.getRandomWaterColor(), hex.q, hex.r);
+        const p = this.createWaterParticle(px, py, vx, vy, 0.55 + Math.random() * 0.35, pickExplosionColor(), hex.q, hex.r);
         // Clamp to within hex area using maxDistance from start point
         p.maxDistance = hexRadiusPx * 0.75;
         // Store start position as relative offset for distance constraint (use the calculated offset)
@@ -7356,6 +8037,7 @@ export class Renderer {
         // Larger droplets with broader variance scaling with level
         const baseSize = (2.4 + Math.random() * 2.2) * 1.5; // 3.6..6.9 (50% increase)
         p.size = baseSize * (1.2 + (level - 1) * 0.2);
+        p.alphaScale = explosionAlphaScale;
         
         if (!this.waterParticles.has(explosionId)) this.waterParticles.set(explosionId, []);
         this.waterParticles.get(explosionId).push(p);
@@ -7513,13 +8195,42 @@ export class Renderer {
       
       // Draw flash overlay
       if (flash.color === 'blue') {
+        const opacityScale = flash.opacityScale ?? 1;
         // Blue explosion flash
-        const alpha = intensity * pulse * 0.8; // More opaque
+        const alpha = intensity * pulse * 0.8 * opacityScale;
         this.drawHex(screenX, screenY, `rgba(0, 150, 255, ${alpha})`, null);
         
         // White center burst
-        const whiteAlpha = intensity * pulse * 0.6; // More opaque
+        const whiteAlpha = intensity * pulse * 0.6 * opacityScale;
         this.drawHex(screenX, screenY, `rgba(255, 255, 255, ${whiteAlpha})`, null);
+      } else if (flash.color === 'bomber-violet' || flash.color === 'bomber-fuchsia') {
+        const opacityScale = flash.opacityScale ?? 1;
+        const [or, og, ob] = this._toneBomberWaterColor(255, 50, 210, 1);
+        const alpha = intensity * pulse * 0.9 * opacityScale;
+        this.drawHex(screenX, screenY, `rgba(${or}, ${og}, ${ob}, ${alpha})`, null);
+        const [cr, cg, cb] = this._toneBomberWaterColor(255, 160, 240, 1, BOMBER_WATER_CORE_BRIGHTNESS_LIFT);
+        const centerAlpha = intensity * pulse * 0.72 * opacityScale;
+        this.drawHex(screenX, screenY, `rgba(${cr}, ${cg}, ${cb}, ${centerAlpha})`, null);
+        const whiteAlpha = intensity * pulse * 0.48 * opacityScale;
+        this.drawHex(screenX, screenY, `rgba(255, 255, 255, ${whiteAlpha})`, null);
+      } else if (flash.color === 'sentinel-chartreuse') {
+        const opacityScale = flash.opacityScale ?? 1;
+        const alpha = intensity * pulse * 0.82 * opacityScale;
+        this.drawHex(screenX, screenY, `rgba(200, 255, 160, ${alpha})`, null);
+        const centerAlpha = intensity * pulse * 0.62 * opacityScale;
+        this.drawHex(screenX, screenY, `rgba(235, 255, 200, ${centerAlpha})`, null);
+      } else if (flash.color === 'perimeter-blue') {
+        const opacityScale = flash.opacityScale ?? 1;
+        const alpha = intensity * pulse * 0.86 * opacityScale;
+        this.drawHex(screenX, screenY, `rgba(15, 160, 255, ${alpha})`, null);
+        const centerAlpha = intensity * pulse * 0.66 * opacityScale;
+        this.drawHex(screenX, screenY, `rgba(100, 220, 255, ${centerAlpha})`, null);
+      } else if (flash.color === 'charge-green') {
+        const opacityScale = flash.opacityScale ?? 1;
+        const alpha = intensity * pulse * 0.86 * opacityScale;
+        this.drawHex(screenX, screenY, `rgba(60, 255, 80, ${alpha})`, null);
+        const centerAlpha = intensity * pulse * 0.66 * opacityScale;
+        this.drawHex(screenX, screenY, `rgba(180, 255, 150, ${centerAlpha})`, null);
       } else if (flash.color === 'cyan') {
         // Cyan water tank explosion flash
         const alpha = intensity * pulse * 0.85; // More opaque
@@ -8190,7 +8901,7 @@ export class Renderer {
   drawRotationArrows(q, r, currentDirection, towerType) {
     try {
       // Don't draw rotation arrows for AOE / non-directional towers (pulsing, rain, sentinel)
-      if (towerType === CONFIG.TOWER_TYPE_PULSING || towerType === CONFIG.TOWER_TYPE_RAIN || towerType === CONFIG.TOWER_TYPE_SENTINEL) {
+      if (towerType === CONFIG.TOWER_TYPE_PULSING || towerType === CONFIG.TOWER_TYPE_RAIN || towerType === CONFIG.TOWER_TYPE_SENTINEL || towerType === CONFIG.TOWER_TYPE_PERIMETER) {
         return;
       }
       
@@ -8417,6 +9128,42 @@ export class Renderer {
             
             this.drawHex(screenHexX, screenHexY, CONFIG.AOE_HEX_OVERLAY_PULSING, null);
           });
+        } else if (towerType === CONFIG.TOWER_TYPE_PERIMETER) {
+          let perimeterRing = CONFIG.PERIMETER_RING_DEFAULT;
+          if (dragType === 'tower-stored' && dragData?.storedTower) {
+            perimeterRing = dragData.storedTower.perimeterRing ?? CONFIG.PERIMETER_RING_DEFAULT;
+          }
+          const ringHexes = this._getPerimeterRingHexes(q, r, perimeterRing);
+          this._drawPerimeterRingOverlay(ringHexes);
+        } else if (towerType === CONFIG.TOWER_TYPE_CHARGE) {
+          let chargeTargetDistance = CONFIG.CHARGE_TARGET_DEFAULT;
+          let chargeMode = CONFIG.CHARGE_MODE_DEFAULT;
+          if (dragType === 'tower-stored' && dragData?.storedTower) {
+            chargeTargetDistance = dragData.storedTower.chargeTargetDistance ?? CONFIG.CHARGE_TARGET_DEFAULT;
+            chargeMode = normalizeChargeMode(dragData.storedTower.chargeMode ?? CONFIG.CHARGE_MODE_DEFAULT);
+          }
+          const previewDirection = 0;
+          const maxReach = this.gameState?.towerSystem?.getMaxChargeStepsInDirection?.(q, r, previewDirection)
+            ?? CONFIG.CHARGE_TARGET_MAX;
+          const distance = clampChargeTargetDistance(chargeTargetDistance, maxReach);
+          for (let i = 1; i <= distance; i++) {
+            const hex = getHexInDirection(q, r, previewDirection, i);
+            if (!this.gameState?.gridSystem?.getHex(hex.q, hex.r)) continue;
+            const { x: hexX, y: hexY } = axialToPixel(hex.q, hex.r);
+            this._drawBomberWaterProjectile(hexX + this.offsetX, hexY + this.offsetY, {
+              idSalt: i * 0.17,
+              impactLevel: 1,
+              timeOffset: i * 0.5,
+              sizeScale: 0.35,
+              jitter: false,
+              animationDamp: 0.5,
+              chargeTint: true,
+            });
+          }
+          const targetHex = getHexInDirection(q, r, previewDirection, distance);
+          if (targetHex && this.gameState?.gridSystem?.getHex(targetHex.q, targetHex.r)) {
+            this._drawChargeImpactOverlay(getChargeImpactZone(targetHex.q, targetHex.r, chargeMode));
+          }
         }
       }
     }
@@ -8668,7 +9415,7 @@ export class Renderer {
    */
   drawRotationArrows(q, r, currentDirection, towerType) {
       // Don't draw rotation arrows for AOE / non-directional towers (pulsing, rain, sentinel)
-      if (towerType === CONFIG.TOWER_TYPE_PULSING || towerType === CONFIG.TOWER_TYPE_RAIN || towerType === CONFIG.TOWER_TYPE_SENTINEL) {
+      if (towerType === CONFIG.TOWER_TYPE_PULSING || towerType === CONFIG.TOWER_TYPE_RAIN || towerType === CONFIG.TOWER_TYPE_SENTINEL || towerType === CONFIG.TOWER_TYPE_PERIMETER) {
       return;
     }
     // All towers use 6 directions for rotation
@@ -9206,6 +9953,12 @@ export class Renderer {
     octx.fill();
 
     entry = { canvas: off, refRadius: REF_RADIUS, halfSize: size * 0.5, size };
+    // Safety net: bound the cache so no color source (current or future) can ever leak
+    // offscreen canvases without limit and exhaust GPU memory / lose the canvas context.
+    // Sprites are cheap to regenerate, so a hard cap with a full clear is sufficient.
+    if (this._waterParticleSpriteCache.size >= this._waterParticleSpriteCacheMax) {
+      this._waterParticleSpriteCache.clear();
+    }
     this._waterParticleSpriteCache.set(colorBase, entry);
     return entry;
   }
@@ -9312,7 +10065,7 @@ export class Renderer {
         const drawSize = lastSpriteSize * scale;
         const half = drawSize * 0.5;
 
-        ctx.globalAlpha = baseAlpha * lifeAlpha;
+        ctx.globalAlpha = baseAlpha * lifeAlpha * (particle.alphaScale ?? 1);
         ctx.drawImage(lastSpriteCanvas, screenX - half, screenY - half, drawSize, drawSize);
       }
     }
@@ -9330,7 +10083,7 @@ export class Renderer {
     const towers = towerSystem.getAllTowers();
     towers.forEach(tower => {
       // Draw turrets for all tower types that use sprites
-      if (tower.type === CONFIG.TOWER_TYPE_JET || tower.type === CONFIG.TOWER_TYPE_SPREAD || tower.type === CONFIG.TOWER_TYPE_BOMBER || tower.type === CONFIG.TOWER_TYPE_RAIN || tower.type === CONFIG.TOWER_TYPE_PULSING || tower.type === CONFIG.TOWER_TYPE_SENTINEL) {
+      if (tower.type === CONFIG.TOWER_TYPE_JET || tower.type === CONFIG.TOWER_TYPE_SPREAD || tower.type === CONFIG.TOWER_TYPE_BOMBER || tower.type === CONFIG.TOWER_TYPE_CHARGE || tower.type === CONFIG.TOWER_TYPE_RAIN || tower.type === CONFIG.TOWER_TYPE_PULSING || tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER) {
         const { x, y } = axialToPixel(tower.q, tower.r);
         const screenX = x + this.offsetX;
         const screenY = y + this.offsetY;
@@ -9346,7 +10099,7 @@ export class Renderer {
           this.ctx.translate(screenX, screenY);
           
           // Check if tower is rotatable (jet, spread, bomber) or non-rotatable (rain, pulsing)
-          const isRotatable = tower.type === CONFIG.TOWER_TYPE_JET || tower.type === CONFIG.TOWER_TYPE_SPREAD || tower.type === CONFIG.TOWER_TYPE_BOMBER;
+          const isRotatable = tower.type === CONFIG.TOWER_TYPE_JET || tower.type === CONFIG.TOWER_TYPE_SPREAD || tower.type === CONFIG.TOWER_TYPE_BOMBER || tower.type === CONFIG.TOWER_TYPE_CHARGE;
           
           let turretHeightMultiplier;
           
@@ -9404,8 +10157,11 @@ export class Renderer {
               baseTurretMultiplier *= 1.05; // Increase by 5% from current size
             }
             // Bomber range levels 3 and 4: keep as is (no change)
-            
-            turretHeightMultiplier = baseTurretMultiplier;
+
+            // Charge: fixed height for all speed levels; width follows sprite aspect ratio below
+            turretHeightMultiplier = tower.type === CONFIG.TOWER_TYPE_CHARGE
+              ? getChargeTurretHeightMultiplier()
+              : baseTurretMultiplier;
             
             // Shift turret forward in the direction the tower is facing (before rotation)
             // Jet range level 2: 18px (15px + 3px more)
@@ -9430,6 +10186,8 @@ export class Renderer {
               offsetDistance = 5; // Bomber level 1: 10px left (15px - 10px)
             } else if (tower.type === CONFIG.TOWER_TYPE_BOMBER && rangeLevel === 2) {
               offsetDistance = 10; // Bomber level 2: 5px left (15px - 5px)
+            } else if (tower.type === CONFIG.TOWER_TYPE_CHARGE) {
+              offsetDistance = getChargeTurretOffsetPx(rangeLevel);
             }
             const offsetX = Math.cos(angle) * offsetDistance;
             const offsetY = Math.sin(angle) * offsetDistance;
@@ -9445,6 +10203,8 @@ export class Renderer {
             // Rain and pulsing towers: reduce size by 15%, then increase by 10% (net: 6.5% smaller)
             if (tower.type === CONFIG.TOWER_TYPE_SENTINEL) {
               baseTurretMultiplier = getSentinelTurretSizeMultiplier(rangeLevel);
+            } else if (tower.type === CONFIG.TOWER_TYPE_PERIMETER) {
+              baseTurretMultiplier = getPerimeterTurretSizeMultiplier(rangeLevel);
             } else if (tower.type === CONFIG.TOWER_TYPE_RAIN || tower.type === CONFIG.TOWER_TYPE_PULSING) {
               baseTurretMultiplier *= 0.85; // Reduce by 15%
               baseTurretMultiplier *= 1.1; // Increase by 10%
@@ -9472,21 +10232,39 @@ export class Renderer {
             // No range level size adjustments for other towers (reset to baseline)
             turretHeightMultiplier = baseTurretMultiplier;
             
-            // Rain and pulsing towers: slow continuous rotation (no translation, centered over base)
-            // Rotate slowly: 1 full rotation every 8 seconds (2π / 8 = 0.785 radians per second)
-            const rotationSpeed = 0.785; // radians per second
-            const rotationAngle = this.turretRotationTime * rotationSpeed;
-            this.ctx.rotate(rotationAngle);
+            if (tower.type === CONFIG.TOWER_TYPE_PERIMETER) {
+              // Aim turret at current ring target; shift forward so pivot sits at cannon base.
+              const aimAngle = towerSystem.getPerimeterTurretAngleRadians(tower);
+              const offsetDistance = getPerimeterTurretOffsetPx(rangeLevel);
+              const offsetX = Math.cos(aimAngle) * offsetDistance;
+              const offsetY = Math.sin(aimAngle) * offsetDistance;
+              this.ctx.translate(offsetX, offsetY);
+              this.ctx.rotate(aimAngle + Math.PI / 2);
+            } else {
+              // Rain, pulsing, sentinel: slow continuous rotation (no translation, centered over base)
+              // Rotate slowly: 1 full rotation every 8 seconds (2π / 8 = 0.785 radians per second)
+              const rotationSpeed = 0.785; // radians per second
+              const rotationAngle = this.turretRotationTime * rotationSpeed;
+              this.ctx.rotate(rotationAngle);
+            }
           }
           
-          // Turret size: use height multiplier and calculate width to preserve aspect ratio
-          let turretHeight = CONFIG.HEX_RADIUS * turretHeightMultiplier;
+          // Turret size: preserve sprite aspect ratio. Rotatable towers rotate 90° so draw
+          // width maps to on-screen height and draw height to on-screen width.
           const aspectRatio = turretSprite.naturalWidth / turretSprite.naturalHeight;
-          let turretWidth = turretHeight * aspectRatio;
+          let turretHeight;
+          let turretWidth;
+          if (tower.type === CONFIG.TOWER_TYPE_CHARGE) {
+            turretWidth = CONFIG.HEX_RADIUS * turretHeightMultiplier;
+            turretHeight = turretWidth / aspectRatio;
+          } else {
+            turretHeight = CONFIG.HEX_RADIUS * turretHeightMultiplier;
+            turretWidth = turretHeight * aspectRatio;
+          }
           turretHeight = Math.round(turretHeight);
           turretWidth = Math.round(turretWidth);
 
-          if (tower.type === CONFIG.TOWER_TYPE_SENTINEL) {
+          if (tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER) {
             this._drawSmoothTowerSprite(
               turretSprite,
               -turretWidth / 2,
@@ -9516,32 +10294,74 @@ export class Renderer {
   }
 
   /**
-   * Draw all tower health bars (called from drawAllWorldHealthBarsAfterParticles)
-   * @param {TowerSystem} towerSystem - Tower system to get all towers from
+   * Tower health + shield bars with shared size; health stays fixed, shield stacks below when both show.
+   * @param {TowerSystem} towerSystem
    */
   drawAllTowerHealthBars(towerSystem) {
     if (!towerSystem) return;
 
+    const scale = CONFIG.HEALTH_BAR_RENDER_SCALE ?? 1;
+    const barWidth = 40 * scale;
+    const barHeight = 4 * scale;
+    const barGap = 2 * scale;
+    const baseLift = 8 * scale;
+    const stackStep = barHeight + barGap;
+
     const towers = towerSystem.getAllTowers();
-    // drawHealthBar bails when current >= max, but we still pay axialToPixel + screen-math
-    // for every tower above. Towers spend most of the game at full HP, so we skip them
-    // outright here. Also viewport-cull so offscreen damaged towers don't trigger draws.
     for (let i = 0; i < towers.length; i++) {
       const tower = towers[i];
       const rawHealth = tower.health || 0;
       const rawMax = tower.maxHealth || CONFIG.TOWER_HEALTH;
-      if (rawHealth >= rawMax) continue;
+      const sh = tower.shield;
+      const showHealth = rawHealth < rawMax;
+      const showShield = !!(sh && sh.health > 0);
+      if (!showHealth && !showShield) continue;
 
       const { x, y } = axialToPixel(tower.q, tower.r);
       const screenX = x + this.offsetX;
       const screenY = y + this.offsetY;
       if (!this.isHexInViewport(screenX, screenY)) continue;
 
-      const currentHealth = Math.max(0, rawHealth);
-      const maxHealth = Math.max(1, rawMax);
-      const healthLabelY = screenY + CONFIG.HEX_RADIUS * 0.7;
+      const anchorY = screenY + CONFIG.HEX_RADIUS * 0.7;
+      const barX = screenX - barWidth / 2;
+      const healthBarY = anchorY - baseLift;
 
-      this.drawHealthBar(screenX, healthLabelY, currentHealth, maxHealth, 40, 4, `hp-tower-${tower.id}`);
+      if (showHealth) {
+        const targetPercent = Math.max(0, Math.min(1, rawHealth / Math.max(1, rawMax)));
+        const fillPercent = this.getAnimatedValue(
+          `hp-tower-${tower.id}`,
+          targetPercent,
+          this.deltaTime || 0.016
+        );
+        this._drawMapStatusBar(
+          barX,
+          healthBarY,
+          barWidth,
+          barHeight,
+          fillPercent,
+          getHealthBarFillColor(fillPercent),
+          TOWER_MAP_STATUS_BAR_CORNER_RADIUS
+        );
+      }
+
+      if (showShield) {
+        const shieldBarY = healthBarY + (showHealth ? stackStep : 0);
+        const targetPercent = Math.max(0, Math.min(1, sh.health / Math.max(1, sh.maxHealth)));
+        const fillPercent = this.getAnimatedValue(
+          `hp-shield-${tower.id}`,
+          targetPercent,
+          this.deltaTime || 0.016
+        );
+        this._drawMapStatusBar(
+          barX,
+          shieldBarY,
+          barWidth,
+          barHeight,
+          fillPercent,
+          getShieldColorRgba(0.9),
+          TOWER_MAP_STATUS_BAR_CORNER_RADIUS
+        );
+      }
     }
   }
 
@@ -9563,8 +10383,10 @@ export class Renderer {
 
     const currentHealth = Math.max(0, centerHex.townHealth || 0);
     const maxHealth = Math.max(1, centerHex.maxTownHealth || 1);
-    const healthY = screenY + Math.max(18, CONFIG.HEX_RADIUS * 0.45);
-    this.drawHealthBar(screenX, healthY, currentHealth, maxHealth, 45, 4.5, 'hp-grove');
+    const healthY = screenY + Math.max(18, CONFIG.HEX_RADIUS * 0.45) - 3;
+    this.drawHealthBar(screenX, healthY, currentHealth, maxHealth, 51, 7.5, 'hp-grove', {
+      cornerRadius: GROVE_MAP_HEALTH_BAR_CORNER_RADIUS,
+    });
   }
 
   /**
@@ -9691,48 +10513,6 @@ export class Renderer {
   }
 
   /**
-   * Shield HP bars for shielded towers (same timing as other map health bars).
-   */
-  drawTowerShieldHealthBarsOverlay(towerSystem) {
-    if (!towerSystem) return;
-
-    const scale = CONFIG.HEALTH_BAR_RENDER_SCALE ?? 1;
-
-    towerSystem.getAllTowers().forEach((tower) => {
-      const sh = tower.shield;
-      if (!sh || sh.health >= sh.maxHealth) return;
-
-      const { x, y } = axialToPixel(tower.q, tower.r);
-      const screenX = x + this.offsetX;
-      const screenY = y + this.offsetY;
-      if (!this.isHexInViewport(screenX, screenY)) return;
-
-      const targetPercent = Math.max(0, Math.min(1, sh.health / sh.maxHealth));
-      const shieldKey = `hp-shield-${tower.id}`;
-      const shieldHealthPercent = this.getAnimatedValue(
-        shieldKey,
-        targetPercent,
-        this.deltaTime || 0.016
-      );
-      let barWidth = CONFIG.HEX_RADIUS * 0.8 * scale;
-      let barHeight = 4 * scale;
-      const barX = screenX - barWidth / 2;
-      const barY = screenY + CONFIG.HEX_RADIUS * 0.5;
-
-      this.ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-      this.ctx.fillRect(barX, barY, barWidth, barHeight);
-
-      const healthWidth = barWidth * shieldHealthPercent;
-      this.ctx.fillStyle = getShieldColorRgba(0.9);
-      this.ctx.fillRect(barX, barY, healthWidth, barHeight);
-
-      this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
-      this.ctx.lineWidth = 1;
-      this.ctx.strokeRect(barX, barY, barWidth, barHeight);
-    });
-  }
-
-  /**
    * Draw every map health bar after water and fire particles so FX never obscure HP (grove, towers, items).
    * @param {object} gameState
    */
@@ -9752,7 +10532,6 @@ export class Renderer {
       this.drawBurningVaultHealthBarsOverlay(gameState.burningVaultSystem);
     }
     if (gameState.towerSystem) {
-      this.drawTowerShieldHealthBarsOverlay(gameState.towerSystem);
       this.drawAllTowerHealthBars(gameState.towerSystem);
     }
   }
@@ -10265,6 +11044,9 @@ export class Renderer {
       } else if (item.itemType === 'shield') {
         const level = Math.min(4, Math.max(1, item.value || 1));
         spriteFilename = `shield_${level}.png`;
+      } else if (item.itemType === 'suppression_bomb') {
+        const level = Math.min(4, Math.max(1, item.value || 1));
+        spriteFilename = `suppression_${level}.png`;
       } else if (item.itemType === 'upgrade_plans') {
         spriteFilename = 'upgrade_token.png';
       } else if (item.itemType === 'tree_juice') {

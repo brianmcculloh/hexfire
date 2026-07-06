@@ -1,6 +1,6 @@
 // Main Entry Point - Initializes and starts the game
 
-import { CONFIG, getFireTypeConfig, getSuppressionBombCost, getSuppressionBombTotalUses, getShieldCost, getShieldHealth, getLevelThreshold, getLevelTierSpritePath, getTowerUnlockStatus, getPlayerLevel, getTowerPower, getPulsingPower, getPulsingAttackInterval, getRainPower, getBomberPower, getBomberAttackInterval, getPowerUpMultiplier, getTowerRange, getSpreadTowerRange, getRainRange, addPlayerScore, getPowerUpGraphicFilename, getPermanentPowerUpShopPurchaseCost, getArtifactById, isTowerRepairShopUnlocked, getWaveGroupName, formatActiveWaveTimerText, formatClockMinutesSeconds, formatWaveGroupSlotDisplay, formatPowerUpStackEffectSummary, getPermanentPowerUpDescription, getTempPowerUpDescription, resolveWaterTankTypeIdFromPoolRow, isWaterTankTypeAvailableAtWaveGroup, getSentinelTurretSizeMultiplier } from './config.js';
+import { CONFIG, getFireTypeConfig, getSuppressionBombCost, getSuppressionBombTotalUses, getShieldCost, getShieldHealth, getLevelThreshold, getLevelTierSpritePath, getTowerUnlockStatus, getPlayerLevel, getTowerPower, getPulsingPower, getPulsingAttackInterval, getRainPower, getBomberPower, getBomberAttackInterval, getPowerUpMultiplier, getTowerRange, getSpreadTowerRange, getRainRange, addPlayerScore, getPowerUpGraphicFilename, getPermanentPowerUpShopPurchaseCost, getArtifactById, isTowerRepairShopUnlocked, getWaveGroupName, formatActiveWaveTimerText, formatClockMinutesSeconds, formatWaveGroupSlotDisplay, formatPowerUpStackEffectSummary, getPermanentPowerUpDescription, getTempPowerUpDescription, resolveWaterTankTypeIdFromPoolRow, isWaterTankTypeAvailableAtWaveGroup, getSentinelTurretSizeMultiplier, getPerimeterTurretSizeMultiplier, getPerimeterTurretOffsetPx, getChargeTurretHeightMultiplier, getChargeTurretAspectRatio, getChargeTurretOffsetPx, getHealthBarFillColor, applyCurrencyGainBonuses } from './config.js';
 import { filterWeightedRewardPool } from './utils/rewardPoolUnlocks.js';
 import {
   showConfirmModal,
@@ -37,13 +37,22 @@ import { BossSystem } from './systems/bossSystem.js';
 import { SurvivalHeroSystem } from './systems/survivalHeroSystem.js';
 import { ComboSystem } from './systems/comboSystem.js';
 import { Renderer } from './utils/renderer.js';
-import { InputHandler, CURSOR_DEFAULT, CURSOR_DRAG, CURSOR_PLUS, CURSOR_X } from './utils/inputHandler.js';
+import { InputHandler, CURSOR_DEFAULT, CURSOR_DRAG, CURSOR_PLUS, CURSOR_X, setBodyCursor } from './utils/inputHandler.js';
 import { NotificationSystem } from './utils/notifications.js';
 import { saveGame, loadGame, renameSave, deleteSave, hasSaveData, getSaveInfo, applyLoadedState, repairStoredSave, saveTutorialState, loadTutorialState, clearTutorialState, formatTimestamp } from './utils/saveLoad.js';
 import { setLocalStorageItemWithRetry, trimLeaderboard, trimRunHistory } from './utils/localStorageQuota.js';
 import { submitFeedbackReport } from './utils/feedbackReport.js';
 import { initTowerStatusPanel } from './utils/towerStatusPanel.js';
 import { initSentinelModeUI } from './utils/sentinelModeUI.js';
+import { initPerimeterModeUI } from './utils/perimeterModeUI.js';
+import { initChargeModeUI } from './utils/chargeModeUI.js';
+import {
+  attachMovementTokenSellbackButton,
+  initTokenVoucherUI,
+  isMovementTokenSellbackPickerBlocked,
+  isMovementTokenSellbackPickerOpen,
+  showMovementTokenSellbackModal,
+} from './utils/tokenVoucherUI.js';
 import { addScoreToLeaderboard, getLeaderboard, formatLeaderboardDate, clearLeaderboard } from './utils/leaderboard.js';
 import { GameLoop } from './gameLoop.js';
 import {
@@ -55,6 +64,12 @@ import {
 } from './systems/runStatsSystem.js';
 import { wireRunHistoryModal, openRunHistoryModal } from './utils/runHistoryUI.js';
 import { wireMapProgressionModal, shouldShowMapProgressionGate } from './utils/mapProgressionUI.js';
+import {
+  wireSpecialtyModal,
+  handleSpecialtyPlanInventoryClick,
+} from './utils/specialtyUI.js';
+import { ensureSpecialtyMilestoneRewards } from './utils/specialtyRewards.js';
+import { wireTowerStatsModal, openTowerStatsModal, closeTowerStatsModal } from './utils/towerStatsUI.js';
 import { AudioManager } from './utils/audioManager.js';
 import { initTextEffects, processTextWaveElements } from './utils/textEffects.js';
 import { axialToPixel } from './utils/hexMath.js';
@@ -100,10 +115,6 @@ import {
   root.style.setProperty('--cursor-drag', CURSOR_DRAG);
   root.style.setProperty('--cursor-plus', CURSOR_PLUS);
   root.style.setProperty('--cursor-x', CURSOR_X);
-  root.style.cursor = CURSOR_DEFAULT;
-  if (document.body) {
-    document.body.style.cursor = CURSOR_DEFAULT;
-  }
 })();
 
 /** Resolved at module load so the update log file lives at repo root next to index.html. */
@@ -170,10 +181,14 @@ const gameState = {
     score: 0,
     currency: CONFIG.DEBUG_MODE ? 99999 : CONFIG.STARTING_CURRENCY, // New currency system (99999 in debug mode)
     upgradePlans: CONFIG.STARTING_UPGRADE_PLANS, // Upgrade plans for multiple level gains
+    specialtyPlans: CONFIG.STARTING_SPECIALTY_PLANS, // Specialty plans (every 5 levels)
+    specialties: { time: 0, power: 0, money: 0, health: 0 },
+    specialtyTimeMilestonePowerUps: null,
     movementTokens: 0, // Movement tokens: reposition one tower during wave (dig site / shop only)
     towerSellbacks: 0, // Tower Sellback tokens: remove a placed tower and refund spent upgrade plans
     towerRepairs: 0, // Repair Supplies (stack); apply from inventory to clear broken on a stored tower
     partsVouchers: 0, // Parts Vouchers (stack); recycle broken stored towers between waves
+    tokenVouchers: 0, // Token Vouchers (stack); sell movement tokens back to the shop
     inventory: {
       towers: 0, // Start with 0, buy with currency
     },
@@ -397,6 +412,16 @@ function initializeDebugStartingTowers() {
         const n = itemConfig.count || 0;
         if (n > 0) {
           gameState.player.partsVouchers = (gameState.player.partsVouchers || 0) + n;
+        }
+      } else if (itemConfig.type === 'movement_token') {
+        const n = itemConfig.count || 0;
+        if (n > 0) {
+          gameState.player.movementTokens = (gameState.player.movementTokens || 0) + n;
+        }
+      } else if (itemConfig.type === 'token_voucher') {
+        const n = itemConfig.count || 0;
+        if (n > 0) {
+          gameState.player.tokenVouchers = (gameState.player.tokenVouchers || 0) + n;
         }
       }
     });
@@ -1245,6 +1270,9 @@ function init() {
   window.gameState = gameState;
   initTowerStatusPanel();
   initSentinelModeUI(gameState);
+  initPerimeterModeUI(gameState);
+  initChargeModeUI(gameState);
+  initTokenVoucherUI();
   window.renderer = gameState.renderer;
   window.gameLoop = gameLoop;
   window.applyWaveJumpAfterVictory = applyWaveJumpAfterVictory;
@@ -1291,6 +1319,7 @@ function init() {
   window.pauseGameWithAudio = pauseGameWithAudio;
   window.resumeGameWithAudio = resumeGameWithAudio;
   window.resumeGameSilently = resumeGameSilently;
+  window.resumeGameAfterModalClose = resumeGameAfterModalClose;
   window.updateFpsCounterVisibility = updateFpsCounterVisibility;
   window.showMovementInstructions = showMovementInstructions;
   window.hideMovementInstructions = hideMovementInstructions;
@@ -1704,17 +1733,17 @@ function init() {
     if (gameState.inputHandler?.selectedShieldForPlacement) return; // Step 24: cursor handled by inputHandler (plus over path tower)
     if (gameState.inputHandler?.isDragging) return; // Green plus / red X when dragging - handled by inputHandler
     if (e.target.id !== 'gameCanvas') {
-      document.body.style.cursor = 'var(--cursor-default)';
+      setBodyCursor(CURSOR_DEFAULT);
       return;
     }
     const hex = gameState.inputHandler?.hoveredHex;
     if (!hex || !gameState.gridSystem) {
-      document.body.style.cursor = 'var(--cursor-default)';
+      setBodyCursor(CURSOR_DEFAULT);
       return;
     }
     const gridHex = gameState.gridSystem.getHex(hex.q, hex.r);
     if (!gridHex) {
-      document.body.style.cursor = 'var(--cursor-default)';
+      setBodyCursor(CURSOR_DEFAULT);
       return;
     }
     const hasClickable = gameState.towerSystem?.getTowerAt(hex.q, hex.r) ||
@@ -1722,7 +1751,7 @@ function init() {
       gameState.waterTankSystem?.getWaterTankAt(hex.q, hex.r) ||
       gridHex.hasDigSite || gridHex.hasTempPowerUpItem || gridHex.hasMysteryItem || gridHex.hasCurrencyItem ||
       gridHex.hasBurningVault || gridHex.hasArtifactItem;
-    document.body.style.cursor = hasClickable ? 'var(--cursor-x)' : 'var(--cursor-default)';
+    setBodyCursor(hasClickable ? CURSOR_X : CURSOR_DEFAULT);
   }
   document.addEventListener('mousemove', handleTutorialMapCursor, false);
 
@@ -2043,6 +2072,13 @@ function buildExperienceOverlayTooltipText() {
   return `${base} Next level (${level + 1}): ${nextLevelXP} XP${pendingSuffix}.`;
 }
 
+/** @returns {string} HTML tooltip for overlay XP row (includes specialty tree footnote). */
+function buildExperienceOverlayTooltipHtml() {
+  const text = buildExperienceOverlayTooltipText();
+  const footnote = 'Click to view your specialty tree';
+  return `<div style="color: #FFFFFF; font-size: 13px; line-height: 1.5;">${escapeTooltipText(text)}</div><div style="font-size: 11px; color: #AAAAAA; margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">${escapeTooltipText(footnote)}</div>`;
+}
+
 // Setup tooltips for overlay panel rows (XP, town health, score, currency, etc.)
 function setupOverlayTooltips() {
   document.querySelectorAll('.overlay-row-tooltip').forEach((row) => {
@@ -2050,9 +2086,7 @@ function setupOverlayTooltips() {
       row.addEventListener('mouseenter', (e) => {
         const tooltipSystem = gameState?.inputHandler?.tooltipSystem;
         if (!tooltipSystem) return;
-        const text = buildExperienceOverlayTooltipText();
-        const tooltipContent = `<div style="color: #FFFFFF; font-size: 13px; line-height: 1.5;">${escapeTooltipText(text)}</div>`;
-        tooltipSystem.show(tooltipContent, e.clientX, e.clientY);
+        tooltipSystem.show(buildExperienceOverlayTooltipHtml(), e.clientX, e.clientY);
       });
       row.addEventListener('mouseleave', () => {
         gameState?.inputHandler?.tooltipSystem?.hide();
@@ -2227,10 +2261,106 @@ function setupUI() {
       }
     });
   }
+
+  // Left overlays toggle — slides the top-left stats stack off-screen, leaving
+  // only the toggle button visible and a compact floating stats bar up top.
+  const leftOverlayToggle = document.getElementById('leftOverlayToggle');
+  if (leftOverlayToggle) {
+    const leftPanel = document.querySelector('.overlay-top-left');
+    const leftStack = document.querySelector('.overlay-top-left-stack');
+
+    if (leftPanel && leftStack) {
+      if (window.ResizeObserver) {
+        const ro = new ResizeObserver(() => positionLeftOverlayToggle());
+        ro.observe(leftPanel);
+      }
+      window.addEventListener('resize', positionLeftOverlayToggle);
+      // Position once now and again after layout/fonts settle.
+      positionLeftOverlayToggle();
+      requestAnimationFrame(positionLeftOverlayToggle);
+      setTimeout(positionLeftOverlayToggle, 250);
+    }
+
+    leftOverlayToggle.addEventListener('click', () => {
+      const collapsed = document.body.classList.toggle('left-overlays-collapsed');
+      positionLeftOverlayToggle();
+      requestAnimationFrame(positionLeftOverlayToggle);
+      setTimeout(positionLeftOverlayToggle, 320);
+      if (window.AudioManager) window.AudioManager.playSFX(collapsed ? 'close' : 'open');
+      if (collapsed && typeof window.updateFloatingTopStats === 'function') {
+        window.updateFloatingTopStats();
+      }
+    });
+  }
   
   // Show splash screen on initial page load
   openSplashScreen(false); // false = initial load (hide save/close)
 }
+
+function positionLeftOverlayToggle() {
+  const toggle = document.getElementById('leftOverlayToggle');
+  if (!toggle) return;
+
+  const collapsed = document.body.classList.contains('left-overlays-collapsed');
+  const OPEN_TOP = 362;
+  const OPEN_LEFT = 150;
+
+  toggle.style.top = `${OPEN_TOP}px`;
+  toggle.style.left = collapsed ? '-6px' : `${OPEN_LEFT}px`;
+}
+
+/**
+ * Update the compact floating stats bar (level | wave | timer | currency) that
+ * appears along the top of the screen while the left overlays are hidden.
+ * No-op while the overlays are visible to avoid unnecessary DOM writes.
+ */
+function updateFloatingTopStats() {
+  if (!document.body.classList.contains('left-overlays-collapsed')) return;
+
+  const floatingTimer = document.getElementById('floatingTimer');
+  if (floatingTimer) {
+    floatingTimer.textContent = formatActiveWaveTimerText(gameState);
+    const tr = gameState.wave.timeRemaining;
+    const low =
+      gameState.wave.isActive &&
+      !gameState.wave.untimedSurvival &&
+      Number.isFinite(tr) &&
+      tr <= 10;
+    floatingTimer.style.color = low ? '#ff0065' : '#fff';
+  }
+
+  const floatingWave = document.getElementById('floatingWave');
+  if (floatingWave) {
+    if (gameState.tutorialMode) {
+      floatingWave.textContent = 'Tutorial';
+    } else if (gameState.wave.isScenario) {
+      floatingWave.textContent = gameState.wave.scenarioName || 'Scenario';
+    } else {
+      const groupNumber = gameState.waveSystem ? (gameState.waveSystem.currentWaveGroup || 1) : 1;
+      const waveInGroup = gameState.waveSystem ? (gameState.waveSystem.waveInGroup || 1) : 1;
+      floatingWave.textContent = formatWaveGroupSlotDisplay(groupNumber, waveInGroup);
+    }
+  }
+
+  const floatingLevel = document.getElementById('floatingLevel');
+  if (floatingLevel) {
+    floatingLevel.textContent = gameState.player.level;
+  }
+  const floatingLevelHexImg = document.getElementById('floatingLevelHexImg');
+  if (floatingLevelHexImg) {
+    const tierPath = getLevelTierSpritePath(gameState.player.level);
+    if (floatingLevelHexImg.dataset.levelTier !== tierPath) {
+      floatingLevelHexImg.src = tierPath;
+      floatingLevelHexImg.dataset.levelTier = tierPath;
+    }
+  }
+
+  const floatingCurrency = document.getElementById('floatingCurrency');
+  if (floatingCurrency) {
+    floatingCurrency.textContent = `$${gameState.player.currency || 0}`;
+  }
+}
+window.updateFloatingTopStats = updateFloatingTopStats;
 
 /**
  * Setup scenario modals and handlers
@@ -2474,6 +2604,12 @@ function setupScenarioModals() {
   const openMetaProgressionBtn = document.getElementById('openMetaProgressionBtn');
   const closeMetaProgressionBtn = document.getElementById('closeMetaProgressionBtn');
   const metaProgressionModal = document.getElementById('metaProgressionModal');
+  const openTowerStatsFromAdvancedBtn = document.getElementById('openTowerStatsFromAdvancedBtn');
+  if (openTowerStatsFromAdvancedBtn) {
+    openTowerStatsFromAdvancedBtn.addEventListener('click', () => {
+      openTowerStatsModal(gameState);
+    });
+  }
   if (openMetaProgressionBtn) {
     openMetaProgressionBtn.addEventListener('click', () => {
       openMetaProgressionModal();
@@ -2515,6 +2651,8 @@ function setupScenarioModals() {
 
   wireRunHistoryModal();
   wireMapProgressionModal(gameState, bindTooltipPlainText);
+  wireSpecialtyModal(gameState);
+  wireTowerStatsModal(gameState, bindTooltipPlainText);
 
   const splashFeedbackBtn = document.getElementById('splashFeedbackBtn');
   const cancelFeedbackModalBtn = document.getElementById('cancelFeedbackModalBtn');
@@ -2909,6 +3047,31 @@ function resumeGameSilently() {
 }
 
 /**
+ * Whether closing a sub-modal should unpause the game loop.
+ * Placement phase must stay paused until the player clicks Start Wave.
+ * @returns {boolean}
+ */
+function shouldUnpauseAfterModalClose() {
+  const wave = gameState.wave;
+  if (!wave) return false;
+  if (wave.isPlacementPhase && !wave.isActive) return false;
+  return true;
+}
+
+/**
+ * Unpause after a sub-modal only when gameplay should actually resume.
+ * Skips placement phase (between waves) so resume.wav does not play and the loop
+ * stays paused until Start Wave.
+ * @param {{ withAudio?: boolean }} [options]
+ */
+function resumeGameAfterModalClose({ withAudio = false } = {}) {
+  if (!window.gameLoop?.isPaused) return;
+  if (!shouldUnpauseAfterModalClose()) return;
+  if (withAudio) resumeGameWithAudio();
+  else resumeGameSilently();
+}
+
+/**
  * Open splash screen / main menu
  * @param {boolean} fromMenu - If true, shows save/close buttons. If false (initial load), hides them.
  */
@@ -2978,10 +3141,12 @@ function closeSplashScreen() {
       gameState.loadedWithActiveWave = false;
     }
     if (!skipResumeForLoadedMidWave && !wasGamePausedBeforeSplash && window.gameLoop?.isPaused) {
-      if (gameState.wave?.isActive) {
-        resumeGameWithAudio();
-      } else {
-        resumeGameSilently();
+      if (shouldUnpauseAfterModalClose()) {
+        if (gameState.wave?.isActive) {
+          resumeGameWithAudio();
+        } else {
+          resumeGameSilently();
+        }
       }
       if (window.syncPauseButton) {
         window.syncPauseButton();
@@ -3046,6 +3211,7 @@ function openAdvancedSettingsModal() {
 function closeAdvancedSettingsModal() {
   closeMetaProgressionModal();
   closeUpdateLogModal();
+  closeTowerStatsModal();
   const advancedSettingsModal = document.getElementById('advancedSettingsModal');
   const settingsModalInner = document.getElementById('settingsModalInner');
   const returnToSettings = () => {
@@ -3150,6 +3316,7 @@ const DEFAULT_SETTINGS = {
   SCREEN_SHAKE_ENABLED: CONFIG.SCREEN_SHAKE_ENABLED,
   SHOW_FPS_COUNTER: CONFIG.SHOW_FPS_COUNTER,
   DISABLE_GAME_TOOLTIPS: CONFIG.DISABLE_GAME_TOOLTIPS,
+  DISABLE_NOTIFICATIONS: CONFIG.DISABLE_NOTIFICATIONS,
   SIMPLIFIED_WATER_VISUALS: CONFIG.SIMPLIFIED_WATER_VISUALS,
   AUDIO_SFX_ENABLED: CONFIG.AUDIO_SFX_ENABLED,
   AUDIO_MUSIC_ENABLED: CONFIG.AUDIO_MUSIC_ENABLED,
@@ -3228,6 +3395,7 @@ function saveUserSettings() {
       SCREEN_SHAKE_ENABLED: CONFIG.SCREEN_SHAKE_ENABLED,
       SHOW_FPS_COUNTER: CONFIG.SHOW_FPS_COUNTER === true,
       DISABLE_GAME_TOOLTIPS: CONFIG.DISABLE_GAME_TOOLTIPS === true,
+      DISABLE_NOTIFICATIONS: CONFIG.DISABLE_NOTIFICATIONS === true,
       SIMPLIFIED_WATER_VISUALS: CONFIG.SIMPLIFIED_WATER_VISUALS === true,
       AUDIO_SFX_ENABLED: CONFIG.AUDIO_SFX_ENABLED,
       AUDIO_MUSIC_ENABLED: CONFIG.AUDIO_MUSIC_ENABLED,
@@ -3366,6 +3534,11 @@ function updateSettingsUI() {
   const disableTooltipsCheckbox = document.getElementById('settingDisableGameTooltips');
   if (disableTooltipsCheckbox) {
     disableTooltipsCheckbox.checked = CONFIG.DISABLE_GAME_TOOLTIPS === true;
+  }
+
+  const disableNotificationsCheckbox = document.getElementById('settingDisableNotifications');
+  if (disableNotificationsCheckbox) {
+    disableNotificationsCheckbox.checked = CONFIG.DISABLE_NOTIFICATIONS === true;
   }
 
   const simplifiedWaterCheckbox = document.getElementById('settingSimplifiedWaterVisuals');
@@ -3875,6 +4048,17 @@ function setupSettingsControls() {
     });
   }
 
+  const disableNotificationsCheckbox = document.getElementById('settingDisableNotifications');
+  if (disableNotificationsCheckbox) {
+    disableNotificationsCheckbox.addEventListener('change', (e) => {
+      CONFIG.DISABLE_NOTIFICATIONS = e.target.checked;
+      if (CONFIG.DISABLE_NOTIFICATIONS) {
+        gameState?.notificationSystem?.clearToasts?.();
+      }
+      saveUserSettings();
+    });
+  }
+
   const simplifiedWaterCheckbox = document.getElementById('settingSimplifiedWaterVisuals');
   if (simplifiedWaterCheckbox) {
     simplifiedWaterCheckbox.addEventListener('change', (e) => {
@@ -4315,6 +4499,14 @@ function placeDebugDropItems() {
             level = Math.floor(Math.random() * 4) + 1;
           }
           didSpawn = !!currencySys.spawnCurrencyItem(q, r, 'shield', level);
+        } else if (entry.type === 'suppression_bomb') {
+          let level;
+          if (entry.level != null && Number.isFinite(Number(entry.level))) {
+            level = Math.min(4, Math.max(1, Math.round(Number(entry.level))));
+          } else {
+            level = Math.floor(Math.random() * 4) + 1;
+          }
+          didSpawn = !!currencySys.spawnCurrencyItem(q, r, 'suppression_bomb', level);
         } else {
           let value = 1;
           if (entry.type === 'currency' || entry.type === 'money' || entry.type === 'xp') {
@@ -4428,23 +4620,16 @@ async function openSaveGameModal() {
 }
 
 /**
- * Close save game modal
- * @param {boolean} skipResume - If true, don't auto-resume the game
+ * Close save game modal.
+ * Does not unpause the game — the save modal is always opened from the main menu overlay,
+ * which owns resume behavior when it closes. Auto-resuming here caused resume.wav to play
+ * between waves (placement stays paused) and could unpause gameplay behind an open menu.
+ * @param {boolean} [_skipResume] - Deprecated; kept for call-site compatibility.
  */
-function closeSaveGameModal(skipResume = false) {
+function closeSaveGameModal(_skipResume = false) {
   const saveGameModal = document.getElementById('saveGameModal');
-  const resumeIfNeeded = () => {
-    if (!skipResume && !wasGamePausedBeforeSplash && window.gameLoop?.isPaused) {
-      resumeGameWithAudio();
-      if (window.syncPauseButton) {
-        window.syncPauseButton();
-      }
-    }
-  };
   if (saveGameModal?.classList.contains('active')) {
-    closeModalOverlay(saveGameModal, { onDone: resumeIfNeeded, skipAnimation: skipResume });
-  } else {
-    resumeIfNeeded();
+    closeModalOverlay(saveGameModal);
   }
 }
 
@@ -4916,10 +5101,15 @@ function startNewGame() {
   gameState.player.score = 0;
   gameState.player.currency = CONFIG.DEBUG_MODE ? 99999 : CONFIG.STARTING_CURRENCY;
   gameState.player.upgradePlans = CONFIG.STARTING_UPGRADE_PLANS;
+  gameState.player.specialtyPlans = CONFIG.STARTING_SPECIALTY_PLANS;
+  gameState.player.specialties = { time: 0, power: 0, money: 0, health: 0 };
+  gameState.player.specialtyTimeMilestonePowerUps = null;
+  ensureSpecialtyMilestoneRewards(gameState);
   gameState.player.movementTokens = 0;
   gameState.player.towerSellbacks = 0;
   gameState.player.towerRepairs = 0;
   gameState.player.partsVouchers = 0;
+  gameState.player.tokenVouchers = 0;
   gameState.player.inventory = {
     purchasedTowers: [],
     purchasedSuppressionBombs: [],
@@ -5313,10 +5503,15 @@ function resetGameStateForTutorial() {
   gameState.player.score = 0;
   gameState.player.currency = TUTORIAL_CONFIG.currency ?? CONFIG.STARTING_CURRENCY;
   gameState.player.upgradePlans = CONFIG.STARTING_UPGRADE_PLANS;
+  gameState.player.specialtyPlans = CONFIG.STARTING_SPECIALTY_PLANS;
+  gameState.player.specialties = { time: 0, power: 0, money: 0, health: 0 };
+  gameState.player.specialtyTimeMilestonePowerUps = null;
+  ensureSpecialtyMilestoneRewards(gameState);
   gameState.player.movementTokens = 0;
   gameState.player.towerSellbacks = 0;
   gameState.player.towerRepairs = 0;
   gameState.player.partsVouchers = 0;
+  gameState.player.tokenVouchers = 0;
   gameState.player.inventory = {
     purchasedTowers: [...(TUTORIAL_CONFIG.inventory?.towers || [])],
     purchasedSuppressionBombs: [...(TUTORIAL_CONFIG.inventory?.suppressionBombs || [])],
@@ -6430,10 +6625,15 @@ function loadScenario(scenarioName) {
   }
   gameState.player.currency = CONFIG.DEBUG_MODE ? 99999 : (scenario.currency !== undefined ? scenario.currency : CONFIG.STARTING_CURRENCY);
   gameState.player.upgradePlans = 0;
+  gameState.player.specialtyPlans = 0;
+  gameState.player.specialties = { time: 0, power: 0, money: 0, health: 0 };
+  gameState.player.specialtyTimeMilestonePowerUps = null;
+  ensureSpecialtyMilestoneRewards(gameState);
   gameState.player.movementTokens = 0;
   gameState.player.towerSellbacks = 0;
   gameState.player.towerRepairs = 0;
   gameState.player.partsVouchers = 0;
+  gameState.player.tokenVouchers = 0;
   gameState.player.inventory = {
     purchasedTowers: scenario.inventory.towers || [],
     purchasedSuppressionBombs: scenario.inventory.suppressionBombs || [],
@@ -6796,6 +6996,7 @@ function handleUpgradePlanClick() {
  */
 async function handleMovementTokenClick() {
   if (gameState.isUpgradeSelectionMode || gameState.isTowerSellbackMode || gameState.isRepairSelectionMode || gameState.isPartsRecycleMode) return;
+  if (isMovementTokenSellbackPickerBlocked(gameState)) return;
 
   const hasTokens = (gameState.player.movementTokens || 0) > 0;
   if (!hasTokens) return;
@@ -6936,9 +7137,16 @@ async function promptDestroyBrokenInventoryTower(kind, index) {
         )
       : '';
 
+  const hasPartsVoucherRecycleHint =
+    kind === 'stored' && (gameState.player.partsVouchers || 0) > 0;
+  const destroyMessage = hasPartsVoucherRecycleHint
+    ? `Permanently destroy this tower and remove it from your inventory.<div style="color:#ff4444;font-size:14px;line-height:1.45;margin-top:12px;">You're about to destroy this tower. To recycle it for currency instead, click your Parts Voucher in inventory.</div>`
+    : 'Permanently destroy this tower and remove it from your inventory.';
+
   const confirmed = await showConfirmModal({
     title: 'Destroy tower?',
-    message: 'Permanently destroy this tower and remove it from your inventory.',
+    message: destroyMessage,
+    messageIsHtml: hasPartsVoucherRecycleHint,
     confirmText: 'Destroy',
     cancelText: 'Cancel',
     confirmButtonClass: 'cta-red',
@@ -7041,7 +7249,8 @@ function applyPartsVoucherFromInventory(storedIndex, floatingTarget = null) {
   const vouchers = gameState.player.partsVouchers || 0;
   if (vouchers <= 0) return;
 
-  const partsValue = ensureBrokenTowerPartsValue(tower);
+  const partsValueBase = ensureBrokenTowerPartsValue(tower);
+  const partsValue = applyCurrencyGainBonuses(partsValueBase, gameState);
   gameState.player.partsVouchers = vouchers - 1;
   list.splice(storedIndex, 1);
   gameState.player.currency = (gameState.player.currency || 0) + partsValue;
@@ -7281,6 +7490,9 @@ function updateUI() {
   if (overlayCurrency) {
     overlayCurrency.textContent = `$${gameState.player.currency || 0}`;
   }
+
+  // Keep the compact floating top stats in sync (only writes when collapsed)
+  updateFloatingTopStats();
   
   const overlayUpgradePlans = document.getElementById('overlayUpgradeTokens');
   if (overlayUpgradePlans) {
@@ -7327,6 +7539,7 @@ function updateUI() {
 
   const overlayTownHealth = document.getElementById('overlayTownHealth');
   const overlayHpProgress = document.getElementById('overlayHpProgress');
+  const overlayHpContainer = overlayHpProgress?.closest?.('.overlay-hp-container');
   if (overlayTownHealth && overlayHpProgress && gameState.gridSystem) {
     const townCenter = gameState.gridSystem.getTownCenter();
     if (townCenter) {
@@ -7335,11 +7548,21 @@ function updateUI() {
           (townCenter.maxTownHealth || 1),
       );
       const currentHealth = Math.round(Math.min(maxHealth, townCenter.townHealth || 0));
-      const healthPercent = maxHealth > 0 ? Math.min(100, (currentHealth / maxHealth) * 100) : 0;
+      const healthPercent = maxHealth > 0 ? Math.min(1, currentHealth / maxHealth) : 0;
+      const groveHpColor = getHealthBarFillColor(healthPercent);
       
       overlayTownHealth.textContent = `${currentHealth} / ${maxHealth}`;
-      overlayHpProgress.style.width = `${healthPercent}%`;
+      overlayHpProgress.style.width = `${healthPercent * 100}%`;
+      overlayHpContainer?.style.setProperty('--grove-hp-color', groveHpColor);
+      overlayHpContainer?.classList.toggle(
+        'grove-on-fire',
+        gameState.gridSystem.isAnyTownHexBurning?.() ?? false,
+      );
+    } else if (overlayHpContainer) {
+      overlayHpContainer.classList.remove('grove-on-fire');
     }
+  } else if (overlayHpContainer) {
+    overlayHpContainer.classList.remove('grove-on-fire');
   }
 
   const overlayFiresExtinguishedThisWave = document.getElementById('overlayFiresExtinguishedThisWave');
@@ -7396,7 +7619,7 @@ function updateInventory() {
 // Helper function to create tower icon HTML (base + turret sprites for jet, spread, and bomber towers)
 // Matches the exact rendering logic from the map
 function createTowerIconHTML(towerType, rangeLevel = 1, powerLevel = 1, isShop = false, freezeTurretAnimation = false) {
-  if (towerType === 'jet' || towerType === 'spread' || towerType === 'bomber' || towerType === 'rain' || towerType === 'pulsing' || towerType === 'sentinel') {
+  if (towerType === 'jet' || towerType === 'spread' || towerType === 'bomber' || towerType === 'charge' || towerType === 'rain' || towerType === 'pulsing' || towerType === 'sentinel' || towerType === 'perimeter') {
     const safePowerLevel = Math.min(4, Math.max(1, Math.floor(Number(powerLevel) || 1)));
     const safeRangeLevel = Math.min(4, Math.max(1, Math.floor(Number(rangeLevel) || 1)));
     const baseFilename = `${towerType}_power_${safePowerLevel}.png`;
@@ -7432,8 +7655,9 @@ function createTowerIconHTML(towerType, rangeLevel = 1, powerLevel = 1, isShop =
     const baseSize = containerSize * graphicsScale * (baseSizeMultiplier / 3.8709);
     
     // Check if tower is rotatable (jet, spread, bomber) or non-rotatable (rain, pulsing)
-    const isRotatable = towerType === 'jet' || towerType === 'spread' || towerType === 'bomber';
+    const isRotatable = towerType === 'jet' || towerType === 'spread' || towerType === 'bomber' || towerType === 'charge';
     const isRainPulsingOrSentinel = towerType === 'rain' || towerType === 'pulsing' || towerType === 'sentinel';
+    const isPerimeterCannon = towerType === 'perimeter';
     
     // Turret size multipliers: equal for all tower types (100% scale, reset to baseline)
     let baseTurretMultiplier = 1.84797223453125;
@@ -7484,10 +7708,14 @@ function createTowerIconHTML(towerType, rangeLevel = 1, powerLevel = 1, isShop =
       baseTurretMultiplier *= 1.05; // Increase by 5% from current size
     }
     // Bomber range levels 3 and 4: keep as is (no change)
-    
+
     // Rain and pulsing towers: reduce size by 15%, then increase by 10% (net: 6.5% smaller)
-    if (towerType === 'sentinel') {
+    if (towerType === 'charge') {
+      baseTurretMultiplier = getChargeTurretHeightMultiplier();
+    } else if (towerType === 'sentinel') {
       baseTurretMultiplier = getSentinelTurretSizeMultiplier(safeRangeLevel);
+    } else if (towerType === 'perimeter') {
+      baseTurretMultiplier = getPerimeterTurretSizeMultiplier(safeRangeLevel);
     } else if (towerType === 'rain' || towerType === 'pulsing') {
       baseTurretMultiplier *= 0.85; // Reduce by 15%
       baseTurretMultiplier *= 1.1; // Increase by 10%
@@ -7529,7 +7757,7 @@ function createTowerIconHTML(towerType, rangeLevel = 1, powerLevel = 1, isShop =
     }
     
     // Rain and pulsing power level 1: shift up 3px (scaled for inventory)
-    const baseOffsetY = (isRainPulsingOrSentinel && safePowerLevel === 1) ? -3 * scaleFactor : 0;
+    const baseOffsetY = ((isRainPulsingOrSentinel || isPerimeterCannon) && safePowerLevel === 1) ? -3 * scaleFactor : 0;
     const baseTopOffset = baseOffsetY !== 0 ? `calc(50% + ${baseOffsetY}px)` : '50%';
     
     // Shift turret to the right (scaled for inventory)
@@ -7555,6 +7783,10 @@ function createTowerIconHTML(towerType, rangeLevel = 1, powerLevel = 1, isShop =
       turretShiftDistance = 5; // Bomber level 1: 10px left (15px - 10px)
     } else if (towerType === 'bomber' && rangeLevel === 2) {
       turretShiftDistance = 10; // Bomber level 2: 5px left (15px - 5px)
+    } else if (towerType === 'charge') {
+      turretShiftDistance = getChargeTurretOffsetPx(safeRangeLevel);
+    } else if (isPerimeterCannon) {
+      turretShiftDistance = getPerimeterTurretOffsetPx(safeRangeLevel);
     } else if (isRainPulsingOrSentinel) {
       turretShiftDistance = 0; // Rain and pulsing towers: no shift (centered)
     }
@@ -7566,29 +7798,34 @@ function createTowerIconHTML(towerType, rangeLevel = 1, powerLevel = 1, isShop =
     // Darken base: 40% for jet/spread/bomber, 20% for rain/pulsing (half as much darkening)
     // Darken base: 40% for jet/spread/bomber, 20% for rain, 10% for pulsing (half of rain's darkening)
     let baseFilter = 'filter: brightness(0.6);'; // Default for jet/spread/bomber
-    if (towerType === 'rain' || towerType === 'sentinel') {
+    if (towerType === 'rain' || towerType === 'sentinel' || towerType === 'perimeter') {
       baseFilter = 'filter: brightness(0.8);'; // 20% darker
     } else if (towerType === 'pulsing') {
       baseFilter = 'filter: brightness(0.9);'; // 10% darker (half of rain's darkening)
     }
     // Brighten turret by 35% for other tower types; sentinel turret uses full-color art
-    const turretFilter = towerType === 'sentinel' ? '' : 'filter: brightness(1.35);';
+    const turretFilter = (towerType === 'sentinel' || towerType === 'perimeter') ? '' : 'filter: brightness(1.35);';
     const baseSizeRounded = Math.round(baseSize);
+    const isChargeTurret = towerType === 'charge';
     const turretSizeRounded = Math.round(turretHeightRelative);
+    // Charge turrets rotate 90° in inventory: CSS width → visual height, CSS height → visual width
+    const turretWidthRounded = turretSizeRounded;
+    const turretHeightRounded = isChargeTurret
+      ? Math.round(turretHeightRelative / getChargeTurretAspectRatio(safeRangeLevel))
+      : turretSizeRounded;
     // Sentinel downscales large art — smooth scaling reads rounder than pixelated at inventory size
-    const imageRendering = towerType === 'sentinel' ? 'auto' : 'pixelated';
+    const imageRendering = (towerType === 'sentinel' || towerType === 'perimeter') ? 'auto' : 'pixelated';
     const layerFit = 'object-fit: contain; object-position: center;';
     const baseImgHtml = showBaseLayer
       ? `<img src="assets/images/towers/${baseFilename}" alt="" style="position: absolute; width: ${baseSizeRounded}px; height: ${baseSizeRounded}px; ${layerFit} top: ${baseTopOffset}; left: 50%; transform: translate(-50%, -50%); image-rendering: ${imageRendering}; ${baseFilter}" />`
       : '';
     
-    if (isRotatable) {
-      // Rotatable towers: rotate turret and shift to match map (shifted forward in facing direction)
-      // For inventory display, show as if facing east (0 degrees), so shift to the right
+    if (isRotatable || isPerimeterCannon) {
+      // Rotatable / perimeter cannon: shift turret forward (east-facing in inventory)
       return `
         <div style="position: relative; width: ${containerSize}px; height: ${containerSize}px; margin: 0 auto; overflow: visible;">
           ${baseImgHtml}
-          <img src="assets/images/towers/${turretFilename}" alt="" style="position: absolute; width: ${turretSizeRounded}px; height: ${turretSizeRounded}px; ${layerFit} top: 50%; left: calc(50% + ${turretShiftX / 2 - 1}px); transform: translate(-50%, -50%) rotate(90deg); image-rendering: ${imageRendering}; pointer-events: none; ${turretFilter}" />
+          <img src="assets/images/towers/${turretFilename}" alt="" style="position: absolute; width: ${isChargeTurret ? turretWidthRounded : turretSizeRounded}px; height: ${turretHeightRounded}px; ${layerFit} top: 50%; left: calc(50% + ${turretShiftX / 2 - 1}px); transform: translate(-50%, -50%) rotate(90deg); image-rendering: ${imageRendering}; pointer-events: none; ${turretFilter}" />
         </div>
       `;
     } else {
@@ -7611,13 +7848,13 @@ function createTowerIconHTML(towerType, rangeLevel = 1, powerLevel = 1, isShop =
 }
 
 // Helper function to create shop item with tooltip
-function createShopItemWithTooltip(icon, name, cost, description, isUnlocked, unlockLevel, onClick, canAfford = false, itemType = null, fullTooltipContent = null, lockedDetailHtml = null, showDiscountBadge = false) {
+function createShopItemWithTooltip(icon, name, cost, description, isUnlocked, unlockLevel, onClick, canAfford = false, itemType = null, fullTooltipContent = null, lockedDetailHtml = null, showDiscountBadge = false, soldOut = false) {
   const item = document.createElement('div');
   item.className = 'inventory-item';
   
   // Add frame class based on item type
   const isPowerUp = itemType && itemType.startsWith('powerup_');
-  const isTower = itemType && ['jet', 'spread', 'rain', 'pulsing', 'bomber', 'sentinel'].includes(itemType);
+  const isTower = itemType && ['jet', 'spread', 'rain', 'pulsing', 'bomber', 'charge', 'sentinel', 'perimeter'].includes(itemType);
   if (isTower) {
     item.classList.add('tower');
   } else if (isPowerUp) {
@@ -7632,12 +7869,18 @@ function createShopItemWithTooltip(icon, name, cost, description, isUnlocked, un
     item.classList.add('unlocked');
   }
   
-  if (isShopItemHighlightedAsNew(gameState, itemType, isUnlocked)) {
+  if (isShopItemHighlightedAsNew(gameState, itemType, isUnlocked) && !soldOut) {
     item.classList.add('newly-unlocked');
+  }
+
+  if (soldOut) {
+    item.classList.add('shop-sold-out');
   }
   
   // Determine cost color based on affordability (only if unlocked)
-  const costColor = isUnlocked ? (canAfford ? '#00FF88' : '#FF6B6B') : '#666';
+  const costColor = isUnlocked
+    ? (soldOut ? '#888' : (canAfford ? '#00FF88' : '#FF6B6B'))
+    : '#666';
   
   // Visible content: icon and cost (or locked status)
   if (!isUnlocked) {
@@ -7763,7 +8006,7 @@ function createShopItemWithTooltip(icon, name, cost, description, isUnlocked, un
 
   if (isUnlocked) {
     item.onclick = () => {
-      if (isShopTargetingActive()) return;
+      if (soldOut || isShopTargetingActive()) return;
 
       if (itemType) {
         if (gameState.player.newlyUnlockedItems?.has(itemType)) {
@@ -7781,7 +8024,9 @@ function createShopItemWithTooltip(icon, name, cost, description, isUnlocked, un
         gameState.notificationSystem?.showToast?.("You can't afford that", 3000, 'negative');
       }
     };
-    item.style.cursor = isShopTargetingActive() ? 'not-allowed' : 'var(--cursor-default)';
+    item.style.cursor = soldOut
+      ? 'var(--cursor-x)'
+      : (isShopTargetingActive() ? 'not-allowed' : 'var(--cursor-default)');
   }
   
   return item;
@@ -7821,6 +8066,7 @@ function createInventoryItemWithTooltip(icon, name, stats, extraInfo, borderColo
   
   // Add tooltip on hover
   item.addEventListener('mouseenter', (e) => {
+    if (typeof getLiveTooltipContent === 'function' && getLiveTooltipContent() == null) return;
     const rect = item.getBoundingClientRect();
     const mouseX = rect.left + rect.width / 2;
     const mouseY = rect.top - 20;
@@ -8042,7 +8288,43 @@ function updateShopTowers(currency, playerLevel) {
     pulsingTowerItem.classList.add('locked');
   }
   shopGrid.appendChild(pulsingTowerItem);
-  
+
+  // Perimeter Tower (account meta progression — hidden until unlocked)
+  if (isMetaItemUnlocked(gameState, 'perimeter')) {
+    const perimeterStatus = getTowerUnlockStatus('perimeter', playerLevel, null, false);
+    const canAffordPerimeter = currency >= CONFIG.TOWER_COST_PERIMETER;
+    const perimeterTooltip = tooltipSystem ? tooltipSystem.getTowerTooltipContentForInventory({ type: 'perimeter', rangeLevel: 1, powerLevel: 1 }, gameState, { cost: CONFIG.TOWER_COST_PERIMETER }) : null;
+    const perimeterTowerItem = createShopItemWithTooltip(
+      createTowerIconHTML('perimeter', 1, 1, true),
+      'Perimeter Tower',
+      CONFIG.TOWER_COST_PERIMETER,
+      'Shoots water bombs clockwise around a selected hex ring',
+      perimeterStatus.unlocked,
+      perimeterStatus.unlockLevel,
+      perimeterStatus.unlocked && canAffordPerimeter ? async () => {
+        const confirmed = await showConfirmModal({
+          title: 'Confirm Purchase',
+          message: 'Purchase Perimeter Tower',
+          confirmText: 'Confirm',
+          cancelText: 'Cancel',
+          itemIcon: createTowerIconHTML('perimeter', 1, 1, true),
+          cost: CONFIG.TOWER_COST_PERIMETER,
+        });
+        if (confirmed) {
+          buyTower('perimeter');
+        }
+      } : null,
+      canAffordPerimeter,
+      'perimeter',
+      perimeterTooltip
+    );
+    perimeterTowerItem.id = 'perimeter-tower-shop';
+    if (!perimeterStatus.unlocked) {
+      perimeterTowerItem.classList.add('locked');
+    }
+    shopGrid.appendChild(perimeterTowerItem);
+  }
+
   // Bomber Tower (account meta progression — hidden until unlocked)
   if (isMetaItemUnlocked(gameState, 'bomber')) {
     const bomberStatus = getTowerUnlockStatus('bomber', playerLevel, null, false);
@@ -8077,6 +8359,42 @@ function updateShopTowers(currency, playerLevel) {
       bomberTowerItem.classList.add('locked');
     }
     shopGrid.appendChild(bomberTowerItem);
+  }
+
+  // Charge Tower (account meta progression — hidden until unlocked)
+  if (isMetaItemUnlocked(gameState, 'charge')) {
+    const chargeStatus = getTowerUnlockStatus('charge', playerLevel, null, false);
+    const canAffordCharge = currency >= CONFIG.TOWER_COST_CHARGE;
+    const chargeTooltip = tooltipSystem ? tooltipSystem.getTowerTooltipContentForInventory({ type: 'charge', rangeLevel: 1, powerLevel: 1 }, gameState, { cost: CONFIG.TOWER_COST_CHARGE }) : null;
+    const chargeTowerItem = createShopItemWithTooltip(
+      createTowerIconHTML('charge', 1, 1, true),
+      'Charge Tower',
+      CONFIG.TOWER_COST_CHARGE,
+      'Directional charge shots with a fixed 7-hex impact cluster',
+      chargeStatus.unlocked,
+      chargeStatus.unlockLevel,
+      chargeStatus.unlocked && canAffordCharge ? async () => {
+        const confirmed = await showConfirmModal({
+          title: 'Confirm Purchase',
+          message: 'Purchase Charge Tower',
+          confirmText: 'Confirm',
+          cancelText: 'Cancel',
+          itemIcon: createTowerIconHTML('charge', 1, 1, true),
+          cost: CONFIG.TOWER_COST_CHARGE,
+        });
+        if (confirmed) {
+          buyTower('charge');
+        }
+      } : null,
+      canAffordCharge,
+      'charge',
+      chargeTooltip
+    );
+    chargeTowerItem.id = 'charge-tower-shop';
+    if (!chargeStatus.unlocked) {
+      chargeTowerItem.classList.add('locked');
+    }
+    shopGrid.appendChild(chargeTowerItem);
   }
 
   if (isMetaItemUnlocked(gameState, 'sentinel')) {
@@ -8226,6 +8544,123 @@ function updateShopItems(currency, playerLevel) {
   }
   shopGrid.appendChild(movementTokenItem);
 
+  if (isMetaItemUnlocked(gameState, 'tower_sellback') && isMetaItemUnlocked(gameState, 'parts_voucher')) {
+    const partsVoucherStatus = getTowerUnlockStatus('parts_voucher', playerLevel, null, false);
+    const canAffordPartsVoucher = currency >= CONFIG.PARTS_VOUCHER_COST;
+    const partsVoucherTooltip = gameState.inputHandler?.tooltipSystem?.getLevelUpRewardTooltipContent(
+      { towerType: 'parts_voucher' },
+      gameState,
+      { omitShopCost: false }
+    );
+    const partsVoucherItem = createShopItemWithTooltip(
+      `<img src="assets/images/items/parts_voucher.png" style="width: 56px; height: auto; image-rendering: pixelated;" />`,
+      'Parts Voucher',
+      CONFIG.PARTS_VOUCHER_COST,
+      'Recycle one broken tower between waves for its parts value.',
+      partsVoucherStatus.unlocked,
+      partsVoucherStatus.unlockLevel,
+      partsVoucherStatus.unlocked && canAffordPartsVoucher ? async () => {
+        const confirmed = await showConfirmModal({
+          title: 'Purchase Parts Voucher?',
+          message: '',
+          confirmText: 'Purchase',
+          cancelText: 'Cancel',
+          itemIcon: `<img src="assets/images/items/parts_voucher.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
+          cost: CONFIG.PARTS_VOUCHER_COST,
+        });
+        if (confirmed) {
+          buyPartsVoucher();
+        }
+      } : null,
+      canAffordPartsVoucher,
+      'parts_voucher',
+      partsVoucherTooltip
+    );
+    partsVoucherItem.id = 'parts-voucher-shop';
+    if (!partsVoucherStatus.unlocked) {
+      partsVoucherItem.classList.add('locked');
+    }
+    shopGrid.appendChild(partsVoucherItem);
+  }
+
+  if (isMetaItemUnlocked(gameState, 'token_voucher')) {
+    const tokenVoucherStatus = getTowerUnlockStatus('token_voucher', playerLevel, null, false);
+    const tokenVoucherOwned = (gameState.player.tokenVouchers || 0) > 0;
+    const canAffordTokenVoucher = currency >= CONFIG.TOKEN_VOUCHER_COST;
+    const canPurchaseTokenVoucher = tokenVoucherStatus.unlocked && !tokenVoucherOwned && canAffordTokenVoucher;
+    const tokenVoucherTooltip = gameState.inputHandler?.tooltipSystem?.getLevelUpRewardTooltipContent(
+      { towerType: 'token_voucher' },
+      gameState,
+      { omitShopCost: tokenVoucherOwned }
+    );
+    const tokenVoucherItem = createShopItemWithTooltip(
+      `<img src="assets/images/items/token_voucher.png" style="width: 56px; height: auto; image-rendering: pixelated;" />`,
+      'Token Voucher',
+      CONFIG.TOKEN_VOUCHER_COST,
+      'Sell movement tokens back to the shop for currency.',
+      tokenVoucherStatus.unlocked,
+      tokenVoucherStatus.unlockLevel,
+      canPurchaseTokenVoucher ? async () => {
+        const confirmed = await showConfirmModal({
+          title: 'Purchase Token Voucher?',
+          message: '',
+          confirmText: 'Purchase',
+          cancelText: 'Cancel',
+          itemIcon: `<img src="assets/images/items/token_voucher.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
+          cost: CONFIG.TOKEN_VOUCHER_COST,
+        });
+        if (confirmed) {
+          buyTokenVoucher();
+        }
+      } : null,
+      canPurchaseTokenVoucher,
+      'token_voucher',
+      tokenVoucherTooltip,
+      null,
+      false,
+      tokenVoucherOwned
+    );
+    tokenVoucherItem.id = 'token-voucher-shop';
+    if (!tokenVoucherStatus.unlocked) {
+      tokenVoucherItem.classList.add('locked');
+    }
+    shopGrid.appendChild(tokenVoucherItem);
+  }
+
+  if (isMetaItemUnlocked(gameState, 'tower_sellback')) {
+    const sellbackStatus = getTowerUnlockStatus('tower_sellback', playerLevel, null, false);
+    const canAffordSellback = currency >= CONFIG.TOWER_SELLBACK_COST;
+    const sellbackIcon = `<img src="assets/images/items/sellback.png" style="width: 56px; height: auto; image-rendering: pixelated;" />`;
+    const sellbackItem = createShopItemWithTooltip(
+      sellbackIcon,
+      'Tower Sellback',
+      CONFIG.TOWER_SELLBACK_COST,
+      'Sell a tower back to the shop and recieve all upgrade plans spent on it',
+      sellbackStatus.unlocked,
+      sellbackStatus.unlockLevel,
+      sellbackStatus.unlocked && canAffordSellback ? async () => {
+        const confirmed = await showConfirmModal({
+          title: 'Purchase Tower Sellback?',
+          message: '',
+          confirmText: 'Purchase',
+          cancelText: 'Cancel',
+          itemIcon: `<img src="assets/images/items/sellback.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
+          cost: CONFIG.TOWER_SELLBACK_COST,
+        });
+        if (confirmed) {
+          buyTowerSellback();
+        }
+      } : null,
+      canAffordSellback,
+      'tower_sellback'
+    );
+    sellbackItem.id = 'tower-sellback-shop';
+    if (!sellbackStatus.unlocked) {
+      sellbackItem.classList.add('locked');
+    }
+    shopGrid.appendChild(sellbackItem);
+  }
+
   const repairShopUnlocked = isTowerRepairShopUnlocked(gameState);
   const canAffordRepair = currency >= CONFIG.TOWER_REPAIR_COST;
   const repairTooltip = gameState.inputHandler?.tooltipSystem?.getLevelUpRewardTooltipContent(
@@ -8263,79 +8698,6 @@ function updateShopItems(currency, playerLevel) {
     repairShopItem.classList.add('locked');
   }
   shopGrid.appendChild(repairShopItem);
-
-  if (isMetaItemUnlocked(gameState, 'tower_sellback')) {
-    const sellbackStatus = getTowerUnlockStatus('tower_sellback', playerLevel, null, false);
-    const canAffordSellback = currency >= CONFIG.TOWER_SELLBACK_COST;
-    const sellbackIcon = `<img src="assets/images/items/sellback.png" style="width: 56px; height: auto; image-rendering: pixelated;" />`;
-    const sellbackItem = createShopItemWithTooltip(
-      sellbackIcon,
-      'Tower Sellback',
-      CONFIG.TOWER_SELLBACK_COST,
-      'Sell a tower back to the shop and recieve all upgrade plans spent on it',
-      sellbackStatus.unlocked,
-      sellbackStatus.unlockLevel,
-      sellbackStatus.unlocked && canAffordSellback ? async () => {
-        const confirmed = await showConfirmModal({
-          title: 'Purchase Tower Sellback?',
-          message: '',
-          confirmText: 'Purchase',
-          cancelText: 'Cancel',
-          itemIcon: `<img src="assets/images/items/sellback.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
-          cost: CONFIG.TOWER_SELLBACK_COST,
-        });
-        if (confirmed) {
-          buyTowerSellback();
-        }
-      } : null,
-      canAffordSellback,
-      'tower_sellback'
-    );
-    sellbackItem.id = 'tower-sellback-shop';
-    if (!sellbackStatus.unlocked) {
-      sellbackItem.classList.add('locked');
-    }
-    shopGrid.appendChild(sellbackItem);
-
-    if (isMetaItemUnlocked(gameState, 'parts_voucher')) {
-      const partsVoucherStatus = getTowerUnlockStatus('parts_voucher', playerLevel, null, false);
-      const canAffordPartsVoucher = currency >= CONFIG.PARTS_VOUCHER_COST;
-      const partsVoucherTooltip = gameState.inputHandler?.tooltipSystem?.getLevelUpRewardTooltipContent(
-        { towerType: 'parts_voucher' },
-        gameState,
-        { omitShopCost: false }
-      );
-      const partsVoucherItem = createShopItemWithTooltip(
-        `<img src="assets/images/items/parts_voucher.png" style="width: 56px; height: auto; image-rendering: pixelated;" />`,
-        'Parts Voucher',
-        CONFIG.PARTS_VOUCHER_COST,
-        'Recycle one broken tower between waves for its parts value.',
-        partsVoucherStatus.unlocked,
-        partsVoucherStatus.unlockLevel,
-        partsVoucherStatus.unlocked && canAffordPartsVoucher ? async () => {
-          const confirmed = await showConfirmModal({
-            title: 'Purchase Parts Voucher?',
-            message: '',
-            confirmText: 'Purchase',
-            cancelText: 'Cancel',
-            itemIcon: `<img src="assets/images/items/parts_voucher.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
-            cost: CONFIG.PARTS_VOUCHER_COST,
-          });
-          if (confirmed) {
-            buyPartsVoucher();
-          }
-        } : null,
-        canAffordPartsVoucher,
-        'parts_voucher',
-        partsVoucherTooltip
-      );
-      partsVoucherItem.id = 'parts-voucher-shop';
-      if (!partsVoucherStatus.unlocked) {
-        partsVoucherItem.classList.add('locked');
-      }
-      shopGrid.appendChild(partsVoucherItem);
-    }
-  }
   
   // Suppression Bombs (individual levels unlock separately)
   const tooltipSystem = gameState.inputHandler?.tooltipSystem;
@@ -8583,7 +8945,7 @@ function groupInventoryItemsByLevel(items) {
 }
 
 /** Least → most powerful (matches CONFIG base tower costs). */
-const TOWER_INVENTORY_TYPE_ORDER = ['jet', 'spread', 'rain', 'pulsing', 'bomber', 'sentinel'];
+const TOWER_INVENTORY_TYPE_ORDER = ['jet', 'spread', 'rain', 'pulsing', 'bomber', 'sentinel', 'perimeter', 'charge'];
 
 function compareTowerInventoryOrder(a, b) {
   const rank = (t) => {
@@ -8733,6 +9095,8 @@ function getTowerDisplayData(tower) {
     case 'rain': towerIcon = createTowerIconHTML('rain', rl, pl, false, broken); towerName = 'Rain Tower'; break;
     case 'bomber': towerIcon = createTowerIconHTML('bomber', rl, pl, false, broken); towerName = 'Bomber Tower'; break;
     case 'sentinel': towerIcon = createTowerIconHTML('sentinel', rl, pl, false, broken); towerName = 'Sentinel Tower'; break;
+    case 'perimeter': towerIcon = createTowerIconHTML('perimeter', rl, pl, false, broken); towerName = 'Perimeter Tower'; break;
+    case 'charge': towerIcon = createTowerIconHTML('charge', rl, pl, false, broken); towerName = 'Charge Tower'; break;
     default: towerIcon = createTowerIconHTML('jet', 1, 1, false, broken); towerName = 'Jet Tower';
   }
   const tooltipSystem = gameState.inputHandler?.tooltipSystem;
@@ -8743,6 +9107,9 @@ function getTowerDisplayData(tower) {
     shield: tower.shield,
     broken: tower.broken,
     sentinelMode: tower.sentinelMode,
+    perimeterRing: tower.perimeterRing,
+    chargeTargetDistance: tower.chargeTargetDistance,
+    chargeMode: tower.chargeMode,
   };
   let fullTooltipContent = tooltipSystem ? tooltipSystem.getTowerTooltipContentForInventory(towerData, gameState) : null;
   if (tower.broken) {
@@ -8787,7 +9154,7 @@ function updateInventoryItemsSubTab() {
         towerDiv.classList.add('upgradeable-size-pulse');
         towerDiv.classList.add('repair-mode-repairable');
         towerDiv.addEventListener('mouseenter', () => {
-          document.body.style.cursor = CURSOR_PLUS;
+          setBodyCursor(CURSOR_PLUS);
           gameState.inputHandler?.setCursorForInventoryHover(true);
         });
         towerDiv.addEventListener('mouseleave', () => {
@@ -8805,7 +9172,7 @@ function updateInventoryItemsSubTab() {
         towerDiv.classList.add('upgradeable-size-pulse');
         towerDiv.classList.add('repair-mode-repairable');
         towerDiv.addEventListener('mouseenter', () => {
-          document.body.style.cursor = CURSOR_PLUS;
+          setBodyCursor(CURSOR_PLUS);
           gameState.inputHandler?.setCursorForInventoryHover(true);
         });
         towerDiv.addEventListener('mouseleave', () => {
@@ -8944,6 +9311,37 @@ function updateInventoryItemsSubTab() {
     inventoryGrid.appendChild(upgradePlanDiv);
   }
 
+  const specialtyPlanCount = gameState.player.specialtyPlans || 0;
+  if (specialtyPlanCount > 0) {
+    const stats = stackCountLine(specialtyPlanCount, '#FDA801');
+    const fullTooltipContent = gameState.inputHandler?.tooltipSystem?.getLevelUpRewardTooltipContent(
+      { towerType: 'specialty_plan' },
+      gameState,
+      { omitShopCost: true }
+    );
+    const specialtyPlanIcon = `<img src="assets/images/items/special.png" style="height: 64px; width: auto; image-rendering: pixelated;" />`;
+    const specialtyPlanDiv = createInventoryItemWithTooltip(
+      specialtyPlanIcon,
+      'Specialty Plans',
+      stats,
+      fullTooltipContent || '',
+      borderColor,
+      () => handleSpecialtyPlanInventoryClick(gameState),
+      'item',
+      fullTooltipContent
+    );
+    specialtyPlanDiv.id = 'specialty-plan-inventory';
+    specialtyPlanDiv.style.cursor = 'var(--cursor-default)';
+    if (gameState.isUpgradeSelectionMode || gameState.isRepairSelectionMode || gameState.isPartsRecycleMode || gameState.isTowerSellbackMode || gameState.inputHandler?.selectedShieldForPlacement) {
+      specialtyPlanDiv.classList.add('upgrade-mode-dimmed');
+      if (gameState.isTowerSellbackMode) specialtyPlanDiv.classList.add('sellback-mode-blocked');
+      else if (gameState.inputHandler?.selectedShieldForPlacement) specialtyPlanDiv.classList.add('shield-mode-blocked');
+      specialtyPlanDiv.addEventListener('mouseenter', () => gameState.inputHandler?.setCursorForInventoryHover(false));
+      specialtyPlanDiv.addEventListener('mouseleave', () => gameState.inputHandler?.resetCursorToDefault());
+    }
+    inventoryGrid.appendChild(specialtyPlanDiv);
+  }
+
   // Show movement tokens (if player has any)
   const movementTokenCount = gameState.player.movementTokens || 0;
   if (movementTokenCount > 0) {
@@ -8954,9 +9352,21 @@ function updateInventoryItemsSubTab() {
       { omitShopCost: true }
     );
     const movementTokenIcon = `<img src="assets/images/items/movement_token.png" style="height: 64px; width: auto; image-rendering: pixelated;" />`;
-    const movementTokenDiv = createInventoryItemWithTooltip(movementTokenIcon, 'Movement Token', stats, fullTooltipContent || '', borderColor, handleMovementTokenClick, 'item', fullTooltipContent);
+    const movementTokenDiv = createInventoryItemWithTooltip(
+      movementTokenIcon,
+      'Movement Token',
+      stats,
+      fullTooltipContent || '',
+      borderColor,
+      handleMovementTokenClick,
+      'item',
+      fullTooltipContent,
+      undefined,
+      () => (isMovementTokenSellbackPickerOpen() ? null : fullTooltipContent)
+    );
     movementTokenDiv.id = 'movement-token-inventory';
     movementTokenDiv.style.cursor = 'var(--cursor-default)';
+    attachMovementTokenSellbackButton(movementTokenDiv, gameState);
     if (gameState.isUpgradeSelectionMode || gameState.isMovementTokenMode || gameState.isRepairSelectionMode || gameState.isPartsRecycleMode || gameState.isTowerSellbackMode || gameState.inputHandler?.selectedShieldForPlacement) {
       movementTokenDiv.classList.add('upgrade-mode-dimmed');
       if (gameState.isTowerSellbackMode) movementTokenDiv.classList.add('sellback-mode-blocked');
@@ -9049,6 +9459,7 @@ function updateInventoryItemsSubTab() {
       (!gameState.player.inventory.purchasedSuppressionBombs || gameState.player.inventory.purchasedSuppressionBombs.length === 0) &&
       (!gameState.player.inventory.purchasedShields || gameState.player.inventory.purchasedShields.length === 0) &&
       upgradePlanCount === 0 &&
+      specialtyPlanCount === 0 &&
       movementTokenCount === 0 &&
       towerSellbackCount === 0 &&
       partsVoucherCount === 0 &&
@@ -9089,6 +9500,7 @@ async function promptLoanArtifactToMuseum(artifactId) {
   }
 
   const findersFee = rollArtifactMuseumFindersFee();
+  const displayFindersFee = applyCurrencyGainBonuses(findersFee, gameState);
   const displayName =
     typeof def.name === 'string' && def.name === def.name.toUpperCase()
       ? def.name
@@ -9112,7 +9524,7 @@ async function promptLoanArtifactToMuseum(artifactId) {
     confirmText: 'Confirm',
     cancelText: 'Cancel',
     confirmButtonClass: 'cta-lime',
-    cost: findersFee,
+    cost: displayFindersFee,
     costLabel: "Finder's Fee",
     currencyFloatDirection: 'gain',
     itemIcon: `<img src="assets/images/artifacts/${def.sprite}" alt="" class="artifact-sprite-smooth" style="width: 72px; height: auto;" />`,
@@ -9252,12 +9664,14 @@ function updateInventoryBadge() {
     const bombStackSlots = bombs.length ? groupInventoryItemsByLevel(bombs).size : 0;
     const shieldStackSlots = shields.length ? groupInventoryItemsByLevel(shields).size : 0;
     const hasUpgradePlans = (gameState.player.upgradePlans || 0) > 0;
+    const hasSpecialtyPlans = (gameState.player.specialtyPlans || 0) > 0;
     const hasMovementTokens = (gameState.player.movementTokens || 0) > 0;
     const hasTowerSellbacks = (gameState.player.towerSellbacks || 0) > 0;
     const hasPartsVouchers = (gameState.player.partsVouchers || 0) > 0;
     const hasTowerRepairs = (gameState.player.towerRepairs || 0) > 0;
     const distinctFrameCount = purchasedTowers + storedTowers + bombStackSlots + shieldStackSlots
       + (hasUpgradePlans ? 1 : 0)
+      + (hasSpecialtyPlans ? 1 : 0)
       + (hasMovementTokens ? 1 : 0)
       + (hasTowerSellbacks ? 1 : 0)
       + (hasPartsVouchers ? 1 : 0)
@@ -9419,6 +9833,8 @@ function buyTower(towerType) {
     case 'rain': cost = CONFIG.TOWER_COST_RAIN; break;
     case 'bomber': cost = CONFIG.TOWER_COST_BOMBER; break;
     case 'sentinel': cost = CONFIG.TOWER_COST_SENTINEL; break;
+    case 'perimeter': cost = CONFIG.TOWER_COST_PERIMETER; break;
+    case 'charge': cost = CONFIG.TOWER_COST_CHARGE; break;
     default: cost = CONFIG.TOWER_COST_JET; break;
   }
   
@@ -9769,6 +10185,26 @@ function buyPartsVoucher() {
     gameState.player.partsVouchers = (gameState.player.partsVouchers || 0) + 1;
     gameState.notificationSystem?.showToast('Parts Voucher purchased!', 3000, 'positive');
 
+    updateInventory();
+    updateUI();
+  }
+}
+
+function buyTokenVoucher() {
+  if (!isMetaItemUnlocked(gameState, 'token_voucher')) return;
+  if ((gameState.player.tokenVouchers || 0) > 0) return;
+
+  const cost = CONFIG.TOKEN_VOUCHER_COST;
+  if ((gameState.player.currency || 0) >= cost) {
+    gameState.player.currency -= cost;
+    const rs = gameState.runStats;
+    rs?.recordShopSpend?.(cost);
+    rs?.recordShopPurchase?.('token_voucher', { currency: cost });
+
+    gameState.player.tokenVouchers = (gameState.player.tokenVouchers || 0) + 1;
+    gameState.notificationSystem?.showToast('Token Voucher purchased!', 3000, 'positive');
+
+    updateShop();
     updateInventory();
     updateUI();
   }
@@ -10379,7 +10815,7 @@ function hideGameOverModalToMap() {
     const pauseBtn = document.getElementById('pauseBtn');
     if (pauseBtn) pauseBtn.style.display = 'none';
     window.isMouseOverSidebar = false;
-    document.body.style.cursor = CURSOR_X;
+    setBodyCursor(CURSOR_X);
     showGameOverReturnButton();
   };
   closeModalOverlay(modal, { extraRemove: ['upgrade-token-mask'], onDone: showMap });

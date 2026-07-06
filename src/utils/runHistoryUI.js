@@ -1,6 +1,6 @@
 // Run history modal: list + detailed stats (localStorage archive).
 
-import { CONFIG, formatClockMinutesSeconds } from '../config.js';
+import { CONFIG, formatClockMinutesSeconds, getComboHistoryLabel } from '../config.js';
 import { getRunHistoryFromStorage, clearRunHistoryFromStorage } from '../systems/runStatsSystem.js';
 import { showConfirmModal, closeModalOverlay, openModalOverlay } from './modal.js';
 
@@ -90,6 +90,20 @@ function powerUpName(id) {
   return p?.name ? escapeHtml(p.name) : escapeHtml(id);
 }
 
+function titleCaseComboPhrase(text) {
+  return String(text || '').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatHighestComboLabel(stats, summary) {
+  const hexCount = Math.max(
+    0,
+    Math.floor(Number(stats?.highestComboHexCount ?? summary?.highestComboHexCount)) || 0,
+  );
+  const tierId = stats?.highestComboTierId ?? summary?.highestComboTierId;
+  const raw = getComboHistoryLabel(tierId, hexCount);
+  return raw ? titleCaseComboPhrase(raw) : null;
+}
+
 function statCard(label, value, opts = {}) {
   const sub = opts.sub ? `<div class="run-history-stat-sub">${opts.sub}</div>` : '';
   return `
@@ -134,6 +148,17 @@ function renderDetail(entry) {
   const statsArchived = Object.keys(s).length > 0;
   const fires = s.firesExtinguishedByType || sum.fires || {};
   const fireTotal = Object.values(fires).reduce((a, v) => a + (Number(v) || 0), 0);
+
+  const combosByTier = s.combosByTier || {};
+  const comboCountTotal = Object.values(combosByTier).reduce((a, v) => a + (Number(v) || 0), 0);
+  const bestComboLabel = formatHighestComboLabel(s, sum);
+  const comboTierRows = (CONFIG.COMBO_TIERS || [])
+    .map((tier) => {
+      const n = combosByTier[tier.id] || 0;
+      if (!n) return null;
+      return [titleCaseComboPhrase(tier.text || tier.id), String(n)];
+    })
+    .filter(Boolean);
 
   const outcomeClass = String(entry.outcome || 'unknown').replace(/[^a-z0-9_-]/gi, '');
   const outcomeBadge = `<span class="run-history-outcome run-history-outcome--${escapeHtml(outcomeClass)}">${outcomeLabel(entry.outcome)}</span>`;
@@ -293,6 +318,18 @@ function renderDetail(entry) {
           : '<p class="run-history-muted">No fires recorded in this run archive.</p>'
       }
 
+      ${sectionTitle('Fire combos')}
+      <div class="run-history-stat-grid run-history-stat-grid--small">
+        ${statCard('Best combo', bestComboLabel ? escapeHtml(bestComboLabel) : '—')}
+        ${statCard('Combo XP earned', (s.comboXpTotal ?? 0).toLocaleString())}
+        ${statCard('Combos achieved', String(comboCountTotal))}
+      </div>
+      ${
+        comboTierRows.length
+          ? simpleTable(['Tier', 'Count'], comboTierRows)
+          : '<p class="run-history-muted">No combos recorded this run.</p>'
+      }
+
       ${sectionTitle('Actions')}
       <div class="run-history-stat-grid run-history-stat-grid--small">
         ${statCard('Tower rotations', String(s.towerRotations ?? 0))}
@@ -375,10 +412,12 @@ function populateList() {
         ? formatClockMinutesSeconds(entry.summary.waveGroup30SurvivalSeconds)
         : null;
       const wave30Meta = wave30Survival != null ? ` · 30-1 ${wave30Survival}` : '';
+      const bestCombo = formatHighestComboLabel(entry.stats, entry.summary);
+      const comboMeta = bestCombo ? ` · ${escapeHtml(bestCombo)}` : '';
       return `
       <button type="button" class="run-history-list-item" data-entry-index="${idx}">
         <span class="run-history-list-date">${escapeHtml(date)}</span>
-        <span class="run-history-list-meta">${outcomeLabel(entry.outcome)} · Wave ${escapeHtml(String(wave))}${escapeHtml(wave30Meta)} · ${escapeHtml(score)} pts</span>
+        <span class="run-history-list-meta">${outcomeLabel(entry.outcome)} · Wave ${escapeHtml(String(wave))}${escapeHtml(wave30Meta)} · ${escapeHtml(score)} pts${comboMeta}</span>
       </button>`;
     })
     .join('');

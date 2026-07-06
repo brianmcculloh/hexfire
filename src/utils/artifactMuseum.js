@@ -2,7 +2,7 @@
  * Museum artifact loans — finder's fee, on-loan collection state (still owned for map spawn).
  */
 
-import { getArtifactById, rollArtifactMuseumFindersFee } from '../config.js';
+import { getArtifactById, rollArtifactMuseumFindersFee, applyCurrencyGainBonuses } from '../config.js';
 import { isArtifactTradedToTrader } from './artifactTrader.js';
 
 export { rollArtifactMuseumFindersFee };
@@ -58,7 +58,7 @@ export function loanArtifactToMuseum(gameState, artifactId, findersFee) {
   const key = String(artifactId);
   if (!inv.loanedArtifactIds.includes(key)) inv.loanedArtifactIds.push(key);
 
-  const fee = Math.max(0, Math.floor(Number(findersFee) || 0));
+  const fee = applyCurrencyGainBonuses(Math.max(0, Math.floor(Number(findersFee) || 0)), gameState);
   gameState.player.currency = (gameState.player.currency || 0) + fee;
 
   if (!Array.isArray(inv.seenCollectedArtifactIds)) inv.seenCollectedArtifactIds = [];

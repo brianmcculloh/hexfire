@@ -1,11 +1,13 @@
 // Input Handler - Manages mouse/touch input and drag-and-drop
 
 import { pixelToAxial, axialToPixel, getDirectionAngle, getDirectionAngle12 } from './hexMath.js';
-import { CONFIG, isTowerMovementAllowed, getBossPatternForWaveGroup, getHeroPatternForWaveGroup, getActiveHeroPowerPattern, getPlacementBossAbilityDescription } from '../config.js';
+import { CONFIG, isTowerMovementAllowed, getBossPatternForWaveGroup, getHeroPatternForWaveGroup, getActiveHeroPowerPattern, getPlacementBossAbilityDescription, applyCurrencyGainBonuses } from '../config.js';
 import { MapScrollSystem } from '../systems/mapScrollSystem.js';
 import { TooltipSystem } from './tooltip.js';
 import { showConfirmModal } from './modal.js';
 import { isHexUnderSentinelModeModal, isSentinelModePickerBlocked } from './sentinelModeUI.js';
+import { isHexUnderPerimeterModeModal, isPerimeterModePickerBlocked } from './perimeterModeUI.js';
+import { isHexUnderChargeModeModal, isChargeModePickerBlocked } from './chargeModeUI.js';
 
 // Custom cursor URLs - use full path for reliable loading (hotspot 0 0 for consistent alignment across all cursors)
 function getCursorUrl(filename) {
@@ -26,9 +28,28 @@ const CURSOR_DRAG = getCursorUrl('cursor-drag.png') + CURSOR_HOTSPOT + ", auto";
 const BODY_CLASS_PLACING = 'placing-item';
 const BODY_CLASS_CLICK_FEEDBACK = 'cursor-click-feedback';
 
+/** null = body's stylesheet cursor (--cursor-default); otherwise the inline cursor value last applied. */
+let _bodyCursorInline = null;
+
+/**
+ * Set game cursor on document.body without redundant style writes (avoids flicker while moving the mouse).
+ * @param {string} cursor - Full CSS cursor value (use CURSOR_* constants).
+ */
+export function setBodyCursor(cursor) {
+  if (cursor === CURSOR_DEFAULT) {
+    if (_bodyCursorInline === null) return;
+    document.body.style.removeProperty('cursor');
+    _bodyCursorInline = null;
+    return;
+  }
+  if (_bodyCursorInline === cursor) return;
+  document.body.style.cursor = cursor;
+  _bodyCursorInline = cursor;
+}
+
 /** Elements that should keep native vertical wheel scrolling (side panel, modals, etc.). */
 const WHEEL_SCROLLABLE_UI =
-  '.side-panel, .side-panel-toggle, .modal-overlay.active, .run-history-list, .run-history-detail, .tower-status-scroll-area, .map-progression-grid-wrap, .tab-content.active, .inventory-grid';
+  '.side-panel, .side-panel-toggle, .modal-overlay.active, .run-history-list, .run-history-detail, .tower-status-scroll-area, .map-progression-grid-wrap, .tower-stats-list-wrap, .tab-content.active, .inventory-grid';
 
 const WHEEL_LISTENER_OPTIONS = { passive: false };
 
@@ -249,7 +270,7 @@ export class InputHandler {
       if (sidePanel) {
         sidePanel.classList.add('side-panel-drop-zone');
         // Keep drag cursor
-        document.body.style.cursor = CURSOR_DRAG;
+        setBodyCursor(CURSOR_DRAG);
       }
     }
   }
@@ -310,7 +331,8 @@ export class InputHandler {
             if (!storedTower.partsValue || storedTower.partsValue <= 0) {
               storedTower.partsValue = this.gameState.towerSystem?.rollBrokenTowerPartsValue?.() ?? 100;
             }
-            const partsValue = Math.max(1, Math.round(Number(storedTower.partsValue) || 100));
+            const partsValueBase = Math.max(1, Math.round(Number(storedTower.partsValue) || 100));
+            const partsValue = applyCurrencyGainBonuses(partsValueBase, this.gameState);
             const towerIconHtml = (typeof window !== 'undefined' && window.createTowerIconHTML)
               ? window.createTowerIconHTML(
                   storedTower.type || 'jet',
@@ -644,7 +666,7 @@ export class InputHandler {
       towerIndex: towerIndex,
     };
     if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_select');
-    document.body.style.cursor = CURSOR_DRAG;
+    setBodyCursor(CURSOR_DRAG);
     this.setPlacingItemMode(true);
   }
 
@@ -664,7 +686,7 @@ export class InputHandler {
       storedIndex: index,
     };
     if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_select');
-    document.body.style.cursor = CURSOR_DRAG;
+    setBodyCursor(CURSOR_DRAG);
     this.setPlacingItemMode(true);
   }
 
@@ -683,7 +705,7 @@ export class InputHandler {
       bombIndex: index,
     };
     if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_select');
-    document.body.style.cursor = CURSOR_DRAG;
+    setBodyCursor(CURSOR_DRAG);
     this.setPlacingItemMode(true);
   }
 
@@ -704,7 +726,7 @@ export class InputHandler {
     const shieldEl = document.getElementById(`shield-to-place-level-${shield.level}`);
     if (shieldEl) shieldEl.classList.add('shield-selected');
     if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_select');
-    document.body.style.cursor = CURSOR_DRAG; // Will switch to CURSOR_PLUS/x when hovering over map
+    setBodyCursor(CURSOR_DRAG); // Will switch to CURSOR_PLUS/x when hovering over map
     this.setPlacingItemMode(true);
     // Tutorial: inventory shield uses mousedown + preventDefault — no reliable click; advance from here.
     this.gameState.advanceTutorialAfterInventoryShieldSelect?.();
@@ -727,7 +749,7 @@ export class InputHandler {
     const towerEl = document.getElementById(`tower-to-place-${towerIndex}`);
     if (towerEl) towerEl.classList.add('shield-selected'); // Reuse highlight style
     if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_select');
-    document.body.style.cursor = CURSOR_DRAG;
+    setBodyCursor(CURSOR_DRAG);
     this.setPlacingItemMode(true);
   }
 
@@ -740,7 +762,7 @@ export class InputHandler {
     const towerEl = document.getElementById(`tower-to-place-${towerIndex}`);
     if (towerEl) towerEl.classList.remove('shield-selected');
     this.clearPlacingActiveHighlight();
-    document.body.style.cursor = CURSOR_DEFAULT;
+    setBodyCursor(CURSOR_DEFAULT);
     this.setPlacingItemMode(false);
   }
 
@@ -759,7 +781,7 @@ export class InputHandler {
       shieldIndex: index,
     };
     if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_select');
-    document.body.style.cursor = CURSOR_DRAG;
+    setBodyCursor(CURSOR_DRAG);
     this.setPlacingItemMode(true);
   }
 
@@ -783,7 +805,7 @@ export class InputHandler {
       direction: tower.direction,
     };
     if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_select');
-    document.body.style.cursor = CURSOR_DRAG;
+    setBodyCursor(CURSOR_DRAG);
     this.setPlacingItemMode(true);
   }
 
@@ -805,7 +827,7 @@ export class InputHandler {
       level: bomb.level,
     };
     if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_select');
-    document.body.style.cursor = CURSOR_DRAG;
+    setBodyCursor(CURSOR_DRAG);
     this.setPlacingItemMode(true);
   }
 
@@ -825,7 +847,7 @@ export class InputHandler {
       originalR: tank.r,
     };
     if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_select');
-    document.body.style.cursor = CURSOR_DRAG;
+    setBodyCursor(CURSOR_DRAG);
     this.setPlacingItemMode(true);
   }
 
@@ -838,6 +860,24 @@ export class InputHandler {
   }
 
   /**
+   * True when map/side-panel cursor must be driven by JS (plus/x/drag); otherwise CSS default applies.
+   * @returns {boolean}
+   */
+  isDynamicGameCursorActive() {
+    const gs = this.gameState;
+    if (this.isDragging) return true;
+    if (this.isPlacingSuppressionBombFromInventory()) return true;
+    if (this.selectedShieldForPlacement) return true;
+    if (this.selectedTowerForPlacement) return true;
+    if (gs?.isPartsRecycleMode) return true;
+    if (gs?.isMovementTokenMode) return true;
+    if (gs?.isTowerSellbackMode) return true;
+    if (gs?.isUpgradeSelectionMode) return true;
+    if (gs?.tutorialMode && (this.selectedShieldForPlacement || this.selectedTowerForPlacement)) return true;
+    return false;
+  }
+
+  /**
    * Update the game cursor based on mode and hovered item
    * @param {Object} options - { hexCoords, tower }
    */
@@ -846,11 +886,11 @@ export class InputHandler {
     if (this.gameState.tutorialMode && this.selectedShieldForPlacement && this.gameState.tutorialShieldApplyOnlyPathTower) {
       const ph = this.gameState.tutorialShieldApplyPathTowerHex;
       if (tower && ph && tower.q === ph.q && tower.r === ph.r) {
-        document.body.style.cursor = CURSOR_PLUS;
+        setBodyCursor(CURSOR_PLUS);
       } else if (hexCoords) {
-        document.body.style.cursor = CURSOR_X;
+        setBodyCursor(CURSOR_X);
       } else {
-        document.body.style.cursor = CURSOR_DRAG;
+        setBodyCursor(CURSOR_DRAG);
       }
       return;
     }
@@ -861,14 +901,14 @@ export class InputHandler {
       if (placementHex && (progress === 5 || progress === 8)) {
         if (hexCoords && hexCoords.q === placementHex.q && hexCoords.r === placementHex.r &&
             this.gameState.gridSystem?.canPlaceTower(hexCoords.q, hexCoords.r)) {
-          document.body.style.cursor = CURSOR_PLUS;
+          setBodyCursor(CURSOR_PLUS);
         } else if (hexCoords) {
-          document.body.style.cursor = CURSOR_X;
+          setBodyCursor(CURSOR_X);
         } else {
-          document.body.style.cursor = CURSOR_DRAG;
+          setBodyCursor(CURSOR_DRAG);
         }
       } else {
-        document.body.style.cursor = CURSOR_DRAG;
+        setBodyCursor(CURSOR_DRAG);
       }
       return;
     }
@@ -882,43 +922,43 @@ export class InputHandler {
         this.gameState.placementPreview.q === hexCoords.q &&
         this.gameState.placementPreview.r === hexCoords.r
       ) {
-        document.body.style.cursor = this.gameState.placementPreview.isValid ? CURSOR_PLUS : CURSOR_X;
+        setBodyCursor(this.gameState.placementPreview.isValid ? CURSOR_PLUS : CURSOR_X);
       } else {
-        document.body.style.cursor = CURSOR_DRAG;
+        setBodyCursor(CURSOR_DRAG);
       }
       return;
     }
     // When dragging a tower/item for placement, show plus over valid hexes and x over invalid (spawner, occupied hex, etc.)
     if (this.isDragging && this.gameState.placementPreview && hexCoords &&
         this.gameState.placementPreview.q === hexCoords.q && this.gameState.placementPreview.r === hexCoords.r) {
-      document.body.style.cursor = this.gameState.placementPreview.isValid ? CURSOR_PLUS : CURSOR_X;
+      setBodyCursor(this.gameState.placementPreview.isValid ? CURSOR_PLUS : CURSOR_X);
       return;
     }
     // Upgrade/sellback modals (selection, confirm) - use default cursor
     if ((this.gameState.isUpgradeSelectionMode || this.gameState.isTowerSellbackMode) && this.isUpgradeModalVisible()) {
-      document.body.style.cursor = CURSOR_DEFAULT;
+      setBodyCursor(CURSOR_DEFAULT);
       return;
     }
     if (this.gameState.isPartsRecycleMode) {
-      document.body.style.cursor = CURSOR_X;
+      setBodyCursor(CURSOR_X);
       return;
     }
     // Movement token mode: drag designated tower (or any tower before one is chosen), x on other towers and map items
     if (this.gameState.isMovementTokenMode) {
       const targetId = this.gameState.movementTokenTargetTowerId;
       if (tower) {
-        document.body.style.cursor = (!targetId || tower.id === targetId) ? CURSOR_DRAG : CURSOR_X;
+        setBodyCursor((!targetId || tower.id === targetId) ? CURSOR_DRAG : CURSOR_X);
       } else if (hexCoords) {
-        document.body.style.cursor = CURSOR_X;
+        setBodyCursor(CURSOR_X);
       } else {
-        document.body.style.cursor = CURSOR_DEFAULT;
+        setBodyCursor(CURSOR_DEFAULT);
       }
       return;
     }
     // Tower sellback mode: plus over placed towers, x over invalid targets, drag elsewhere
     if (this.gameState.isTowerSellbackMode) {
       if (tower) {
-        document.body.style.cursor = CURSOR_PLUS;
+        setBodyCursor(CURSOR_PLUS);
       } else {
         const hex = this.gameState.gridSystem?.getHex(hexCoords.q, hexCoords.r);
         const hasInvalidTarget = hex && (
@@ -931,14 +971,14 @@ export class InputHandler {
           hex.hasBurningVault ||
           hex.hasArtifactItem
         );
-        document.body.style.cursor = hasInvalidTarget ? CURSOR_X : CURSOR_DRAG;
+        setBodyCursor(hasInvalidTarget ? CURSOR_X : CURSOR_DRAG);
       }
       return;
     }
     // Shield placement mode: plus over any tower (stackable), x over non-tower targets, drag elsewhere
     if (this.selectedShieldForPlacement) {
       if (tower) {
-        document.body.style.cursor = CURSOR_PLUS;
+        setBodyCursor(CURSOR_PLUS);
       } else {
         const hex = this.gameState.gridSystem?.getHex(hexCoords.q, hexCoords.r);
         const hasInvalidTarget = hex && (
@@ -951,14 +991,14 @@ export class InputHandler {
           hex.hasBurningVault ||
           hex.hasArtifactItem
         );
-        document.body.style.cursor = hasInvalidTarget ? CURSOR_X : CURSOR_DRAG;
+        setBodyCursor(hasInvalidTarget ? CURSOR_X : CURSOR_DRAG);
       }
       return;
     }
     // Upgrade selection mode: plus over upgradeable tower, x over invalid targets, drag elsewhere
     if (this.gameState.isUpgradeSelectionMode) {
       if (tower && (tower.rangeLevel < 4 || tower.powerLevel < 4)) {
-        document.body.style.cursor = CURSOR_PLUS;
+        setBodyCursor(CURSOR_PLUS);
       } else {
         const hex = this.gameState.gridSystem?.getHex(hexCoords.q, hexCoords.r);
         const hasInvalidTarget = hex && (
@@ -972,11 +1012,11 @@ export class InputHandler {
           hex.hasBurningVault ||
           hex.hasArtifactItem
         );
-        document.body.style.cursor = hasInvalidTarget ? CURSOR_X : CURSOR_DRAG;
+        setBodyCursor(hasInvalidTarget ? CURSOR_X : CURSOR_DRAG);
       }
       return;
     }
-    document.body.style.cursor = CURSOR_DEFAULT;
+    setBodyCursor(CURSOR_DEFAULT);
   }
 
   /**
@@ -997,10 +1037,10 @@ export class InputHandler {
       return;
     if (this.isUpgradeModalVisible()) return; // Don't override default cursor when modal is open
     if (this.gameState.isMovementTokenMode) {
-      document.body.style.cursor = canUpgrade ? CURSOR_DEFAULT : CURSOR_X;
+      setBodyCursor(canUpgrade ? CURSOR_DEFAULT : CURSOR_X);
       return;
     }
-    document.body.style.cursor = canUpgrade ? CURSOR_PLUS : CURSOR_X;
+    setBodyCursor(canUpgrade ? CURSOR_PLUS : CURSOR_X);
   }
 
   /**
@@ -1012,10 +1052,10 @@ export class InputHandler {
     if (this.gameState.isMovementTokenMode) return;
     // Keep drag cursor when an item is selected for placement (e.g. shield click-to-place)
     if (this.selectedShieldForPlacement) {
-      document.body.style.cursor = CURSOR_DRAG;
+      setBodyCursor(CURSOR_DRAG);
       return;
     }
-    document.body.style.cursor = CURSOR_DEFAULT;
+    setBodyCursor(CURSOR_DEFAULT);
   }
 
   /**
@@ -1025,7 +1065,7 @@ export class InputHandler {
   setPlacingItemMode(active) {
     if (active) {
       document.body.classList.add(BODY_CLASS_PLACING);
-      document.body.style.cursor = CURSOR_DRAG;
+      setBodyCursor(CURSOR_DRAG);
     } else {
       document.body.classList.remove(BODY_CLASS_PLACING);
     }
@@ -1095,7 +1135,7 @@ export class InputHandler {
     
     // Update cursor for shield placement / upgrade mode (plus over valid targets, x over invalid)
     const towerAtCursor = this.gameState.towerSystem?.getTowerAt(hexCoords.q, hexCoords.r);
-    if (!this.gameState.isGameOverMapInspecting) {
+    if (!this.gameState.isGameOverMapInspecting && this.isDynamicGameCursorActive()) {
       this.updateGameCursor(hexCoords, towerAtCursor);
     }
     
@@ -1200,6 +1240,30 @@ export class InputHandler {
       ) {
         if (typeof window !== 'undefined' && window.showSentinelModeModal) {
           window.showSentinelModeModal(tower, e.clientX, e.clientY);
+        }
+        return;
+      }
+      if (
+        tower.type === CONFIG.TOWER_TYPE_PERIMETER &&
+        q === tower.q &&
+        r === tower.r &&
+        !isTowerMovementAllowed(this.gameState) &&
+        !isPerimeterModePickerBlocked(this.gameState, this)
+      ) {
+        if (typeof window !== 'undefined' && window.showPerimeterModeModal) {
+          window.showPerimeterModeModal(tower, e.clientX, e.clientY);
+        }
+        return;
+      }
+      if (
+        tower.type === CONFIG.TOWER_TYPE_CHARGE &&
+        q === tower.q &&
+        r === tower.r &&
+        !isTowerMovementAllowed(this.gameState) &&
+        !isChargeModePickerBlocked(this.gameState, this)
+      ) {
+        if (typeof window !== 'undefined' && window.showChargeModeModal) {
+          window.showChargeModeModal(tower, e.clientX, e.clientY);
         }
         return;
       }
@@ -1537,6 +1601,30 @@ export class InputHandler {
         this.stopDragging();
         return;
       }
+      const perimeterTower = sentinelTower;
+      if (
+        perimeterTower?.type === CONFIG.TOWER_TYPE_PERIMETER &&
+        onSameHex &&
+        minimalMove &&
+        !isPerimeterModePickerBlocked(this.gameState, this) &&
+        typeof window.showPerimeterModeModal === 'function'
+      ) {
+        window.showPerimeterModeModal(perimeterTower, e.clientX, e.clientY);
+        this.stopDragging();
+        return;
+      }
+      const chargeTower = perimeterTower;
+      if (
+        chargeTower?.type === CONFIG.TOWER_TYPE_CHARGE &&
+        onSameHex &&
+        minimalMove &&
+        !isChargeModePickerBlocked(this.gameState, this) &&
+        typeof window.showChargeModeModal === 'function'
+      ) {
+        window.showChargeModeModal(chargeTower, e.clientX, e.clientY);
+        this.stopDragging();
+        return;
+      }
     }
 
     if (!placed && typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_cancel');
@@ -1628,7 +1716,7 @@ export class InputHandler {
     this.gameState.isTowerSellbackMode = false;
     document.body.classList.remove('tower-sellback-selection-mode');
     this.hideTowerSellbackInstructions();
-    document.body.style.cursor = CURSOR_DEFAULT;
+    setBodyCursor(CURSOR_DEFAULT);
 
     if (window.updateInventory) {
       window.updateInventory();
@@ -1903,34 +1991,53 @@ export class InputHandler {
     // Update tooltip position
     this.tooltipSystem.updateMousePosition(mouseX, mouseY);
     
-    // Check for survival rotating hero (group 30, bottom-left)
-    if (canvasMouseX != null && canvasMouseY != null && this.renderer?.isCanvasPointOverSurvivalHeroPortrait?.(canvasMouseX, canvasMouseY)) {
-      const heroGroup = this.gameState.survivalHeroSystem?.getDisplayHeroGroup?.();
-      const heroPattern = heroGroup ? getHeroPatternForWaveGroup(heroGroup) : null;
-      if (heroPattern) {
-        const content = this.generateHeroPowerTooltipContent(heroPattern);
-        this.tooltipSystem.show(content, mouseX, mouseY, { fromCanvas: true });
-        return;
-      }
-    }
+    // Bottom-left hero portrait hover (survival group 30 + boss-wave hero power portrait).
+    // The hit region covers the whole hero graphic, but placed map objects (towers, tanks,
+    // bombs, pickups) under the cursor take priority — so the hero tooltip only triggers over
+    // "empty" parts of the corner. Buttons live in the DOM outside the canvas and never reach here.
+    const heroPriorityHex = (canvasMouseX != null && canvasMouseY != null)
+      ? this.gameState.gridSystem?.getHex(hexCoords.q, hexCoords.r)
+      : null;
+    const heroHexHasMapObject = !!(heroPriorityHex && (
+      heroPriorityHex.hasTower ||
+      heroPriorityHex.hasWaterTank ||
+      heroPriorityHex.hasSuppressionBomb ||
+      heroPriorityHex.hasTempPowerUpItem ||
+      heroPriorityHex.hasMysteryItem ||
+      heroPriorityHex.hasArtifactItem ||
+      heroPriorityHex.hasCurrencyItem
+    ));
 
-    // Check for hero power nameplate (boss wave, bottom-left)
-    if (canvasMouseX != null && canvasMouseY != null && this.renderer?.isCanvasPointOverHeroPowerNameplate?.(canvasMouseX, canvasMouseY)) {
-      const heroPattern = getActiveHeroPowerPattern(this.gameState) ?? getHeroPatternForWaveGroup(this.gameState.waveSystem?.currentWaveGroup || 1);
-      if (heroPattern) {
-        const content = this.generateHeroPowerPlateTooltipContent(heroPattern);
-        this.tooltipSystem.show(content, mouseX, mouseY, { fromCanvas: true });
-        return;
+    if (!heroHexHasMapObject && canvasMouseX != null && canvasMouseY != null) {
+      // Survival rotating hero (group 30)
+      if (this.renderer?.isCanvasPointOverSurvivalHeroPortrait?.(canvasMouseX, canvasMouseY)) {
+        const heroGroup = this.gameState.survivalHeroSystem?.getDisplayHeroGroup?.();
+        const heroPattern = heroGroup ? getHeroPatternForWaveGroup(heroGroup) : null;
+        if (heroPattern) {
+          const content = this.generateHeroPowerTooltipContent(heroPattern);
+          this.tooltipSystem.show(content, mouseX, mouseY, { fromCanvas: true, heroPortrait: true });
+          return;
+        }
       }
-    }
 
-    // Check for hero power portrait (boss wave, bottom-left)
-    if (canvasMouseX != null && canvasMouseY != null && this.renderer?.isCanvasPointOverHeroPortrait?.(canvasMouseX, canvasMouseY)) {
-      const heroPattern = getActiveHeroPowerPattern(this.gameState) ?? getHeroPatternForWaveGroup(this.gameState.waveSystem?.currentWaveGroup || 1);
-      if (heroPattern) {
-        const content = this.generateHeroPowerTooltipContent(heroPattern);
-        this.tooltipSystem.show(content, mouseX, mouseY, { fromCanvas: true });
-        return;
+      // Hero power nameplate (boss wave, bottom-left)
+      if (this.renderer?.isCanvasPointOverHeroPowerNameplate?.(canvasMouseX, canvasMouseY)) {
+        const heroPattern = getActiveHeroPowerPattern(this.gameState) ?? getHeroPatternForWaveGroup(this.gameState.waveSystem?.currentWaveGroup || 1);
+        if (heroPattern) {
+          const content = this.generateHeroPowerPlateTooltipContent(heroPattern);
+          this.tooltipSystem.show(content, mouseX, mouseY, { fromCanvas: true, heroPortrait: true });
+          return;
+        }
+      }
+
+      // Hero power portrait (boss wave, bottom-left)
+      if (this.renderer?.isCanvasPointOverHeroPortrait?.(canvasMouseX, canvasMouseY)) {
+        const heroPattern = getActiveHeroPowerPattern(this.gameState) ?? getHeroPatternForWaveGroup(this.gameState.waveSystem?.currentWaveGroup || 1);
+        if (heroPattern) {
+          const content = this.generateHeroPowerTooltipContent(heroPattern);
+          this.tooltipSystem.show(content, mouseX, mouseY, { fromCanvas: true, heroPortrait: true });
+          return;
+        }
       }
     }
 
@@ -1954,6 +2061,14 @@ export class InputHandler {
 
     // Sentinel mode picker: suppress every map tooltip on that tower's hex (e.g. Ancient Grove combo).
     if (isHexUnderSentinelModeModal(hexCoords.q, hexCoords.r, this.gameState)) {
+      this.tooltipSystem.hide();
+      return;
+    }
+    if (isHexUnderPerimeterModeModal(hexCoords.q, hexCoords.r, this.gameState)) {
+      this.tooltipSystem.hide();
+      return;
+    }
+    if (isHexUnderChargeModeModal(hexCoords.q, hexCoords.r, this.gameState)) {
       this.tooltipSystem.hide();
       return;
     }
@@ -2291,7 +2406,7 @@ export class InputHandler {
     }
     // Reset cursor when leaving canvas (unless dragging or shield/tower selected, need drag cursor)
     if (!this.isDragging && !this.gameState.tutorialMode) {
-      document.body.style.cursor = (this.selectedShieldForPlacement || this.selectedTowerForPlacement) ? CURSOR_DRAG : CURSOR_DEFAULT;
+      setBodyCursor((this.selectedShieldForPlacement || this.selectedTowerForPlacement) ? CURSOR_DRAG : CURSOR_DEFAULT);
     }
     
     // Keep inventory suppression-bomb placement when the pointer leaves the canvas (HUD, side panel, etc.)
@@ -2317,7 +2432,7 @@ export class InputHandler {
   handleGlobalMouseMove(e) {
     // When upgrade modal is open, use default cursor (skip when tutorial mode - cursor handled by main.js)
     if (!this.gameState.tutorialMode && this.gameState.isUpgradeSelectionMode && this.isUpgradeModalVisible()) {
-      document.body.style.cursor = CURSOR_DEFAULT;
+      setBodyCursor(CURSOR_DEFAULT);
     }
     // Tutorial step 6: tower selected for placement - show plus/x over map, drag elsewhere (handled here so cursor updates even when overlays block canvas mousemove)
     if (this.gameState.tutorialMode && this.selectedTowerForPlacement) {
@@ -2336,12 +2451,12 @@ export class InputHandler {
           const hexCoords = pixelToAxial(worldPos.x, worldPos.y);
           if (hexCoords.q === placementHex.q && hexCoords.r === placementHex.r &&
               this.gameState.gridSystem?.canPlaceTower(hexCoords.q, hexCoords.r)) {
-            document.body.style.cursor = CURSOR_PLUS;
+            setBodyCursor(CURSOR_PLUS);
           } else {
-            document.body.style.cursor = CURSOR_X;
+            setBodyCursor(CURSOR_X);
           }
         } else {
-          document.body.style.cursor = CURSOR_DRAG;
+          setBodyCursor(CURSOR_DRAG);
         }
       }
     }
@@ -2449,7 +2564,7 @@ export class InputHandler {
     // Skip when in upgrade mode selecting tower on map (we show plus/x/drag); allow when modal is open (we show default)
     if (this.gameState.isUpgradeSelectionMode && !this.isUpgradeModalVisible()) return;
     document.body.classList.add(BODY_CLASS_CLICK_FEEDBACK);
-    document.body.style.cursor = CURSOR_DRAG;
+    setBodyCursor(CURSOR_DRAG);
   }
 
   /**
@@ -2460,17 +2575,17 @@ export class InputHandler {
     if (this.gameState.tutorialMode && !this.selectedTowerForPlacement) return; // Tutorial cursor handled by main.js
     if (this.isDragging) {
       if (this.isPlacingSuppressionBombFromInventory()) {
-        document.body.style.cursor = CURSOR_DRAG;
+        setBodyCursor(CURSOR_DRAG);
       }
       return;
     }
     if (this.selectedTowerForPlacement) {
-      document.body.style.cursor = CURSOR_DRAG;
+      setBodyCursor(CURSOR_DRAG);
       return;
     }
     if (this.selectedShieldForPlacement) {
       // Keep cursor-drag until they hover over the map; plus/x only when over a tower
-      document.body.style.cursor = CURSOR_DRAG;
+      setBodyCursor(CURSOR_DRAG);
       return;
     }
     if (this.gameState.isUpgradeSelectionMode) {
@@ -2479,7 +2594,7 @@ export class InputHandler {
       this.updateGameCursor(hex, tower);
       return;
     }
-    document.body.style.cursor = CURSOR_DEFAULT;
+    setBodyCursor(CURSOR_DEFAULT);
   }
 
   /**
@@ -2657,7 +2772,7 @@ export class InputHandler {
     this.clearShieldCardHighlight();
     this.clearPlacingActiveHighlight();
     this.selectedShieldForPlacement = null;
-    document.body.style.cursor = CURSOR_DEFAULT;
+    setBodyCursor(CURSOR_DEFAULT);
     this.setPlacingItemMode(false);
     if (typeof window !== 'undefined' && window.updateInventory) window.updateInventory();
   }
@@ -2678,7 +2793,7 @@ export class InputHandler {
     this.dragData = null;
     this.gameState.placementPreview = null;
     this.clearPlacingActiveHighlight();
-    document.body.style.cursor = CURSOR_DEFAULT;
+    setBodyCursor(CURSOR_DEFAULT);
     this.setPlacingItemMode(false);
     
     // Remove side panel drop zone highlight
@@ -2768,7 +2883,8 @@ export class InputHandler {
     return (
       tower?.type === CONFIG.TOWER_TYPE_JET ||
       tower?.type === CONFIG.TOWER_TYPE_SPREAD ||
-      tower?.type === CONFIG.TOWER_TYPE_BOMBER
+      tower?.type === CONFIG.TOWER_TYPE_BOMBER ||
+      tower?.type === CONFIG.TOWER_TYPE_CHARGE
     );
   }
 
@@ -3047,7 +3163,8 @@ export class InputHandler {
       const isNonDirectional =
         activeTower.type === CONFIG.TOWER_TYPE_RAIN ||
         activeTower.type === CONFIG.TOWER_TYPE_PULSING ||
-        activeTower.type === CONFIG.TOWER_TYPE_SENTINEL;
+        activeTower.type === CONFIG.TOWER_TYPE_SENTINEL ||
+        activeTower.type === CONFIG.TOWER_TYPE_PERIMETER;
       const isInTowerArea = isNonDirectional
         ? hexCoords.q === activeTower.q && hexCoords.r === activeTower.r
         : this.isHexAdjacentToTower(hexCoords.q, hexCoords.r, activeTower);

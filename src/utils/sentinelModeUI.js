@@ -123,6 +123,9 @@ export function showSentinelModeModal(gameState, tower, clientX, clientY) {
 
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
+      if (typeof window !== 'undefined' && window.AudioManager) {
+        window.AudioManager.playSFX('mode_selected');
+      }
       if (mode.id === currentMode) {
         hideSentinelModeModal();
         tooltipSystem?.hide?.();
@@ -137,9 +140,6 @@ export function showSentinelModeModal(gameState, tower, clientX, clientY) {
           3500,
           'neutral'
         );
-        if (typeof window !== 'undefined' && window.AudioManager) {
-          window.AudioManager.playSFX('button2');
-        }
       }
       hideSentinelModeModal();
       tooltipSystem?.hide?.();

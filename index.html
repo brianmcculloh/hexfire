@@ -65,6 +65,7 @@
             
             <!-- Top-left HUD + floating FPS (below panel, not inside it) -->
             <div class="overlay-top-left-stack">
+            <div class="overlay-left-collapsible">
             <div class="overlay-panel overlay-top-left">
                 <div class="overlay-content">
                     <div class="overlay-row overlay-row-right overlay-wave-row">
@@ -136,15 +137,32 @@
             <div id="fpsCounterFloating" class="fps-counter-floating" aria-hidden="true" hidden><span class="fps-counter-label">FPS: </span><span id="fpsCounterValue" class="fps-counter-value">--</span></div>
             <div id="towerStatusPanel" class="tower-status-panel">
                 <div class="overlay-row overlay-row-right tower-status-header-row">
-                    <label class="label label-white">
+                    <button type="button" id="towerStatsHeaderBtn" class="tower-stats-header-trigger label label-white" aria-label="Tower Statistics">
                         <span class="label-middle-bg"></span>
                         <span class="label-text">Towers On Map</span>
-                    </label>
+                    </button>
                 </div>
                 <div class="tower-status-scroll-area">
                     <div id="towerStatusList" class="tower-status-list"></div>
                 </div>
             </div>
+            </div>
+            <button type="button" id="leftOverlayToggle" class="overlay-left-toggle" aria-label="Hide stats overlays" data-tooltip="Hide stats panels">
+                <img src="assets/images/ui/arrow-toggle.png" alt="" class="overlay-left-toggle-arrow">
+            </button>
+            </div>
+
+            <!-- Floating compact stats (shown only when the left overlays are hidden) -->
+            <div id="floatingTopStats" class="overlay-top-stats" aria-hidden="true">
+                <span class="floating-stat floating-stat-level">
+                    <span class="floating-level-hex-wrap">
+                        <img id="floatingLevelHexImg" src="assets/images/misc/level1.png" class="floating-level-hex" alt="" />
+                        <span class="floating-level-value" id="floatingLevel">1</span>
+                    </span>
+                </span>
+                <span class="floating-stat floating-stat-wave" id="floatingWave">1-1</span>
+                <span class="floating-stat floating-stat-timer" id="floatingTimer">2:00</span>
+                <span class="floating-stat floating-stat-currency" id="floatingCurrency">$0</span>
             </div>
             
             <!-- Debug Wave Selector Panel (only visible when debug mode is on) -->
@@ -540,12 +558,12 @@
                     </label>
                 </div>
                 
-                <!-- Debug Mode -->
+                <!-- Disable Notifications -->
                 <div class="setting-item">
                     <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
-                        <span style="font-weight: bold;">Debug Mode</span>
+                        <span style="font-weight: bold;">Disable Notifications</span>
                         <label class="toggle-switch">
-                            <input type="checkbox" id="settingDebugMode">
+                            <input type="checkbox" id="settingDisableNotifications">
                             <span class="toggle-slider"></span>
                         </label>
                     </label>
@@ -566,6 +584,17 @@
             <div class="modal-frame-content">
                 <h2>Advanced Settings</h2>
                 <div class="settings-grid">
+                <!-- Debug Mode -->
+                <div class="setting-item">
+                    <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
+                        <span style="font-weight: bold;">Debug Mode</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="settingDebugMode">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </label>
+                </div>
+
                 <!-- Enable Edge Scrolling -->
                 <div class="setting-item">
                     <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
@@ -618,10 +647,15 @@
                 </div>
                 </div>
                 <div class="modal-choices modal-choices-advanced-footer">
-                    <button class="choice-btn cta-button" id="closeAdvancedSettingsBtn">Done</button>
-                    <button type="button" class="choice-btn cta-button cta-lime" id="openMetaProgressionBtn">Unlocks</button>
-                    <button type="button" class="choice-btn cta-button cta-yellow" id="openRunHistoryBtn">Run history</button>
-                    <button type="button" class="choice-btn cta-button cta-orange" id="openUpdateLogBtn">Update log</button>
+                    <div class="modal-choices-advanced-footer-row">
+                        <button type="button" class="choice-btn cta-button cta-purple" id="openTowerStatsFromAdvancedBtn">Tower Stats</button>
+                        <button type="button" class="choice-btn cta-button cta-lime" id="openMetaProgressionBtn">Unlocks</button>
+                        <button type="button" class="choice-btn cta-button cta-yellow" id="openRunHistoryBtn">Run history</button>
+                        <button type="button" class="choice-btn cta-button cta-orange" id="openUpdateLogBtn">Update log</button>
+                    </div>
+                    <div class="modal-choices-advanced-footer-row modal-choices-advanced-footer-row--done">
+                        <button type="button" class="choice-btn cta-button cta-blue" id="closeAdvancedSettingsBtn">Done</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -665,6 +699,20 @@
         </div>
     </div>
 
+    <!-- Tower statistics comparison (Towers On Map header) -->
+    <div id="towerStatsModal" class="modal-overlay tower-stats-overlay" aria-hidden="true">
+        <div class="tower-stats-screen">
+            <h2 class="map-progression-title">Tower Statistics</h2>
+            <p class="map-progression-intro">Compare all tower types at their highest upgrade levels by power, range, area, and cost.</p>
+            <div class="tower-stats-list-wrap">
+                <div id="towerStatsList" class="tower-stats-list" role="list"></div>
+            </div>
+            <div class="modal-choices tower-stats-footer">
+                <button type="button" class="choice-btn cta-button cta-blue" id="closeTowerStatsBtn">Done</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Map progression (minimap review or wave-group gate before placement) -->
     <div id="mapProgressionModal" class="modal-overlay map-progression-overlay map-progression-mode-review" aria-hidden="true">
         <div class="map-progression-screen">
@@ -676,6 +724,26 @@
             </div>
             <div class="modal-choices map-progression-footer">
                 <button type="button" class="choice-btn cta-button cta-blue" id="closeMapProgressionBtn">Done</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Specialty research tree (level / XP bar or specialty plans in inventory) -->
+    <div id="specialtyModal" class="modal-overlay specialty-overlay" aria-hidden="true">
+        <div class="specialty-screen">
+            <div class="specialty-title-row">
+                <div class="specialty-plans-cluster">
+                    <img src="assets/images/items/special.png" alt="" class="specialty-plans-icon" />
+                    <span id="specialtyPlansBadge" class="specialty-plans-badge" hidden></span>
+                </div>
+                <h2 class="map-progression-title specialty-screen-title">Specialty Research</h2>
+            </div>
+            <p class="map-progression-intro">Choose a path to specialize in. You can specialize in multiple paths.</p>
+            <div class="specialty-tree-wrap">
+                <div id="specialtyTreeGrid" class="specialty-tree-grid" role="list"></div>
+            </div>
+            <div class="modal-choices specialty-footer">
+                <button type="button" class="choice-btn cta-button cta-blue" id="closeSpecialtyBtn">Done</button>
             </div>
         </div>
     </div>

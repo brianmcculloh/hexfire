@@ -2,7 +2,7 @@ import { CONFIG, getTowerUnlockStatus, isTowerRepairShopUnlocked } from '../conf
 import { isMetaItemUnlocked } from './metaProgression.js';
 
 const MULTI_LEVEL_SHOP_TYPES = ['suppression_bomb', 'shield'];
-const SHOP_TOWER_TYPES = ['jet', 'spread', 'pulsing', 'rain', 'bomber', 'sentinel'];
+const SHOP_TOWER_TYPES = ['jet', 'spread', 'pulsing', 'rain', 'bomber', 'sentinel', 'perimeter', 'charge'];
 const SHOP_ITEMS_CATEGORY_TYPES = [
   'town_health',
   'upgrade_token',
@@ -10,6 +10,7 @@ const SHOP_ITEMS_CATEGORY_TYPES = [
   'tower_repair',
   'tower_sellback',
   'parts_voucher',
+  'token_voucher',
   'suppression_bundle',
   'shield_bundle',
 ];
@@ -72,6 +73,7 @@ function isPartsVoucherVisibleInShop(gameState) {
 
 function isShopItemsCategoryEntryVisible(gameState, itemType) {
   if (itemType === 'parts_voucher') return isPartsVoucherVisibleInShop(gameState);
+  if (itemType === 'token_voucher') return isMetaItemUnlocked(gameState, 'token_voucher');
   if (itemType === 'tower_sellback') return isMetaItemUnlocked(gameState, 'tower_sellback');
   if (itemType === 'tower_repair') return true;
   if (itemType === 'suppression_bundle' || itemType === 'shield_bundle') {

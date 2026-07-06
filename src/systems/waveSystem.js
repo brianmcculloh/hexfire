@@ -1,6 +1,6 @@
 // Wave System - Manages wave timing and progression
 
-import { CONFIG, getPulsingPower, getPulsingAttackInterval, getPathCountForWave, getFireSpawnProbabilities, getFireTypeConfig, getPowerUpMultiplier, getEffectiveDurationTowerAttackInterval, getPowerUpGraphicFilename, formatDisplayHundredths, getSuppressionBombTotalUses, getBossPatternForWaveGroup, getBossPatternForSpeech, getHeroPatternForWaveGroup, getSpeechBubblePatternGroup, getCampaignEndWaveGroup, getWaveGroupName, formatActiveWaveTimerText, isFinalSurvivalBossWaveGroup, getWaterTankTypeConfig, getWaterTankModalIconWidthPx, normalizeWaveGroupIndex, getHeroPortraitSpriteGroup, getPlacementBossAbilityDescription } from '../config.js';
+import { CONFIG, getPulsingPower, getPulsingAttackInterval, getPathCountForWave, getFireSpawnProbabilities, getFireTypeConfig, getPowerUpMultiplier, getEffectiveDurationTowerAttackInterval, getPowerUpGraphicFilename, formatDisplayHundredths, getSuppressionBombTotalUses, getBossPatternForWaveGroup, getBossPatternForSpeech, getHeroPatternForWaveGroup, getSpeechBubblePatternGroup, getCampaignEndWaveGroup, getWaveGroupName, formatActiveWaveTimerText, isFinalSurvivalBossWaveGroup, getWaterTankTypeConfig, getWaterTankModalIconWidthPx, normalizeWaveGroupIndex, getHeroPortraitSpriteGroup, getPlacementBossAbilityDescription, getEffectiveIgnitionChance, applyCurrencyGainBonuses } from '../config.js';
 import { assetUrl } from '../utils/assetUrl.js';
 import { VICTORY_SPEECH_PLACEHOLDERS } from '../patterns.js';
 import { getScenarioByName } from '../scenarios.js';
@@ -18,6 +18,7 @@ import {
   crossfadeModalOverlays,
   crossfadeModalShellContent,
   clearModalShellSwapAnimationState,
+  MODAL_CONTENT_FADE_IN_MS,
 } from '../utils/modal.js';
 import {
   artifactTraderShouldOffer,
@@ -36,6 +37,80 @@ import {
   openMapProgressionGateBeforePlacement,
   shouldShowMapProgressionGate,
 } from '../utils/mapProgressionUI.js';
+
+const HERO_PORTRAIT_SIZE_CLASS = {
+  1: 'hero-size-110',
+  5: 'hero-size-90', // Starseed — 10% smaller than default
+  3: 'hero-size-78.75',
+  6: 'hero-size-120',
+  7: 'hero-size-140.6',
+  11: 'hero-size-135',
+  12: 'hero-size-90',
+  14: 'hero-size-125',
+  15: 'hero-size-90',
+  17: 'hero-size-125',
+  18: 'hero-size-125',
+  19: 'hero-size-127.5',
+  20: 'hero-size-144',
+  21: 'hero-size-170',
+  22: 'hero-size-170',
+};
+
+const HERO_PORTRAIT_SHIFT_CLASS = {
+  1: 'hero-shift-100',
+  11: 'hero-shift-150',
+  14: 'hero-shift-100',
+  16: 'hero-shift-100',
+  17: 'hero-shift-100',
+  18: 'hero-shift-100',
+  19: 'hero-shift-280',
+  20: 'hero-shift-150',
+  21: 'hero-shift-300',
+  22: 'hero-shift-200',
+};
+
+const HERO_PORTRAIT_SHIFT_UP_CLASS = { 3: 'hero-shift-up-100', 12: 'hero-shift-up-100', 15: 'hero-shift-up-100' };
+const HERO_PORTRAIT_SHIFT_DOWN_CLASS = {
+  4: 'hero-shift-down-75',
+  6: 'hero-shift-down-80',
+  7: 'hero-shift-down-200',
+  8: 'hero-shift-down-25',
+  13: 'hero-shift-down-25',
+};
+const HERO_PORTRAIT_SHIFT_LEFT_CLASS = {
+  6: 'hero-shift-left-50',
+  7: 'hero-shift-left-200',
+  11: 'hero-shift-left-50',
+  18: 'hero-shift-left-40',
+  19: 'hero-shift-left-250',
+  20: 'hero-shift-left-50',
+  21: 'hero-shift-left-100',
+  22: 'hero-shift-left-100',
+};
+
+const HERO_PORTRAIT_LAYOUT_CLASSES = [
+  ...Object.values(HERO_PORTRAIT_SIZE_CLASS),
+  ...Object.values(HERO_PORTRAIT_SHIFT_CLASS),
+  ...Object.values(HERO_PORTRAIT_SHIFT_UP_CLASS),
+  ...Object.values(HERO_PORTRAIT_SHIFT_DOWN_CLASS),
+  ...Object.values(HERO_PORTRAIT_SHIFT_LEFT_CLASS),
+];
+
+const ARTIFACT_TRADER_HERO_SRC = 'assets/images/creatures/artifact-trader.png?v=3';
+const ARTIFACT_TRADER_SPEECH_TEXT =
+  "Curious curios, sealed deals, and—when the wind's right—genuine upgrade plans. Show me the pieces, not the excuses, and we both leave happier than the last wave left your inventory.";
+/** After morph runs, wait for shell swap-in to finish before showing speech bubbles. */
+const PANEL_SWAP_SPEECH_REVEAL_MS = MODAL_CONTENT_FADE_IN_MS + 48;
+/** Matches .wave-complete-hero-graphic img { top: 50px } */
+const HERO_PORTRAIT_IMG_TOP_PX = 50;
+/** Wrapper class — trader portrait sizing is CSS-only under .artifact-trader-modal (never inline). */
+const ARTIFACT_TRADER_PORTRAIT_CLASS = 'artifact-trader-portrait';
+
+/** Extra speech-bubble vertical offset by wave group (negative = higher). */
+const HERO_SPEECH_BUBBLE_TOP_OFFSET_PX = {
+  5: -20, // Starseed — 20px higher than default
+  12: -150, // Ael — portrait is taller; lift bubble so it doesn't cover his face
+};
 
 /**
  * True if `type` has spawn weight on `waveNumber` but never on any earlier wave.
@@ -122,6 +197,13 @@ export class WaveSystem {
 
     /** Deferred map/theme transition applied when entering next group's placement phase. */
     this.pendingGroupTransition = null;
+
+    /**
+     * Set when the player leaves the artifact trader for placement this cycle; enables Back on the
+     * placement modal until the wave starts.
+     * @type {{ placementPhaseOptions: Object } | null}
+     */
+    this._pendingArtifactTraderReturn = null;
   }
 
   /**
@@ -151,6 +233,12 @@ export class WaveSystem {
 
     this.gameState.wave.isPlacementPhase = true;
     this.gameState.wave.isActive = false;
+
+    if (this.waveInGroup === 1) {
+      this.gameState.renderer?.hideMapUntilReveal?.();
+    } else {
+      this.gameState.renderer?.resetMapReveal?.();
+    }
 
     // If already paused (e.g. main menu → load game), resume first so pause timers extend temp power-up
     // expiries and the next pause() refreshes pauseStartTime. Otherwise pause() is a no-op and timers stay stale.
@@ -420,6 +508,9 @@ export class WaveSystem {
    * Show countdown timer and then start the wave
    */
   showCountdownAndStartWave() {
+    this._pendingArtifactTraderReturn = null;
+    this.gameState.renderer?.resetMapReveal?.();
+
     // Remove clear all button if it exists
     const clearAllBtn = document.getElementById('clearAllItemsBtn');
     if (clearAllBtn) {
@@ -559,12 +650,9 @@ export class WaveSystem {
     this.gameState.wave.townBonusAward = CONFIG.TOWN_PROTECTION_BONUS_FULL ?? 300; // Placeholder until wave ends
     this.gameState.wave.baseWaveReward = 0; // No base wave reward - only grove protection bonus
 
-    // Set dynamic ignition chance based on wave-in-group scaling
+    // Set dynamic ignition chance based on wave-in-group scaling (survival ramps every 2 min via fireSystem)
     try {
-      const base = CONFIG.DIFFICULTY_BASE_IGNITION_CHANCE;
-      const incPct = CONFIG.DIFFICULTY_IGNITION_CHANCE_INCREMENT_PER_WAVE;
-      const multiplier = 1 + (Math.max(1, this.waveInGroup) - 1) * incPct;
-      const effectiveChance = base * multiplier;
+      const effectiveChance = getEffectiveIgnitionChance(this.gameState);
       this.gameState.fireSystem?.setDynamicIgnitionChance?.(effectiveChance);
     } catch (e) {
       // ignore
@@ -634,6 +722,22 @@ export class WaveSystem {
           const recent = tower.lastBombFiredAt && (now - tower.lastBombFiredAt) < 250;
           if (!hasActiveBombs && !recent) {
             this.gameState.towerSystem.createSentinelVolley(tower);
+            tower.timeSinceLastAttack = 0;
+          }
+        } else if (tower.type === CONFIG.TOWER_TYPE_PERIMETER) {
+          const hasActiveBombs = Array.isArray(tower.bombs) && tower.bombs.length > 0;
+          const now = Date.now();
+          const recent = tower.lastBombFiredAt && (now - tower.lastBombFiredAt) < 250;
+          if (!hasActiveBombs && !recent) {
+            this.gameState.towerSystem.createPerimeterShot(tower);
+            tower.timeSinceLastAttack = 0;
+          }
+        } else if (tower.type === CONFIG.TOWER_TYPE_CHARGE) {
+          const hasActiveBombs = Array.isArray(tower.bombs) && tower.bombs.length > 0;
+          const now = Date.now();
+          const recent = tower.lastBombFiredAt && (now - tower.lastBombFiredAt) < 250;
+          if (!hasActiveBombs && !recent) {
+            this.gameState.towerSystem.createChargeShot(tower);
             tower.timeSinceLastAttack = 0;
           }
         }
@@ -794,11 +898,8 @@ export class WaveSystem {
         
         // Within-group (waveInGroup > 1): keep hero, only update speech bubble. New group: remove and re-add hero.
         // When jumping via debug, existing hero may be from a different group - always replace in that case.
-        const isWithinGroupTransition = this.waveInGroup > 1;
-        const existingHero = modal?.querySelector('.wave-complete-hero-graphic');
-        const existingHeroWaveGroup = existingHero?.dataset?.heroWaveGroup ? parseInt(existingHero.dataset.heroWaveGroup, 10) : null;
-        const heroMatchesCurrentGroup = existingHeroWaveGroup === this.currentWaveGroup;
-        const shouldKeepHero = isWithinGroupTransition && heroMatchesCurrentGroup;
+        const morphFromTrader = options.morphHeroFromArtifactTrader === true;
+        const shouldKeepHero = morphFromTrader || this.shouldKeepHeroGraphicForPlacement(modal);
         if (shouldKeepHero) {
           this.removeHeroSpeechBubbleOnly(modal);
         } else {
@@ -1126,7 +1227,7 @@ export class WaveSystem {
       // Build boss reward section (only for boss waves) - define early so it's always available
       let bossRewardHtml = '';
       if (isBossWave) {
-        const groupBonusCurrency = CONFIG.WAVE_GROUP_BONUS_REWARD;
+        const groupBonusCurrency = applyCurrencyGainBonuses(CONFIG.WAVE_GROUP_BONUS_REWARD, this.gameState);
         
         bossRewardHtml = '<div class="placement-boss-reward">';
         bossRewardHtml += '<div class="placement-boss-reward-header">';
@@ -1479,7 +1580,9 @@ export class WaveSystem {
 
         // Hero graphic: skip entirely for scenarios; within-group keeps existing hero and just updates speech bubble; new group adds fresh hero
         if (!this.gameState.wave?.isScenario) {
-          if (shouldKeepHero) {
+          if (options.morphHeroFromArtifactTrader && modal.querySelector('.wave-complete-hero-graphic')) {
+            this.morphHeroGraphicForPlacement(modal, this.currentWaveGroup, this.waveInGroup, 'placement');
+          } else if (shouldKeepHero) {
             this.addHeroSpeechBubbleOnly(modal, this.currentWaveGroup, this.waveInGroup, 'placement', 100);
           } else {
             this.addHeroGraphic(modal, this.currentWaveGroup, this.waveInGroup, 'placement');
@@ -1508,6 +1611,27 @@ export class WaveSystem {
         modal.querySelector('.placement-start-button-fixed')?.remove();
         const buttonContainer = modalFrameContent.querySelector('.placement-start-button-container');
         if (continueBtn && buttonContainer) {
+          buttonContainer.innerHTML = '';
+          buttonContainer.style.marginTop = '6px';
+
+          if (this._pendingArtifactTraderReturn) {
+            const backToTraderBtn = document.createElement('button');
+            backToTraderBtn.id = 'backToArtifactTraderBtn';
+            backToTraderBtn.type = 'button';
+            backToTraderBtn.className =
+              'choice-btn cta-button cta-orange placement-start-button placement-modal-back-btn';
+            backToTraderBtn.innerHTML =
+              '<img src="assets/images/ui/arrow.png" alt="" class="control-btn-icon placement-back-arrow" /> Back';
+            backToTraderBtn.setAttribute('aria-label', 'Back to artifact trader');
+            backToTraderBtn.onclick = () => {
+              if (typeof window !== 'undefined' && window.AudioManager) {
+                window.AudioManager.playSFX('button2');
+              }
+              this.returnToArtifactTraderFromPlacement();
+            };
+            buttonContainer.appendChild(backToTraderBtn);
+          }
+
           if (continueBtn.parentElement) {
             continueBtn.parentElement.removeChild(continueBtn);
           }
@@ -1516,7 +1640,7 @@ export class WaveSystem {
           continueBtn.style.width = 'auto';
           continueBtn.style.minWidth = 'auto';
           continueBtn.style.maxWidth = 'none';
-          continueBtn.style.margin = '6px auto 0 auto';
+          continueBtn.style.margin = '0';
           continueBtn.style.display = 'block';
           continueBtn.style.visibility = 'visible';
           continueBtn.onclick = null;
@@ -1566,8 +1690,16 @@ export class WaveSystem {
    * Enter actual placement mode (after modal)
    */
   enterPlacementMode() {
+    if (this.waveInGroup === 1) {
+      this.gameState.renderer?.startMapReveal?.();
+    } else {
+      this.gameState.renderer?.resetMapReveal?.();
+    }
+
     if (isFinalSurvivalBossWaveGroup(this.gameState)) {
-      this.gameState.survivalHeroSystem?.onEnterPlacement?.();
+      if (!this.gameState.survivalHeroSystem?.started) {
+        this.gameState.survivalHeroSystem?.onEnterPlacement?.();
+      }
     } else if (this.waveInGroup === this.wavesPerGroup) {
       this.gameState.renderer?.startBossPlacementReveal?.();
       this.gameState.renderer?.startHeroPlacementReveal?.();
@@ -1659,6 +1791,10 @@ export class WaveSystem {
     // for a wave-complete view in the meantime). Without content, re-showing it would just be a
     // blank overlay.
     if (!modal.querySelector('.placement-header-container')) return;
+
+    if (this.waveInGroup === 1) {
+      this.gameState.renderer?.hideMapUntilReveal?.();
+    }
 
     modal.classList.add('active', 'upgrade-token-mask', 'placement-phase');
     playModalEnterAnimation(modal);
@@ -1845,6 +1981,7 @@ export class WaveSystem {
     this.gameState.wave.isActive = false;
     this.gameState.wave.untimedSurvival = false;
     this.gameState.wave.survivalElapsed = 0;
+    this.gameState.bossSystem?.onWaveCompleteCleanup?.();
     this.gameState.suppressionBombSystem?.resetPendingExplosions?.();
     
     // Open sidebar when wave completes
@@ -2000,7 +2137,8 @@ export class WaveSystem {
     if (!reward) return;
     const count = Math.max(1, Math.floor(Number(reward.count) || 1));
     if (reward.type === 'currency' && typeof reward.amount === 'number') {
-      this.gameState.player.currency = (this.gameState.player.currency || 0) + reward.amount;
+      const amount = applyCurrencyGainBonuses(reward.amount, this.gameState);
+      this.gameState.player.currency = (this.gameState.player.currency || 0) + amount;
       if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('earn');
       return;
     }
@@ -2063,7 +2201,8 @@ export class WaveSystem {
   applyPendingTownBonus() {
     const bonus = Math.max(0, Math.round(this.gameState.wave.townBonusAward || 0));
     if (bonus > 0) {
-      this.gameState.player.currency = (this.gameState.player.currency || 0) + bonus;
+      const adjusted = applyCurrencyGainBonuses(bonus, this.gameState);
+      this.gameState.player.currency = (this.gameState.player.currency || 0) + adjusted;
       if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('earn');
     }
     this.gameState.wave.townBonusAward = 0;
@@ -2081,11 +2220,11 @@ export class WaveSystem {
       if (entry?.reward) this.applyDigSiteReward(entry.reward);
       const nd = entry?.noDamageBonusCurrency;
       if (typeof nd === 'number' && nd > 0) {
-        this.gameState.player.currency = (this.gameState.player.currency || 0) + nd;
+        this.gameState.player.currency = (this.gameState.player.currency || 0) + applyCurrencyGainBonuses(nd, this.gameState);
       }
     }
     if (typeof p.groupBonus === 'number' && p.groupBonus > 0) {
-      this.gameState.player.currency = (this.gameState.player.currency || 0) + p.groupBonus;
+      this.gameState.player.currency = (this.gameState.player.currency || 0) + applyCurrencyGainBonuses(p.groupBonus, this.gameState);
     }
     if (typeof p.upgradePlanDelta === 'number' && p.upgradePlanDelta > 0) {
       this.gameState.player.upgradePlans = (this.gameState.player.upgradePlans || 0) + p.upgradePlanDelta;
@@ -2633,7 +2772,9 @@ export class WaveSystem {
     collectRow.style.cssText = 'display: flex; justify-content: center; margin-top: 16px; width: 100%;';
     const collectVictoryBtn = document.createElement('button');
     collectVictoryBtn.type = 'button';
-    collectVictoryBtn.className = 'choice-btn cta-button cta-lime';
+    collectVictoryBtn.className = 'choice-btn cta-button';
+    collectVictoryBtn.style.cssText =
+      'width: auto; min-width: auto; max-width: none; margin: 16px auto 0 auto; display: block; visibility: visible;';
     collectVictoryBtn.textContent = 'Collect';
     collectRow.appendChild(collectVictoryBtn);
     statsContainer.appendChild(collectRow);
@@ -3010,7 +3151,11 @@ export class WaveSystem {
       return;
     }
 
-    this.showPlacementPhaseModal({ skipEnterAnimation: uiOptions.skipEnterAnimation === true });
+    this.showPlacementPhaseModal({
+      skipEnterAnimation:
+        uiOptions.skipEnterAnimation === true ||
+        this.shouldKeepHeroGraphicForPlacement(modal),
+    });
   }
 
   /**
@@ -3023,10 +3168,30 @@ export class WaveSystem {
     this.gameState?.inputHandler?.tooltipSystem?.hide();
     // Same-overlay swap crossfade left .modal at opacity: 0 after Collect; rebuild in place instead.
     clearModalShellSwapAnimationState(modal);
+    const keepHero = this.shouldKeepHeroGraphicForPlacement(modal);
     this.teardownWaveCompleteModal(modal);
     advanceGameState?.();
-    this.openPostWaveCompleteUI(placementPhaseOptions, { skipEnterAnimation: false });
+    this.openPostWaveCompleteUI(placementPhaseOptions, {
+      skipEnterAnimation: keepHero,
+    });
     if (window.updateUI) window.updateUI();
+  }
+
+  /**
+   * Keep the bottom-left hero portrait between wave-complete and placement when still in the same wave group.
+   * @param {HTMLElement | null | undefined} modal
+   * @returns {boolean}
+   */
+  shouldKeepHeroGraphicForPlacement(modal) {
+    if (this.gameState.wave?.isScenario) return false;
+    const existingHero = modal?.querySelector('.wave-complete-hero-graphic');
+    if (!existingHero) return false;
+    const placementWaveInGroup = this.waveInGroup;
+    if (!placementWaveInGroup || placementWaveInGroup <= 1) return false;
+    const existingHeroWaveGroup = existingHero.dataset?.heroWaveGroup
+      ? parseInt(existingHero.dataset.heroWaveGroup, 10)
+      : null;
+    return existingHeroWaveGroup === this.currentWaveGroup;
   }
 
   /**
@@ -3039,7 +3204,12 @@ export class WaveSystem {
     delete modal._groupRewardsCollected;
     modal.classList.remove('wave-group-complete', 'victory-modal', 'placement-phase', 'artifact-trader-modal');
 
-    this.removeWaveCompleteHeroGraphic(modal);
+    const keepHero = this.shouldKeepHeroGraphicForPlacement(modal);
+    if (keepHero) {
+      this.removeHeroSpeechBubbleOnly(modal);
+    } else {
+      this.removeWaveCompleteHeroGraphic(modal);
+    }
     modal.querySelector('.wave-complete-header-container')?.remove();
     modal.querySelector('.placement-header-container')?.remove();
     modal.querySelector('.placement-boss-header-label')?.remove();
@@ -3076,9 +3246,275 @@ export class WaveSystem {
   }
 
   /**
+   * Keep hero/speech-bubble DOM out of shell-swap fade animations (artifact trader ↔ placement).
+   * @param {HTMLElement | null | undefined} modal
+   * @param {boolean} persist
+   */
+  setModalShellPersistForHero(modal, persist) {
+    if (!modal) return;
+    modal.querySelectorAll('.wave-complete-hero-graphic, .character-speech-bubble').forEach((el) => {
+      if (persist) el.classList.add('modal-shell-persist');
+      else el.classList.remove('modal-shell-persist');
+    });
+  }
+
+  /**
+   * @param {HTMLElement} wrapper
+   * @param {number} portraitGroup
+   */
+  _applyHeroPortraitLayoutClasses(wrapper, portraitGroup) {
+    HERO_PORTRAIT_LAYOUT_CLASSES.forEach((cls) => wrapper.classList.remove(cls));
+    const sizeClass = HERO_PORTRAIT_SIZE_CLASS[portraitGroup];
+    const shiftClass = HERO_PORTRAIT_SHIFT_CLASS[portraitGroup];
+    const shiftUpClass = HERO_PORTRAIT_SHIFT_UP_CLASS[portraitGroup];
+    const shiftDownClass = HERO_PORTRAIT_SHIFT_DOWN_CLASS[portraitGroup];
+    const shiftLeftClass = HERO_PORTRAIT_SHIFT_LEFT_CLASS[portraitGroup];
+    if (sizeClass) wrapper.classList.add(sizeClass);
+    if (shiftClass) wrapper.classList.add(shiftClass);
+    if (shiftUpClass) wrapper.classList.add(shiftUpClass);
+    if (shiftDownClass) wrapper.classList.add(shiftDownClass);
+    if (shiftLeftClass) wrapper.classList.add(shiftLeftClass);
+  }
+
+  /**
+   * @param {HTMLImageElement | null | undefined} img
+   * @param {string} newSrc
+   * @param {string} [fallbackSrc]
+   */
+  _crossfadeHeroPortraitImage(img, newSrc, fallbackSrc = 'assets/images/creatures/hero1.png?v=6') {
+    if (!img) return;
+    if (img.src.includes(newSrc.split('?')[0])) {
+      img.style.opacity = '1';
+      return;
+    }
+    img.style.opacity = '0';
+    const finish = () => {
+      img.style.opacity = '1';
+    };
+    img.onload = () => {
+      img.onload = null;
+      finish();
+    };
+    img.onerror = () => {
+      img.onerror = null;
+      if (fallbackSrc) img.src = fallbackSrc;
+      finish();
+    };
+    img.src = newSrc;
+    if (img.complete) finish();
+  }
+
+  /**
+   * Instant portrait swap for artifact trader ↔ placement (no opacity/size animation).
+   * @param {HTMLImageElement | null | undefined} img
+   * @param {string} newSrc
+   * @param {string} [fallbackSrc]
+   */
+  _swapHeroPortraitImage(img, newSrc, fallbackSrc = 'assets/images/creatures/hero1.png?v=6') {
+    if (!img) return;
+    if (img.src.includes(newSrc.split('?')[0])) {
+      img.style.opacity = '1';
+      return;
+    }
+    img.style.opacity = '1';
+    img.onload = null;
+    img.onerror = () => {
+      img.onerror = null;
+      if (fallbackSrc) img.src = fallbackSrc;
+    };
+    img.src = newSrc;
+  }
+
+  /**
+   * Strip inline layout overrides left over from older trader morph logic.
+   * Campaign heroes rely on hero-size-* CSS classes only.
+   * @param {HTMLElement | null | undefined} wrapper
+   */
+  _clearHeroPortraitInlineLayout(wrapper) {
+    if (!wrapper) return;
+    delete wrapper.dataset.heroPanelLayoutFrozen;
+    wrapper.style.width = '';
+    wrapper.style.height = '';
+    wrapper.style.removeProperty('opacity');
+    wrapper.style.removeProperty('transform');
+    const img = wrapper.querySelector('img');
+    if (img) {
+      delete img.dataset.heroPortraitFullWidth;
+      img.style.width = '';
+      img.style.removeProperty('left');
+      img.style.removeProperty('top');
+    }
+  }
+
+  /**
+   * Toggle artifact-trader portrait mode. Sizing lives in CSS under .artifact-trader-modal only.
+   * Campaign hero-size/shift classes must not remain on the wrapper — they override img position
+   * (e.g. hero-shift-left-250) and push the trader off-screen after wave-group complete.
+   * @param {HTMLElement | null | undefined} wrapper
+   * @param {boolean} enabled
+   */
+  _setArtifactTraderPortraitMode(wrapper, enabled) {
+    if (!wrapper) return;
+    if (enabled) {
+      HERO_PORTRAIT_LAYOUT_CLASSES.forEach((cls) => wrapper.classList.remove(cls));
+      wrapper.classList.add(ARTIFACT_TRADER_PORTRAIT_CLASS);
+    } else {
+      wrapper.classList.remove(ARTIFACT_TRADER_PORTRAIT_CLASS);
+      this._clearHeroPortraitInlineLayout(wrapper);
+    }
+  }
+
+  /**
+   * Suppress width/height/transform CSS transitions during trader ↔ placement portrait swaps.
+   * @param {HTMLElement | null | undefined} wrapper
+   * @param {boolean} instant
+   */
+  _setHeroPortraitInstantSwap(wrapper, instant) {
+    if (!wrapper) return;
+    if (instant) wrapper.classList.add('hero-portrait-instant-swap');
+    else wrapper.classList.remove('hero-portrait-instant-swap');
+  }
+
+  /**
+   * @param {HTMLElement} wrapper
+   * @param {string} name
+   * @param {string} [title]
+   */
+  _updateHeroPill(wrapper, name, title = '') {
+    let pill = wrapper.querySelector('.wave-complete-hero-pill');
+    if (!pill) {
+      pill = document.createElement('div');
+      pill.className = 'wave-complete-hero-pill';
+      wrapper.appendChild(pill);
+    }
+    let nameEl = pill.querySelector('.wave-complete-hero-pill-name');
+    if (!nameEl) {
+      nameEl = document.createElement('div');
+      nameEl.className = 'wave-complete-hero-pill-name';
+      pill.appendChild(nameEl);
+    }
+    nameEl.textContent = name.toUpperCase();
+    let titleEl = pill.querySelector('.wave-complete-hero-pill-title');
+    if (title) {
+      if (!titleEl) {
+        titleEl = document.createElement('div');
+        titleEl.className = 'wave-complete-hero-pill-title';
+        pill.appendChild(titleEl);
+      }
+      titleEl.textContent = title;
+      titleEl.style.display = '';
+    } else if (titleEl) {
+      titleEl.remove();
+    }
+  }
+
+  /**
+   * Morph the existing bottom-left portrait into the campaign hero (artifact trader → placement).
+   */
+  morphHeroGraphicForPlacement(modal, waveGroup, waveInGroup, speechContext) {
+    const wrapper = modal?.querySelector('.wave-complete-hero-graphic');
+    if (!wrapper) {
+      this.addHeroGraphic(modal, waveGroup, waveInGroup, speechContext);
+      return;
+    }
+
+    this._setHeroPortraitInstantSwap(wrapper, true);
+    wrapper.classList.add('shifted-in', 'modal-shell-persist');
+    wrapper.style.removeProperty('opacity');
+    wrapper.style.removeProperty('transform');
+    this._setArtifactTraderPortraitMode(wrapper, false);
+
+    const portraitGroup = getHeroPortraitSpriteGroup(waveGroup);
+    const heroPattern = getHeroPatternForWaveGroup(waveGroup) || { name: 'Hero', title: '' };
+    wrapper.dataset.heroGroup = String(portraitGroup);
+    wrapper.dataset.heroWaveGroup = String(Math.max(1, waveGroup || 1));
+    this._applyHeroPortraitLayoutClasses(wrapper, portraitGroup);
+
+    const img = wrapper.querySelector('img');
+    if (img) {
+      img.classList.add('pulsing');
+      this._swapHeroPortraitImage(
+        img,
+        `assets/images/creatures/hero${portraitGroup}.png?v=6`
+      );
+    }
+    this._updateHeroPill(wrapper, heroPattern.name || 'Hero', heroPattern.title || '');
+
+    this.removeHeroSpeechBubbleOnly(modal);
+    const speechBubbles = heroPattern.speechBubbles || [];
+    const maxIndex = Math.max(0, speechBubbles.length - 1);
+    const waveIndex = Math.max(0, Math.min((waveInGroup || 1) - 1, maxIndex));
+    const waveSpeech = speechBubbles[waveIndex];
+    const speechText = (waveSpeech && typeof waveSpeech === 'object') ? (waveSpeech[speechContext] || '') : '';
+    if (speechText) {
+      this._scheduleSpeechBubbleAfterHeroMorph(modal, wrapper, speechText);
+    }
+    requestAnimationFrame(() => this._setHeroPortraitInstantSwap(wrapper, false));
+  }
+
+  /**
+   * Morph the existing bottom-left portrait back into the artifact trader (placement → trader).
+   */
+  morphHeroGraphicForArtifactTrader(modal) {
+    const wrapper = modal?.querySelector('.wave-complete-hero-graphic');
+    if (!wrapper) {
+      this.addArtifactTraderHeroGraphic(modal);
+      return;
+    }
+
+    this._setHeroPortraitInstantSwap(wrapper, true);
+    wrapper.classList.add('shifted-in', 'modal-shell-persist');
+    wrapper.style.removeProperty('opacity');
+    wrapper.style.removeProperty('transform');
+    this._setArtifactTraderPortraitMode(wrapper, true);
+    delete wrapper.dataset.heroGroup;
+    delete wrapper.dataset.heroWaveGroup;
+
+    const img = wrapper.querySelector('img');
+    if (img) {
+      img.classList.add('pulsing');
+      this._swapHeroPortraitImage(img, ARTIFACT_TRADER_HERO_SRC);
+    }
+    this._updateHeroPill(wrapper, 'WIMBLESMYTHE', 'The Merchant');
+
+    this.removeHeroSpeechBubbleOnly(modal);
+    if (img) {
+      this._scheduleSpeechBubbleAfterHeroMorph(modal, img, ARTIFACT_TRADER_SPEECH_TEXT, {
+        hideAfterMs: 6000,
+      });
+    }
+    requestAnimationFrame(() => this._setHeroPortraitInstantSwap(wrapper, false));
+  }
+
+  /**
+   * Defer hero speech bubble until panel shell crossfade finishes (trader ↔ placement).
+   * @param {HTMLElement | null | undefined} modal
+   * @param {HTMLElement | null | undefined} anchorEl - portrait wrapper (preferred) or img
+   */
+  _scheduleSpeechBubbleAfterHeroMorph(modal, anchorEl, text, options = {}) {
+    if (!modal || !anchorEl || !text) return;
+    const isImgAnchor = anchorEl.tagName === 'IMG';
+    const wrapper = isImgAnchor
+      ? anchorEl.closest?.('.wave-complete-hero-graphic')
+      : anchorEl.classList?.contains('wave-complete-hero-graphic')
+        ? anchorEl
+        : anchorEl.closest?.('.wave-complete-hero-graphic');
+    const token = (this._heroMorphSpeechToken = (this._heroMorphSpeechToken || 0) + 1);
+    setTimeout(() => {
+      if (token !== this._heroMorphSpeechToken) return;
+      if (!anchorEl.isConnected || !modal.contains(anchorEl)) return;
+      this.showCharacterSpeechBubble(modal, wrapper || anchorEl, text, 'hero', '', {
+        revealDelayMs: 0,
+        positionAnchor: isImgAnchor ? anchorEl : (wrapper || anchorEl),
+        ...options,
+      });
+    }, PANEL_SWAP_SPEECH_REVEAL_MS);
+  }
+
+  /**
    * Modal listing what the artifact trader seeks this run; only Continue advances to placement.
    * @param {Object} [placementPhaseOptions] - forwarded to {@link startPlacementPhase}
-   * @param {{ skipEnterAnimation?: boolean }} [uiOptions]
+   * @param {{ skipEnterAnimation?: boolean, morphHeroFromPlacement?: boolean }} [uiOptions]
    */
   showArtifactTraderModal(placementPhaseOptions = {}, uiOptions = {}) {
     const modal = document.getElementById('waveCompleteModal');
@@ -3117,7 +3553,11 @@ export class WaveSystem {
     modal.querySelector('.placement-content-layout')?.remove();
     modal.querySelector('.artifact-trader-header-container')?.remove();
 
-    this.removeWaveCompleteHeroGraphic(modal);
+    if (!uiOptions.morphHeroFromPlacement) {
+      this.removeWaveCompleteHeroGraphic(modal);
+    } else {
+      this.removeHeroSpeechBubbleOnly(modal);
+    }
 
     // Orange header is only used here; placement = red, all complete modals = blue
     const headerContainer = document.createElement('div');
@@ -3165,10 +3605,15 @@ export class WaveSystem {
     continueBtn.onclick = () => {
       artifactTraderAcknowledgeAllCollected(this.gameState);
       continueBtn.onclick = null;
+      this.removeHeroSpeechBubbleOnly(modal);
       this.transitionFromArtifactTrader(modal, placementPhaseOptions);
     };
 
-    this.addArtifactTraderHeroGraphic(modal);
+    if (uiOptions.morphHeroFromPlacement) {
+      this.morphHeroGraphicForArtifactTrader(modal);
+    } else {
+      this.addArtifactTraderHeroGraphic(modal);
+    }
 
     if (window.updateUI) window.updateUI();
   }
@@ -3176,12 +3621,17 @@ export class WaveSystem {
   /**
    * Remove artifact trader DOM from the shared wave modal shell.
    * @param {HTMLElement | null | undefined} modal
+   * @param {{ keepHero?: boolean }} [options]
    */
-  teardownArtifactTraderModal(modal) {
+  teardownArtifactTraderModal(modal, options = {}) {
     if (!modal) return;
     delete modal.dataset.artifactTraderActive;
     modal.classList.remove('artifact-trader-modal');
-    this.removeWaveCompleteHeroGraphic(modal);
+    if (options.keepHero) {
+      this.removeHeroSpeechBubbleOnly(modal);
+    } else {
+      this.removeWaveCompleteHeroGraphic(modal);
+    }
 
     modal.querySelector('.placement-header-container')?.remove();
     modal.querySelector('.artifact-trader-header-container')?.remove();
@@ -3205,49 +3655,122 @@ export class WaveSystem {
    */
   transitionFromArtifactTrader(modal, placementPhaseOptions = {}) {
     this.gameState?.inputHandler?.tooltipSystem?.hide();
+    this.removeHeroSpeechBubbleOnly(modal);
+    this._pendingArtifactTraderReturn = { placementPhaseOptions: { ...placementPhaseOptions } };
+    this.setModalShellPersistForHero(modal, true);
 
     const mapProgressionModal = document.getElementById('mapProgressionModal');
     const showGate = shouldShowMapProgressionGate(this.gameState);
 
+    const finishTraderToPlacement = () => {
+      this.setModalShellPersistForHero(modal, false);
+      if (window.updateUI) window.updateUI();
+    };
+
     if (showGate && mapProgressionModal) {
       crossfadeModalOverlays(modal, () => {
+        this.teardownArtifactTraderModal(modal, { keepHero: true });
         this.startPlacementPhase({ ...placementPhaseOptions, deferPlacementUI: true });
         openMapProgressionGateBeforePlacement(this.gameState, () => {
-          this.showPlacementPhaseModal();
+          this.showPlacementPhaseModal({ morphHeroFromArtifactTrader: true });
         });
       }, {
         toEl: mapProgressionModal,
         extraRemoveFrom: ['upgrade-token-mask', 'artifact-trader-modal'],
-        onDone: () => this.teardownArtifactTraderModal(modal),
+        onDone: finishTraderToPlacement,
       });
       return;
     }
 
     crossfadeModalShellContent(modal, () => {
-      this.teardownArtifactTraderModal(modal);
+      this.teardownArtifactTraderModal(modal, { keepHero: true });
       this.startPlacementPhase({ ...placementPhaseOptions, deferPlacementUI: true });
-      this.showPlacementPhaseModal({ skipEnterAnimation: true });
+      this.showPlacementPhaseModal({ skipEnterAnimation: true, morphHeroFromArtifactTrader: true });
     }, {
-      onDone: () => {
-        if (window.updateUI) window.updateUI();
-      },
+      onDone: finishTraderToPlacement,
     });
   }
 
   /**
-   * Bottom-left character graphic for the artifact trader modal — same layout/classes as wave group 1 hero (1-1).
+   * Strip placement-phase DOM from the shared wave modal shell (keeps overlay active).
+   * @param {HTMLElement | null | undefined} modal
+   * @param {{ keepHero?: boolean }} [options]
+   */
+  teardownPlacementPhaseModal(modal, options = {}) {
+    if (!modal) return;
+    modal.classList.remove('placement-phase');
+
+    const keepHero = options.keepHero || this.shouldKeepHeroGraphicForPlacement(modal);
+    if (keepHero) {
+      this.removeHeroSpeechBubbleOnly(modal);
+    } else {
+      this.removeWaveCompleteHeroGraphic(modal);
+    }
+    modal.querySelector('.placement-header-container')?.remove();
+    modal.querySelector('.placement-boss-header-label')?.remove();
+    modal.querySelector('.placement-content-layout')?.remove();
+    modal.querySelector('.placement-start-button-fixed')?.remove();
+    modal.querySelector('.placement-start-button-container')?.remove();
+
+    const statsDiv = document.getElementById('waveStats');
+    const frame = modal.querySelector('.modal-frame-content');
+    const continueBtn = document.getElementById('continueBtn');
+    if (continueBtn && statsDiv?.contains(continueBtn)) {
+      continueBtn.onclick = null;
+      continueBtn.style.display = '';
+      if (frame) {
+        if (statsDiv.nextSibling) frame.insertBefore(continueBtn, statsDiv.nextSibling);
+        else frame.appendChild(continueBtn);
+      }
+    } else if (continueBtn) {
+      continueBtn.onclick = null;
+      continueBtn.style.display = '';
+    }
+    if (statsDiv) statsDiv.innerHTML = '';
+  }
+
+  /**
+   * Placement modal Back — re-open the artifact trader the player just left without trading.
+   */
+  returnToArtifactTraderFromPlacement() {
+    const modal = document.getElementById('waveCompleteModal');
+    const pending = this._pendingArtifactTraderReturn;
+    if (!modal || !pending) return;
+
+    const placementPhaseOptions = pending.placementPhaseOptions || {};
+    this.gameState?.inputHandler?.tooltipSystem?.hide();
+    this.removeHeroSpeechBubbleOnly(modal);
+    this.setModalShellPersistForHero(modal, true);
+
+    crossfadeModalShellContent(
+      modal,
+      () => {
+        this.teardownPlacementPhaseModal(modal, { keepHero: true });
+        this.showArtifactTraderModal(placementPhaseOptions, {
+          skipEnterAnimation: true,
+          morphHeroFromPlacement: true,
+        });
+      },
+      {
+        onDone: () => {
+          this.setModalShellPersistForHero(modal, false);
+          if (window.updateUI) window.updateUI();
+        },
+      },
+    );
+  }
+
+  /**
+   * Bottom-left character graphic for the artifact trader modal — matches current wave group portrait layout.
    */
   addArtifactTraderHeroGraphic(modal) {
     this.removeWaveCompleteHeroGraphic(modal);
-    const heroSrc = 'assets/images/creatures/artifact-trader.png?v=3';
-    const speechText =
-      "Curious curios, sealed deals, and—when the wind's right—genuine upgrade plans. Show me the pieces, not the excuses, and we both leave happier than the last wave left your inventory.";
 
     const wrapper = document.createElement('div');
-    wrapper.className = 'wave-complete-hero-graphic hero-size-110 hero-shift-100';
+    wrapper.className = `wave-complete-hero-graphic ${ARTIFACT_TRADER_PORTRAIT_CLASS}`;
     wrapper.setAttribute('aria-hidden', 'true');
     const img = document.createElement('img');
-    img.src = heroSrc;
+    img.src = ARTIFACT_TRADER_HERO_SRC;
     img.alt = '';
     img.onerror = () => {
       img.src = 'assets/images/creatures/hero1.png?v=6';
@@ -3267,14 +3790,28 @@ export class WaveSystem {
     wrapper.appendChild(pill);
 
     modal.appendChild(wrapper);
-    requestAnimationFrame(() => {
-      wrapper.classList.add('shifted-in');
-    });
-    setTimeout(() => {
-      if (img.parentElement) img.classList.add('pulsing');
-    }, 450);
+    this._setHeroPortraitInstantSwap(wrapper, true);
 
-    this.showCharacterSpeechBubble(modal, img, speechText, 'hero', '', { hideAfterMs: 6000 });
+    const revealPortrait = () => {
+      wrapper.classList.add('shifted-in');
+      requestAnimationFrame(() => this._setHeroPortraitInstantSwap(wrapper, false));
+      setTimeout(() => {
+        if (img.parentElement) img.classList.add('pulsing');
+      }, 450);
+      // Anchor bubble to the img (not the wrapper) so it stays above Wimblesmythe's head.
+      this.showCharacterSpeechBubble(modal, img, ARTIFACT_TRADER_SPEECH_TEXT, 'hero', '', {
+        hideAfterMs: 6000,
+      });
+    };
+
+    if (img.complete && img.naturalHeight > 0) {
+      revealPortrait();
+    } else {
+      img.onload = () => {
+        img.onload = null;
+        revealPortrait();
+      };
+    }
   }
 
   /**
@@ -3422,9 +3959,20 @@ export class WaveSystem {
    * @param {string} text - The speech bubble text (plain text or HTML; use text-* classes for effects, e.g. <span class="text-fire text-glow">FIRE</span>)
    * @param {'hero'|'boss'} type - 'hero' for left-side character
    * @param {string} [extraBubbleClass] - Optional extra class(es) for bubble styling (e.g. victory mini heroes)
-   * @param {{ hideAfterMs?: number }} [options] - When hideAfterMs is set, fade out after that many ms once visible
+   * @param {{ hideAfterMs?: number, revealDelayMs?: number, positionAnchor?: HTMLElement, portraitTopOffsetPx?: number }} [options]
    */
   showCharacterSpeechBubble(modal, characterWrapper, text, type, extraBubbleClass = '', options = {}) {
+    const revealDelayMs = options.revealDelayMs ?? 450;
+    const positionAnchor = options.positionAnchor || characterWrapper;
+    const anchorToHeroWrapper = positionAnchor.classList?.contains('wave-complete-hero-graphic');
+    let portraitTopOffsetPx = options.portraitTopOffsetPx;
+    if (portraitTopOffsetPx == null) {
+      const heroWrapper = anchorToHeroWrapper
+        ? positionAnchor
+        : characterWrapper?.closest?.('.wave-complete-hero-graphic');
+      const waveGroup = Number(heroWrapper?.dataset?.heroWaveGroup);
+      portraitTopOffsetPx = HERO_SPEECH_BUBBLE_TOP_OFFSET_PX[waveGroup] ?? 0;
+    }
     const bubble = document.createElement('div');
     bubble.className = `character-speech-bubble character-speech-bubble-${type}${extraBubbleClass ? ` ${extraBubbleClass}` : ''}`.trim();
     bubble.innerHTML = text;
@@ -3432,16 +3980,18 @@ export class WaveSystem {
     modal.appendChild(bubble);
 
     const positionBubble = () => {
-      const rect = characterWrapper.getBoundingClientRect();
+      const rect = positionAnchor.getBoundingClientRect();
       let centerX = rect.left + rect.width / 2;
-      let top = rect.top - 10;
+      let top = anchorToHeroWrapper
+        ? rect.top + HERO_PORTRAIT_IMG_TOP_PX + portraitTopOffsetPx - 10
+        : rect.top - 10;
       const padding = 12;
       const bubbleWidth = bubble.offsetWidth || 340;
       const bubbleHeight = bubble.offsetHeight || 80;
       const halfWidth = bubbleWidth / 2;
       const minCenterX = halfWidth + padding;
       const maxCenterX = window.innerWidth - halfWidth - padding;
-      const minTop = padding + bubbleHeight; // Keep bubble top within viewport
+      const minTop = padding + bubbleHeight;
       const maxTop = window.innerHeight - padding;
       centerX = Math.max(minCenterX, Math.min(maxCenterX, centerX));
       top = Math.max(minTop, Math.min(maxTop, top));
@@ -3450,23 +4000,62 @@ export class WaveSystem {
       bubble.style.transform = 'translate(-50%, -100%)';
     };
 
-    // Position after hero slide-in animation (400ms) so img has final position
-    requestAnimationFrame(() => positionBubble());
-    setTimeout(() => {
-      if (bubble.parentElement) {
-        positionBubble();
-        bubble.style.opacity = '1';
-        const hideAfterMs = options.hideAfterMs;
-        if (typeof hideAfterMs === 'number' && hideAfterMs > 0) {
-          setTimeout(() => {
-            if (bubble.parentElement) {
-              bubble.style.opacity = '0';
-              setTimeout(() => bubble.remove(), 300);
-            }
-          }, hideAfterMs);
-        }
+    let rafId = null;
+    let revealed = false;
+
+    const stopTracking = () => {
+      if (rafId != null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
       }
-    }, 450);
+      bubble._speechBubbleRaf = null;
+    };
+
+    const scheduleHideAfterReveal = () => {
+      const hideAfterMs = options.hideAfterMs;
+      if (typeof hideAfterMs !== 'number' || hideAfterMs <= 0) return;
+      setTimeout(() => {
+        if (bubble.parentElement) {
+          stopTracking();
+          bubble.style.opacity = '0';
+          setTimeout(() => bubble.remove(), 300);
+        }
+      }, hideAfterMs);
+    };
+
+    const revealBubble = () => {
+      if (revealed || !bubble.parentElement) return;
+      revealed = true;
+      positionBubble();
+      bubble.style.opacity = '1';
+      scheduleHideAfterReveal();
+    };
+
+    const updateLoop = () => {
+      if (!bubble.parentElement) {
+        stopTracking();
+        return;
+      }
+      positionBubble();
+      rafId = requestAnimationFrame(updateLoop);
+      bubble._speechBubbleRaf = rafId;
+    };
+
+    requestAnimationFrame(() => {
+      positionBubble();
+      if (revealDelayMs <= 0) {
+        revealBubble();
+      }
+      rafId = requestAnimationFrame(updateLoop);
+      bubble._speechBubbleRaf = rafId;
+    });
+
+    if (revealDelayMs > 0) {
+      setTimeout(() => {
+        if (!bubble.parentElement) return;
+        revealBubble();
+      }, revealDelayMs);
+    }
 
     // Hero speech bubbles without hideAfterMs stay visible until removeWaveCompleteHeroGraphic
   }
@@ -3652,7 +4241,10 @@ export class WaveSystem {
       modal._victorySpeechCleanup.bubbles.forEach((b) => b.remove());
       delete modal._victorySpeechCleanup;
     }
-    modal?.querySelectorAll('.character-speech-bubble').forEach(b => b.remove());
+    modal?.querySelectorAll('.character-speech-bubble').forEach((b) => {
+      this._cancelSpeechBubbleTracking(b);
+      b.remove();
+    });
     this.removeBossDefeatGraphic(modal);
   }
 
@@ -3772,10 +4364,25 @@ export class WaveSystem {
   }
 
   /**
+   * @param {HTMLElement} bubble
+   */
+  _cancelSpeechBubbleTracking(bubble) {
+    if (!bubble) return;
+    if (bubble._speechBubbleRaf != null) {
+      cancelAnimationFrame(bubble._speechBubbleRaf);
+      bubble._speechBubbleRaf = null;
+    }
+  }
+
+  /**
    * Remove only the hero speech bubble(s), not the hero graphic
    */
   removeHeroSpeechBubbleOnly(modal) {
-    modal?.querySelectorAll('.character-speech-bubble').forEach(b => b.remove());
+    this._heroMorphSpeechToken = (this._heroMorphSpeechToken || 0) + 1;
+    modal?.querySelectorAll('.character-speech-bubble').forEach((b) => {
+      this._cancelSpeechBubbleTracking(b);
+      b.remove();
+    });
   }
 
   /**
@@ -3831,16 +4438,7 @@ export class WaveSystem {
     wrapper.className = 'wave-complete-hero-graphic';
     wrapper.dataset.heroGroup = String(portraitGroup);
     wrapper.dataset.heroWaveGroup = String(Math.max(1, waveGroup || 1));
-    const sizeClass = { 1: 'hero-size-110', 3: 'hero-size-78.75', 6: 'hero-size-120', 7: 'hero-size-140.6', 11: 'hero-size-135', 12: 'hero-size-90', 14: 'hero-size-125', 15: 'hero-size-90', 17: 'hero-size-125', 18: 'hero-size-125', 19: 'hero-size-127.5', 20: 'hero-size-144', 21: 'hero-size-170', 22: 'hero-size-170' }[portraitGroup];
-    const shiftClass = { 1: 'hero-shift-100', 11: 'hero-shift-150', 14: 'hero-shift-100', 16: 'hero-shift-100', 17: 'hero-shift-100', 18: 'hero-shift-100', 19: 'hero-shift-280', 20: 'hero-shift-150', 21: 'hero-shift-300', 22: 'hero-shift-200' }[portraitGroup];
-    const shiftUpClass = { 3: 'hero-shift-up-100', 12: 'hero-shift-up-100', 15: 'hero-shift-up-100' }[portraitGroup];
-    const shiftDownClass = { 4: 'hero-shift-down-75', 6: 'hero-shift-down-80', 7: 'hero-shift-down-200', 8: 'hero-shift-down-25', 13: 'hero-shift-down-25' }[portraitGroup];
-    const shiftLeftClass = { 6: 'hero-shift-left-50', 7: 'hero-shift-left-200', 11: 'hero-shift-left-50', 18: 'hero-shift-left-40', 19: 'hero-shift-left-250', 20: 'hero-shift-left-50', 21: 'hero-shift-left-100', 22: 'hero-shift-left-100' }[portraitGroup];
-    if (sizeClass) wrapper.classList.add(sizeClass);
-    if (shiftClass) wrapper.classList.add(shiftClass);
-    if (shiftUpClass) wrapper.classList.add(shiftUpClass);
-    if (shiftDownClass) wrapper.classList.add(shiftDownClass);
-    if (shiftLeftClass) wrapper.classList.add(shiftLeftClass);
+    this._applyHeroPortraitLayoutClasses(wrapper, portraitGroup);
     wrapper.setAttribute('aria-hidden', 'true');
     const img = document.createElement('img');
     img.src = heroSrc;
@@ -3976,7 +4574,10 @@ export class WaveSystem {
       modalFrameContent.insertBefore(headerContainer, modalFrameContent.firstChild);
       
       // Get data for stats
-      const townBonus = Math.max(0, Math.round(this.gameState.wave.townBonusAward || 0));
+      const townBonus = applyCurrencyGainBonuses(
+        Math.max(0, Math.round(this.gameState.wave.townBonusAward || 0)),
+        this.gameState,
+      );
       const totalExtinguished = this.gameState.fireSystem?.getTotalFiresExtinguishedThisWave() || 0;
       const totalEarned = townBonus;
       
@@ -4218,8 +4819,8 @@ export class WaveSystem {
         modalTitle.textContent = 'Scenario Complete!';
       }
       
-      const townBonus = Math.max(0, Math.round(this.gameState.wave.townBonusAward || 0));
-      const totalCurrencyEarned = townBonus;
+      const townBonusBase = Math.max(0, Math.round(this.gameState.wave.townBonusAward || 0));
+      const totalCurrencyEarned = applyCurrencyGainBonuses(townBonusBase, this.gameState);
       const firesExtinguished = this.gameState.fireSystem?.getFiresExtinguishedThisWave() || {};
       const totalExtinguished = this.gameState.fireSystem?.getTotalFiresExtinguishedThisWave() || 0;
       

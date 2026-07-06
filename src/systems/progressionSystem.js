@@ -1,8 +1,9 @@
 // Progression System - Manages XP, leveling, and upgrades
 
-import { CONFIG, getFireTypeConfig, getLevelThreshold, getPlayerLevel, getTowerUnlockStatus, getPowerUpMultiplier, getTowerRange, getSpreadTowerRange, getRainRange, getTowerPower, getSpreadTowerPower, getPulsingPower, getRainPower, getPulsingAttackInterval, getBomberAttackInterval, getSentinelAttackInterval, getSentinelPower, getPowerUpGraphicFilename, getBomberImpactZone, formatWaterDamageRate, formatEveryInterval, getHeroPowerXpGainMultiplier } from '../config.js';
+import { CONFIG, getFireTypeConfig, getLevelThreshold, getPlayerLevel, getTowerUnlockStatus, getPowerUpMultiplier, getTowerRange, getSpreadTowerRange, getRainRange, getTowerPower, getSpreadTowerPower, getPulsingPower, getRainPower, getPulsingAttackInterval, getBomberAttackInterval, getSentinelAttackInterval, getSentinelPower, getPerimeterShotIntervalSeconds, getPerimeterPower, getChargeAttackInterval, getChargePerHexPower, getPowerUpGraphicFilename, getBomberImpactZone, formatWaterDamageRate, formatEveryInterval, getHeroPowerXpGainMultiplier, getTowerDisplayName } from '../config.js';
 import { isMetaItemUnlocked } from '../utils/metaProgression.js';
 import { isShopItemSeen } from '../utils/shopSeenItems.js';
+import { awardSpecialtyPlansForLevels, openSpecialtyModal } from '../utils/specialtyUI.js';
 import { pixelToAxial, axialToPixel } from '../utils/hexMath.js';
 import { createModalFloatingText, closeModalOverlay, openModalOverlay } from '../utils/modal.js';
 
@@ -11,6 +12,59 @@ function getBomberImpactHexDisplayLabel(impactLevel) {
   const level = Math.min(4, Math.max(1, Math.floor(impactLevel)));
   const count = getBomberImpactZone(0, 0, level, 0).length;
   return count === 1 ? '1 hex' : `${count} hexes`;
+}
+
+const TOWER_UPGRADE_MAX_LEVEL = 4;
+
+/** Upgrade-plan cost for a single step from currentLevel (1–3) to the next level. */
+function getUpgradePlanCostForStep(currentLevel) {
+  const lv = Math.floor(Number(currentLevel)) || 1;
+  return lv === 3 ? 4 : lv;
+}
+
+/** Total upgrade plans to reach max from currentLevel (0 if already max). */
+function getUpgradePlanCostToMax(currentLevel) {
+  const lv = Math.floor(Number(currentLevel)) || 1;
+  if (lv >= TOWER_UPGRADE_MAX_LEVEL) return 0;
+  let total = 0;
+  for (let step = lv; step < TOWER_UPGRADE_MAX_LEVEL; step++) {
+    total += getUpgradePlanCostForStep(step);
+  }
+  return total;
+}
+
+/** Max shortcut is redundant when only one level remains (3 → 4). */
+function shouldShowMaxUpgradeButton(currentLevel) {
+  const lv = Math.floor(Number(currentLevel)) || 1;
+  return lv >= 1 && lv <= 2;
+}
+
+/** Purple CTA row: label + upgrade-plan icon + x{cost}. */
+function createUpgradePlanCostButtonContent(label, cost) {
+  const row = document.createElement('div');
+  row.style.cssText = 'display: flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap;';
+
+  const labelSpan = document.createElement('span');
+  labelSpan.textContent = label;
+  labelSpan.style.fontSize = 'inherit';
+  row.appendChild(labelSpan);
+
+  const tokenImg = document.createElement('img');
+  tokenImg.src = 'assets/images/items/upgrade_token.png';
+  tokenImg.style.cssText = 'width: 32px; height: auto; object-fit: contain; image-rendering: crisp-edges;';
+  row.appendChild(tokenImg);
+
+  const costSpan = document.createElement('span');
+  costSpan.textContent = `x${cost}`;
+  costSpan.style.color = '#ff67e7';
+  costSpan.style.fontWeight = 'bold';
+  costSpan.style.fontSize = '24px';
+  costSpan.style.textShadow = '0 0 25px rgba(0,0,0,.3), 0 0 10px rgba(0,0,0,.3), 0 0 5px rgba(0,0,0,.5)';
+  costSpan.style.marginLeft = '-6px';
+  costSpan.style.textTransform = 'none';
+  row.appendChild(costSpan);
+
+  return row;
 }
 
 export class ProgressionSystem {
@@ -65,7 +119,7 @@ export class ProgressionSystem {
 
   /**
    * Award bonus XP from a fire combo (on top of per-hex extinguish XP). Applies XP boost power-ups.
-   * @param {number} baseXp - Raw combo XP from {@link CONFIG.COMBO_TIERS}
+   * @param {number} baseXp - Combo XP after wave-group scaling ({@link getComboXpForWaveGroup}); power-ups apply on top
    * @returns {number} Boosted XP actually added
    */
   awardComboXP(baseXp) {
@@ -287,6 +341,11 @@ export class ProgressionSystem {
     }
     this.gameState.player.upgradePlans += levelsGained;
 
+    const specialtyPlansGained = awardSpecialtyPlansForLevels(currentLevel, newLevel);
+    if (specialtyPlansGained > 0) {
+      this.gameState.player.specialtyPlans = (this.gameState.player.specialtyPlans || 0) + specialtyPlansGained;
+    }
+
     // Update player level
     this.gameState.player.level = newLevel;
 
@@ -368,7 +427,7 @@ export class ProgressionSystem {
    * @returns {Array} Array of unlock objects with towerType, unlockLevel, and optional level
    */
   getNewlyUnlockedItems(previousLevel, newLevel) {
-    const allUnlockTypes = ['jet', 'rain', 'shield', 'spread', 'suppression_bomb', 'suppression_bundle', 'shield_bundle', 'town_health', 'upgrade_token', 'pulsing', 'bomber'];
+    const allUnlockTypes = ['jet', 'rain', 'shield', 'spread', 'suppression_bomb', 'suppression_bundle', 'shield_bundle', 'town_health', 'upgrade_token', 'pulsing', 'bomber', 'perimeter', 'charge'];
     const newlyUnlocked = [];
     
     // Initialize newlyUnlockedItems if it doesn't exist
@@ -477,8 +536,18 @@ export class ProgressionSystem {
         break;
       case 'bomber':
         name = 'Bomber Tower';
-        description = 'Water bombs with long range';
-        stats = `Range: 2-10 hexes | Power: 6`;
+        description = 'Water bombs; full power on the target hex, weaker in each outer ring';
+        stats = `Range: 5-10 hexes | Power: 12 at target`;
+        break;
+      case 'perimeter':
+        name = 'Perimeter Tower';
+        description = 'Water bombs sweep a selected hex ring';
+        stats = `Target ring: 1-10 | Power: 7 HP/bomb`;
+        break;
+      case 'charge':
+        name = 'Charge Tower';
+        description = 'Directional charge shots with a fixed 7-hex impact';
+        stats = `Impact: Area/Balance/Power · Target hex 1-20`;
         break;
       case 'suppression_bomb':
         name = 'Suppression Bombs';
@@ -542,7 +611,7 @@ export class ProgressionSystem {
     const towerIconScale = 75 / 48;
     const safeName = unlockInfo?.name || '?';
 
-    if (['jet', 'spread', 'rain', 'pulsing', 'bomber', 'sentinel'].includes(unlock.towerType) && window.createTowerIconHTML) {
+    if (['jet', 'spread', 'rain', 'pulsing', 'bomber', 'sentinel', 'perimeter', 'charge'].includes(unlock.towerType) && window.createTowerIconHTML) {
       // Tower: 48px intrinsic icon scaled to ~75px to match item PNG width so labels align.
       iconDiv.innerHTML = window.createTowerIconHTML(unlock.towerType, 1, 1, false);
       iconDiv.style.cssText = `display: flex; justify-content: center; align-items: center; transform: scale(${towerIconScale}); transform-origin: center center; overflow: visible;`;
@@ -788,8 +857,10 @@ export class ProgressionSystem {
       
       // Check for unlocks if we have pending unlock check
       let newlyUnlocked = [];
+      let specialtyPlansGained = 0;
       if (this.pendingUnlockCheck) {
         const { previousLevel, newLevel } = this.pendingUnlockCheck;
+        specialtyPlansGained = awardSpecialtyPlansForLevels(previousLevel, newLevel);
         newlyUnlocked = this.getNewlyUnlockedItems(previousLevel, newLevel);
         // Clear the pending unlock check since we've handled it
         this.pendingUnlockCheck = null;
@@ -803,7 +874,7 @@ export class ProgressionSystem {
       
       // Create main sections container
       const sectionsContainer = document.createElement('div');
-      sectionsContainer.style.cssText = 'display: flex; justify-content: center; align-items: flex-start; gap: 20px; margin-bottom: 30px; width: 100%;';
+      sectionsContainer.style.cssText = 'display: flex; justify-content: center; align-items: flex-start; gap: 20px; margin-bottom: 10px; width: 100%;';
       
       // REWARDS section (always shown)
       const rewardsSection = document.createElement('div');
@@ -882,7 +953,58 @@ export class ProgressionSystem {
       
       rewardsFrame.appendChild(tokenContainer);
       rewardsSection.appendChild(rewardsFrame);
-      
+
+      let specialtyContainer = null;
+      if (specialtyPlansGained > 0) {
+        const specialtyFrame = document.createElement('div');
+        specialtyFrame.style.cssText = 'width: 150px; height: 150px; margin-top: 12px; background-image: url(assets/images/ui/frame-purple.png); background-size: 100% 100%; background-position: center; background-repeat: no-repeat; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 10px; box-sizing: border-box;';
+
+        specialtyContainer = document.createElement('div');
+        specialtyContainer.style.cssText = 'display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0;';
+
+        const specialtyImg = document.createElement('img');
+        specialtyImg.src = 'assets/images/items/special.png';
+        specialtyImg.style.cssText = 'width: 72px; height: auto; object-fit: contain; image-rendering: crisp-edges;';
+        specialtyContainer.appendChild(specialtyImg);
+
+        const specialtyQuantity = document.createElement('div');
+        specialtyQuantity.textContent = specialtyPlansGained === 1 ? 'x1' : `x${specialtyPlansGained}`;
+        specialtyQuantity.style.cssText = 'color: #FDA801; font-size: 28px; font-weight: bold; margin-top: 0; line-height: 26px;';
+        specialtyContainer.appendChild(specialtyQuantity);
+
+        let specialtyTooltipHtml = tsReward?.getLevelUpRewardTooltipContent(
+          { towerType: 'specialty_plan' },
+          this.gameState,
+          { omitShopCost: true }
+        ) || '';
+        if (specialtyTooltipHtml) {
+          specialtyTooltipHtml += `<div style="font-size: 11px; color: #FFFFFF; margin-top: 8px;">Click in inventory to open your specialty tree</div>`;
+        }
+
+        specialtyFrame.addEventListener('mouseenter', (e) => {
+          const rect = specialtyFrame.getBoundingClientRect();
+          const mouseX = rect.left + rect.width / 2;
+          const mouseY = rect.top - 20;
+          if (this.gameState?.inputHandler?.tooltipSystem && specialtyTooltipHtml) {
+            this.gameState.inputHandler.tooltipSystem.show(specialtyTooltipHtml, mouseX, mouseY);
+          }
+        });
+        specialtyFrame.addEventListener('mouseleave', () => {
+          this.gameState?.inputHandler?.tooltipSystem?.hide();
+        });
+        specialtyFrame.addEventListener('mousemove', (e) => {
+          const rect = specialtyFrame.getBoundingClientRect();
+          const mouseX = rect.left + rect.width / 2;
+          const mouseY = e.clientY - 20;
+          if (this.gameState?.inputHandler?.tooltipSystem) {
+            this.gameState.inputHandler.tooltipSystem.updateMousePosition(mouseX, mouseY);
+          }
+        });
+
+        specialtyFrame.appendChild(specialtyContainer);
+        rewardsSection.appendChild(specialtyFrame);
+      }
+
       sectionsContainer.appendChild(rewardsSection);
       
       // DISCOVERIES section (only shown when there are unlocks)
@@ -921,42 +1043,60 @@ export class ProgressionSystem {
       
       choicesDiv.appendChild(sectionsContainer);
       
-      // Create single Upgrade Towers button (centered, auto width)
       const buttonWrapper = document.createElement('div');
-      buttonWrapper.style.cssText = 'display: flex; justify-content: center; align-items: center; width: 100%;';
+      buttonWrapper.className = 'level-up-actions';
       
+      if (specialtyPlansGained > 0) {
+        const specialtyBtn = document.createElement('button');
+        specialtyBtn.type = 'button';
+        specialtyBtn.className = 'choice-btn cta-button cta-yellow level-up-action-btn';
+        specialtyBtn.textContent = 'Research a Specialty';
+        specialtyBtn.onclick = () => {
+          const onResumeAfterLevelUp = this.callbacks.onResumeAfterLevelUp;
+          this.inLevelUpFlow = false;
+          this.hideLevelUpModal();
+          openSpecialtyModal(this.gameState, {
+            forceResumeOnClose: true,
+            onClose: () => {
+              onResumeAfterLevelUp?.();
+            },
+          });
+        };
+        buttonWrapper.appendChild(specialtyBtn);
+      }
+
       const mapBtn = document.createElement('button');
-      mapBtn.className = 'choice-btn cta-button cta-purple';
+      mapBtn.type = 'button';
+      mapBtn.className = 'choice-btn cta-button cta-purple level-up-action-btn';
       mapBtn.textContent = 'Upgrade Towers';
-      mapBtn.style.whiteSpace = 'nowrap'; // Prevent text wrapping
-      mapBtn.style.width = 'auto'; // Override the default 100% width from CSS
+      mapBtn.style.whiteSpace = 'nowrap';
       mapBtn.onclick = () => {
         this.startMapSelection();
       };
-      
       buttonWrapper.appendChild(mapBtn);
-      choicesDiv.appendChild(buttonWrapper);
-      
-      // Add skip button (same style as story skip button)
-      const skipBtn = document.createElement('button');
-      skipBtn.className = 'story-skip-btn cta-button';
-      skipBtn.id = 'levelUpSkipBtn';
-      skipBtn.textContent = 'Skip';
-      skipBtn.onclick = (e) => {
+
+      const laterBtn = document.createElement('button');
+      laterBtn.type = 'button';
+      laterBtn.className = 'choice-btn cta-button cta-blue level-up-action-btn';
+      laterBtn.id = 'levelUpSkipBtn';
+      laterBtn.textContent = 'Later';
+      laterBtn.onclick = (e) => {
         e.stopPropagation();
-        // Skip upgrade phase and resume game
         this.closeUpgradeModal();
       };
+      buttonWrapper.appendChild(laterBtn);
+
+      choicesDiv.appendChild(buttonWrapper);
       
-      // Append skip button to modal overlay
-      modal.appendChild(skipBtn);
-      
-      // Add floating "+1" text above the upgrade plan
+      // Add floating reward text above each level-up reward card
       // Use a small delay to ensure DOM is fully rendered and positioned
       setTimeout(() => {
-        if (tokenContainer && tokenContainer.offsetParent !== null) { // Check if element is visible
-          // Create floating text: +1, color #ff67e7, 48px, 1.6875 seconds, float 40px, start 45px higher
+        if (tokenContainer && tokenContainer.offsetParent !== null) {
           createModalFloatingText(tokenContainer, '+1', '#ff67e7', 48, 1.6875, 40, -45);
+        }
+        if (specialtyContainer && specialtyContainer.offsetParent !== null) {
+          const specialtyFloatText = specialtyPlansGained === 1 ? 'x1' : `x${specialtyPlansGained}`;
+          createModalFloatingText(specialtyContainer, specialtyFloatText, '#FDA801', 48, 1.6875, 40, -45);
         }
       }, 100);
     }
@@ -1325,6 +1465,8 @@ export class ProgressionSystem {
     const isPulsing = towerType === CONFIG.TOWER_TYPE_PULSING;
     const isBomber = towerType === CONFIG.TOWER_TYPE_BOMBER;
     const isSentinel = towerType === CONFIG.TOWER_TYPE_SENTINEL;
+    const isPerimeter = towerType === CONFIG.TOWER_TYPE_PERIMETER;
+    const isCharge = towerType === CONFIG.TOWER_TYPE_CHARGE;
     const isRain = towerType === CONFIG.TOWER_TYPE_RAIN;
 
     if (upgradeType === 'range') {
@@ -1332,8 +1474,8 @@ export class ProgressionSystem {
         const currentInterval = getPulsingAttackInterval(currentLevel);
         const upgradedInterval = getPulsingAttackInterval(upgradedLevel);
         return {
-          currentValue: formatEveryInterval(currentInterval),
-          upgradedValue: formatEveryInterval(upgradedInterval),
+          currentValue: formatEveryInterval(currentInterval, { abbrev: true }),
+          upgradedValue: formatEveryInterval(upgradedInterval, { abbrev: true }),
           suffix: '',
         };
       }
@@ -1341,8 +1483,8 @@ export class ProgressionSystem {
         const currentInterval = getBomberAttackInterval(currentLevel);
         const upgradedInterval = getBomberAttackInterval(upgradedLevel);
         return {
-          currentValue: formatEveryInterval(currentInterval),
-          upgradedValue: formatEveryInterval(upgradedInterval),
+          currentValue: formatEveryInterval(currentInterval, { abbrev: true }),
+          upgradedValue: formatEveryInterval(upgradedInterval, { abbrev: true }),
           suffix: '',
         };
       }
@@ -1350,8 +1492,26 @@ export class ProgressionSystem {
         const currentInterval = getSentinelAttackInterval(currentLevel);
         const upgradedInterval = getSentinelAttackInterval(upgradedLevel);
         return {
-          currentValue: formatEveryInterval(currentInterval),
-          upgradedValue: formatEveryInterval(upgradedInterval),
+          currentValue: formatEveryInterval(currentInterval, { abbrev: true }),
+          upgradedValue: formatEveryInterval(upgradedInterval, { abbrev: true }),
+          suffix: '',
+        };
+      }
+      if (isPerimeter) {
+        const currentInterval = getPerimeterShotIntervalSeconds(currentLevel);
+        const upgradedInterval = getPerimeterShotIntervalSeconds(upgradedLevel);
+        return {
+          currentValue: formatEveryInterval(currentInterval, { abbrev: true }),
+          upgradedValue: formatEveryInterval(upgradedInterval, { abbrev: true }),
+          suffix: '',
+        };
+      }
+      if (isCharge) {
+        const currentInterval = getChargeAttackInterval(currentLevel);
+        const upgradedInterval = getChargeAttackInterval(upgradedLevel);
+        return {
+          currentValue: formatEveryInterval(currentInterval, { abbrev: true }),
+          upgradedValue: formatEveryInterval(upgradedInterval, { abbrev: true }),
           suffix: '',
         };
       }
@@ -1391,6 +1551,25 @@ export class ProgressionSystem {
           currentValue: `${formatWaterDamageRate(currentPower)}`,
           upgradedValue: `${formatWaterDamageRate(upgradedPower)}`,
           suffix: ' HP/bomb',
+        };
+      }
+      if (isPerimeter) {
+        const currentPower = getPerimeterPower(currentLevel);
+        const upgradedPower = getPerimeterPower(upgradedLevel);
+        return {
+          currentValue: `${formatWaterDamageRate(currentPower)}`,
+          upgradedValue: `${formatWaterDamageRate(upgradedPower)}`,
+          suffix: ' HP/bomb',
+        };
+      }
+      if (isCharge) {
+        const chargeMode = CONFIG.CHARGE_MODE_BALANCED;
+        const currentPower = getChargePerHexPower(currentLevel, chargeMode);
+        const upgradedPower = getChargePerHexPower(upgradedLevel, chargeMode);
+        return {
+          currentValue: `${formatWaterDamageRate(currentPower)}`,
+          upgradedValue: `${formatWaterDamageRate(upgradedPower)}`,
+          suffix: ' HP/hex',
         };
       }
       let currentPower = 0;
@@ -1570,15 +1749,17 @@ export class ProgressionSystem {
     const isRain = tower.type === CONFIG.TOWER_TYPE_RAIN;
     const isBomber = tower.type === CONFIG.TOWER_TYPE_BOMBER;
     const isSentinel = tower.type === CONFIG.TOWER_TYPE_SENTINEL;
+    const isPerimeter = tower.type === CONFIG.TOWER_TYPE_PERIMETER;
+    const isCharge = tower.type === CONFIG.TOWER_TYPE_CHARGE;
     
-    const firstUpgradeLabel = isPulsing || isBomber || isSentinel ? 'Speed' : 'Range';
-    const firstUpgradeType = 'range'; // For pulsing, bomber, and sentinel, rangeLevel tracks speed upgrades
+    const firstUpgradeLabel = isPulsing || isBomber || isSentinel || isPerimeter || isCharge ? 'Speed' : 'Range';
+    const firstUpgradeType = 'range'; // For pulsing, bomber, sentinel, and perimeter, rangeLevel tracks speed upgrades
     const secondUpgradeLabel = isBomber ? 'Impact' : 'Power';
     const secondUpgradeType = 'power';
     
     // Determine colors and images based on tower type
-    const firstUpgradeColor = isPulsing || isBomber || isSentinel ? '#FFC41D' : '#00FF00';
-    const firstUpgradeImage = isPulsing || isBomber || isSentinel ? 'assets/images/misc/speed.png' : 'assets/images/misc/range.png?v=2';
+    const firstUpgradeColor = isPulsing || isBomber || isSentinel || isPerimeter || isCharge ? '#FFC41D' : '#00FF00';
+    const firstUpgradeImage = isPulsing || isBomber || isSentinel || isPerimeter || isCharge ? 'assets/images/misc/speed.png' : 'assets/images/misc/range.png?v=2';
     const secondUpgradeColor = isBomber ? '#F7375C' : '#00D9FF';
     const secondUpgradeImage = isBomber ? 'assets/images/misc/impact.png' : 'assets/images/misc/power.png';
     
@@ -1934,8 +2115,53 @@ export class ProgressionSystem {
       return btn;
     };
 
+    const appendUpgradeOptionColumn = (btn, {
+      upgradeType,
+      currentLevel,
+      isMaxed,
+    }) => {
+      const column = document.createElement('div');
+      column.className = 'upgrade-option-column';
+      column.style.cssText = 'display: flex; flex-direction: column; align-items: center; gap: 6px;';
+      column.appendChild(btn);
+
+      if (!isMaxed && shouldShowMaxUpgradeButton(currentLevel)) {
+        const maxCost = getUpgradePlanCostToMax(currentLevel);
+        const maxCanAfford = availablePlans >= maxCost;
+        const maxBtn = document.createElement('button');
+        maxBtn.className = 'choice-btn cta-button cta-purple tower-upgrade-max-btn';
+        maxBtn.appendChild(createUpgradePlanCostButtonContent('Max', maxCost));
+
+        if (maxCanAfford) {
+          maxBtn.onclick = () => {
+            this.hideTowerUpgradePopup();
+            this.applyUpgrade(towerId, upgradeType, isInventory, true);
+          };
+        } else {
+          maxBtn.classList.add('tower-upgrade-max-btn--disabled');
+          maxBtn.addEventListener('mouseenter', () => {
+            if (this.gameState.inputHandler?.tooltipSystem) {
+              const rect = maxBtn.getBoundingClientRect();
+              this.gameState.inputHandler.tooltipSystem.show(
+                `<div style="color: #FF6B6B; font-weight: bold;">Insufficient plans!</div><div style="color: #FFFFFF; font-size: 14px; margin-top: 4px;">Need ${maxCost} plan${maxCost !== 1 ? 's' : ''}, have ${availablePlans}</div>`,
+                rect.left + rect.width / 2,
+                rect.top
+              );
+            }
+          });
+          maxBtn.addEventListener('mouseleave', () => {
+            this.gameState.inputHandler?.tooltipSystem?.hide();
+          });
+        }
+
+        column.appendChild(maxBtn);
+      }
+
+      buttonsDiv.appendChild(column);
+    };
+
     const firstIsMaxed = tower.rangeLevel >= 4;
-    const firstRequiredTokens = firstIsMaxed ? 0 : (tower.rangeLevel === 3 ? 4 : tower.rangeLevel);
+    const firstRequiredTokens = firstIsMaxed ? 0 : getUpgradePlanCostForStep(tower.rangeLevel);
     const firstCanAfford = availablePlans >= firstRequiredTokens;
     const firstBtn = createUpgradeButton({
       upgradeLabel: firstUpgradeLabel,
@@ -1953,10 +2179,14 @@ export class ProgressionSystem {
       towerRangeLevel: tower.rangeLevel,
       towerPowerLevel: tower.powerLevel,
     });
-    buttonsDiv.appendChild(firstBtn);
+    appendUpgradeOptionColumn(firstBtn, {
+      upgradeType: firstUpgradeType,
+      currentLevel: tower.rangeLevel,
+      isMaxed: firstIsMaxed,
+    });
 
     const secondIsMaxed = tower.powerLevel >= 4;
-    const secondRequiredTokens = secondIsMaxed ? 0 : (tower.powerLevel === 3 ? 4 : tower.powerLevel);
+    const secondRequiredTokens = secondIsMaxed ? 0 : getUpgradePlanCostForStep(tower.powerLevel);
     const secondCanAfford = availablePlans >= secondRequiredTokens;
     const secondBtn = createUpgradeButton({
       upgradeLabel: secondUpgradeLabel,
@@ -1974,7 +2204,11 @@ export class ProgressionSystem {
       towerRangeLevel: tower.rangeLevel,
       towerPowerLevel: tower.powerLevel,
     });
-    buttonsDiv.appendChild(secondBtn);
+    appendUpgradeOptionColumn(secondBtn, {
+      upgradeType: secondUpgradeType,
+      currentLevel: tower.powerLevel,
+      isMaxed: secondIsMaxed,
+    });
     
     // Cancel button (auto width, bottom area) - wrap in container like other modals
     const cancelContainer = document.createElement('div');
@@ -2110,10 +2344,11 @@ export class ProgressionSystem {
    * @param {string|null} towerId - Tower ID (null for inventory)
    * @param {string} upgradeType - 'range' or 'power'
    * @param {boolean} isInventory - Whether this is for an inventory tower
+   * @param {boolean} [toMax] - When true, upgrade this stat all the way to level 4
    */
-  applyUpgrade(towerId, upgradeType, isInventory) {
+  applyUpgrade(towerId, upgradeType, isInventory, toMax = false) {
     // Show confirmation modal
-    this.showUpgradeConfirmation(towerId, upgradeType, isInventory);
+    this.showUpgradeConfirmation(towerId, upgradeType, isInventory, toMax);
   }
 
   /**
@@ -2121,8 +2356,9 @@ export class ProgressionSystem {
    * @param {string|null} towerId - Tower ID (null for inventory)
    * @param {string} upgradeType - 'range' or 'power'
    * @param {boolean} isInventory - Whether this is for an inventory tower
+   * @param {boolean} [toMax] - When true, preview/apply upgrade to max level
    */
-  showUpgradeConfirmation(towerId, upgradeType, isInventory) {
+  showUpgradeConfirmation(towerId, upgradeType, isInventory, toMax = false) {
     const modal = document.getElementById('modalOverlay');
     const choicesDiv = document.getElementById('modalChoices');
     
@@ -2184,18 +2420,22 @@ export class ProgressionSystem {
       const isPulsing = towerType === CONFIG.TOWER_TYPE_PULSING;
       const isBomber = towerType === CONFIG.TOWER_TYPE_BOMBER;
       const isSentinel = towerType === CONFIG.TOWER_TYPE_SENTINEL;
+      const isPerimeter = towerType === CONFIG.TOWER_TYPE_PERIMETER;
+      const isCharge = towerType === CONFIG.TOWER_TYPE_CHARGE;
       const upgradeLabel = upgradeType === 'range'
-        ? (isPulsing || isBomber || isSentinel ? 'Speed' : 'Range')
+        ? (isPulsing || isBomber || isSentinel || isPerimeter || isCharge ? 'Speed' : 'Range')
         : (isBomber ? 'Impact' : 'Power');
       const upgradeImage = upgradeType === 'range'
-        ? (isPulsing || isBomber || isSentinel ? 'assets/images/misc/speed.png' : 'assets/images/misc/range.png?v=2')
+        ? (isPulsing || isBomber || isSentinel || isPerimeter || isCharge ? 'assets/images/misc/speed.png' : 'assets/images/misc/range.png?v=2')
         : (isBomber ? 'assets/images/misc/impact.png' : 'assets/images/misc/power.png');
       const upgradeColor = upgradeType === 'range'
-        ? (isPulsing || isBomber || isSentinel ? '#FFC41D' : '#00FF00')
+        ? (isPulsing || isBomber || isSentinel || isPerimeter || isCharge ? '#FFC41D' : '#00FF00')
         : (isBomber ? '#F7375C' : '#00D9FF');
       const currentLevel = upgradeType === 'range' ? rangeLevel : powerLevel;
-      const newLevel = currentLevel + 1;
-      const requiredTokens = currentLevel === 3 ? 4 : currentLevel;
+      const newLevel = toMax ? TOWER_UPGRADE_MAX_LEVEL : currentLevel + 1;
+      const requiredTokens = toMax
+        ? getUpgradePlanCostToMax(currentLevel)
+        : getUpgradePlanCostForStep(currentLevel);
       
       // Determine background image based on upgrade type
       let defaultBackgroundImage = 'hex-red.png'; // Default to red for Impact
@@ -2213,9 +2453,9 @@ export class ProgressionSystem {
       let newRangeLevel = rangeLevel;
       let newPowerLevel = powerLevel;
       if (upgradeType === 'range') {
-        newRangeLevel = Math.min(4, rangeLevel + 1);
+        newRangeLevel = toMax ? TOWER_UPGRADE_MAX_LEVEL : Math.min(TOWER_UPGRADE_MAX_LEVEL, rangeLevel + 1);
       } else if (upgradeType === 'power') {
-        newPowerLevel = Math.min(4, powerLevel + 1);
+        newPowerLevel = toMax ? TOWER_UPGRADE_MAX_LEVEL : Math.min(TOWER_UPGRADE_MAX_LEVEL, powerLevel + 1);
       }
       
       // Get tower image HTML for current and upgraded versions
@@ -2444,31 +2684,7 @@ export class ProgressionSystem {
       // Upgrade button (right) - includes token cost in confirm modal
       const confirmBtn = document.createElement('button');
       confirmBtn.className = 'choice-btn cta-button cta-purple';
-      
-      // Create cost row for inside the button - "Upgrade" text, token image, then "x1" in red
-      const costRowInButton = document.createElement('div');
-      costRowInButton.style.cssText = 'display: flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap;';
-      
-      const upgradeTextSpan = document.createElement('span');
-      upgradeTextSpan.textContent = 'Upgrade';
-      upgradeTextSpan.style.fontSize = 'inherit';
-      costRowInButton.appendChild(upgradeTextSpan);
-      
-      const tokenImgInButton = document.createElement('img');
-      tokenImgInButton.src = 'assets/images/items/upgrade_token.png';
-      tokenImgInButton.style.cssText = 'width: 32px; height: auto; object-fit: contain; image-rendering: crisp-edges;';
-      costRowInButton.appendChild(tokenImgInButton);
-      
-      const costSpanInButton = document.createElement('span');
-      costSpanInButton.textContent = `x${requiredTokens}`;
-      costSpanInButton.style.color = '#ff67e7'; // Pink to match upgrade plan color
-      costSpanInButton.style.fontSize = '24px';
-      costSpanInButton.style.textShadow = '0 0 25px rgba(0,0,0,.3), 0 0 10px rgba(0,0,0,.3), 0 0 5px rgba(0,0,0,.5)';
-      costSpanInButton.style.marginLeft = '-6px'; // Reduce gap from 8px to 2px (8px - 6px = 2px)
-      costSpanInButton.style.textTransform = 'none'; // Ensure lowercase "x" stays lowercase
-      costRowInButton.appendChild(costSpanInButton);
-      
-      confirmBtn.appendChild(costRowInButton);
+      confirmBtn.appendChild(createUpgradePlanCostButtonContent('Upgrade', requiredTokens));
       confirmBtn.onclick = () => {
         // Play upgrade sound
         if (typeof window !== 'undefined' && window.AudioManager) {
@@ -2480,7 +2696,7 @@ export class ProgressionSystem {
         
         // Close the confirmation modal first
         closeModalOverlay(modal, {
-          onDone: () => this.executeUpgrade(towerId, upgradeType, isInventory),
+          onDone: () => this.executeUpgrade(towerId, upgradeType, isInventory, toMax),
         });
       };
       buttonContainer.appendChild(confirmBtn);
@@ -2494,8 +2710,9 @@ export class ProgressionSystem {
    * @param {string|null} towerId - Tower ID or 'stored-X' for stored towers
    * @param {string} upgradeType - 'range' or 'power'
    * @param {boolean} isInventory - Whether this is for an inventory tower
+   * @param {boolean} [toMax] - When true, upgrade this stat all the way to level 4
    */
-  executeUpgrade(towerId, upgradeType, isInventory) {
+  executeUpgrade(towerId, upgradeType, isInventory, toMax = false) {
     // First, determine the current level and required token cost
     let currentLevel = 1;
     let requiredTokens = 1;
@@ -2508,13 +2725,18 @@ export class ProgressionSystem {
       
       if (tower) {
         currentLevel = upgradeType === 'range' ? tower.rangeLevel : tower.powerLevel;
-        // Level 4 upgrades cost 4 plans, others cost current level
-        requiredTokens = currentLevel === 3 ? 4 : currentLevel;
+        requiredTokens = toMax
+          ? getUpgradePlanCostToMax(currentLevel)
+          : getUpgradePlanCostForStep(currentLevel);
         
         if (upgradeType === 'range') {
-          tower.rangeLevel = Math.min(4, tower.rangeLevel + 1);
+          tower.rangeLevel = toMax
+            ? TOWER_UPGRADE_MAX_LEVEL
+            : Math.min(TOWER_UPGRADE_MAX_LEVEL, tower.rangeLevel + 1);
         } else if (upgradeType === 'power') {
-          tower.powerLevel = Math.min(4, tower.powerLevel + 1);
+          tower.powerLevel = toMax
+            ? TOWER_UPGRADE_MAX_LEVEL
+            : Math.min(TOWER_UPGRADE_MAX_LEVEL, tower.powerLevel + 1);
         }
         
         // Update inventory display to show upgrade levels
@@ -2528,13 +2750,18 @@ export class ProgressionSystem {
       const storedTower = this.gameState.player.inventory.storedTowers[index];
       if (storedTower) {
         currentLevel = upgradeType === 'range' ? storedTower.rangeLevel : storedTower.powerLevel;
-        // Level 4 upgrades cost 4 plans, others cost current level
-        requiredTokens = currentLevel === 3 ? 4 : currentLevel;
+        requiredTokens = toMax
+          ? getUpgradePlanCostToMax(currentLevel)
+          : getUpgradePlanCostForStep(currentLevel);
         
         if (upgradeType === 'range') {
-          storedTower.rangeLevel = Math.min(4, storedTower.rangeLevel + 1);
+          storedTower.rangeLevel = toMax
+            ? TOWER_UPGRADE_MAX_LEVEL
+            : Math.min(TOWER_UPGRADE_MAX_LEVEL, storedTower.rangeLevel + 1);
         } else if (upgradeType === 'power') {
-          storedTower.powerLevel = Math.min(4, storedTower.powerLevel + 1);
+          storedTower.powerLevel = toMax
+            ? TOWER_UPGRADE_MAX_LEVEL
+            : Math.min(TOWER_UPGRADE_MAX_LEVEL, storedTower.powerLevel + 1);
         }
         
         // Update inventory display
@@ -2547,10 +2774,18 @@ export class ProgressionSystem {
       const tower = this.gameState.towerSystem.getTower(towerId);
       if (tower) {
         currentLevel = upgradeType === 'range' ? tower.rangeLevel : tower.powerLevel;
-        // Level 4 upgrades cost 4 plans, others cost current level
-        requiredTokens = currentLevel === 3 ? 4 : currentLevel;
+        requiredTokens = toMax
+          ? getUpgradePlanCostToMax(currentLevel)
+          : getUpgradePlanCostForStep(currentLevel);
         
-        if (upgradeType === 'range') {
+        if (toMax) {
+          if (upgradeType === 'range') {
+            tower.rangeLevel = TOWER_UPGRADE_MAX_LEVEL;
+            this.gameState.towerSystem.updateTowerAffectedHexes(towerId);
+          } else if (upgradeType === 'power') {
+            tower.powerLevel = TOWER_UPGRADE_MAX_LEVEL;
+          }
+        } else if (upgradeType === 'range') {
           this.gameState.towerSystem.upgradeTowerRange(towerId);
         } else if (upgradeType === 'power') {
           this.gameState.towerSystem.upgradeTowerPower(towerId);
@@ -2677,7 +2912,9 @@ export class ProgressionSystem {
     // During a wave, always resume (unlock modals will pause again if needed)
     // Between waves, only resume if no unlock modals will show
     if (isWaveActive || !hasPendingUnlocks) {
-      if (window.gameLoop?.isPaused) {
+      if (window.resumeGameAfterModalClose) {
+        window.resumeGameAfterModalClose({ withAudio: false });
+      } else if (window.gameLoop?.isPaused) {
         if (window.resumeGameSilently) window.resumeGameSilently();
         else if (window.resumeGameWithAudio) window.resumeGameWithAudio();
       }
@@ -2734,17 +2971,10 @@ export class ProgressionSystem {
    * @returns {string} Formatted item name
    */
   getItemDisplayName(towerType, level = null) {
+    const towerName = getTowerDisplayName(towerType);
+    if (towerName) return towerName;
+
     switch (towerType) {
-      case 'jet':
-        return 'Jet Tower';
-      case 'spread':
-        return 'Spread Tower';
-      case 'pulsing':
-        return 'Pulsing Tower';
-      case 'rain':
-        return 'Rain Tower';
-      case 'bomber':
-        return 'Bomber Tower';
       case 'suppression_bomb':
         return level ? `Suppression Bomb Level ${level}` : 'Suppression Bomb';
       case 'shield':
@@ -2773,7 +3003,7 @@ export class ProgressionSystem {
 
   checkAndShowUnlocks(previousLevel, newLevel) {
     // Check all tower types to see if any unlocked
-    const allUnlockTypes = ['jet', 'rain', 'shield', 'spread', 'suppression_bomb', 'suppression_bundle', 'shield_bundle', 'town_health', 'upgrade_token', 'pulsing', 'bomber'];
+    const allUnlockTypes = ['jet', 'rain', 'shield', 'spread', 'suppression_bomb', 'suppression_bundle', 'shield_bundle', 'town_health', 'upgrade_token', 'pulsing', 'bomber', 'perimeter', 'charge'];
     
     // Initialize newlyUnlockedItems if it doesn't exist
     if (!this.gameState.player.newlyUnlockedItems) {
@@ -3005,7 +3235,9 @@ export class ProgressionSystem {
             return;
           }
 
-          if (window.gameLoop?.isPaused && window.resumeGameWithAudio) {
+          if (window.resumeGameAfterModalClose) {
+            window.resumeGameAfterModalClose({ withAudio: true });
+          } else if (window.gameLoop?.isPaused && window.resumeGameWithAudio) {
             window.resumeGameWithAudio();
           }
           if (window.syncPauseButton) {

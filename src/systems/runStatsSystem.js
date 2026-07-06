@@ -53,6 +53,8 @@ function compactStatsForHistory(data) {
     digSiteOutcomes: slice(data.digSiteOutcomes),
     combosByTier: data.combosByTier,
     comboXpTotal: data.comboXpTotal,
+    highestComboHexCount: data.highestComboHexCount,
+    highestComboTierId: data.highestComboTierId,
     comboEvents: slice(data.comboEvents),
   };
 }
@@ -131,6 +133,10 @@ function emptyData() {
     combosByTier: emptyCombosByTier(),
     /** Total boosted combo XP earned this run */
     comboXpTotal: 0,
+    /** Largest contiguous combo (hex count) achieved this run */
+    highestComboHexCount: 0,
+    /** Tier id for {@link highestComboHexCount} (giant, monster, ludicrous, god) */
+    highestComboTierId: null,
     /** @type {Array<{ tierId: string, text: string, hexCount: number, xp: number, baseXp: number, wave: number, waveGroup: number, waveInGroup: number, at: number }>} */
     comboEvents: [],
   };
@@ -189,13 +195,18 @@ export class RunStatsTracker {
    * @param {string} text - Combo phrase
    * @param {number} hexCount - Contiguous hexes in the combo
    * @param {number} xpAwarded - Boosted XP granted
-   * @param {number} baseXp - Config base XP before boosts
+   * @param {number} baseXp - Tier baseline × wave group, before XP power-up boosts
    */
   recordCombo(tierId, text, hexCount, xpAwarded, baseXp) {
     const id = String(tierId || 'unknown').toLowerCase();
     if (!this.data.combosByTier) this.data.combosByTier = emptyCombosByTier();
     if (this.data.combosByTier[id] === undefined) this.data.combosByTier[id] = 0;
     this.data.combosByTier[id] += 1;
+    const hex = Math.max(0, Math.floor(Number(hexCount)) || 0);
+    if (hex > (this.data.highestComboHexCount || 0)) {
+      this.data.highestComboHexCount = hex;
+      this.data.highestComboTierId = id;
+    }
     const xp = Math.max(0, Math.round(Number(xpAwarded)) || 0);
     this.data.comboXpTotal = (this.data.comboXpTotal || 0) + xp;
     const ctx = this.getCtx();
@@ -203,7 +214,7 @@ export class RunStatsTracker {
     this.data.comboEvents.push({
       tierId: id,
       text: String(text || ''),
-      hexCount: Math.max(0, Math.floor(Number(hexCount)) || 0),
+      hexCount: hex,
       xp,
       baseXp: Math.max(0, Math.round(Number(baseXp)) || 0),
       wave: ctx.wave,
@@ -547,7 +558,26 @@ export class RunStatsTracker {
         ...(json.combosByTier && typeof json.combosByTier === 'object' ? json.combosByTier : {}),
       };
       merged.comboXpTotal = Math.max(0, Math.round(Number(json.comboXpTotal)) || 0);
+      merged.highestComboHexCount = Math.max(
+        0,
+        Math.floor(Number(json.highestComboHexCount)) || 0
+      );
+      merged.highestComboTierId =
+        json.highestComboTierId != null && String(json.highestComboTierId).length
+          ? String(json.highestComboTierId).toLowerCase()
+          : null;
       merged.comboEvents = Array.isArray(json.comboEvents) ? json.comboEvents : [];
+      if (!merged.highestComboHexCount && merged.comboEvents.length > 0) {
+        for (const ev of merged.comboEvents) {
+          const h = Math.max(0, Math.floor(Number(ev?.hexCount)) || 0);
+          if (h >= merged.highestComboHexCount) {
+            merged.highestComboHexCount = h;
+            merged.highestComboTierId = ev?.tierId
+              ? String(ev.tierId).toLowerCase()
+              : merged.highestComboTierId;
+          }
+        }
+      }
       merged.lastRunTotalFiresExtinguished = Math.max(
         0,
         Math.floor(Number(json.lastRunTotalFiresExtinguished)) || 0
@@ -581,6 +611,8 @@ export function appendRunToHistory(tracker, meta = {}) {
         waveGroup30SurvivalSeconds: tracker?.data?.reachedWaveGroup30
           ? Math.max(0, Number(tracker?.data?.waveGroup30SurvivalSeconds) || 0)
           : null,
+        highestComboHexCount: Math.max(0, Math.floor(Number(tracker?.data?.highestComboHexCount)) || 0),
+        highestComboTierId: tracker?.data?.highestComboTierId ?? null,
       },
       stats: compactStatsForHistory(tracker?.data),
     };

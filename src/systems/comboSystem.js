@@ -1,6 +1,6 @@
 // Combo System — detects contiguous fire extinguishes within a short time window
 
-import { CONFIG, getComboTierForHexCount } from '../config.js';
+import { CONFIG, getComboTierForHexCount, getComboXpForWaveGroup, getComboDisplayText } from '../config.js';
 import { getNeighbors, hexKey } from '../utils/hexMath.js';
 
 /**
@@ -113,22 +113,31 @@ export class ComboSystem {
    */
   triggerCombo(tier, component) {
     const center = getComponentCenter(component);
-    const baseXp = Math.max(0, Math.round(Number(tier.xp)) || 0);
+    const waveGroup = Math.max(
+      1,
+      Math.floor(
+        Number(this.gameState?.waveSystem?.currentWaveGroup ?? this.gameState?.wave?.currentGroup) || 1,
+      ),
+    );
+    const baseXp = getComboXpForWaveGroup(tier.xp, waveGroup);
     const boostedXp =
       this.gameState?.progressionSystem?.awardComboXP?.(baseXp) ?? baseXp;
+
+    const hexCount = component.length;
+    const displayText = getComboDisplayText(tier, hexCount);
 
     this.gameState?.notificationSystem?.addComboNotification?.(
       center.q,
       center.r,
-      tier.text,
+      displayText,
       tier.color,
       boostedXp,
     );
 
     this.gameState?.runStats?.recordCombo?.(
       tier.id,
-      tier.text,
-      component.length,
+      displayText,
+      hexCount,
       boostedXp,
       baseXp,
     );

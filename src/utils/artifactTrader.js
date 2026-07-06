@@ -10,7 +10,9 @@ import {
   getArtifactById,
   getArtifactsBySet,
   getSuppressionBombTotalUses,
+  getPowerUpGraphicFilename,
   ARTIFACT_SET_IDS,
+  applyCurrencyGainBonuses,
 } from '../config.js';
 import { createModalFloatingImage, createModalFloatingText } from './modal.js';
 
@@ -375,16 +377,17 @@ const TRADER_ARTIFACT_IMG_HEIGHT_PX = 58;
 /** Same height for all want boxes; widths scale by set size. */
 const TRADER_ARTIFACT_BOX_H = 100;
 const TRADER_ARTIFACT_BOX_W_SINGLE = 108;
-const TRADER_ARTIFACT_BOX_W_PAIR = 212;
-const TRADER_ARTIFACT_BOX_W_TRIPLE = 288;
-const TRADER_ARTIFACT_BOX_W_QUAD = 368;
+const TRADER_ARTIFACT_BOX_W_PAIR = 196;
+const TRADER_ARTIFACT_BOX_W_TRIPLE = 244;
+const TRADER_ARTIFACT_BOX_W_QUAD = 308;
 const TRADER_ROW_ARROW_COL_W = 18;
 const TRADER_ROW_COL_GAP = 6;
 const TRADER_REWARD_ICON_H_PX = 52;
-const TRADER_REWARD_INNER_GAP_PX = 6;
-const TRADER_REWARD_PART_GAP_PX = 12;
-const TRADER_REWARD_COL_MIN_W_PX = 104;
-const TRADER_REWARD_COL_MAX_W_PX = 236;
+const TRADER_REWARD_COL_MAX_W_PX = 200;
+/** ~10% more overlap than the prior 14px default. */
+const TRADER_REWARD_OVERLAP_PX = 15;
+/** Narrow reward rows still need room for the Claim button. */
+const TRADER_CLAIM_BTN_MIN_W_PX = 72;
 const TRADER_DIM_FILTER = 'brightness(0.38) saturate(0.92)';
 const TRADER_DIM_FILTER_HEAVY = 'brightness(0.32) saturate(0.9)';
 const TRADER_SET_PLUS_H_PX = 16;
@@ -494,7 +497,19 @@ function applyRewardBundleToPlayer(gameState, rewardBundle) {
     } else if (part.type === 'currency') {
       const amt = part.amount != null && part.amount > 0 ? Number(part.amount) : 0;
       if (amt > 0) {
-        gameState.player.currency = (gameState.player.currency || 0) + amt * n;
+        const granted = applyCurrencyGainBonuses(amt * n, gameState);
+        gameState.player.currency = (gameState.player.currency || 0) + granted;
+      }
+    } else if (part.type === 'permanent_power_up') {
+      const powerUpId = part.powerUpId;
+      if (!powerUpId || !CONFIG.POWER_UPS?.[powerUpId]) continue;
+      if (!gameState.player.powerUps) gameState.player.powerUps = {};
+      gameState.player.powerUps[powerUpId] = (gameState.player.powerUps[powerUpId] || 0) + n;
+      if (powerUpId === 'tower_speed') {
+        gameState.towerSystem?.refreshAllTowerAffectedHexes?.();
+      }
+      if (powerUpId === 'tower_health') {
+        gameState.towerSystem?.refreshAllTowerMaxHealth?.();
       }
     } else if (part.type === 'shield') {
       const level = Math.min(4, Math.max(1, Math.round(Number(part.level || 1))));
@@ -525,118 +540,199 @@ function applyRewardBundleToPlayer(gameState, rewardBundle) {
   }
 }
 
+function rewardIconsRowWidth(count, unitW = TRADER_REWARD_ICON_H_PX) {
+  const n = Math.max(0, Math.floor(count));
+  if (n <= 0) return 0;
+  if (n === 1) return unitW;
+  return unitW + (n - 1) * (unitW - TRADER_REWARD_OVERLAP_PX);
+}
+
+function styleTraderRewardIcon(img, stackIndex = 0, stackTotal = 1) {
+  img.classList.add('collectible-sprite-smooth');
+  img.style.cssText = `height: ${TRADER_REWARD_ICON_H_PX}px; width: auto; flex-shrink: 0; cursor: inherit;`;
+  if (stackTotal >= 2 && stackIndex > 0) {
+    img.style.marginLeft = `-${TRADER_REWARD_OVERLAP_PX}px`;
+    img.style.position = 'relative';
+    img.style.zIndex = String(stackIndex);
+  }
+  return img;
+}
+
+/** Count every reward portrait in a bundle (one currency chip = one icon). */
+function countRewardBundleIcons(bundle) {
+  if (!Array.isArray(bundle)) return 0;
+  let total = 0;
+  for (const part of bundle) {
+    if (!part || !part.type) continue;
+    const n = part.count != null && part.count > 0 ? Math.floor(part.count) : 1;
+    if (part.type === 'currency') {
+      const amt = part.amount != null && part.amount > 0 ? Number(part.amount) : 0;
+      if (amt * n > 0) total += 1;
+    } else if (['upgrade_plans', 'shield', 'suppression_bomb', 'tree_juice', 'permanent_power_up'].includes(part.type)) {
+      total += n;
+    }
+  }
+  return total;
+}
+
+/**
+ * @param {object} part
+ * @param {number} unitIndex - index within a multi-count part (for unique nodes only)
+ * @returns {HTMLImageElement|null}
+ */
+function createTraderRewardIconElement(part, unitIndex = 0, gameState = null) {
+  if (!part || !part.type) return null;
+  const n = part.count != null && part.count > 0 ? Math.floor(part.count) : 1;
+
+  if (part.type === 'currency') {
+    if (unitIndex > 0) return null;
+    const amt = part.amount != null && part.amount > 0 ? Number(part.amount) : 0;
+    const baseTotal = amt * n;
+    const total = gameState ? applyCurrencyGainBonuses(baseTotal, gameState) : baseTotal;
+    if (total <= 0) return null;
+    const icon = document.createElement('img');
+    icon.src = 'assets/images/items/currency.png';
+    icon.alt = 'Currency';
+    icon.dataset.traderReward = 'currency';
+    icon.dataset.traderCurrencyAmount = String(total);
+    icon.dataset.traderFloatText = `+$${total}`;
+    icon.dataset.traderFloatColor = '#00FF88';
+    return icon;
+  }
+
+  const img = document.createElement('img');
+  if (part.type === 'upgrade_plans') {
+    img.src = 'assets/images/items/upgrade_token.png';
+    img.alt = 'Upgrade plans';
+    img.dataset.traderReward = 'upgrade_plans';
+  } else if (part.type === 'shield') {
+    const level = Math.min(4, Math.max(1, Math.round(Number(part.level || 1))));
+    img.src = `assets/images/items/shield_${level}.png`;
+    img.alt = `Shield level ${level}`;
+    img.dataset.traderReward = 'shield';
+    img.dataset.traderRewardLevel = String(level);
+  } else if (part.type === 'suppression_bomb') {
+    const level = Math.min(4, Math.max(1, Math.round(Number(part.level || 1))));
+    img.src = `assets/images/items/suppression_${level}.png`;
+    img.alt = 'Suppression bomb';
+    img.dataset.traderReward = 'suppression_bomb';
+    img.dataset.traderRewardLevel = String(level);
+  } else if (part.type === 'tree_juice') {
+    img.src = 'assets/images/items/town_defense.png';
+    img.alt = 'Tree juice';
+    img.dataset.traderReward = 'tree_juice';
+  } else if (part.type === 'permanent_power_up') {
+    const powerUpId = part.powerUpId;
+    const gfx = powerUpId ? getPowerUpGraphicFilename(powerUpId) : null;
+    if (!gfx) return null;
+    img.src = `assets/images/power_ups/${gfx}`;
+    img.alt = CONFIG.POWER_UPS?.[powerUpId]?.name || 'Power-up';
+    img.dataset.traderReward = 'permanent_power_up';
+    img.dataset.traderRewardPowerUpId = powerUpId;
+  } else {
+    return null;
+  }
+  return img;
+}
+
 /**
  * @param {object[]} rewardBundle
  * @returns {HTMLElement}
  */
-function buildArtifactTraderRewardRow(rewardBundle) {
-  const row = document.createElement('div');
-  row.className = 'artifact-trader-reward-row';
-  row.style.cssText =
-    'display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; justify-content: center; gap: 12px; min-height: 0; max-width: 100%; white-space: nowrap;';
-  for (const part of rewardBundle) {
+function buildArtifactTraderRewardRow(rewardBundle, gameState = null) {
+  const icons = [];
+  for (const part of rewardBundle || []) {
     if (!part || !part.type) continue;
-    const partWrap = document.createElement('div');
-    partWrap.className = 'artifact-trader-reward-part';
     const n = part.count != null && part.count > 0 ? Math.floor(part.count) : 1;
     if (part.type === 'currency') {
-      const amt = part.amount != null && part.amount > 0 ? Number(part.amount) : 0;
-      const total = amt * n;
-      if (total > 0) {
-        const icon = document.createElement('img');
-        icon.src = 'assets/images/items/currency.png';
-        icon.alt = 'Currency';
-        icon.dataset.traderReward = 'currency';
-        icon.dataset.traderCurrencyAmount = String(total);
-        icon.dataset.traderFloatText = `+$${total}`;
-        icon.dataset.traderFloatColor = '#00FF88';
-        icon.classList.add('collectible-sprite-smooth');
-        icon.style.cssText = `height: ${TRADER_REWARD_ICON_H_PX}px; width: auto; flex-shrink: 0; cursor: inherit;`;
-        partWrap.appendChild(icon);
-        row.appendChild(partWrap);
-      }
+      const icon = createTraderRewardIconElement(part, 0, gameState);
+      if (icon) icons.push(icon);
       continue;
     }
     for (let u = 0; u < n; u++) {
-      if (part.type === 'upgrade_plans') {
-        const img = document.createElement('img');
-        img.src = 'assets/images/items/upgrade_token.png';
-        img.alt = 'Upgrade plans';
-        img.dataset.traderReward = 'upgrade_plans';
-        img.classList.add('collectible-sprite-smooth');
-        img.style.cssText = `height: ${TRADER_REWARD_ICON_H_PX}px; width: auto; flex-shrink: 0; cursor: inherit;`;
-        partWrap.appendChild(img);
-      } else if (part.type === 'shield') {
-        const level = Math.min(4, Math.max(1, Math.round(Number(part.level || 1))));
-        const img = document.createElement('img');
-        img.src = `assets/images/items/shield_${level}.png`;
-        img.alt = `Shield level ${level}`;
-        img.dataset.traderReward = 'shield';
-        img.dataset.traderRewardLevel = String(level);
-        img.classList.add('collectible-sprite-smooth');
-        img.style.cssText = `height: ${TRADER_REWARD_ICON_H_PX}px; width: auto; flex-shrink: 0; cursor: inherit;`;
-        partWrap.appendChild(img);
-      } else if (part.type === 'suppression_bomb') {
-        const level = Math.min(4, Math.max(1, Math.round(Number(part.level || 1))));
-        const img = document.createElement('img');
-        img.src = `assets/images/items/suppression_${level}.png`;
-        img.alt = 'Suppression bomb';
-        img.dataset.traderReward = 'suppression_bomb';
-        img.dataset.traderRewardLevel = String(level);
-        img.classList.add('collectible-sprite-smooth');
-        img.style.cssText = `height: ${TRADER_REWARD_ICON_H_PX}px; width: auto; flex-shrink: 0; cursor: inherit;`;
-        partWrap.appendChild(img);
-      } else if (part.type === 'tree_juice') {
-        const img = document.createElement('img');
-        img.src = 'assets/images/items/town_defense.png';
-        img.alt = 'Tree juice';
-        img.dataset.traderReward = 'tree_juice';
-        img.classList.add('collectible-sprite-smooth');
-        img.style.cssText = `height: ${TRADER_REWARD_ICON_H_PX}px; width: auto; flex-shrink: 0; cursor: inherit;`;
-        partWrap.appendChild(img);
-      }
+      const icon = createTraderRewardIconElement(part, u, gameState);
+      if (icon) icons.push(icon);
     }
-    if (partWrap.childElementCount > 0) row.appendChild(partWrap);
   }
-  if (!row.firstChild) {
-    const img = document.createElement('img');
-    img.src = 'assets/images/items/upgrade_token.png';
-    img.alt = 'Upgrade plans';
-    img.dataset.traderReward = 'upgrade_plans';
-    img.classList.add('collectible-sprite-smooth');
-    img.style.cssText = `height: ${TRADER_REWARD_ICON_H_PX}px; width: auto; flex-shrink: 0; cursor: inherit;`;
-    row.appendChild(img);
+
+  if (icons.length === 0) {
+    const fallback = document.createElement('img');
+    fallback.src = 'assets/images/items/upgrade_token.png';
+    fallback.alt = 'Upgrade plans';
+    fallback.dataset.traderReward = 'upgrade_plans';
+    icons.push(fallback);
   }
+
+  const stackTotal = icons.length;
+  const row = document.createElement('div');
+  row.className = 'artifact-trader-reward-row';
+  if (stackTotal >= 2) row.classList.add('artifact-trader-reward-row--stacked');
+  row.style.cssText =
+    'display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; justify-content: center; gap: 0; min-height: 0; max-width: 100%; white-space: nowrap;';
+
+  const stack = document.createElement('div');
+  stack.className = 'artifact-trader-reward-stack';
+  icons.forEach((img, i) => {
+    stack.appendChild(styleTraderRewardIcon(img, i, stackTotal));
+  });
+  row.appendChild(stack);
   return row;
 }
 
-function rewardPartVisualWidth(part) {
-  if (!part || !part.type) return 0;
-  const n = part.count != null && part.count > 0 ? Math.floor(part.count) : 1;
-  const unitW = TRADER_REWARD_ICON_H_PX;
-  if (part.type === 'currency') return unitW;
-  if (part.type === 'upgrade_plans' || part.type === 'shield' || part.type === 'suppression_bomb' || part.type === 'tree_juice') {
-    return n * unitW + Math.max(0, n - 1) * TRADER_REWARD_INNER_GAP_PX;
-  }
-  return unitW;
+/**
+ * Float-up reward visuals from a reward stack row (artifact trader claim, specialty milestone, etc.).
+ * @param {ParentNode | null | undefined} rewardWrap
+ */
+export function playRewardBundleFloatAnimation(rewardWrap) {
+  if (!rewardWrap) return;
+  const floatTargets = rewardWrap.querySelectorAll("img:not([data-trader-reward='currency']), [data-trader-float-text]");
+  floatTargets.forEach((el) => {
+    const text = el.getAttribute('data-trader-float-text');
+    if (text) {
+      const color = el.getAttribute('data-trader-float-color') || '#FFFFFF';
+      createModalFloatingText(el, text, color, 34, 1.6875, 40, 0);
+      return;
+    }
+    if (el.tagName === 'IMG') {
+      const h = Math.max(24, Math.round(el.getBoundingClientRect().height || 52));
+      createModalFloatingImage(el, /** @type {HTMLImageElement} */ (el).src, h, 1.6875, 40, 0);
+    }
+  });
 }
+
+export { applyRewardBundleToPlayer, buildArtifactTraderRewardRow as buildRewardStackRow };
 
 function rewardBundleVisualWidth(bundle) {
-  if (!Array.isArray(bundle) || bundle.length === 0) return TRADER_REWARD_ICON_H_PX;
-  const widths = bundle.map((p) => rewardPartVisualWidth(p)).filter((w) => w > 0);
-  if (widths.length === 0) return TRADER_REWARD_ICON_H_PX;
-  return widths.reduce((a, b) => a + b, 0) + Math.max(0, widths.length - 1) * TRADER_REWARD_PART_GAP_PX;
+  const iconCount = countRewardBundleIcons(bundle);
+  if (iconCount <= 0) return TRADER_REWARD_ICON_H_PX;
+  return rewardIconsRowWidth(iconCount);
 }
 
-function clampRewardColWidth(px) {
-  return Math.max(TRADER_REWARD_COL_MIN_W_PX, Math.min(TRADER_REWARD_COL_MAX_W_PX, Math.ceil(px)));
+function computeRewardColWidth(rewardBundle) {
+  const bundle = Array.isArray(rewardBundle) && rewardBundle.length
+    ? rewardBundle
+    : [{ type: 'upgrade_plans', count: 1 }];
+  const stackW = rewardBundleVisualWidth(bundle);
+  return Math.min(
+    TRADER_REWARD_COL_MAX_W_PX,
+    Math.ceil(Math.max(stackW + 6, TRADER_CLAIM_BTN_MIN_W_PX))
+  );
+}
+
+/** Shared reward-column width for a denomination so rows line up vertically. */
+function maxRewardColWidthForBundles(bundles) {
+  if (!Array.isArray(bundles) || bundles.length === 0) {
+    return computeRewardColWidth(null);
+  }
+  return Math.max(...bundles.map((b) => computeRewardColWidth(b)));
 }
 
 function createTradeRow(artifactBoxEl, artifactIds, gameState, rowOpts = {}) {
   const wantColWidth = rowOpts.wantColWidth ?? artifactBoxEl.getBoundingClientRect?.().width ?? TRADER_ARTIFACT_BOX_W_SINGLE;
-  const rewardColWidth = rowOpts.rewardColWidth ?? clampRewardColWidth(TRADER_REWARD_ICON_H_PX + 12);
+  const rewardColWidth = rowOpts.rewardColWidth ?? computeRewardColWidth(rowOpts.reward);
+  const colGap = rowOpts.colGap ?? TRADER_ROW_COL_GAP;
   const maxRow = rowOpts.maxRowWidth
-    ?? (Math.round(wantColWidth) + TRADER_ROW_ARROW_COL_W + rewardColWidth + TRADER_ROW_COL_GAP * 2);
+    ?? (Math.round(wantColWidth) + TRADER_ROW_ARROW_COL_W + rewardColWidth + colGap * 2);
   const rewardBundle = rowOpts.reward;
   const key = makeTradeRowKey(artifactIds);
   const row = document.createElement('div');
@@ -644,7 +740,7 @@ function createTradeRow(artifactBoxEl, artifactIds, gameState, rowOpts = {}) {
   row.dataset.tradeKey = key;
   row._artifactIds = artifactIds;
   row._tradeKey = key;
-  row.style.cssText = `display: grid; grid-template-columns: ${Math.round(wantColWidth)}px ${TRADER_ROW_ARROW_COL_W}px ${rewardColWidth}px; align-items: center; justify-content: start; column-gap: ${TRADER_ROW_COL_GAP}px; width: ${maxRow}px; max-width: ${maxRow}px;`;
+  row.style.cssText = `display: grid; grid-template-columns: ${Math.round(wantColWidth)}px ${TRADER_ROW_ARROW_COL_W}px ${rewardColWidth}px; align-items: center; justify-content: start; column-gap: ${colGap}px; width: ${maxRow}px; max-width: ${maxRow}px;`;
 
   row.appendChild(artifactBoxEl);
   row.appendChild(createTradeArrowElement());
@@ -652,7 +748,8 @@ function createTradeRow(artifactBoxEl, artifactIds, gameState, rowOpts = {}) {
   const rewardCol = document.createElement('div');
   rewardCol.className = 'artifact-trader-reward-col';
   const rewardWrap = buildArtifactTraderRewardRow(
-    Array.isArray(rewardBundle) && rewardBundle.length ? rewardBundle : [{ type: 'upgrade_plans', count: 1 }]
+    Array.isArray(rewardBundle) && rewardBundle.length ? rewardBundle : [{ type: 'upgrade_plans', count: 1 }],
+    gameState,
   );
   rewardCol.appendChild(rewardWrap);
   const tradeBtn = document.createElement('button');
@@ -664,19 +761,7 @@ function createTradeRow(artifactBoxEl, artifactIds, gameState, rowOpts = {}) {
     e.preventDefault();
     if (tradeBtn.disabled) return;
     // Trigger floating visuals BEFORE row state refresh/hide so anchors keep correct viewport coordinates.
-    const floatTargets = rewardWrap.querySelectorAll("img:not([data-trader-reward='currency']), [data-trader-float-text]");
-    floatTargets.forEach((el) => {
-      const text = el.getAttribute('data-trader-float-text');
-      if (text) {
-        const color = el.getAttribute('data-trader-float-color') || '#FFFFFF';
-          createModalFloatingText(el, text, color, 34, 1.6875, 40, 0);
-        return;
-      }
-      if (el.tagName === 'IMG') {
-        const h = Math.max(24, Math.round(el.getBoundingClientRect().height || 52));
-          createModalFloatingImage(el, /** @type {HTMLImageElement} */ (el).src, h, 1.6875, 40, 0);
-      }
-    });
+    playRewardBundleFloatAnimation(rewardWrap);
 
     markTradeRowCompleted(gameState, key);
     applyRewardBundleToPlayer(
@@ -859,10 +944,8 @@ export function mountArtifactTraderModalBody(statsDiv, wants, gameState, opts = 
   columns.className = 'artifact-trader-columns';
 
   const leftCol = createTraderColumn();
-  const leftSinglesMaxRewardW = clampRewardColWidth(
-    Math.max(
-      ...wants.individuals.map((ind) => rewardBundleVisualWidth(ind.reward || [{ type: 'upgrade_plans', count: 1 }]))
-    ) + 8
+  const leftSinglesMaxRewardW = maxRewardColWidthForBundles(
+    wants.individuals.map((ind) => ind.reward)
   );
   wants.individuals.forEach((ind) => {
     const aid = ind.artifactId;
@@ -884,15 +967,8 @@ export function mountArtifactTraderModalBody(statsDiv, wants, gameState, opts = 
   });
 
   const rightCol = createTraderColumn();
-  const rightPairsMaxRewardW = clampRewardColWidth(
-    Math.max(
-      ...wants.pairs.map((pair) => rewardBundleVisualWidth(pair.reward || [{ type: 'upgrade_plans', count: 1 }]))
-    ) + 8
-  );
-  const rightTriplesMaxRewardW = clampRewardColWidth(
-    Math.max(
-      ...wants.triples.map((triple) => rewardBundleVisualWidth(triple.reward || [{ type: 'upgrade_plans', count: 1 }]))
-    ) + 8
+  const rightPairsMaxRewardW = maxRewardColWidthForBundles(
+    wants.pairs.map((pair) => pair.reward)
   );
   wants.pairs.forEach((pair) => {
     const box = createArtifactWantBox(
@@ -911,9 +987,20 @@ export function mountArtifactTraderModalBody(statsDiv, wants, gameState, opts = 
       })
     );
   });
+
+  const tripleWantRows = wants.triples.filter((t) => t.ids.length < 4);
+  const quadWantRows = wants.triples.filter((t) => t.ids.length >= 4);
+  const rightTriplesMaxRewardW = maxRewardColWidthForBundles(
+    tripleWantRows.map((triple) => triple.reward)
+  );
+  const rightQuadsMaxRewardW = maxRewardColWidthForBundles(
+    quadWantRows.map((triple) => triple.reward)
+  );
   wants.triples.forEach((triple) => {
     const n = triple.ids.length;
-    const w = n >= 4 ? TRADER_ARTIFACT_BOX_W_QUAD : TRADER_ARTIFACT_BOX_W_TRIPLE;
+    const isQuad = n >= 4;
+    const w = isQuad ? TRADER_ARTIFACT_BOX_W_QUAD : TRADER_ARTIFACT_BOX_W_TRIPLE;
+    const rewardW = isQuad ? rightQuadsMaxRewardW : rightTriplesMaxRewardW;
     const box = createArtifactWantBox(
       triple.ids,
       gameState,
@@ -923,9 +1010,9 @@ export function mountArtifactTraderModalBody(statsDiv, wants, gameState, opts = 
     );
     rightCol.appendChild(
       createTradeRow(box, triple.ids, gameState, {
-        maxRowWidth: w + TRADER_ROW_ARROW_COL_W + rightTriplesMaxRewardW + TRADER_ROW_COL_GAP * 2,
+        maxRowWidth: w + TRADER_ROW_ARROW_COL_W + rewardW + TRADER_ROW_COL_GAP * 2,
         wantColWidth: w,
-        rewardColWidth: rightTriplesMaxRewardW,
+        rewardColWidth: rewardW,
         reward: triple.reward,
       })
     );

@@ -1,10 +1,65 @@
 // Tooltip System - Displays hover information for game elements
 
-import { CONFIG, getFireTypeConfig, getFireTypeDisplayColor, getTowerPower, getSpreadTowerPower, getPulsingPower, getPulsingAttackInterval, getRainPower, getBomberPower, getBomberAttackInterval, getSentinelAttackInterval, getSentinelPower, getSentinelImpactZone, getSentinelModeLabel, getSentinelModeIcon, getSentinelModeIconStyle, getPowerUpMultiplier, getTowerRange, getSpreadTowerRange, getRainRange, getEffectiveDurationTowerAttackInterval, getPowerUpGraphicFilename, getPermanentPowerUpShopPurchaseCost, getBomberImpactZone, getArtifactById, getSuppressionBombTotalUses, getSuppressionBombRadius, getSuppressionBombHexCount, getEffectiveSuppressionBombPower, formatWaterDamageRate, formatDisplayHundredths, getTowerMaxHealth, formatEveryInterval, formatDurationSeconds, getPermanentPowerUpDescription, getTempPowerUpDescription, getPowerUpPerStackFraction, formatPowerUpEffectPercent, getWaterTankTypeConfig, getHeroPowerJetMultiplier, getHeroPowerSpreadMultiplier, getHeroPowerRainTowerMultiplier, getHeroPowerBomberDamageMultiplier, getHeroPowerPulsingTowerMultiplier } from '../config.js';
-import { getTowerRangeHexBonusForGameState } from './tempPowerUpClock.js';
+import { CONFIG, getFireTypeConfig, getFireTypeDisplayColor, getTowerPower, getSpreadTowerPower, getPulsingPower, getPulsingAttackInterval, getRainPower, getBomberPower, getBomberAttackInterval, getSentinelAttackInterval, getSentinelPower, getSentinelImpactZone, getSentinelModeLabel, getSentinelModeIcon, getSentinelModeIconStyle, getPowerUpMultiplier, getTowerRange, getSpreadTowerRange, getRainRange, getEffectiveDurationTowerAttackIntervalWithHeroPower, getEffectivePerimeterAttackInterval, getPowerUpGraphicFilename, getPermanentPowerUpShopPurchaseCost, getBomberImpactZone, getArtifactById, getSuppressionBombTotalUses, getSuppressionBombRadius, getSuppressionBombHexCount, getEffectiveSuppressionBombPower, formatWaterDamageRate, formatDisplayHundredths, getTowerMaxHealth, formatEveryInterval, formatDurationSeconds, getPermanentPowerUpDescription, getTempPowerUpDescription, getPowerUpPerStackFraction, formatPowerUpEffectPercent, getWaterTankTypeConfig, getHeroPowerJetMultiplier, getHeroPowerSpreadMultiplier, getHeroPowerRainTowerMultiplier, getHeroPowerBomberDamageMultiplier, getHeroPowerPulsingTowerMultiplier, getHeroPowerPerimeterTowerMultiplier, getHeroPowerChargeTowerMultiplier, getPerimeterPower, clampPerimeterRing, getChargeAttackInterval, getChargePerHexPower, getChargeTotalHpPerBomb, getChargeImpactZone, clampChargeTargetDistance, normalizeChargeMode, getChargeModeLabel, getChargeImpactLevel, getHealthBarFillColor } from '../config.js';
+import { getTowerRangeHexBonusForGameState, getTempPowerUpTimeReference } from './tempPowerUpClock.js';
 import { getArtifactTraderSoughtTooltipLine, getArtifactTradedLabelColor, isArtifactTradedToTrader } from './artifactTrader.js';
 import { getArtifactOnLoanLabelColor, isArtifactLoanedToMuseum } from './artifactMuseum.js';
 import { assetUrl } from './assetUrl.js';
+
+/**
+ * Tooltip HP row: heart icon, RTS-style bar, then "current / max" (no percentage).
+ * @param {number} currentHealth
+ * @param {number} maxHealth
+ * @param {{ className?: string }} [options]
+ * @returns {string}
+ */
+export function buildTooltipHealthRow(currentHealth, maxHealth, options = {}) {
+  const current = Math.round(Math.max(0, currentHealth));
+  const max = Math.max(1, Math.round(maxHealth));
+  const ratio = Math.max(0, Math.min(1, current / max));
+  const pct = ratio * 100;
+  const fillColor = getHealthBarFillColor(ratio);
+  const extraClass = options.className ? ` ${options.className}` : '';
+  return (
+    `<div class="tooltip-health-row${extraClass}">` +
+    `<img class="tooltip-health-row__icon" src="assets/images/misc/health.png" alt="" />` +
+    `<div class="tooltip-health-row__bar-group">` +
+    `<span class="tooltip-health-row__track" aria-hidden="true">` +
+    `<span class="tooltip-health-row__fill" style="width:${pct.toFixed(2)}%;background:${fillColor};"></span>` +
+    `</span>` +
+    `<span class="tooltip-health-row__text">${current} / ${max}</span>` +
+    `</div>` +
+    `</div>`
+  );
+}
+
+/**
+ * Tooltip shield row: shield icon, pink bar (matches map / Towers On Map panel), then "current / max".
+ * @param {number} shieldLevel 1–4 (sprite tier)
+ * @param {number} currentShield
+ * @param {number} maxShield
+ * @param {{ className?: string }} [options]
+ * @returns {string}
+ */
+export function buildTooltipShieldRow(shieldLevel, currentShield, maxShield, options = {}) {
+  const current = Math.round(Math.max(0, currentShield));
+  const max = Math.max(1, Math.round(maxShield));
+  const ratio = Math.max(0, Math.min(1, current / max));
+  const pct = ratio * 100;
+  const level = Math.min(4, Math.max(1, Math.round(shieldLevel || 1)));
+  const extraClass = options.className ? ` ${options.className}` : '';
+  return (
+    `<div class="tooltip-health-row tooltip-shield-row${extraClass}">` +
+    `<img class="tooltip-health-row__icon tooltip-shield-row__icon" src="assets/images/items/shield_${level}.png" alt="" />` +
+    `<div class="tooltip-health-row__bar-group">` +
+    `<span class="tooltip-health-row__track" aria-hidden="true">` +
+    `<span class="tooltip-health-row__fill tooltip-shield-row__fill" style="width:${pct.toFixed(2)}%;"></span>` +
+    `</span>` +
+    `<span class="tooltip-health-row__text tooltip-shield-row__text">${current} / ${max}</span>` +
+    `</div>` +
+    `</div>`
+  );
+}
 
 export class TooltipSystem {
   constructor(gameState = null) {
@@ -53,7 +108,7 @@ export class TooltipSystem {
    * @param {string|Array<string>} htmlContent - HTML content to display (single string or array of strings for multiple tooltips)
    * @param {number} mouseX - Mouse X position
    * @param {number} mouseY - Mouse Y position
-   * @param {{ allowInTutorial?: boolean, fromCanvas?: boolean }} [options] - allowInTutorial for UI during tutorial; fromCanvas when the map is the source (enables per-frame content refresh)
+   * @param {{ allowInTutorial?: boolean, fromCanvas?: boolean, heroPortrait?: boolean }} [options] - allowInTutorial for UI during tutorial; fromCanvas when the map is the source (enables per-frame content refresh); heroPortrait raises stacking above speech bubbles
    */
   show(htmlContent, mouseX, mouseY, options = {}) {
     if (!this.tooltip) return;
@@ -62,6 +117,7 @@ export class TooltipSystem {
       return;
     }
     this._fromCanvas = options.fromCanvas === true;
+    this.tooltip.classList.toggle('game-tooltip--hero-portrait', options.heroPortrait === true);
     // Disable tooltips during tutorial to avoid cluttering the UI (exceptions via allowInTutorial)
     if (this.gameState?.tutorialMode && !options.allowInTutorial) {
       this.hide();
@@ -110,6 +166,7 @@ export class TooltipSystem {
     
     this.tooltip.style.display = 'none';
     this.tooltip.style.maxWidth = '320px';
+    this.tooltip.classList.remove('game-tooltip--hero-portrait');
     this.currentContent = null;
     this._fromCanvas = false;
     this._lastRenderedHtml = null;
@@ -184,14 +241,18 @@ export class TooltipSystem {
       'rain': 'Rain Tower',
       'bomber': 'Bomber Tower',
       'sentinel': 'Sentinel Tower',
+      'perimeter': 'Perimeter Tower',
+      'charge': 'Charge Tower',
     };
     const usageBlurbs = {
       jet: 'Single stream of water with high power and range. Rotateable.',
       spread: 'Multiple streams of water covering a directional area with standard power and range. Rotateable.',
       rain: 'Constant water targeting a large area on the map with standard power.',
       pulsing: 'Periodic water targeting a small area on the map with high power.',
-      bomber: 'Periodic water bombs targeting an area on the map between 5 and 10 hexes away with high power. Rotateable.',
+      bomber: 'Periodic water bombs from 5–10 hexes away. Full power on the target hex; damage weakens with each outer ring. Rotateable.',
       sentinel: 'Periodic water bombs targeting map objects by mode. Auto-rotating turret.',
+      perimeter: 'Water bombs sweep clockwise around a selected hex ring. Auto-rotating turret.',
+      charge: 'Directional charge shots to a selected target hex. Choose Area, Balance, or Power impact. Rotateable.',
     };
     
     const towerName = typeNames[tower.type] || 'Tower';
@@ -220,8 +281,19 @@ export class TooltipSystem {
     } else {
       currentHealth = Math.min(maxHealth, currentHealth);
     }
-    const healthPercent = Math.round((currentHealth / maxHealth) * 100);
-    const healthLine = `<div style="color: #FFFFFF; display: flex; align-items: center; gap: 6px;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${currentHealth} / ${maxHealth} (${healthPercent}%)</div>`;
+    const healthLine = buildTooltipHealthRow(currentHealth, maxHealth);
+    let shieldLine = '';
+    if (tower.shield && tower.shield.health > 0) {
+      shieldLine = buildTooltipShieldRow(
+        tower.shield.level,
+        tower.shield.health,
+        tower.shield.maxHealth
+      );
+    }
+
+    const statusBarsHtml = shieldLine
+      ? `<div class="tooltip-hp-stack">${healthLine}${shieldLine}</div>`
+      : healthLine;
 
     let content = '';
     if (towerIconHtml && typeof towerIconHtml === 'string' && towerIconHtml.includes('<')) {
@@ -229,12 +301,15 @@ export class TooltipSystem {
         <div style="flex-shrink: 0; width: 76px; min-width: 76px; display: flex; align-items: center; justify-content: center; transform: translateX(-10px);">${towerIconHtml}</div>
         <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0; padding-left: 2px;">
           <div style="font-weight: bold; color: #FFD700; font-size: 14px;"><span class="tower-tooltip-name">${towerName}</span></div>
-          ${healthLine}
+          ${statusBarsHtml}
         </div>
       </div>`;
     } else {
       content += `<div style="font-weight: bold; color: #FFD700; margin-bottom: 8px; font-size: 14px;"><span class="tower-tooltip-name">${towerName}</span></div>`;
-      content += `<div style="color: #FFFFFF; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${currentHealth} / ${maxHealth} (${healthPercent}%)</div>`;
+      content += buildTooltipHealthRow(currentHealth, maxHealth, { className: 'tooltip-health-row--spaced' });
+      if (shieldLine) {
+        content += shieldLine;
+      }
     }
 
     content += `<div class="tower-tooltip-details">`;
@@ -243,6 +318,8 @@ export class TooltipSystem {
     const isBomber = tower.type === 'bomber';
     const isPulsing = tower.type === 'pulsing';
     const isSentinel = tower.type === 'sentinel';
+    const isPerimeter = tower.type === 'perimeter';
+    const isCharge = tower.type === 'charge';
     
     // Helper function to create level graphics (filled + silhouettes)
     const createLevelGraphics = (currentLevel, maxLevel, graphicPath, graphicColor) => {
@@ -263,15 +340,22 @@ export class TooltipSystem {
     const powerUps = gameState?.player?.powerUps || {};
     const tempPowerUps = gameState?.player?.tempPowerUps || [];
     const waterPowerMultiplier = getPowerUpMultiplier('waterTowerPower', powerUps, tempPowerUps);
+    const intervalNow = getTempPowerUpTimeReference(
+      gameState,
+      typeof window !== 'undefined' ? window.gameLoop : null
+    );
     
     if (isBomber) {
       // Bomber towers: Speed and Impact Zone
       const speedGraphics = createLevelGraphics(tower.rangeLevel, 4, 'assets/images/misc/speed.png', '#FFC41D');
       const impactGraphics = createLevelGraphics(tower.powerLevel, 4, 'assets/images/misc/impact.png', '#F7375C');
-      const attackInterval = getEffectiveDurationTowerAttackInterval(
+      const attackInterval = getEffectiveDurationTowerAttackIntervalWithHeroPower(
         getBomberAttackInterval(tower.rangeLevel),
         powerUps,
-        tempPowerUps
+        tempPowerUps,
+        tower.type,
+        gameState,
+        intervalNow
       );
       const basePower = getBomberPower(tower.powerLevel);
       const impactLevel = tower.powerLevel;
@@ -286,14 +370,17 @@ export class TooltipSystem {
       
       content += `<div style="color: #FFC41D; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">Speed: <span style="display: inline-flex; align-items: center; gap: 2px;">${speedGraphics}</span> <span style="margin-left: 12px; display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_orange.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${formatEveryInterval(attackInterval)}</span></div>`;
       content += `<div style="color: #F7375C; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">Impact: <span style="display: inline-flex; align-items: center; gap: 2px;">${impactGraphics}</span> <span style="margin-left: 12px; display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_red.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${totalHexes} hex${totalHexes !== 1 ? 'es' : ''}</span></div>`;
-      content += `<div style="color: #00D9FF; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;"><span style="display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_blue.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${formatWaterDamageRate(perHexPower)} HP/hex (${formatWaterDamageRate(totalHpPerBomb)} total HP/bomb)</span></div>`;
+      content += `<div style="color: #00D9FF; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;"><span style="display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_blue.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${formatWaterDamageRate(perHexPower)} HP/hex at target (${formatWaterDamageRate(totalHpPerBomb)} total HP/bomb)</span></div>`;
     } else if (isSentinel) {
       const speedGraphics = createLevelGraphics(tower.rangeLevel, 4, 'assets/images/misc/speed.png', '#FFC41D');
       const powerGraphics = createLevelGraphics(tower.powerLevel, 4, 'assets/images/misc/power.png', '#00D9FF');
-      const attackInterval = getEffectiveDurationTowerAttackInterval(
+      const attackInterval = getEffectiveDurationTowerAttackIntervalWithHeroPower(
         getSentinelAttackInterval(tower.rangeLevel),
         powerUps,
-        tempPowerUps
+        tempPowerUps,
+        tower.type,
+        gameState,
+        intervalNow
       );
       const basePower = getSentinelPower(tower.powerLevel);
       const impactHexes = getSentinelImpactZone(0, 0);
@@ -319,18 +406,102 @@ export class TooltipSystem {
           <div style="color: #AAAAAA; font-size: 11px;">${isPlacedOnMap ? 'Click tower to change mode' : 'Mode is kept when stored in inventory'}</div>
         </div>
       </div>`;
+    } else if (isPerimeter) {
+      const speedGraphics = createLevelGraphics(tower.rangeLevel, 4, 'assets/images/misc/speed.png', '#FFC41D');
+      const powerGraphics = createLevelGraphics(tower.powerLevel, 4, 'assets/images/misc/power.png', '#00D9FF');
+      const attackInterval = getEffectivePerimeterAttackInterval(
+        tower.rangeLevel,
+        powerUps,
+        tempPowerUps,
+        intervalNow
+      );
+      const basePower = getPerimeterPower(tower.powerLevel);
+      const basePowerWithMultiplier = basePower * waterPowerMultiplier * getHeroPowerPerimeterTowerMultiplier(gameState);
+      const perHexPower = basePowerWithMultiplier;
+      const totalHpPerBomb = perHexPower;
+      const totalHexes = 1;
+      const targetRing = clampPerimeterRing(tower.perimeterRing ?? CONFIG.PERIMETER_RING_DEFAULT);
+      const ringHexCount = targetRing * 6;
+      const isPlacedOnMap = Number.isFinite(tower.q) && Number.isFinite(tower.r);
+
+      content += `<div style="color: #FFC41D; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">Speed: <span style="display: inline-flex; align-items: center; gap: 2px;">${speedGraphics}</span> <span style="margin-left: 12px; display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_orange.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${formatEveryInterval(attackInterval)}</span></div>`;
+      content += `<div style="color: #00D9FF; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">Power: <span style="display: inline-flex; align-items: center; gap: 2px;">${powerGraphics}</span> <span style="margin-left: 12px; display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_blue.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${formatWaterDamageRate(perHexPower)} HP/hex</span></div>`;
+      content += `<div style="color: #F7375C; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;"><img src="assets/images/misc/fire_red.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${totalHexes} hex (${formatWaterDamageRate(totalHpPerBomb)} HP/bomb)</div>`;
+      content += `<div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
+        <div style="flex-shrink: 0; width: 52px; min-width: 52px; height: 44px; display: flex; align-items: center; justify-content: center; overflow: visible;">
+          <div style="width: 40px; height: 40px; border-radius: 50%; border: 2px solid rgba(55, 90, 200, 0.9); display: flex; align-items: center; justify-content: center; color: #6B9AE8; font-weight: bold; font-size: 18px;">${targetRing}</div>
+        </div>
+        <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0;">
+          <div style="font-weight: bold; color: #FFD700; font-size: 13px;">Target ring: ${targetRing} (${ringHexCount} hex${ringHexCount !== 1 ? 'es' : ''})</div>
+          <div style="color: #AAAAAA; font-size: 11px;">${isPlacedOnMap ? 'Click tower to change target ring' : 'Target ring is kept when stored in inventory'}</div>
+        </div>
+      </div>`;
+    } else if (isCharge) {
+      const speedGraphics = createLevelGraphics(tower.rangeLevel, 4, 'assets/images/misc/speed.png', '#FFC41D');
+      const powerGraphics = createLevelGraphics(tower.powerLevel, 4, 'assets/images/misc/power.png', '#00D9FF');
+      const attackInterval = getEffectiveDurationTowerAttackIntervalWithHeroPower(
+        getChargeAttackInterval(tower.rangeLevel),
+        powerUps,
+        tempPowerUps,
+        tower.type,
+        gameState,
+        intervalNow
+      );
+      const chargeMode = normalizeChargeMode(tower.chargeMode ?? CONFIG.CHARGE_MODE_DEFAULT);
+      const impactHexes = getChargeImpactZone(0, 0, chargeMode);
+      const perHexPower = getChargePerHexPower(tower.powerLevel, chargeMode)
+        * waterPowerMultiplier
+        * getHeroPowerBomberDamageMultiplier(gameState)
+        * getHeroPowerChargeTowerMultiplier(gameState);
+      const totalHpPerBomb = getChargeTotalHpPerBomb(tower.powerLevel, chargeMode)
+        * waterPowerMultiplier
+        * getHeroPowerBomberDamageMultiplier(gameState)
+        * getHeroPowerChargeTowerMultiplier(gameState);
+      const totalHexes = impactHexes.length;
+      const ringCount = getChargeImpactLevel(chargeMode);
+      const modeLabel = getChargeModeLabel(chargeMode);
+      const modeLetter = modeLabel.charAt(0).toUpperCase();
+      const targetDistance = clampChargeTargetDistance(
+        tower.chargeTargetDistance ?? CONFIG.CHARGE_TARGET_DEFAULT
+      );
+      const isPlacedOnMap = Number.isFinite(tower.q) && Number.isFinite(tower.r);
+
+      content += `<div style="color: #FFC41D; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">Speed: <span style="display: inline-flex; align-items: center; gap: 2px;">${speedGraphics}</span> <span style="margin-left: 12px; display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_orange.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${formatEveryInterval(attackInterval)}</span></div>`;
+      content += `<div style="color: #00D9FF; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">Power: <span style="display: inline-flex; align-items: center; gap: 2px;">${powerGraphics}</span> <span style="margin-left: 12px; display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_blue.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${formatWaterDamageRate(perHexPower)} HP/hex</span></div>`;
+      content += `<div style="color: #F7375C; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;"><img src="assets/images/misc/fire_red.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${totalHexes} hex${totalHexes !== 1 ? 'es' : ''} (${ringCount} rings, ${formatWaterDamageRate(totalHpPerBomb)} total HP/bomb)</div>`;
+      content += `<div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
+        <div style="flex-shrink: 0; width: 52px; min-width: 52px; height: 44px; display: flex; align-items: center; justify-content: center; overflow: visible;">
+          <div style="width: 40px; height: 40px; border-radius: 50%; border: 2px solid rgba(85, 255, 95, 0.9); display: flex; align-items: center; justify-content: center; color: #9AFF8E; font-weight: bold; font-size: 18px;">${targetDistance}</div>
+        </div>
+        <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0;">
+          <div style="font-weight: bold; color: #FFD700; font-size: 13px;">Target hex: ${targetDistance} (up to ${CONFIG.CHARGE_TARGET_MAX})</div>
+          <div style="color: #AAAAAA; font-size: 11px;">${isPlacedOnMap ? 'Click tower to change target hex or impact mode' : 'Target hex and impact mode are kept in inventory'}</div>
+        </div>
+      </div>`;
+      content += `<div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
+        <div style="flex-shrink: 0; width: 52px; min-width: 52px; height: 44px; display: flex; align-items: center; justify-content: center; overflow: visible;">
+          <div style="min-width: 40px; padding: 0 8px; height: 40px; border-radius: 8px; border: 2px solid rgba(85, 255, 95, 0.9); display: flex; align-items: center; justify-content: center; color: #9AFF8E; font-weight: bold; font-size: 18px;">${modeLetter}</div>
+        </div>
+        <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0;">
+          <div style="font-weight: bold; color: #FFD700; font-size: 13px;">Impact mode: ${modeLabel}</div>
+          <div style="color: #AAAAAA; font-size: 11px;">Area = less power per hex · Balance = standard · Power = more power per hex</div>
+        </div>
+      </div>`;
     } else if (isPulsing) {
       // Pulsing towers: Speed and Power
       const speedGraphics = createLevelGraphics(tower.rangeLevel, 4, 'assets/images/misc/speed.png', '#FFC41D');
       const powerGraphics = createLevelGraphics(tower.powerLevel, 4, 'assets/images/misc/power.png', '#00D9FF');
-      const attackInterval = getEffectiveDurationTowerAttackInterval(
+      const attackInterval = getEffectiveDurationTowerAttackIntervalWithHeroPower(
         getPulsingAttackInterval(tower.rangeLevel),
         powerUps,
-        tempPowerUps
+        tempPowerUps,
+        tower.type,
+        gameState,
+        intervalNow
       );
       const basePower = getPulsingPower(tower.powerLevel);
       // Matches towerSystem: burst = power × interval, so long-run average DPS per hex in the AoE = power × water (not power/interval).
-      const extinguishingPowerPerSecond = basePower * waterPowerMultiplier;
+      const extinguishingPowerPerSecond = basePower * waterPowerMultiplier * getHeroPowerPulsingTowerMultiplier(gameState);
       const pulseRadius = 1 + getTowerRangeHexBonusForGameState(
         gameState,
         typeof window !== 'undefined' ? window.gameLoop : null
@@ -378,13 +549,6 @@ export class TooltipSystem {
       content += `<div style="color: #00D9FF; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">Power: <span style="display: inline-flex; align-items: center; gap: 2px;">${powerGraphics}</span> <span style="margin-left: 12px; display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/fire_blue.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${formatWaterDamageRate(extinguishingPowerPerSecond)} HP/second</span></div>`;
     }
     
-    // Show shield if present (icon uses highest level applied; label is "Shield:" since stacked shields combine levels)
-    if (tower.shield && tower.shield.health > 0) {
-      const shieldHealth = Math.round(tower.shield.health);
-      const shieldMaxHealth = Math.round(tower.shield.maxHealth);
-      content += `<div style="color: ${CONFIG.COLOR_SHIELD}; margin-top: 8px; display: flex; align-items: center; gap: 6px;"><img src="assets/images/items/shield_${tower.shield.level}.png" style="width: 16px; height: 16px; image-rendering: pixelated;" /> Shield: ${shieldHealth} / ${shieldMaxHealth}</div>`;
-    }
-
     const usageBlurb = usageBlurbs[tower.type];
     if (usageBlurb) {
       content += `<div style="color: #FFFFFF; margin-top: 10px; font-size: 13px; line-height: 1.35;">${usageBlurb}</div>`;
@@ -407,14 +571,13 @@ export class TooltipSystem {
   getTownTooltipContent(hex, townLevel) {
     const currentHealth = Math.round(hex.townHealth || 0);
     const maxHealth = Math.round(hex.maxTownHealth || 0);
-    const healthPercent = Math.round((currentHealth / maxHealth) * 100);
     
     let content = `<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">`;
     content += `<img src="assets/images/items/town.png" style="width: 48px; height: auto; image-rendering: crisp-edges;" />`;
-    content += `<div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">`;
+    content += `<div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0;">`;
     content += `<div style="font-weight: bold; color: #FFFFFF; font-size: 14px;">Ancient Grove</div>`;
     content += `<div style="color: #FFFFFF;">Level: ${townLevel}</div>`;
-    content += `<div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${currentHealth} / ${maxHealth} (${healthPercent}%)</div>`;
+    content += buildTooltipHealthRow(currentHealth, maxHealth);
     content += `</div></div>`;
     content += `<div style="color: #FFFFFF; margin-top: 8px; font-size: 15px;">If the grove burns down, it's game over!</div>`;
     content += `<div style="color: #AAAAAA; margin-top: 6px; font-size: 12px;">The grove includes the surrounding ring of trees. Make sure to protect all 7 hex tiles!</div>`;
@@ -431,15 +594,14 @@ export class TooltipSystem {
     const typeConfig = getWaterTankTypeConfig(tank.typeId);
     const currentHealth = Math.round(tank.health || 0);
     const maxHealth = Math.round(tank.maxHealth || typeConfig.health);
-    const healthPercent = maxHealth > 0 ? Math.round((currentHealth / maxHealth) * 100) : 0;
     const blastHexCount = 1 + 3 * typeConfig.explosionRings * (typeConfig.explosionRings + 1);
     
     return `
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
         <img src="${assetUrl(`assets/images/items/${typeConfig.sprite}`)}" style="width: 48px; height: auto; image-rendering: crisp-edges;" />
-        <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
+        <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0;">
           <div style="font-weight: bold; font-size: 14px; color: #FFFFFF;">${typeConfig.name}</div>
-          <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${currentHealth} / ${maxHealth} (${healthPercent}%)</div>
+          ${buildTooltipHealthRow(currentHealth, maxHealth)}
         </div>
       </div>
       <div style="font-size: 14px; color: #FFFFFF; line-height: 1.4;">Hit with water to trigger a ${typeConfig.explosionRings}-ring blast (~${blastHexCount} hexes) that extinguishes nearby fires (does nothing if destroyed by fire).</div>
@@ -486,6 +648,11 @@ export class TooltipSystem {
       shield: towerData.shield ?? null,
       broken: !!towerData.broken,
       sentinelMode: towerData.sentinelMode ?? CONFIG.SENTINEL_MODE_DEFAULT,
+      perimeterRing: clampPerimeterRing(towerData.perimeterRing ?? CONFIG.PERIMETER_RING_DEFAULT),
+      chargeTargetDistance: clampChargeTargetDistance(
+        towerData.chargeTargetDistance ?? CONFIG.CHARGE_TARGET_DEFAULT
+      ),
+      chargeMode: normalizeChargeMode(towerData.chargeMode ?? CONFIG.CHARGE_MODE_DEFAULT),
     };
     let html = this.getTowerTooltipContent(virtualTower, gameState);
     if (options.cost != null) {
@@ -534,7 +701,7 @@ export class TooltipSystem {
     const towerType = unlock.towerType;
     const level = unlock.level;
 
-    const towerIds = ['jet', 'spread', 'rain', 'pulsing', 'bomber', 'sentinel'];
+    const towerIds = ['jet', 'spread', 'rain', 'pulsing', 'bomber', 'sentinel', 'perimeter', 'charge'];
     if (towerIds.includes(towerType)) {
       const costMap = {
         jet: CONFIG.TOWER_COST_JET,
@@ -543,6 +710,8 @@ export class TooltipSystem {
         pulsing: CONFIG.TOWER_COST_PULSING,
         bomber: CONFIG.TOWER_COST_BOMBER,
         sentinel: CONFIG.TOWER_COST_SENTINEL,
+        perimeter: CONFIG.TOWER_COST_PERIMETER,
+        charge: CONFIG.TOWER_COST_CHARGE,
       };
       return this.getTowerTooltipContentForInventory(
         { type: towerType, rangeLevel: 1, powerLevel: 1 },
@@ -631,13 +800,25 @@ export class TooltipSystem {
     `;
     }
 
+    if (towerType === 'specialty_plan') {
+      return `
+      <div style="font-weight: bold; color: #FDA801; margin-bottom: 8px; font-size: 14px;">Specialty Plans</div>
+      <div style="color: #FFFFFF; font-size: 15px; line-height: 1.5;">Unlock one level in your specialty research tree</div>
+    `;
+    }
+
     if (towerType === 'movement_token') {
       const title = omitCost
         ? 'Movement Token'
         : `Movement Token - <span style="color: #00FF88;">$${CONFIG.MOVEMENT_TOKEN_COST}</span>`;
+      const hasSellback = (gameState?.player?.tokenVouchers || 0) > 0;
+      const sellbackFootnote = hasSellback
+        ? `<div style="color: #AAAAAA; margin-top: 12px; font-size: 11px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">Click the sellback button <img src="assets/images/misc/sellback.png" style="width: 18px; height: auto; vertical-align: middle; image-rendering: pixelated;" alt="" /> to sell tokens back to the shop</div>`
+        : '';
       return `
       <div style="font-weight: bold; color: #FFFFFF; margin-bottom: 8px; font-size: 14px;">${title}</div>
       <div style="color: #FFFFFF; font-size: 15px; line-height: 1.5;">Reposition one tower during a wave</div>
+      ${sellbackFootnote}
     `;
     }
 
@@ -659,6 +840,17 @@ export class TooltipSystem {
       <div style="font-weight: bold; color: #FFFFFF; margin-bottom: 8px; font-size: 14px;">${title}</div>
       <div style="color: #FFFFFF; font-size: 15px; line-height: 1.5;">Recycle one broken tower for its parts value.</div>
       <div style="color: #AAAAAA; margin-top: 12px; font-size: 11px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">Towers can only be recycled between waves</div>
+    `;
+    }
+
+    if (towerType === 'token_voucher') {
+      const title = omitCost
+        ? 'Token Voucher'
+        : `Token Voucher - <span style="color: #00FF88;">$${CONFIG.TOKEN_VOUCHER_COST}</span>`;
+      return `
+      <div style="font-weight: bold; color: #FFFFFF; margin-bottom: 8px; font-size: 14px;">${title}</div>
+      <div style="color: #FFFFFF; font-size: 15px; line-height: 1.5;">Sell movement tokens back to the shop for currency.</div>
+      <div style="color: #AAAAAA; margin-top: 12px; font-size: 11px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">Click the sellback button <img src="assets/images/misc/sellback.png" style="width: 18px; height: auto; vertical-align: middle; image-rendering: pixelated;" alt="" /> on movement tokens in your inventory to choose a sell bundle</div>
     `;
     }
 
@@ -708,12 +900,11 @@ export class TooltipSystem {
     
     const currentHealth = Math.round(site.health || 0);
     const maxHealth = Math.round(site.maxHealth || siteConfig.health);
-    const healthPercent = Math.round((currentHealth / maxHealth) * 100);
     
     let content = `<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">`;
     content += `<img src="assets/images/items/${siteConfig.sprite}" style="width: 48px; height: auto; image-rendering: crisp-edges;" />`;
-    content += `<div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;"><div style="font-weight: bold; color: #FFFFFF; font-size: 14px;">${siteConfig.name}</div>`;
-    content += `<div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${currentHealth} / ${maxHealth} (${healthPercent}%)</div>`;
+    content += `<div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0;"><div style="font-weight: bold; color: #FFFFFF; font-size: 14px;">${siteConfig.name}</div>`;
+    content += buildTooltipHealthRow(currentHealth, maxHealth);
     content += `</div></div>`;
     content += `<div style="color: #FFFFFF; margin-top: 8px; font-size: 15px; line-height: 1.5;">Protect dig sites from burning down to receive a bonus at the end of the wave group.</div>`;
     
@@ -730,13 +921,12 @@ export class TooltipSystem {
     const sprite = cfg?.sprite || 'burning_vault.png';
     const currentHealth = Math.round(item.health || 0);
     const maxHealth = Math.round(item.maxHealth || cfg?.maxHealth || 1);
-    const healthPercent = Math.round((currentHealth / maxHealth) * 100);
 
     let content = `<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">`;
     content += `<img src="assets/images/items/${sprite}" style="width: 48px; height: auto; image-rendering: crisp-edges;" />`;
-    content += `<div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">`;
+    content += `<div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0;">`;
     content += `<div style="font-weight: bold; color: #FFFFFF; font-size: 14px;">${name}</div>`;
-    content += `<div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${currentHealth} / ${maxHealth} (${healthPercent}%)</div>`;
+    content += buildTooltipHealthRow(currentHealth, maxHealth);
     content += `</div></div>`;
     content += `<div style="font-size: 14px; color: #FFFFFF; line-height: 1.4; margin-bottom: 6px;">A smoldering treasure chest appears, holding a powerful reward inside.</div>`;
     content += `<div style="font-size: 12px; color: #AAAAAA; margin-top: 6px;">Open with water before this wave group ends</div>`;
@@ -759,8 +949,8 @@ export class TooltipSystem {
 
     if (item.grantPermanent && permanentPowerUpConfig) {
       const graphicFilename = getPowerUpGraphicFilename(item.powerUpId);
-      const healthPercent = Math.round((item.health / item.maxHealth) * 100);
       const displayName = permanentPowerUpConfig.name || item.powerUpId;
+      const healthRow = buildTooltipHealthRow(item.health, item.maxHealth);
       const badge =
         '<div style="font-size: 11px; font-weight: bold; color: #FFD54F; margin-bottom: 6px; letter-spacing: 0.04em;">PERMANENT PICKUP</div>';
       const body = `<div style="font-size: 14px; color: #FFFFFF; line-height: 1.45; margin-bottom: 6px;">${getPermanentPowerUpDescription(permanentPowerUpConfig)}</div>
@@ -770,9 +960,9 @@ export class TooltipSystem {
         ${badge}
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
           <img src="assets/images/power_ups/${graphicFilename}" style="width: 48px; height: auto; image-rendering: crisp-edges;" />
-          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
+          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0;">
             <div style="font-weight: bold; color: #FFFFFF; font-size: 14px;">${displayName}</div>
-            <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)</div>
+            ${healthRow}
           </div>
         </div>
         ${body}
@@ -781,7 +971,7 @@ export class TooltipSystem {
       return `
         ${badge}
         <div style="font-weight: bold; color: #FFFFFF; font-size: 14px; margin-bottom: 6px;">${displayName}</div>
-        <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF; margin-bottom: 8px;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)</div>
+        ${buildTooltipHealthRow(item.health, item.maxHealth, { className: 'tooltip-health-row--spaced' })}
         ${body}
         <div style="font-size: 12px; color: #AAAAAA; margin-top: 6px;">Collect with water</div>`;
     }
@@ -820,7 +1010,7 @@ export class TooltipSystem {
       ? getTempPowerUpDescription(tempPowerUpConfig)
       : getPermanentPowerUpDescription(permanentPowerUpConfig);
     
-    const healthPercent = Math.round((item.health / item.maxHealth) * 100);
+    const healthRow = buildTooltipHealthRow(item.health, item.maxHealth);
     const displayName = typeof name === 'string' && name === name.toUpperCase()
       ? name.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
       : name;
@@ -830,9 +1020,9 @@ export class TooltipSystem {
       return `
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
           <img src="assets/images/power_ups/${graphicFilename}" style="width: 48px; height: auto; image-rendering: crisp-edges;" />
-          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
+          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0;">
             <div style="font-weight: bold; color: #FFFFFF; font-size: 14px;">${displayName}</div>
-            <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)</div>
+            ${healthRow}
           </div>
         </div>
         <div style="font-size: 14px; color: #FFFFFF; line-height: 1.4; margin-bottom: 6px;">${mainSummary}</div>
@@ -844,9 +1034,9 @@ export class TooltipSystem {
       return `
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
           <div style="font-size: 48px;">${fallbackChar}</div>
-          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
+          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0;">
             <div style="font-weight: bold; color: #FFFFFF; font-size: 14px;">${displayName}</div>
-            <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)</div>
+            ${healthRow}
           </div>
         </div>
         <div style="font-size: 14px; color: #FFFFFF; line-height: 1.4; margin-bottom: 6px;">${mainSummary}</div>
@@ -865,7 +1055,6 @@ export class TooltipSystem {
     const itemConfig = CONFIG.MYSTERY_ITEMS[item.itemId];
     if (!itemConfig) return '';
     
-    const healthPercent = Math.round((item.health / item.maxHealth) * 100);
     const rarityColor = {
       common: '#F74700',
       uncommon: '#37AEE5',
@@ -876,10 +1065,10 @@ export class TooltipSystem {
     return `
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
         <img src="assets/images/items/${itemConfig.sprite}" style="width: 48px; height: auto; image-rendering: pixelated;" />
-        <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
+        <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0;">
           <div style="font-weight: bold; color: #FFFFFF; font-size: 14px;">${displayName}</div>
           <div style="font-size: 14px; color: ${rarityColor};">${itemConfig.rarity.charAt(0).toUpperCase() + itemConfig.rarity.slice(1)}</div>
-          <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)</div>
+          ${buildTooltipHealthRow(item.health, item.maxHealth)}
         </div>
       </div>
       <div style="font-size: 14px; color: #FFFFFF; line-height: 1.4; margin-bottom: 6px;">${itemConfig.description}</div>
@@ -896,7 +1085,6 @@ export class TooltipSystem {
     if (!def) return '';
 
     const name = def.name || 'Artifact';
-    const healthPercent = item.maxHealth > 0 ? Math.round((item.health / item.maxHealth) * 100) : 0;
     const timeLeft = Math.max(0, Math.ceil(item.timeLeftSeconds ?? 0));
     const timeColor = timeLeft <= 3 ? '#FF3B30' : '#00E6CC';
     const displayName = typeof name === 'string' && name === name.toUpperCase()
@@ -904,18 +1092,17 @@ export class TooltipSystem {
       : name;
     const lore = def.lore || '';
     const artifactLabelColor = '#CCFF33';
+    const healthRow = buildTooltipHealthRow(item.health, item.maxHealth);
 
     return `
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
         <img src="assets/images/artifacts/${def.sprite}" class="artifact-sprite-smooth" style="width: 48px; height: auto;" />
-        <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
+        <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0;">
           <div style="font-weight: bold; color: #FFFFFF; font-size: 14px;">${displayName}</div>
           <div style="font-size: 14px; color: ${artifactLabelColor};">Artifact</div>
-          <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px; color: #FFFFFF; font-size: 14px;">
-            <span style="display: inline-flex; align-items: center; gap: 6px;">
-              <img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)
-            </span>
-            <span style="display: inline-flex; align-items: center; gap: 6px; color: ${timeColor};">
+          <div class="tooltip-health-meta-row">
+            ${healthRow}
+            <span style="display: inline-flex; align-items: center; gap: 6px; color: ${timeColor}; font-size: 14px; white-space: nowrap; flex-shrink: 0;">
               <img src="assets/images/misc/clock.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${timeLeft}s
             </span>
           </div>
@@ -979,15 +1166,15 @@ export class TooltipSystem {
    * @returns {string} HTML content for the tooltip
    */
   getCurrencyItemTooltipContent(item) {
-    const healthPercent = Math.round((item.health / item.maxHealth) * 100);
+    const healthRow = buildTooltipHealthRow(item.health, item.maxHealth);
     
     if (item.itemType === 'movement_token') {
       return `
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
           <img src="assets/images/items/movement_token.png" style="width: 48px; height: auto; image-rendering: pixelated;" />
-          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
+          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0;">
             <div style="font-weight: bold; font-size: 14px; color: #FFFFFF;">Movement Token</div>
-            <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)</div>
+            ${healthRow}
           </div>
         </div>
         <div style="font-size: 14px; color: #FFFFFF; line-height: 1.4; margin-bottom: 6px;">Reposition one tower during a wave</div>
@@ -998,10 +1185,10 @@ export class TooltipSystem {
       return `
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
           <img src="assets/images/items/xp.png" style="width: 60px; height: auto; image-rendering: pixelated;" />
-          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
+          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0;">
             <div style="font-weight: bold; font-size: 14px; color: #FFFFFF;">Experience</div>
             <div style="font-size: 14px; color: #FCD619;">+${Math.round(item.value)} XP</div>
-            <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)</div>
+            ${healthRow}
           </div>
         </div>
         <div style="font-size: 12px; color: #AAAAAA; margin-top: 6px;">Collect with water</div>
@@ -1011,9 +1198,9 @@ export class TooltipSystem {
       return `
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
           <img src="assets/images/items/town_defense.png" style="width: 56px; height: auto; image-rendering: pixelated;" />
-          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
+          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0;">
             <div style="font-weight: bold; font-size: 14px; color: #FFFFFF;">Tree Juice</div>
-            <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)</div>
+            ${healthRow}
           </div>
         </div>
         <div style="font-size: 14px; color: #FFFFFF; line-height: 1.4; margin-bottom: 6px;">Permanently increases Ancient Grove town level and adds +${CONFIG.TOWN_HEALTH_PER_UPGRADE} HP to the grove (same as the shop Tree Juice upgrade, without spending currency).</div>
@@ -1027,12 +1214,31 @@ export class TooltipSystem {
       return `
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
           <img src="assets/images/items/shield_${level}.png" style="width: 48px; height: auto; image-rendering: pixelated;" />
-          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
+          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0;">
             <div style="font-weight: bold; font-size: 14px; color: #FFFFFF;">Shield Level ${level}</div>
             <div style="font-size: 14px; color: ${CONFIG.COLOR_SHIELD};">Apply to any tower for +${hp} HP of fire protection</div>
-            <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)</div>
+            ${healthRow}
           </div>
         </div>
+        <div style="font-size: 12px; color: #AAAAAA; margin-top: 6px;">Collect with water</div>
+      `;
+    }
+    if (item.itemType === 'suppression_bomb') {
+      const level = Math.min(4, Math.max(1, Math.round(Number(item.value) || 1)));
+      const totalUses = getSuppressionBombTotalUses(level);
+      const radius = getSuppressionBombRadius(level);
+      const hexCount = getSuppressionBombHexCount(level);
+      const power = formatDisplayHundredths(getEffectiveSuppressionBombPower(this.gameState, level));
+      return `
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+          <img src="assets/images/items/suppression_${level}.png" style="width: 48px; height: auto; image-rendering: pixelated;" />
+          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0;">
+            <div style="font-weight: bold; font-size: 14px; color: #FFFFFF;">Suppression Bomb Level ${level}</div>
+            <div style="color: #00D9FF; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">Uses: <span style="display: inline-flex; align-items: center; gap: 4px;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${totalUses}/${totalUses}</span></div>
+            ${healthRow}
+          </div>
+        </div>
+        <div style="font-size: 14px; color: #FFFFFF; line-height: 1.4; margin-bottom: 6px;">Triggered when adjacent to a burning hex. Explodes and extinguishes fire in a ${radius}-ring area (${hexCount} hexes) with ${power} HP.</div>
         <div style="font-size: 12px; color: #AAAAAA; margin-top: 6px;">Collect with water</div>
       `;
     }
@@ -1040,9 +1246,9 @@ export class TooltipSystem {
       return `
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
           <img src="assets/images/items/upgrade_token.png" style="width: 48px; height: auto; image-rendering: pixelated;" />
-          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
+          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0;">
             <div style="font-weight: bold; font-size: 14px; color: #FFFFFF;">Upgrade Plans</div>
-            <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)</div>
+            ${healthRow}
           </div>
         </div>
         <div style="font-size: 14px; color: #FFFFFF; line-height: 1.4; margin-bottom: 6px;">Upgrade one tower at any time</div>
@@ -1053,10 +1259,10 @@ export class TooltipSystem {
       return `
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
           <img src="assets/images/items/currency.png" style="width: 60px; height: auto; image-rendering: pixelated;" />
-          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
+          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0;">
             <div style="font-weight: bold; font-size: 14px; color: #FFFFFF;">Money</div>
             <div style="font-size: 14px; color: #00FF88;">Value: $${item.value}</div>
-            <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)</div>
+            ${healthRow}
           </div>
         </div>
         <div style="font-size: 12px; color: #AAAAAA; margin-top: 6px;">Collect with water</div>
@@ -1065,10 +1271,10 @@ export class TooltipSystem {
     return `
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
           <img src="assets/images/items/currency.png" style="width: 48px; height: auto; image-rendering: pixelated;" />
-          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2;">
+          <div style="flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0;">
             <div style="font-weight: bold; font-size: 14px; color: #FFFFFF;">Bonus pickup</div>
             <div style="font-size: 13px; color: #CCCCCC;">Type: ${String(item.itemType)}</div>
-            <div style="display: flex; align-items: center; gap: 6px; color: #FFFFFF;"><img src="assets/images/misc/health.png" style="width: 16px; height: 16px; image-rendering: crisp-edges;" /> ${Math.round(item.health)} / ${item.maxHealth} (${healthPercent}%)</div>
+            ${healthRow}
           </div>
         </div>
         <div style="font-size: 12px; color: #AAAAAA; margin-top: 6px;">Collect with water</div>

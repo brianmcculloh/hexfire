@@ -1,13 +1,14 @@
 // Save/Load System - Serializes game state to localStorage
 
 import { getScenarioByName } from '../scenarios.js';
-import { CONFIG, getExpectedTownMaxHealth, getPlayerLevel, normalizeWaveGroupIndex } from '../config.js';
+import { CONFIG, getExpectedTownMaxHealth, getPlayerLevel, normalizeWaveGroupIndex, clampPerimeterRing, clampChargeTargetDistance, normalizeChargeMode, isFinalSurvivalBossWaveGroup } from '../config.js';
 import { RunStatsTracker, getTotalRunFiresExtinguished } from '../systems/runStatsSystem.js';
 import { normalizeMetaProgression } from './metaProgression.js';
 import { migrateSeenShopItems, syncNewlyUnlockedFromSeen } from './shopSeenItems.js';
 import { normalizeMaxFiresExtinguishedByWave } from '../systems/waveGroupStatsBuilder.js';
 import { setLocalStorageItemWithRetry } from './localStorageQuota.js';
 import { artifactTraderWantsAreRevealed } from './artifactTrader.js';
+import { ensureSpecialtyMilestoneRewards } from './specialtyRewards.js';
 import { getTempPowerUpTimeReference } from './tempPowerUpClock.js';
 
 const SAVE_KEY_PREFIX = 'hexfire_save_';
@@ -466,10 +467,16 @@ function serializeGameState(gameState) {
       score: gameState.player.score ?? 0,
       currency: gameState.player.currency || 0,
       upgradePlans: gameState.player.upgradePlans || 0,
+      specialtyPlans: gameState.player.specialtyPlans || 0,
+      specialties: { ...(gameState.player.specialties || { time: 0, power: 0, money: 0, health: 0 }) },
+      specialtyTimeMilestonePowerUps: Array.isArray(gameState.player.specialtyTimeMilestonePowerUps)
+        ? [...gameState.player.specialtyTimeMilestonePowerUps]
+        : null,
       movementTokens: gameState.player.movementTokens || 0,
       towerSellbacks: gameState.player.towerSellbacks || 0,
       towerRepairs: gameState.player.towerRepairs || 0,
       partsVouchers: gameState.player.partsVouchers || 0,
+      tokenVouchers: gameState.player.tokenVouchers || 0,
       inventory: serializeInventory(gameState.player.inventory),
       powerUps: { ...(gameState.player.powerUps || {}) },
       tempPowerUps: playerTempPowerUps,
@@ -506,6 +513,11 @@ function serializeGameState(gameState) {
             }
           : null,
     },
+
+    // Wave group 30: rotating hero allies (portrait + active power slot)
+    survivalHero: isFinalSurvivalBossWaveGroup(gameState)
+      ? (gameState.survivalHeroSystem?.serializeState?.() ?? null)
+      : null,
     
     // Town level
     townLevel: gameState.townLevel || 1,
@@ -723,6 +735,11 @@ function serializeTowers(towerSystem) {
       maxHealth: tower.shield.maxHealth,
     } : null,
     sentinelMode: tower.sentinelMode || CONFIG.SENTINEL_MODE_DEFAULT,
+    perimeterRing: clampPerimeterRing(tower.perimeterRing ?? CONFIG.PERIMETER_RING_DEFAULT),
+    chargeTargetDistance: clampChargeTargetDistance(
+      tower.chargeTargetDistance ?? CONFIG.CHARGE_TARGET_DEFAULT
+    ),
+    chargeMode: normalizeChargeMode(tower.chargeMode ?? CONFIG.CHARGE_MODE_DEFAULT),
   }));
 }
 
@@ -969,10 +986,22 @@ export function applyLoadedState(gameState, loadedData) {
   gameState.player.score = loadedData.player.score ?? 0;
   gameState.player.currency = loadedData.player.currency || 0;
   gameState.player.upgradePlans = loadedData.player.upgradePlans || 0;
+  gameState.player.specialtyPlans = loadedData.player.specialtyPlans || 0;
+  gameState.player.specialties = {
+    time: loadedData.player.specialties?.time || 0,
+    power: loadedData.player.specialties?.power || 0,
+    money: loadedData.player.specialties?.money ?? loadedData.player.specialties?.savvy ?? 0,
+    health: loadedData.player.specialties?.health || 0,
+  };
+  gameState.player.specialtyTimeMilestonePowerUps = Array.isArray(loadedData.player.specialtyTimeMilestonePowerUps)
+    ? [...loadedData.player.specialtyTimeMilestonePowerUps]
+    : null;
+  ensureSpecialtyMilestoneRewards(gameState);
   gameState.player.movementTokens = loadedData.player.movementTokens || 0;
   gameState.player.towerSellbacks = loadedData.player.towerSellbacks || 0;
   gameState.player.towerRepairs = loadedData.player.towerRepairs || 0;
   gameState.player.partsVouchers = loadedData.player.partsVouchers || 0;
+  gameState.player.tokenVouchers = loadedData.player.tokenVouchers || 0;
   gameState.player.inventory = loadedData.player.inventory || {};
   if (!Array.isArray(gameState.player.inventory.collectedArtifactIds)) {
     gameState.player.inventory.collectedArtifactIds = [];
@@ -1186,6 +1215,13 @@ export function applyLoadedState(gameState, loadedData) {
     gameState.runStats?.recordReachedWaveGroup30?.();
     gameState.runStats?.syncWaveGroup30SurvivalSeconds?.(gameState.wave.survivalElapsed);
   }
+
+  if (isFinalSurvivalBossWaveGroup(gameState)) {
+    gameState.survivalHeroSystem?.restoreAfterLoad?.(loadedData.survivalHero);
+  } else {
+    gameState.survivalHeroSystem?.destroy?.();
+  }
+
   if (typeof loadedData.totalFiresExtinguished === 'number') {
     gameState.totalFiresExtinguished = Math.max(0, Math.floor(loadedData.totalFiresExtinguished));
   } else {
@@ -1282,6 +1318,11 @@ export function applyLoadedState(gameState, loadedData) {
           powerLevel: towerData.powerLevel || 1,
           shield: towerData.shield || null,
           sentinelMode: towerData.sentinelMode || CONFIG.SENTINEL_MODE_DEFAULT,
+          perimeterRing: towerData.perimeterRing ?? CONFIG.PERIMETER_RING_DEFAULT,
+          chargeTargetDistance: clampChargeTargetDistance(
+            towerData.chargeTargetDistance ?? CONFIG.CHARGE_TARGET_DEFAULT
+          ),
+          chargeMode: normalizeChargeMode(towerData.chargeMode ?? CONFIG.CHARGE_MODE_DEFAULT),
           runStatsInstanceId: towerData.runStatsInstanceId ?? null,
         }
       );
@@ -1475,7 +1516,7 @@ export function applyLoadedState(gameState, loadedData) {
         const value =
           itemType === 'currency' || itemType === 'xp'
             ? (row.value != null && Number.isFinite(Number(row.value)) ? Number(row.value) : 1)
-            : itemType === 'shield'
+            : itemType === 'shield' || itemType === 'suppression_bomb'
               ? (row.value != null && Number.isFinite(Number(row.value)) ? Number(row.value) : 1)
               : 1;
         const fromMystery = !!row.spawnedFromMystery;
