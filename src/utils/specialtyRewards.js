@@ -6,6 +6,7 @@ import {
   buildRewardStackRow,
   playRewardBundleFloatAnimation,
 } from './artifactTrader.js';
+import { isMetaItemUnlocked } from './metaProgression.js';
 
 /** @typedef {'time'|'power'|'money'|'health'} SpecialtyId */
 
@@ -23,22 +24,41 @@ function getTimeMilestonePowerUpCount() {
 }
 
 /**
+ * Permanent power-ups eligible for the Time mastery reward (meta-unlocked only).
+ * @param {import('../main.js').GameState | null | undefined} gameState
+ * @returns {string[]}
+ */
+function getTimeMilestonePowerUpPool(gameState) {
+  return Object.keys(CONFIG.POWER_UPS || {}).filter((id) => isMetaItemUnlocked(gameState, id));
+}
+
+/**
  * Pick and persist random permanent power-ups for the Time mastery reward (once per run; repeats allowed).
+ * Only meta-unlocked power-ups are eligible (e.g. no Spread/Fire Resistance until unlocked).
  * @param {import('../main.js').GameState | null | undefined} gameState
  */
 export function ensureSpecialtyMilestoneRewards(gameState) {
   if (!gameState?.player) return;
   const count = getTimeMilestonePowerUpCount();
-  const existing = gameState.player.specialtyTimeMilestonePowerUps;
-  if (Array.isArray(existing) && existing.length === count) return;
-
-  const pool = Object.keys(CONFIG.POWER_UPS || {});
+  const pool = getTimeMilestonePowerUpPool(gameState);
   if (pool.length === 0) {
     gameState.player.specialtyTimeMilestonePowerUps = [];
     return;
   }
 
-  const picks = Array.isArray(existing) ? [...existing] : [];
+  const poolSet = new Set(pool);
+  const existing = gameState.player.specialtyTimeMilestonePowerUps;
+  // Keep a cached roll only if every pick is still meta-unlocked
+  if (
+    Array.isArray(existing) &&
+    existing.length === count &&
+    existing.every((id) => poolSet.has(id))
+  ) {
+    return;
+  }
+
+  // Drop any previously cached locked picks, then refill from the unlocked pool
+  const picks = Array.isArray(existing) ? existing.filter((id) => poolSet.has(id)) : [];
   while (picks.length < count) {
     picks.push(pool[Math.floor(Math.random() * pool.length)]);
   }

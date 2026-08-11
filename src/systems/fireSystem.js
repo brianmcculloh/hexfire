@@ -16,7 +16,7 @@ function playLightningStrikeSfx(hex) {
   if (!hex || typeof window === 'undefined' || !window.AudioManager) return;
   const isOccupied = hex.hasTower || hex.hasWaterTank || hex.hasTempPowerUpItem
     || hex.hasMysteryItem || hex.hasCurrencyItem || hex.hasSuppressionBomb
-    || hex.hasBurningVault || hex.hasArtifactItem
+    || hex.hasBurningVault || hex.hasDungeonEntrance || hex.hasArtifactItem
     || hex.isPath;
   const volume = getLightningStrikeSfxVolume();
   if (isOccupied) {
@@ -41,7 +41,8 @@ export class FireSystem {
       blaze: 0,
       firestorm: 0,
       inferno: 0,
-      cataclysm: 0
+      cataclysm: 0,
+      blackfyre: 0,
     };
     
     // Current wave group for fire progression
@@ -513,12 +514,14 @@ export class FireSystem {
    * @param {string} fireType - Type of fire
    * @param {boolean} isSpawn - Whether this is an initial spawn (vs spread)
    * @param {boolean} force - If true, re-ignite already burning hexes (reset fire to full health)
+   * @param {{ spawnLightning?: boolean }} [opts] - spawnLightning defaults to isSpawn; false skips bolt FX/SFX
    */
-  igniteHex(q, r, fireType = CONFIG.FIRE_TYPE_CINDER, isSpawn = false, force = false) {
+  igniteHex(q, r, fireType = CONFIG.FIRE_TYPE_CINDER, isSpawn = false, force = false, opts = null) {
     const hex = this.gridSystem.getHex(q, r);
     // Prevent fires from igniting on fire spawners (spawners are indestructible)
     if (!hex || hex.hasFireSpawner) return;
     if (hex.isBurning && !force) return;
+    const spawnLightning = opts?.spawnLightning ?? isSpawn;
 
     // When re-igniting an already burning hex: if new type is weaker, refill existing fire instead of replacing
     if (hex.isBurning && force) {
@@ -540,7 +543,7 @@ export class FireSystem {
           });
         }
         // Still show lightning hit (use existing fire type for visual)
-        if (isSpawn) {
+        if (spawnLightning) {
           try {
             const renderer = this.gameState?.renderer;
             if (renderer && renderer.spawnLightningEffect) {
@@ -567,6 +570,7 @@ export class FireSystem {
     // setHex performs, which matters when boss casts re-strike dozens of
     // already-burning hexes per second.
     if (hex.isBurning) {
+      // Keep existing ignition origin (spread vs lightning spawn) when upgrading/refilling.
       this.gridSystem.mutateHexFields(q, r, {
         fireType: fireType,
         burnDuration: 0,
@@ -580,11 +584,14 @@ export class FireSystem {
         burnDuration: 0,
         extinguishProgress: fireConfig.extinguishTime,
         maxExtinguishTime: fireConfig.extinguishTime,
+        // Lightning / random ignition vs adjacent-hex spread (grove no-spread bonus ignores spawn damage)
+        fireIgnitedBySpawn: !!isSpawn,
       });
     }
     
-    // Spawn lightning effect for initial spawns (not spreads)
-    if (isSpawn) {
+    // Spawn lightning effect for initial spawns (not spreads).
+    // Callers may disable FX while keeping isSpawn gameplay semantics (e.g. provoked-burn).
+    if (spawnLightning) {
       try {
         const renderer = this.gameState?.renderer;
         if (renderer && renderer.spawnLightningEffect) {
@@ -636,6 +643,7 @@ export class FireSystem {
         burnDuration: 0,
         extinguishProgress: 0,
         maxExtinguishTime: 0,
+        fireIgnitedBySpawn: false,
       });
       
       // Track this fire as extinguished
@@ -789,7 +797,8 @@ export class FireSystem {
       blaze: 0,
       firestorm: 0,
       inferno: 0,
-      cataclysm: 0
+      cataclysm: 0,
+      blackfyre: 0,
     };
   }
 

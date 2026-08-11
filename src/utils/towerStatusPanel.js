@@ -1,10 +1,19 @@
 // Tower Status HUD — compact list of placed towers under the top-left overlay (see updateTowerStatusPanel).
 
 import { CONFIG } from '../config.js';
+import { isHealthBarDamageSimActive } from './tempPowerUpClock.js';
 
 let lastTowerSignature = '';
 let hoveredTowerId = null;
 let hoverPointer = { x: 0, y: 0 };
+
+/**
+ * Per-card DOM refs cached at rebuild time. Rebuilds are rare (tower list changes);
+ * bar updates run every frame — resolving cards with document.querySelector each
+ * frame (2+ queries × N towers × 60 Hz) was ~1% of frame time at 28 towers.
+ * @type {Map<string, {card: HTMLElement, hpFill: HTMLElement|null, shieldRow: HTMLElement|null, shFill: HTMLElement|null, shieldImg: HTMLElement|null, lastHpWidth: string, lastHpColor: string, lastShWidth: string, lastShieldDisplay: string, lastShieldSrc: string, lastBurning: boolean}>}
+ */
+const cardRefsByTowerId = new Map();
 
 function healthFillColor(percent) {
   const p = Math.max(0, Math.min(1, percent));
@@ -98,6 +107,7 @@ function rebuildList(towers, gameState) {
   if (!list) return;
 
   list.replaceChildren();
+  cardRefsByTowerId.clear();
   hoveredTowerId = null;
   gameState.inputHandler?.tooltipSystem?.hide?.();
 
@@ -110,6 +120,19 @@ function rebuildList(towers, gameState) {
     btn.innerHTML = buildTowerCardInnerHtml(tower);
     wireCard(btn, tower, gameState);
     list.appendChild(btn);
+    cardRefsByTowerId.set(tower.id, {
+      card: btn,
+      hpFill: btn.querySelector('.tower-status-bar-fill--health'),
+      shieldRow: btn.querySelector('.tower-status-shield-row'),
+      shFill: btn.querySelector('.tower-status-bar-fill--shield'),
+      shieldImg: btn.querySelector('.tower-status-shield-row .tower-status-row-icon'),
+      lastHpWidth: '',
+      lastHpColor: '',
+      lastShWidth: '',
+      lastShieldDisplay: '',
+      lastShieldSrc: '',
+      lastBurning: false,
+    });
   }
 }
 
@@ -119,36 +142,91 @@ function isTowerHexBurning(gameState, tower) {
 }
 
 function syncTowerCardBurning(tower, gameState) {
-  const card = document.querySelector(`.tower-status-card[data-tower-id="${tower.id}"]`);
-  if (!card) return;
-  card.classList.toggle('tower-status-card--burning', isTowerHexBurning(gameState, tower));
+  const refs = cardRefsByTowerId.get(tower.id);
+  if (!refs) return;
+  const burning = isTowerHexBurning(gameState, tower);
+  if (burning === refs.lastBurning) return;
+  refs.lastBurning = burning;
+  refs.card.classList.toggle('tower-status-card--burning', burning);
 }
 
-function updateBarFills(tower) {
-  const card = document.querySelector(`.tower-status-card[data-tower-id="${tower.id}"]`);
-  if (!card) return;
+function updateBarFills(tower, gameState) {
+  const refs = cardRefsByTowerId.get(tower.id);
+  if (!refs) return;
 
-  const hpPct =
-    Math.max(0, Math.min(1, (tower.health ?? 0) / Math.max(1, tower.maxHealth ?? 1))) * 100;
-  const hpFill = card.querySelector('.tower-status-bar-fill--health');
-  if (hpFill) {
-    hpFill.style.width = `${hpPct.toFixed(2)}%`;
-    hpFill.style.background = healthFillColor(hpPct / 100);
+  const renderer = gameState?.renderer;
+  // Match map tower bars so shared hp-* animator keys use the same expectedInterval.
+  const tickSec = 0.12;
+  const frozen = !isHealthBarDamageSimActive(gameState);
+  const healthHintOpts = frozen
+    ? { hintVelocity: 0, clampUnitInterval: true }
+    : typeof renderer?._towerHealthBarHintOpts === 'function'
+      ? { ...renderer._towerHealthBarHintOpts(tower), clampUnitInterval: true }
+      : { clampUnitInterval: true };
+  const shieldHintOpts = frozen
+    ? { hintVelocity: 0, clampUnitInterval: true }
+    : typeof renderer?._towerShieldBarHintOpts === 'function'
+      ? { ...renderer._towerShieldBarHintOpts(tower), clampUnitInterval: true }
+      : { hintVelocity: 0, clampUnitInterval: true };
+  const smooth = (key, target, hintOpts) => {
+    const clamped = Math.max(0, Math.min(1, target));
+    if (!renderer || typeof renderer.getLinearAnimatedValue !== 'function') return clamped;
+    return Math.max(
+      0,
+      Math.min(
+        1,
+        renderer.getLinearAnimatedValue(
+          key,
+          clamped,
+          renderer.deltaTime || 0.016,
+          tickSec,
+          hintOpts
+        )
+      )
+    );
+  };
+
+  const rawHp =
+    Math.max(0, Math.min(1, (tower.health ?? 0) / Math.max(1, tower.maxHealth ?? 1)));
+  const hpPct = smooth(`hp-tower-${tower.id}`, rawHp, healthHintOpts) * 100;
+  if (refs.hpFill) {
+    const hpWidth = `${hpPct.toFixed(2)}%`;
+    if (hpWidth !== refs.lastHpWidth) {
+      refs.lastHpWidth = hpWidth;
+      refs.hpFill.style.width = hpWidth;
+      const hpColor = healthFillColor(hpPct / 100);
+      if (hpColor !== refs.lastHpColor) {
+        refs.lastHpColor = hpColor;
+        refs.hpFill.style.background = hpColor;
+      }
+    }
   }
 
   const sh = tower.shield;
   const hasShield = !!(sh && sh.maxHealth > 0);
-  const shieldRow = card.querySelector('.tower-status-shield-row');
-  if (shieldRow) {
-    shieldRow.style.display = hasShield ? 'flex' : 'none';
+  if (refs.shieldRow) {
+    const shieldDisplay = hasShield ? 'flex' : 'none';
+    if (shieldDisplay !== refs.lastShieldDisplay) {
+      refs.lastShieldDisplay = shieldDisplay;
+      refs.shieldRow.style.display = shieldDisplay;
+    }
     if (hasShield) {
-      const shPct =
-        Math.max(0, Math.min(1, (sh.health ?? 0) / Math.max(1, sh.maxHealth ?? 1))) * 100;
-      const shFill = card.querySelector('.tower-status-bar-fill--shield');
-      if (shFill) shFill.style.width = `${shPct.toFixed(2)}%`;
-      const shieldImg = shieldRow.querySelector('.tower-status-row-icon');
-      if (shieldImg && sh.level) {
-        shieldImg.src = `assets/images/items/shield_${Math.min(4, Math.max(1, sh.level))}.png`;
+      const rawSh =
+        Math.max(0, Math.min(1, (sh.health ?? 0) / Math.max(1, sh.maxHealth ?? 1)));
+      const shPct = smooth(`hp-shield-${tower.id}`, rawSh, shieldHintOpts) * 100;
+      if (refs.shFill) {
+        const shWidth = `${shPct.toFixed(2)}%`;
+        if (shWidth !== refs.lastShWidth) {
+          refs.lastShWidth = shWidth;
+          refs.shFill.style.width = shWidth;
+        }
+      }
+      if (refs.shieldImg && sh.level) {
+        const src = `assets/images/items/shield_${Math.min(4, Math.max(1, sh.level))}.png`;
+        if (src !== refs.lastShieldSrc) {
+          refs.lastShieldSrc = src;
+          refs.shieldImg.src = src;
+        }
       }
     }
   }
@@ -200,6 +278,7 @@ export function updateTowerStatusPanel(gameState) {
     lastTowerSignature = '';
     const listClear = document.getElementById('towerStatusList');
     if (listClear?.childNodes?.length) listClear.replaceChildren();
+    cardRefsByTowerId.clear();
     hoveredTowerId = null;
     gameState.inputHandler?.tooltipSystem?.hide?.();
     return;
@@ -218,6 +297,7 @@ export function updateTowerStatusPanel(gameState) {
     if (towers.length === 0) {
       const list = document.getElementById('towerStatusList');
       if (list) list.replaceChildren();
+      cardRefsByTowerId.clear();
       hoveredTowerId = null;
       gameState.inputHandler?.tooltipSystem?.hide?.();
     } else {
@@ -228,7 +308,7 @@ export function updateTowerStatusPanel(gameState) {
     }
   } else {
     for (const t of towers) {
-      updateBarFills(t);
+      updateBarFills(t, gameState);
       syncTowerCardBurning(t, gameState);
     }
   }

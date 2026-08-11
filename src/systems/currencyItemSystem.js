@@ -1,6 +1,6 @@
 // Currency Item System - Manages currency items that spawn from mystery boxes
 
-import { CONFIG, getFireTypeConfig, addPlayerScore, getPowerUpMultiplier, resolveWaterTankTypeIdFromPoolRow, getHeroPowerFireDamageResistanceMultiplier, getSuppressionBombTotalUses, applyCurrencyGainBonuses } from '../config.js';
+import { CONFIG, getFireTypeConfig, addPlayerScore, getPowerUpMultiplier, resolveWaterTankTypeIdFromPoolRow, getHeroPowerFireDamageResistanceMultiplier, getSuppressionBombTotalUses, clampSuppressionBombLevel, getSuppressionBombMaxLevel, applyCurrencyGainBonuses } from '../config.js';
 import { getNeighbors } from '../utils/hexMath.js';
 import { filterWeightedRewardPool, isWeightedRewardUnlockedInRun } from '../utils/rewardPoolUnlocks.js';
 
@@ -21,6 +21,7 @@ export function isValidMysteryDropHex(hex) {
     hex.hasMysteryItem ||
     hex.hasCurrencyItem ||
     hex.hasBurningVault ||
+    hex.hasDungeonEntrance ||
     hex.hasArtifactItem ||
     hex.hasDigSite ||
     hex.hasSuppressionBomb
@@ -51,6 +52,8 @@ function getCurrencyItemCollectSpriteSpec(item) {
     }
     case 'upgrade_plans':
       return { spriteCategory: 'items', spriteFilename: 'upgrade_token.png' };
+    case 'specialty_plans':
+      return { spriteCategory: 'items', spriteFilename: 'special.png' };
     case 'tree_juice':
       return { spriteCategory: 'items', spriteFilename: 'town_defense.png' };
     default:
@@ -79,7 +82,7 @@ export class CurrencyItemSystem {
    * @param {number} q - Hex q coordinate
    * @param {number} r - Hex r coordinate
    * @param {string} itemType - Type of item: 'currency', 'xp', 'movement_token', 'shield', 'suppression_bomb', 'upgrade_plans', 'tree_juice'
-   * @param {number} value - Value for currency/xp (amount), shield/suppression_bomb level (1-4), or 1 for movement_token/upgrade_plans
+   * @param {number} value - Value for currency/xp (amount), shield level (1-4), suppression_bomb level (1–max), or 1 for movement_token/upgrade_plans
    * @param {boolean} fromMystery - True when spawned from a mystery box cluster (for boss triggers)
    * @param {{ skipSpawnBounce?: boolean }} [spawnOptions] - Set skipSpawnBounce when restoring from save (no drop-in animation)
    * @returns {string|null} Item ID or null if spawn failed
@@ -101,6 +104,7 @@ export class CurrencyItemSystem {
       hex.hasMysteryItem ||
       hex.hasCurrencyItem ||
       hex.hasBurningVault ||
+      hex.hasDungeonEntrance ||
       hex.hasArtifactItem
     ) {
       return null;
@@ -237,9 +241,9 @@ export class CurrencyItemSystem {
       } else if (selectedItem.type === 'suppression_bomb') {
         let level;
         if (selectedItem.level != null && Number.isFinite(Number(selectedItem.level))) {
-          level = Math.min(4, Math.max(1, Math.round(Number(selectedItem.level))));
+          level = clampSuppressionBombLevel(selectedItem.level);
         } else {
-          level = Math.floor(Math.random() * 4) + 1;
+          level = Math.floor(Math.random() * getSuppressionBombMaxLevel()) + 1;
         }
         didSpawn = !!this.spawnCurrencyItem(q, r, 'suppression_bomb', level, true);
       } else {
@@ -355,6 +359,8 @@ export class CurrencyItemSystem {
       // Award upgrade plan
       this.gameState.player.upgradePlans = (this.gameState.player.upgradePlans || 0) + 1;
       this.gameState.runStats?.recordUpgradePlanFromMapDrop?.();
+    } else if (item.itemType === 'specialty_plans') {
+      this.gameState.player.specialtyPlans = (this.gameState.player.specialtyPlans || 0) + 1;
     } else if (item.itemType === 'tree_juice') {
       this.gameState.townLevel = (this.gameState.townLevel || 1) + 1;
       this.gameState.gridSystem?.applyTownUpgrade(
@@ -461,52 +467,60 @@ export class CurrencyItemSystem {
   }
 
   /**
-   * Update all currency items (called each game tick)
-   * @param {number} deltaTime - Time elapsed in seconds
+   * Per-frame fire/vortex damage so map HP bars track smoothly.
+   * @param {number} deltaTime
    */
-  update(deltaTime) {
-    // Check for items destroyed by fire
+  updateHealth(deltaTime) {
+    const dt = Math.max(0, Number(deltaTime) || 0);
+    if (dt <= 0) return;
+
     const itemsToRemove = [];
-    
+
     this.items.forEach(item => {
       if (!item.isActive) return;
-      
-      // Check if item hex is on fire and take damage
+
       const itemHex = this.gridSystem.getHex(item.q, item.r);
-      if (itemHex && itemHex.isBurning) {
-        // Get fire type damage per second
+      const hasVortexThreat = !!(itemHex && itemHex.hasVortex);
+      if (!itemHex || (!itemHex.isBurning && !hasVortexThreat)) return;
+
+      const powerUps = this.gameState?.player?.powerUps || {};
+      const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+      const fireDamageMult = getPowerUpMultiplier('fireDamage', powerUps, tempPowerUps, this.gameState)
+        * getHeroPowerFireDamageResistanceMultiplier(this.gameState);
+      let damagePerSecond = 0;
+      if (itemHex.isBurning) {
         const fireConfig = getFireTypeConfig(itemHex.fireType);
-        const powerUps = this.gameState?.player?.powerUps || {};
-        const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
-        const fireDamageMult = getPowerUpMultiplier('fireDamage', powerUps, tempPowerUps, this.gameState)
-          * getHeroPowerFireDamageResistanceMultiplier(this.gameState);
-        const damagePerSecond = (fireConfig ? fireConfig.damagePerSecond : 1) * fireDamageMult;
-        const damageThisTick = deltaTime * damagePerSecond;
-        
-        // Damage the item
-        item.health -= damageThisTick;
-        item.health = Math.max(0, item.health);
-        
-        // Item destroyed by fire
-        if (item.health <= 0) {
-          try {
-            this.gameState?.renderer?.spawnFireExplosionParticles?.(item.q, item.r, 'currencyItem');
-          } catch (e) {
-            // ignore render side errors
-          }
-          // Play destroyed sound effect
-          if (window.AudioManager) {
-            window.AudioManager.playSFX('destroyed');
-          }
-          itemsToRemove.push(item.id);
+        damagePerSecond += (fireConfig ? fireConfig.damagePerSecond : 1) * fireDamageMult;
+      }
+      if (hasVortexThreat) {
+        damagePerSecond +=
+          (this.gameState.vortexSystem?.getDamagePerSecondAt?.(item.q, item.r) || 0) * fireDamageMult;
+      }
+      item.health = Math.max(0, item.health - dt * damagePerSecond);
+
+      if (item.health <= 0) {
+        try {
+          this.gameState?.renderer?.spawnFireExplosionParticles?.(item.q, item.r, 'currencyItem');
+        } catch (e) {
+          // ignore render side errors
         }
+        if (window.AudioManager) {
+          window.AudioManager.playSFX('destroyed');
+        }
+        itemsToRemove.push(item.id);
       }
     });
-    
-    // Remove destroyed items
+
     itemsToRemove.forEach(itemId => {
       this.destroyItem(itemId);
     });
+  }
+
+  /**
+   * 1 Hz tick — no spawn here (HP is applied in {@link updateHealth}).
+   */
+  update(_deltaTime) {
+    // no-op: health runs per-frame
   }
 
   /**

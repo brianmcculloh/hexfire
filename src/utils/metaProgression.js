@@ -29,7 +29,12 @@ const META_ITEM_ALIASES = {
 export function getMetaProgressionUnlockDefinitions() {
   return Object.entries(CONFIG.META_PROGRESSION_UNLOCKS || {})
     .map(([id, def]) => ({ id, ...def }))
-    .sort((a, b) => (a.requiredCompletedWaveGroup || 0) - (b.requiredCompletedWaveGroup || 0));
+    .sort((a, b) => {
+      const wa = a.requiredCompletedWaveGroup || 0;
+      const wb = b.requiredCompletedWaveGroup || 0;
+      if (wa !== wb) return wa - wb;
+      return String(a.id).localeCompare(String(b.id));
+    });
 }
 
 export function getMetaUnlockIdForItem(itemId) {
@@ -40,18 +45,17 @@ export function getMetaUnlockIdForItem(itemId) {
   return null;
 }
 
+/**
+ * Normalize persisted meta progression. Does NOT auto-grant unlocks from
+ * bestCompletedWaveGroup — unlocks are only added via
+ * {@link unlockMetaProgressionForCompletedWaveGroup} (max N per run).
+ */
 export function normalizeMetaProgression(raw = {}) {
   const bestCompletedWaveGroup = Math.max(0, Math.floor(Number(raw.bestCompletedWaveGroup) || 0));
   const rawIds = Array.isArray(raw.unlockedIds) ? raw.unlockedIds.map(String) : [];
   const unlockedSet = new Set(
     rawIds.map((id) => (id === 'pulsing_tower' ? 'bomber_tower' : id))
   );
-
-  getMetaProgressionUnlockDefinitions().forEach((def) => {
-    if (bestCompletedWaveGroup >= (def.requiredCompletedWaveGroup || 0)) {
-      unlockedSet.add(def.id);
-    }
-  });
 
   return {
     version: 1,
@@ -96,19 +100,33 @@ export function isMetaItemUnlocked(gameState, itemId) {
   return isMetaProgressionUnlocked(gameState, unlockId);
 }
 
+/**
+ * Grant meta unlocks for a finished run. Eligibility uses THIS run's completed
+ * wave group (not all-time best). Among locked defs with
+ * requiredCompletedWaveGroup <= completed, unlock the lowest-threshold ones first,
+ * up to {@link CONFIG.META_PROGRESSION_MAX_UNLOCKS_PER_RUN} (default 2).
+ * @returns {Array<object>} newly unlocked definition objects (0–2)
+ */
 export function unlockMetaProgressionForCompletedWaveGroup(gameState, completedWaveGroup) {
   const progression = ensureMetaProgression(gameState);
   const completed = Math.max(0, Math.floor(Number(completedWaveGroup) || 0));
   progression.bestCompletedWaveGroup = Math.max(progression.bestCompletedWaveGroup || 0, completed);
 
   const unlocked = new Set(progression.unlockedIds || []);
+  const maxPerRun = Math.max(
+    0,
+    Math.floor(Number(CONFIG.META_PROGRESSION_MAX_UNLOCKS_PER_RUN) ?? 2)
+  );
   const newlyUnlocked = [];
-  getMetaProgressionUnlockDefinitions().forEach((def) => {
-    if (progression.bestCompletedWaveGroup >= (def.requiredCompletedWaveGroup || 0) && !unlocked.has(def.id)) {
-      unlocked.add(def.id);
-      newlyUnlocked.push(def);
-    }
-  });
+
+  // Definitions are sorted lowest requiredCompletedWaveGroup first.
+  for (const def of getMetaProgressionUnlockDefinitions()) {
+    if (newlyUnlocked.length >= maxPerRun) break;
+    if (completed < (def.requiredCompletedWaveGroup || 0)) continue;
+    if (unlocked.has(def.id)) continue;
+    unlocked.add(def.id);
+    newlyUnlocked.push(def);
+  }
 
   progression.unlockedIds = [...unlocked].filter((id) => CONFIG.META_PROGRESSION_UNLOCKS?.[id]);
   if (gameState?.meta) gameState.meta.progression = normalizeMetaProgression(progression);

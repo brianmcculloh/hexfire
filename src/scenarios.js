@@ -23,7 +23,7 @@ import { CONFIG } from './config.js';
  *   startingLevel: number,           // Optional: Starting player level (XP will be set to the amount required for this level)
  *   unlockedItems: Array<string>,    // Array of item types to unlock (e.g., ['jet', 'rain', 'spread'])
  *                                     // For suppression_bomb and shield, use level-specific format:
- *                                     // 'suppression_bomb_1', 'suppression_bomb_2', 'suppression_bomb_3', 'suppression_bomb_4'
+ *                                     // 'suppression_bomb_1', 'suppression_bomb_2', … 'suppression_bomb_5'
  *                                     // 'shield_1', 'shield_2', 'shield_3', 'shield_4'
  *                                     // Or use 'suppression_bomb'/'shield' to unlock all levels (backward compatibility)
  *   townHealth: number                // Optional: Starting town health (defaults to CONFIG.TOWN_HEALTH_BASE)

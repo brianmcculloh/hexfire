@@ -1,7 +1,8 @@
-import { CONFIG, getTowerUnlockStatus, isTowerRepairShopUnlocked } from '../config.js';
+import { CONFIG, getTowerUnlockStatus, isTowerRepairShopUnlocked, getSuppressionBombMaxLevel } from '../config.js';
 import { isMetaItemUnlocked } from './metaProgression.js';
 
 const MULTI_LEVEL_SHOP_TYPES = ['suppression_bomb', 'shield'];
+const SHIELD_MAX_LEVEL = 4;
 const SHOP_TOWER_TYPES = ['jet', 'spread', 'pulsing', 'rain', 'bomber', 'sentinel', 'perimeter', 'charge'];
 const SHOP_ITEMS_CATEGORY_TYPES = [
   'town_health',
@@ -54,7 +55,8 @@ export function migrateSeenShopItems(gameState) {
 
   for (const type of MULTI_LEVEL_SHOP_TYPES) {
     if (!seen.has(type)) continue;
-    for (let level = 1; level <= 4; level++) {
+    const maxLevel = type === 'suppression_bomb' ? getSuppressionBombMaxLevel() : SHIELD_MAX_LEVEL;
+    for (let level = 1; level <= maxLevel; level++) {
       const status = getTowerUnlockStatus(type, playerLevel, level, false);
       if (status.unlocked) {
         seen.add(`${type}_${level}`);
@@ -113,8 +115,10 @@ export function getUnseenVisibleShopItemSlots(gameState, playerLevel) {
   }
 
   for (const itemType of MULTI_LEVEL_SHOP_TYPES) {
-    if (!isMetaItemUnlocked(gameState, itemType)) continue;
-    for (let level = 1; level <= 4; level++) {
+    const maxLevel = itemType === 'suppression_bomb' ? getSuppressionBombMaxLevel() : SHIELD_MAX_LEVEL;
+    for (let level = 1; level <= maxLevel; level++) {
+      // Per-level meta gate (e.g. suppression_bomb_5); levels without a meta entry stay unlocked.
+      if (!isMetaItemUnlocked(gameState, `${itemType}_${level}`)) continue;
       const slotKey = `${itemType}_${level}`;
       if (isUnlockedShopSlot(gameState, itemType, playerLevel, level) && !isShopItemSeen(gameState, slotKey)) {
         slots.push(slotKey);
@@ -149,6 +153,45 @@ export function countUnseenVisibleShopPowerups(gameState, playerLevel) {
     if (!isShopItemSeen(gameState, slotKey)) count++;
   });
   return count;
+}
+
+/**
+ * Seed player.announcedUnlocks with every discoverable item already unlocked at the
+ * current player level. Used for legacy saves that predate announcedUnlocks so wave-end
+ * unlock fallbacks cannot resurrect old discovery modals.
+ * @param {object} gameState
+ */
+export function seedAnnouncedUnlocksFromPlayerLevel(gameState) {
+  if (!gameState?.player) return;
+  if (!gameState.player.announcedUnlocks) {
+    gameState.player.announcedUnlocks = new Set();
+  }
+  const set = gameState.player.announcedUnlocks;
+  const playerLevel = gameState.player.level ?? 1;
+  const discoveryTypes = [
+    ...SHOP_TOWER_TYPES,
+    'suppression_bomb',
+    'shield',
+    'suppression_bundle',
+    'shield_bundle',
+    'town_health',
+    'upgrade_token',
+  ];
+
+  for (const towerType of discoveryTypes) {
+    if (!isMetaItemUnlocked(gameState, towerType)) continue;
+    if (towerType === 'suppression_bomb' || towerType === 'shield') {
+      const maxLevel = towerType === 'suppression_bomb' ? getSuppressionBombMaxLevel() : SHIELD_MAX_LEVEL;
+      for (let level = 1; level <= maxLevel; level++) {
+        if (!isMetaItemUnlocked(gameState, `${towerType}_${level}`)) continue;
+        if (getTowerUnlockStatus(towerType, playerLevel, level, false).unlocked) {
+          set.add(`${towerType}_${level}`);
+        }
+      }
+    } else if (getTowerUnlockStatus(towerType, playerLevel, null, false).unlocked) {
+      set.add(towerType);
+    }
+  }
 }
 
 /** Restore transient highlight set after load (newlyUnlockedItems is not persisted). */

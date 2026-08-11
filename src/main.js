@@ -1,6 +1,6 @@
 // Main Entry Point - Initializes and starts the game
 
-import { CONFIG, getFireTypeConfig, getSuppressionBombCost, getSuppressionBombTotalUses, getShieldCost, getShieldHealth, getLevelThreshold, getLevelTierSpritePath, getTowerUnlockStatus, getPlayerLevel, getTowerPower, getPulsingPower, getPulsingAttackInterval, getRainPower, getBomberPower, getBomberAttackInterval, getPowerUpMultiplier, getTowerRange, getSpreadTowerRange, getRainRange, addPlayerScore, getPowerUpGraphicFilename, getPermanentPowerUpShopPurchaseCost, getArtifactById, isTowerRepairShopUnlocked, getWaveGroupName, formatActiveWaveTimerText, formatClockMinutesSeconds, formatWaveGroupSlotDisplay, formatPowerUpStackEffectSummary, getPermanentPowerUpDescription, getTempPowerUpDescription, resolveWaterTankTypeIdFromPoolRow, isWaterTankTypeAvailableAtWaveGroup, getSentinelTurretSizeMultiplier, getPerimeterTurretSizeMultiplier, getPerimeterTurretOffsetPx, getChargeTurretHeightMultiplier, getChargeTurretAspectRatio, getChargeTurretOffsetPx, getHealthBarFillColor, applyCurrencyGainBonuses } from './config.js';
+import { CONFIG, getFireTypeConfig, getSuppressionBombCost, getSuppressionBombTotalUses, getSuppressionBombMaxLevel, clampSuppressionBombLevel, getEffectiveSuppressionBombPower, getShieldCost, getShieldHealth, getLevelThreshold, getLevelTierSpritePath, getTowerUnlockStatus, getPlayerLevel, getTowerPower, getPulsingPower, getPulsingAttackInterval, getRainPower, getBomberPower, getBomberAttackInterval, getPowerUpMultiplier, getTowerRange, getSpreadTowerRange, getRainRange, addPlayerScore, getPowerUpGraphicFilename, getPermanentPowerUpShopPurchaseCost, getMovementTokenShopCost, getArtifactById, isTowerRepairShopUnlocked, getWaveGroupName, formatActiveWaveTimerText, formatClockMinutesSeconds, formatWaveGroupSlotDisplay, formatPowerUpStackEffectSummary, getPermanentPowerUpDescription, getTempPowerUpDescription, resolveWaterTankTypeIdFromPoolRow, isWaterTankTypeAvailableAtWaveGroup, getSentinelTurretSizeMultiplier, getPerimeterTurretSizeMultiplier, getPerimeterTurretOffsetPx, getChargeTurretHeightMultiplier, getChargeTurretAspectRatio, getChargeTurretOffsetPx, getHealthBarFillColor, applyCurrencyGainBonuses, formatWaterDamageRate } from './config.js';
 import { filterWeightedRewardPool } from './utils/rewardPoolUnlocks.js';
 import {
   showConfirmModal,
@@ -21,7 +21,10 @@ import { FireSystem } from './systems/fireSystem.js';
 import { PathSystem } from './systems/pathSystem.js';
 import { TowerSystem } from './systems/towerSystem.js';
 import { WaveSystem } from './systems/waveSystem.js';
-import { normalizeMaxFiresExtinguishedByWave } from './systems/waveGroupStatsBuilder.js';
+import {
+  normalizeMaxFiresExtinguishedByWave,
+  normalizeMaxVortexesExtinguishedByWave,
+} from './systems/waveGroupStatsBuilder.js';
 import { ProgressionSystem } from './systems/progressionSystem.js';
 import { SuppressionBombSystem } from './systems/suppressionBombSystem.js';
 import { ShieldSystem } from './systems/shieldSystem.js';
@@ -32,6 +35,9 @@ import { CurrencyItemSystem } from './systems/currencyItemSystem.js';
 import { FireSpawnerSystem } from './systems/fireSpawnerSystem.js';
 import { DigSiteSystem } from './systems/digSiteSystem.js';
 import { BurningVaultSystem } from './systems/burningVaultSystem.js';
+import { DungeonEntranceSystem } from './systems/dungeonEntranceSystem.js';
+import { forceCloseDungeonRewardOverlay } from './utils/dungeonRewardUI.js';
+import { VortexSystem } from './systems/vortexSystem.js';
 import { ArtifactSystem } from './systems/artifactSystem.js';
 import { BossSystem } from './systems/bossSystem.js';
 import { SurvivalHeroSystem } from './systems/survivalHeroSystem.js';
@@ -53,6 +59,7 @@ import {
   isMovementTokenSellbackPickerOpen,
   showMovementTokenSellbackModal,
 } from './utils/tokenVoucherUI.js';
+import { attachAutoShieldsButton, initAutoShieldsUI } from './utils/autoShieldsUI.js';
 import { addScoreToLeaderboard, getLeaderboard, formatLeaderboardDate, clearLeaderboard } from './utils/leaderboard.js';
 import { GameLoop } from './gameLoop.js';
 import {
@@ -69,9 +76,10 @@ import {
   handleSpecialtyPlanInventoryClick,
 } from './utils/specialtyUI.js';
 import { ensureSpecialtyMilestoneRewards } from './utils/specialtyRewards.js';
-import { wireTowerStatsModal, openTowerStatsModal, closeTowerStatsModal } from './utils/towerStatsUI.js';
+import { wireTowerStatsModal, openTowerStatsModal, closeTowerStatsModal, attachTowerDetailsButton } from './utils/towerStatsUI.js';
 import { AudioManager } from './utils/audioManager.js';
 import { initTextEffects, processTextWaveElements } from './utils/textEffects.js';
+import { setStoryVortexFxActive } from './utils/storyVortexFx.js';
 import { axialToPixel } from './utils/hexMath.js';
 import { getTempPowerUpTimeReference } from './utils/tempPowerUpClock.js';
 import {
@@ -148,6 +156,8 @@ const gameState = {
   waterTankSystem: null,
   digSiteSystem: null,
   burningVaultSystem: null,
+  dungeonEntranceSystem: null,
+  vortexSystem: null,
   waveSystem: null,
   progressionSystem: null,
   inputHandler: null,
@@ -158,15 +168,18 @@ const gameState = {
   tickCount: 0,
   isPaused: false,
   pauseStartTime: null, // Track when game was paused (for temp power-up timer adjustment)
+  /** True when the player clicked Pause; auto-pause tools must not clear this or auto-resume over it. */
+  pausedByPlayer: false,
   gameOver: false,
   isGameOverMapInspecting: false,
   destroyedTowersThisWave: 0,
   isUpgradeSelectionMode: false, // Flag for upgrade selection mode
+  isDungeonRewardMode: false, // Flag while choosing a flooded dungeon reward
   isTowerSellbackMode: false, // Flag for Tower Sellback target selection mode
   isMovementTokenMode: false, // Flag for movement token mode (reposition one tower during wave)
-  movementTokenTargetTowerId: null, // Tower designated for repositioning until player clicks Resume
+  movementTokenTargetTowerId: null, // Tower designated for repositioning until player clicks Done/Resume
   movementTokenRepositioned: false, // True after the player has moved the designated tower at least once
-  movementTokenCommitted: false, // True after token is spent (tower picked or stored to inventory); blocks cancel panel
+  movementTokenCommitted: false, // True after token is spent (tower picked or stored to inventory); shows Done panel
   isRepairSelectionMode: false, // Flag for Repair Supplies: click broken stored tower to consume one stack unit
   isPartsRecycleMode: false, // Flag for Parts Voucher: click broken stored tower to recycle for currency
   totalFiresExtinguished: 0, // Track total fires extinguished across entire run
@@ -185,6 +198,7 @@ const gameState = {
     specialties: { time: 0, power: 0, money: 0, health: 0 },
     specialtyTimeMilestonePowerUps: null,
     movementTokens: 0, // Movement tokens: reposition one tower during wave (dig site / shop only)
+    movementTokensPurchased: 0, // Shop buys this run (drives escalating MOVEMENT_TOKEN_COST)
     towerSellbacks: 0, // Tower Sellback tokens: remove a placed tower and refund spent upgrade plans
     towerRepairs: 0, // Repair Supplies (stack); apply from inventory to clear broken on a stored tower
     partsVouchers: 0, // Parts Vouchers (stack); recycle broken stored towers between waves
@@ -196,6 +210,7 @@ const gameState = {
     tempPowerUps: [], // Temporary power-ups: [{ powerUpId, expiresAt }]
     seenShopItems: new Set(), // Track which shop items the player has seen after unlocking
     newlyUnlockedItems: new Set(), // Track items that just unlocked and need visual highlighting
+    announcedUnlocks: new Set(), // Discovery UIs already shown this run (level-up card or unlock modal)
   },
   // Town progression
   townLevel: 1,
@@ -225,8 +240,10 @@ const gameState = {
     useRunStartMetaProgression: false,
   },
 
-  /** Mirrors CONFIG.SIMPLIFIED_WATER_VISUALS (persisted via user settings). */
+  /** Mirrors CONFIG.SIMPLIFIED_WATER_VISUALS — "Simple water" performance mode (persisted). */
   simplifiedWaterVisuals: false,
+  /** Mirrors CONFIG.SIMPLIFIED_FIRE_VISUALS — "Simple fire" performance mode (persisted). */
+  simplifiedFireVisuals: false,
 
   runStats: null,
 };
@@ -503,6 +520,8 @@ function init() {
   gameState.fireSpawnerSystem = new FireSpawnerSystem(gameState.gridSystem, gameState.fireSystem, gameState);
   gameState.digSiteSystem = new DigSiteSystem(gameState.gridSystem, gameState.fireSystem, gameState);
   gameState.burningVaultSystem = new BurningVaultSystem(gameState.gridSystem, gameState.fireSystem, gameState);
+  gameState.dungeonEntranceSystem = new DungeonEntranceSystem(gameState.gridSystem, gameState.fireSystem, gameState);
+  gameState.vortexSystem = new VortexSystem(gameState.gridSystem, gameState.fireSystem, gameState);
   gameState.artifactSystem = new ArtifactSystem(gameState.gridSystem, gameState.fireSystem, gameState);
   gameState.waveSystem = new WaveSystem(gameState);
   gameState.populateScenarioInventoryPlaceholder = populateScenarioInventoryPlaceholder;
@@ -682,7 +701,7 @@ function init() {
         window.AudioManager.playAmbientDelayed({ delayMs: 6000, fadeInSec: 2, volumeMultiplier: 0.8 });
       }
     }
-    // Persist per-wave fire PBs to settings (survives new game / refresh without a save slot)
+    // Persist per-wave fire/vortex PBs to settings (survives new game / refresh without a save slot)
     saveUserSettings();
     // Auto-save after each wave completion
     void (async () => {
@@ -708,7 +727,7 @@ function init() {
   // Register systems to update on each tick
   gameLoop.onTick(() => {
     // Check if game is effectively paused (paused OR in upgrade mode)
-    const isEffectivelyPaused = gameLoop.isPaused || gameState.isUpgradeSelectionMode || gameState.isRepairSelectionMode || gameState.isPartsRecycleMode;
+    const isEffectivelyPaused = gameLoop.isPaused || gameState.isUpgradeSelectionMode || gameState.isDungeonRewardMode || gameState.isRepairSelectionMode || gameState.isPartsRecycleMode;
     
     // Check game over condition (town destroyed)
     if (gameState.gridSystem && gameState.gridSystem.isTownDestroyed() && !gameState.gameOver) {
@@ -782,6 +801,14 @@ function init() {
       if (gameState.burningVaultSystem && gameState.wave.isActive) {
         gameState.burningVaultSystem.update(1);
       }
+
+      if (gameState.dungeonEntranceSystem && gameState.wave.isActive) {
+        gameState.dungeonEntranceSystem.update(1);
+      }
+
+      if (gameState.vortexSystem && gameState.wave.isActive) {
+        gameState.vortexSystem.update(1);
+      }
       
       // Update temporary power-up expiration only during an active wave (not placement / between waves)
       if (
@@ -832,7 +859,7 @@ function init() {
       
       // Show pause button and update its state
       pauseBtn.style.display = 'block';
-      if (gameLoop.isPaused) {
+      if (gameLoop.isPaused || gameState.isDungeonRewardMode) {
         pauseBtn.className = 'control-btn cta-button cta-green resume-pulse';
         pauseBtn.innerHTML = '<img src="assets/images/ui/resume.png" alt="Resume" class="control-btn-icon" /> Resume';
         pauseBtn.setAttribute('aria-label', 'Resume');
@@ -848,11 +875,16 @@ function init() {
   }
 
   function syncCancelMovementButton() {
-    // Show reposition panel only until the player commits (picks a tower or stores one to inventory)
+    // Cancel panel until commit; Done panel after token is spent (pick or inventory store)
     if (gameState.isMovementTokenMode && !gameState.movementTokenCommitted) {
+      hideMovementDoneInstructions();
       showMovementInstructions();
+    } else if (gameState.isMovementTokenMode && gameState.movementTokenCommitted) {
+      hideMovementInstructions();
+      showMovementDoneInstructions();
     } else {
       hideMovementInstructions();
+      hideMovementDoneInstructions();
     }
     if (gameState.isRepairSelectionMode) {
       showRepairInstructions();
@@ -909,7 +941,7 @@ function init() {
     `;
     instructionDiv.innerHTML = `
       <div style="margin-bottom: 8px;"><strong>Click or drag a tower to reposition it</strong></div>
-      <div style="font-size: 14px; color: #ccc; margin-bottom: 10px;">Game is paused. Click resume when done repositioning.</div>
+      <div style="font-size: 14px; color: #ccc; margin-bottom: 10px;">Game is paused. Cancel to abort without spending a token.</div>
       <div style="display: flex; justify-content: center; margin-top: 5px;">
         <button id="cancelMovementModalBtn" class="cta-button" style="
           color: white;
@@ -939,6 +971,60 @@ function init() {
 
   function hideMovementInstructions() {
     const instructionDiv = document.getElementById('movementInstructions');
+    if (instructionDiv && instructionDiv.parentNode) {
+      instructionDiv.parentNode.removeChild(instructionDiv);
+    }
+  }
+
+  /** After token is spent: Done returns to normal pause (use another token or Resume). */
+  function showMovementDoneInstructions() {
+    hideMovementDoneInstructions();
+
+    const instructionDiv = document.createElement('div');
+    instructionDiv.id = 'movementDoneInstructions';
+    instructionDiv.style.cssText = `
+      position: absolute;
+      bottom: 16px;
+      left: 16px;
+      background: url('assets/images/ui/modal6.png') center/100% 100% no-repeat;
+      color: white;
+      padding: 24px 32px;
+      border-radius: 12px;
+      border: none;
+      z-index: 100000 !important;
+      font-size: 16px;
+      text-align: center;
+      box-shadow: none;
+    `;
+    instructionDiv.innerHTML = `
+      <div style="margin-bottom: 8px;"><strong>Reposition your tower</strong></div>
+      <div style="font-size: 14px; color: #ccc; margin-bottom: 10px;">Click Done when finished moving this tower</div>
+      <div style="display: flex; justify-content: center; margin-top: 5px;">
+        <button id="doneMovementModalBtn" class="cta-button" style="
+          color: white;
+          cursor: var(--cursor-default);
+        ">Done</button>
+      </div>
+    `;
+
+    const doneBtn = instructionDiv.querySelector('#doneMovementModalBtn');
+    doneBtn.classList.add('upgrade-modal-btn');
+    doneBtn.style.setProperty('--btn-bg-hover', '#6b6b6b');
+    doneBtn.style.setProperty('--btn-border-hover', '#9a9a9a');
+    doneBtn.onclick = () => {
+      handleDoneMovementMode();
+    };
+
+    const canvasContainer = document.querySelector('.canvas-container');
+    if (canvasContainer) {
+      canvasContainer.appendChild(instructionDiv);
+    } else {
+      document.body.appendChild(instructionDiv);
+    }
+  }
+
+  function hideMovementDoneInstructions() {
+    const instructionDiv = document.getElementById('movementDoneInstructions');
     if (instructionDiv && instructionDiv.parentNode) {
       instructionDiv.parentNode.removeChild(instructionDiv);
     }
@@ -1053,9 +1139,7 @@ function init() {
     setRepairSelectionMode(false);
     gameState.isUpgradeSelectionMode = false;
     document.body.classList.remove('upgrade-selection-mode');
-    if (window.gameLoop?.isPaused) {
-      resumeGameSilently();
-    }
+    resumeUnlessPausedByPlayer({ withAudio: false });
     if (window.syncPauseButton) window.syncPauseButton();
     if (window.updateInventory) window.updateInventory();
     if (window.updateUI) window.updateUI();
@@ -1066,12 +1150,22 @@ function init() {
     setPartsRecycleMode(false);
     gameState.isUpgradeSelectionMode = false;
     document.body.classList.remove('upgrade-selection-mode');
-    if (window.gameLoop?.isPaused) {
-      resumeGameSilently();
-    }
+    resumeUnlessPausedByPlayer({ withAudio: false });
     if (window.syncPauseButton) window.syncPauseButton();
     if (window.updateInventory) window.updateInventory();
     if (window.updateUI) window.updateUI();
+  }
+
+  /** Exit movement mode after the token is spent; stay paused so the player can chain tokens or Resume. */
+  function handleDoneMovementMode() {
+    if (!gameState.isMovementTokenMode) return;
+    setMovementTokenMode(false);
+    hideMovementInstructions();
+    hideMovementDoneInstructions();
+    if (window.syncPauseButton) window.syncPauseButton();
+    if (window.updateInventory) window.updateInventory();
+    if (window.updateUI) window.updateUI();
+    if (gameState.waveSystem) gameState.waveSystem.updateClearAllButtonVisibility();
   }
 
   function syncInventoryTargetModeTabLocks() {
@@ -1131,6 +1225,10 @@ function init() {
       gameState.movementTokenTargetTowerId = null;
       gameState.movementTokenRepositioned = false;
       gameState.movementTokenCommitted = false;
+      // Hide rotation arrows when the movement-token action finishes.
+      gameState.selectedTowerId = null;
+      gameState.inputHandler?.clearTowerPierceDwell?.();
+      gameState.renderer?.arrowHoverState?.clear?.();
     }
     if (typeof document !== 'undefined') {
       document.body.classList.toggle('movement-token-mode', on);
@@ -1165,26 +1263,14 @@ function init() {
     if (gameState.isMovementTokenMode && !gameState.movementTokenCommitted) {
       setMovementTokenMode(false);
       hideMovementInstructions();
+      hideMovementDoneInstructions();
       if (window.updateInventory) window.updateInventory();
       if (window.updateUI) window.updateUI();
       
-      // Resume the game and wave music when canceling movement
-      if (window.gameLoop && window.gameLoop.isPaused && window.resumeGameWithAudio) {
-        window.resumeGameWithAudio();
-        if (window.syncPauseButton) window.syncPauseButton();
-      }
+      // Only auto-resume if the player did not manually pause first
+      resumeUnlessPausedByPlayer({ withAudio: true });
+      if (window.syncPauseButton) window.syncPauseButton();
     }
-  }
-
-  /** Toast reminder while repositioning the designated tower */
-  const MOVEMENT_TOKEN_RESUME_TOAST_MSG = 'Click resume to lock tower in place and continue';
-  let movementTokenResumeToastAt = 0;
-
-  function showMovementTokenResumeToast() {
-    const now = Date.now();
-    if (now - movementTokenResumeToastAt < 800) return;
-    movementTokenResumeToastAt = now;
-    gameState.notificationSystem?.showToast?.(MOVEMENT_TOKEN_RESUME_TOAST_MSG, 4000, 'warning');
   }
 
   function isMovementTokenRepositionLocked() {
@@ -1194,6 +1280,8 @@ function init() {
   function isMovementTokenAllowedInteraction(target) {
     if (!target?.closest) return false;
     if (target.closest('#pauseBtn')) return true;
+    if (target.closest('#movementDoneInstructions')) return true;
+    if (target.closest('#doneMovementModalBtn')) return true;
     if (target.closest('#gameCanvas')) return true;
     return false;
   }
@@ -1203,7 +1291,6 @@ function init() {
     if (isMovementTokenAllowedInteraction(e.target)) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    showMovementTokenResumeToast();
   }
 
   document.addEventListener('click', handleMovementTokenBlockedInteraction, true);
@@ -1218,50 +1305,47 @@ function init() {
       gameState.movementTokenCommitted = true;
       gameState.player.movementTokens = Math.max(0, (gameState.player.movementTokens || 0) - 1);
       gameState.runStats?.recordMovementTokenUse?.();
-      hideMovementInstructions();
+      if (window.syncCancelMovementButton) window.syncCancelMovementButton();
       if (window.updateInventory) window.updateInventory();
       if (window.updateUI) window.updateUI();
       if (gameState.waveSystem) gameState.waveSystem.updateClearAllButtonVisibility();
-      showMovementTokenResumeToast();
     }
   }
 
-  /** Store tower to inventory during movement mode before picking one: spend token, hide panel, block cancel */
+  /** Store tower to inventory during movement mode before picking one: spend token, show Done panel */
   function commitMovementTokenViaInventoryStore() {
     if (!gameState.isMovementTokenMode || gameState.movementTokenCommitted) return;
     gameState.movementTokenCommitted = true;
     gameState.player.movementTokens = Math.max(0, (gameState.player.movementTokens || 0) - 1);
     gameState.runStats?.recordMovementTokenUse?.();
-    hideMovementInstructions();
     if (window.syncCancelMovementButton) window.syncCancelMovementButton();
     if (window.updateInventory) window.updateInventory();
     if (window.updateUI) window.updateUI();
     if (gameState.waveSystem) gameState.waveSystem.updateClearAllButtonVisibility();
-    showMovementTokenResumeToast();
   }
 
-  /** After the player repositions the designated tower; stay in movement mode until Resume */
+  /** After the player repositions the designated tower; stay in movement mode until Done/Resume */
   function onMovementTokenReposition() {
     if (!gameState.isMovementTokenMode) return;
     gameState.movementTokenRepositioned = true;
-    showMovementTokenResumeToast();
   }
 
-  /** Resume from movement token mode and continue the wave */
+  /** Resume button while in movement mode: exit mode and continue the wave */
   function finalizeMovementTokenOnResume() {
     if (!gameState.isMovementTokenMode) return;
     setMovementTokenMode(false);
     hideMovementInstructions();
+    hideMovementDoneInstructions();
     if (window.updateInventory) window.updateInventory();
     if (window.updateUI) window.updateUI();
     if (gameState.waveSystem) gameState.waveSystem.updateClearAllButtonVisibility();
+    // Explicit Resume click always continues the wave
     if (window.gameLoop?.isPaused && window.resumeGameWithAudio) {
       window.resumeGameWithAudio();
       if (window.syncPauseButton) window.syncPauseButton();
     }
   }
   gameState.designateMovementTokenTarget = designateMovementTokenTarget;
-  gameState.showMovementTokenResumeToast = showMovementTokenResumeToast;
   gameState.onMovementTokenReposition = onMovementTokenReposition;
   gameState.finalizeMovementTokenOnResume = finalizeMovementTokenOnResume;
   gameState.commitMovementTokenViaInventoryStore = commitMovementTokenViaInventoryStore;
@@ -1273,6 +1357,7 @@ function init() {
   initPerimeterModeUI(gameState);
   initChargeModeUI(gameState);
   initTokenVoucherUI();
+  initAutoShieldsUI();
   window.renderer = gameState.renderer;
   window.gameLoop = gameLoop;
   window.applyWaveJumpAfterVictory = applyWaveJumpAfterVictory;
@@ -1298,14 +1383,26 @@ function init() {
   // High-frequency callers (e.g. fire ignite/extinguish loops) should call this instead of
   // updateUI() directly: it coalesces N calls per frame down to a single updateUI() pass.
   // Avoids DOM thrash when many fires change state in rapid succession during a wave.
+  // Additionally throttled to ~10 Hz: during active waves fires change state nearly every
+  // tick, which made the "coalesced" refresh run the full updateUI() DOM pass at 60 Hz.
+  // Direct updateUI() calls (user interactions, purchases, etc.) remain immediate.
   let _uiRefreshPending = false;
+  let _uiRefreshLastRun = 0;
+  const UI_REFRESH_MIN_INTERVAL_MS = 100;
   window.scheduleUIRefresh = () => {
     if (_uiRefreshPending) return;
     _uiRefreshPending = true;
-    requestAnimationFrame(() => {
+    const run = () => {
       _uiRefreshPending = false;
+      _uiRefreshLastRun = performance.now();
       updateUI();
-    });
+    };
+    const elapsed = performance.now() - _uiRefreshLastRun;
+    if (elapsed >= UI_REFRESH_MIN_INTERVAL_MS) {
+      requestAnimationFrame(run);
+    } else {
+      setTimeout(run, UI_REFRESH_MIN_INTERVAL_MS - elapsed);
+    }
   };
   window.updateShop = updateShop;
   window.updatePowerUpPanel = updatePowerUpPanel;
@@ -1319,10 +1416,13 @@ function init() {
   window.pauseGameWithAudio = pauseGameWithAudio;
   window.resumeGameWithAudio = resumeGameWithAudio;
   window.resumeGameSilently = resumeGameSilently;
+  window.resumeUnlessPausedByPlayer = resumeUnlessPausedByPlayer;
   window.resumeGameAfterModalClose = resumeGameAfterModalClose;
   window.updateFpsCounterVisibility = updateFpsCounterVisibility;
   window.showMovementInstructions = showMovementInstructions;
   window.hideMovementInstructions = hideMovementInstructions;
+  window.showMovementDoneInstructions = showMovementDoneInstructions;
+  window.hideMovementDoneInstructions = hideMovementDoneInstructions;
   window.showRepairInstructions = showRepairInstructions;
   window.hideRepairInstructions = hideRepairInstructions;
   window.showPartsRecycleInstructions = showPartsRecycleInstructions;
@@ -1441,13 +1541,16 @@ function init() {
             cancelText: 'Cancel',
             itemIcon: `<img src="assets/images/items/shield_1.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
             cost: cost,
+            maxQuantity: 1,
+            lockQuantity: true,
           });
           setTutorialProgress(23);
           saveTutorialState(gameState);
           requestAnimationFrame(() => updateTutorialArrow());
           const confirmed = await confirmPromise;
-          if (confirmed) {
-            buyShield(1);
+          const qty = shopPurchaseQty(confirmed);
+          if (qty) {
+            buyShopItemTimes(qty, () => buyShield(1));
           } else {
             setTutorialProgress(22);
             saveTutorialState(gameState);
@@ -1560,13 +1663,16 @@ function init() {
                 cancelText: 'Cancel',
                 itemIcon: `<img src="assets/images/items/shield_1.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
                 cost: cost,
+                maxQuantity: 1,
+                lockQuantity: true,
               });
               setTutorialProgress(23);
               saveTutorialState(gameState);
               requestAnimationFrame(() => updateTutorialArrow());
               const confirmed = await confirmPromise;
-              if (confirmed) {
-                buyShield(1);
+              const qty = shopPurchaseQty(confirmed);
+              if (qty) {
+                buyShopItemTimes(qty, () => buyShield(1));
               } else {
                 setTutorialProgress(22);
                 saveTutorialState(gameState);
@@ -1750,7 +1856,7 @@ function init() {
       gameState.suppressionBombSystem?.getSuppressionBombAt(hex.q, hex.r) ||
       gameState.waterTankSystem?.getWaterTankAt(hex.q, hex.r) ||
       gridHex.hasDigSite || gridHex.hasTempPowerUpItem || gridHex.hasMysteryItem || gridHex.hasCurrencyItem ||
-      gridHex.hasBurningVault || gridHex.hasArtifactItem;
+      gridHex.hasBurningVault || gridHex.hasDungeonEntrance || gridHex.hasArtifactItem;
     setBodyCursor(hasClickable ? CURSOR_X : CURSOR_DEFAULT);
   }
   document.addEventListener('mousemove', handleTutorialMapCursor, false);
@@ -1772,10 +1878,11 @@ function init() {
   }, true);
   
   // Button hover SFX: play hover2.wav when hovering over any button
+  // (includes dungeon reward frames — whole card is clickable; Claim label is pointer-events: none)
   document.body.addEventListener('mouseover', (e) => {
-    const btn = e.target.closest('button, .cta-button');
+    const btn = e.target.closest('button, .cta-button, .dungeon-reward-choice-frame');
     if (!btn || !window.AudioManager) return;
-    const from = e.relatedTarget?.closest?.('button, .cta-button');
+    const from = e.relatedTarget?.closest?.('button, .cta-button, .dungeon-reward-choice-frame');
     if (from === btn) return; // moving within same button
     window.AudioManager.playSFX('hover2');
   }, true);
@@ -1799,6 +1906,11 @@ function init() {
     pauseBtn.onclick = () => {
       // Don't allow pausing/resuming if game is over
       if (gameState.gameOver) {
+        return;
+      }
+
+      // Dungeon flood reward picker: button is Resume for visual cue only — claim to continue
+      if (gameState.isDungeonRewardMode) {
         return;
       }
       
@@ -1871,6 +1983,7 @@ function init() {
           setPartsRecycleMode(false);
         }
         window.AudioManager?.playSFX('pause');
+        gameState.pausedByPlayer = true;
         pauseGameWithAudio();
         syncPauseButton();
       }
@@ -1918,6 +2031,68 @@ function setupViewportResize() {
       console.log('🔄 Viewport resized - canvas and map bounds recalculated');
     }, RESIZE_DEBOUNCE_MS);
   });
+}
+
+/**
+ * Snap a zoom value to the nearest CONFIG.MAP_ZOOM_LEVELS entry.
+ * @param {number} zoom
+ * @returns {number}
+ */
+function snapMapZoomLevel(zoom) {
+  const levels = CONFIG.MAP_ZOOM_LEVELS || [0.75, 1, 1.25];
+  let bestIdx = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < levels.length; i++) {
+    const d = Math.abs(levels[i] - zoom);
+    if (d < bestDist) {
+      bestDist = d;
+      bestIdx = i;
+    }
+  }
+  return levels[bestIdx];
+}
+
+/**
+ * Sync the Settings map-zoom slider / label to CONFIG.MAP_ZOOM.
+ */
+function updateMapZoomSettingsUI() {
+  const levels = CONFIG.MAP_ZOOM_LEVELS || [0.75, 1, 1.25];
+  const z = snapMapZoomLevel(CONFIG.MAP_ZOOM ?? CONFIG.MAP_ZOOM_DEFAULT ?? 1);
+  const idx = Math.max(0, levels.indexOf(z));
+  const slider = document.getElementById('settingMapZoom');
+  const valueEl = document.getElementById('settingMapZoomValue');
+  if (slider) {
+    slider.value = String(idx);
+    slider.setAttribute('aria-valuetext', `${Math.round(z * 100)}%`);
+  }
+  if (valueEl) valueEl.textContent = `${Math.round(z * 100)}%`;
+}
+
+/**
+ * Apply map zoom from absolute scale and/or ±1 level step. Updates renderer, CONFIG,
+ * Settings UI, and optionally persists to localStorage.
+ * @param {{ zoom?: number, direction?: number, persist?: boolean }} opts
+ * @returns {number} Applied zoom scale
+ */
+function applyMapZoomSetting(opts = {}) {
+  const persist = opts.persist !== false;
+  const levels = CONFIG.MAP_ZOOM_LEVELS || [0.75, 1, 1.25];
+  let next;
+  if (typeof opts.direction === 'number' && opts.direction !== 0 && gameState.renderer?.cycleMapZoom) {
+    next = gameState.renderer.cycleMapZoom(opts.direction);
+  } else if (typeof opts.zoom === 'number') {
+    next = gameState.renderer?.setMapZoom?.(opts.zoom) ?? snapMapZoomLevel(opts.zoom);
+  } else if (typeof opts.levelIndex === 'number') {
+    const idx = Math.max(0, Math.min(levels.length - 1, Math.round(opts.levelIndex)));
+    next = gameState.renderer?.setMapZoom?.(levels[idx]) ?? levels[idx];
+  } else {
+    next = snapMapZoomLevel(CONFIG.MAP_ZOOM ?? CONFIG.MAP_ZOOM_DEFAULT ?? 1);
+    gameState.renderer?.setMapZoom?.(next);
+  }
+  CONFIG.MAP_ZOOM = typeof next === 'number' ? next : snapMapZoomLevel(CONFIG.MAP_ZOOM ?? 1);
+  updateMapZoomSettingsUI();
+  if (persist) saveUserSettings();
+  return CONFIG.MAP_ZOOM;
 }
 
 /**
@@ -2180,6 +2355,12 @@ function setupUI() {
   
   // Setup keyboard shortcuts (Enter for confirm/continue in modals)
   setupKeyboardShortcuts();
+
+  // Map zoom helpers used by keyboard shortcuts + save/load
+  window.applyMapZoomSetting = applyMapZoomSetting;
+  window.updateMapZoomSettingsUI = updateMapZoomSettingsUI;
+  // Ensure renderer matches loaded user setting (constructor already reads CONFIG.MAP_ZOOM)
+  applyMapZoomSetting({ zoom: CONFIG.MAP_ZOOM ?? CONFIG.MAP_ZOOM_DEFAULT ?? 1, persist: false });
   
   // Setup overlay row tooltips (XP, town health, score, currency, etc.)
   setupOverlayTooltips();
@@ -2302,7 +2483,7 @@ function positionLeftOverlayToggle() {
   if (!toggle) return;
 
   const collapsed = document.body.classList.contains('left-overlays-collapsed');
-  const OPEN_TOP = 362;
+  const OPEN_TOP = 346;
   const OPEN_LEFT = 150;
 
   toggle.style.top = `${OPEN_TOP}px`;
@@ -2975,6 +3156,27 @@ function pauseGameWithAudio() {
 }
 
 /**
+ * Resume after an auto-pause tool finishes, unless the player had manually paused first.
+ * @param {{ withAudio?: boolean }} [options]
+ * @returns {boolean} true if the game was resumed
+ */
+function resumeUnlessPausedByPlayer({ withAudio = false } = {}) {
+  if (!window.gameLoop?.isPaused) return false;
+  if (gameState.pausedByPlayer) {
+    if (window.syncPauseButton) window.syncPauseButton();
+    return false;
+  }
+  if (!shouldUnpauseAfterModalClose()) {
+    if (window.syncPauseButton) window.syncPauseButton();
+    return false;
+  }
+  if (withAudio) resumeGameWithAudio();
+  else resumeGameSilently();
+  if (window.syncPauseButton) window.syncPauseButton();
+  return true;
+}
+
+/**
  * After load: if rewards were not collected yet, show the same modal again instead of placement.
  * @returns {boolean} true if a reward modal was opened (skip startPlacementPhase)
  */
@@ -2989,11 +3191,12 @@ function resumePendingRewardModalsAfterLoad(waveSystem) {
     waveSystem.showWaveGroupCompleteModal(w.pendingGroupRewards.digSiteRewards || []);
     return true;
   }
-  if (w.isScenario && (w.townBonusAward || 0) > 0 && w.isPlacementPhase && !w.isActive) {
+  const pendingTownBonus = (w.townBonusAward || 0) + (w.townNoSpreadBonusAward || 0);
+  if (w.isScenario && pendingTownBonus > 0 && w.isPlacementPhase && !w.isActive) {
     waveSystem.showScenarioCompleteModal();
     return true;
   }
-  if (!w.isScenario && (w.townBonusAward || 0) > 0 && w.isPlacementPhase && !w.isActive) {
+  if (!w.isScenario && pendingTownBonus > 0 && w.isPlacementPhase && !w.isActive) {
     waveSystem.showWaveCompleteModal();
     return true;
   }
@@ -3007,6 +3210,7 @@ function resumeGameWithAudio() {
   if (window.gameLoop && window.gameLoop.isPaused) {
     window.gameLoop.resume();
     gameState.isPaused = false;
+    gameState.pausedByPlayer = false;
     if (window.AudioManager) {
       window.AudioManager.playSFX('resume');
       window.AudioManager.pauseAmbient();
@@ -3031,6 +3235,7 @@ function resumeGameSilently() {
   if (window.gameLoop && window.gameLoop.isPaused) {
     window.gameLoop.resume();
     gameState.isPaused = false;
+    gameState.pausedByPlayer = false;
     if (window.AudioManager) {
       window.AudioManager.pauseAmbient();
       if (gameState.tutorialMode) {
@@ -3067,6 +3272,11 @@ function shouldUnpauseAfterModalClose() {
 function resumeGameAfterModalClose({ withAudio = false } = {}) {
   if (!window.gameLoop?.isPaused) return;
   if (!shouldUnpauseAfterModalClose()) return;
+  // Keep the game paused when the player had clicked Pause before this tool opened
+  if (gameState.pausedByPlayer) {
+    if (window.syncPauseButton) window.syncPauseButton();
+    return;
+  }
   if (withAudio) resumeGameWithAudio();
   else resumeGameSilently();
 }
@@ -3301,11 +3511,51 @@ function closeSettingsModal() {
 
 const SETTINGS_STORAGE_KEY = 'hexfire_user_settings';
 
+/** Water visibility settings slider UI range (maps onto CONFIG.WATER_VISIBILITY 0–1). */
+const WATER_VISIBILITY_UI_MIN = 20;
+const WATER_VISIBILITY_UI_MAX = 80;
+
+/**
+ * @param {number} t - CONFIG.WATER_VISIBILITY (0–1)
+ * @returns {number} slider value in [20, 80]
+ */
+function waterVisibilityToSliderPct(t) {
+  let u = typeof t === 'number' && !Number.isNaN(t) ? t : 1;
+  u = Math.max(0, Math.min(1, u));
+  const raw = WATER_VISIBILITY_UI_MIN + u * (WATER_VISIBILITY_UI_MAX - WATER_VISIBILITY_UI_MIN);
+  const stepped = Math.round(raw / 5) * 5;
+  return Math.max(WATER_VISIBILITY_UI_MIN, Math.min(WATER_VISIBILITY_UI_MAX, stepped));
+}
+
+/**
+ * @param {number} pct - slider value (20–80)
+ * @returns {number} CONFIG.WATER_VISIBILITY (0–1)
+ */
+function sliderPctToWaterVisibility(pct) {
+  const p = Math.max(
+    WATER_VISIBILITY_UI_MIN,
+    Math.min(WATER_VISIBILITY_UI_MAX, Number.isFinite(pct) ? pct : WATER_VISIBILITY_UI_MAX)
+  );
+  return (p - WATER_VISIBILITY_UI_MIN) / (WATER_VISIBILITY_UI_MAX - WATER_VISIBILITY_UI_MIN);
+}
+
+/**
+ * @param {number} pct - slider value (20–80)
+ * @returns {string}
+ */
+function formatWaterVisibilityLabel(pct) {
+  if (pct <= WATER_VISIBILITY_UI_MIN) return 'min';
+  if (pct >= WATER_VISIBILITY_UI_MAX) return 'max';
+  return `${pct}%`;
+}
+
 /**
  * Default settings values (from CONFIG)
  */
 const DEFAULT_SETTINGS = {
   GAME_DIFFICULTY: CONFIG.GAME_DIFFICULTY,
+  TOWER_SELECT_MODE: CONFIG.TOWER_SELECT_MODE,
+  ENABLE_CLICK_TO_SCROLL: CONFIG.ENABLE_CLICK_TO_SCROLL,
   ENABLE_EDGE_SCROLLING: CONFIG.ENABLE_EDGE_SCROLLING,
   SCROLL_ZONE_SIZE: CONFIG.SCROLL_ZONE_SIZE,
   SCROLL_MAX_SPEED: CONFIG.SCROLL_MAX_SPEED,
@@ -3315,9 +3565,13 @@ const DEFAULT_SETTINGS = {
   DEBUG_MODE: CONFIG.DEBUG_MODE,
   SCREEN_SHAKE_ENABLED: CONFIG.SCREEN_SHAKE_ENABLED,
   SHOW_FPS_COUNTER: CONFIG.SHOW_FPS_COUNTER,
+  MAP_ZOOM: CONFIG.MAP_ZOOM,
   DISABLE_GAME_TOOLTIPS: CONFIG.DISABLE_GAME_TOOLTIPS,
   DISABLE_NOTIFICATIONS: CONFIG.DISABLE_NOTIFICATIONS,
   SIMPLIFIED_WATER_VISUALS: CONFIG.SIMPLIFIED_WATER_VISUALS,
+  SIMPLIFIED_FIRE_VISUALS: CONFIG.SIMPLIFIED_FIRE_VISUALS,
+  WATER_VISIBILITY: CONFIG.WATER_VISIBILITY,
+  DISABLE_ALL_WATER_EFFECTS: CONFIG.DISABLE_ALL_WATER_EFFECTS,
   AUDIO_SFX_ENABLED: CONFIG.AUDIO_SFX_ENABLED,
   AUDIO_MUSIC_ENABLED: CONFIG.AUDIO_MUSIC_ENABLED,
   AUDIO_SFX_VOLUME: CONFIG.AUDIO_SFX_VOLUME,
@@ -3347,6 +3601,34 @@ function loadUserSettings() {
       const v = CONFIG.SIMPLIFIED_WATER_VISUALS;
       CONFIG.SIMPLIFIED_WATER_VISUALS = v === true || v === 1 || v === 'true';
     }
+    if (typeof CONFIG.SIMPLIFIED_FIRE_VISUALS !== 'boolean') {
+      const v = CONFIG.SIMPLIFIED_FIRE_VISUALS;
+      CONFIG.SIMPLIFIED_FIRE_VISUALS = v === true || v === 1 || v === 'true';
+    }
+    if (typeof CONFIG.DISABLE_ALL_WATER_EFFECTS !== 'boolean') {
+      const v = CONFIG.DISABLE_ALL_WATER_EFFECTS;
+      CONFIG.DISABLE_ALL_WATER_EFFECTS = v === true || v === 1 || v === 'true';
+    }
+    if (CONFIG.TOWER_SELECT_MODE !== 'hover' && CONFIG.TOWER_SELECT_MODE !== 'click') {
+      CONFIG.TOWER_SELECT_MODE = 'hover';
+    }
+    if (savedSettings.hasOwnProperty('MAP_ZOOM')) {
+      CONFIG.MAP_ZOOM = snapMapZoomLevel(Number(savedSettings.MAP_ZOOM));
+    } else {
+      CONFIG.MAP_ZOOM = CONFIG.MAP_ZOOM_DEFAULT ?? 1;
+    }
+    // Migrate pre-split saves: old "Reduced water visuals" bundled opacity + performance.
+    // New WATER_VISIBILITY owns opacity; SIMPLIFIED_WATER_VISUALS stays as Simple water (perf).
+    if (!savedSettings.hasOwnProperty('WATER_VISIBILITY')) {
+      CONFIG.WATER_VISIBILITY = CONFIG.SIMPLIFIED_WATER_VISUALS === true ? 0 : 1;
+    } else {
+      let t = CONFIG.WATER_VISIBILITY;
+      if (typeof t !== 'number' || Number.isNaN(t)) {
+        t = t === true || t === 1 || t === 'true' ? 1 : Number(t);
+      }
+      if (typeof t !== 'number' || Number.isNaN(t)) t = 1;
+      CONFIG.WATER_VISIBILITY = Math.max(0, Math.min(1, t));
+    }
     if (savedSettings.hasOwnProperty('ENDLESS_MODE')) {
       gameState.meta.endlessMode = !!savedSettings.ENDLESS_MODE;
     }
@@ -3362,6 +3644,14 @@ function loadUserSettings() {
         savedSettings.MAX_FIRES_EXTINGUISHED_BY_WAVE
       );
     }
+    if (
+      savedSettings.MAX_VORTEXES_EXTINGUISHED_BY_WAVE &&
+      typeof savedSettings.MAX_VORTEXES_EXTINGUISHED_BY_WAVE === 'object'
+    ) {
+      gameState.meta.maxVortexesExtinguishedByWave = normalizeMaxVortexesExtinguishedByWave(
+        savedSettings.MAX_VORTEXES_EXTINGUISHED_BY_WAVE
+      );
+    }
   } catch (error) {
     console.error('Failed to load user settings:', error);
   } finally {
@@ -3369,6 +3659,10 @@ function loadUserSettings() {
       CONFIG.SIMPLIFIED_WATER_VISUALS === true ||
       CONFIG.SIMPLIFIED_WATER_VISUALS === 1 ||
       CONFIG.SIMPLIFIED_WATER_VISUALS === 'true';
+    gameState.simplifiedFireVisuals =
+      CONFIG.SIMPLIFIED_FIRE_VISUALS === true ||
+      CONFIG.SIMPLIFIED_FIRE_VISUALS === 1 ||
+      CONFIG.SIMPLIFIED_FIRE_VISUALS === 'true';
   }
 }
 
@@ -3384,7 +3678,12 @@ function saveUserSettings() {
       MAX_FIRES_EXTINGUISHED_BY_WAVE: normalizeMaxFiresExtinguishedByWave(
         gameState.meta?.maxFiresExtinguishedByWave
       ),
+      MAX_VORTEXES_EXTINGUISHED_BY_WAVE: normalizeMaxVortexesExtinguishedByWave(
+        gameState.meta?.maxVortexesExtinguishedByWave
+      ),
       GAME_DIFFICULTY: CONFIG.GAME_DIFFICULTY,
+      TOWER_SELECT_MODE: CONFIG.TOWER_SELECT_MODE === 'click' ? 'click' : 'hover',
+      ENABLE_CLICK_TO_SCROLL: CONFIG.ENABLE_CLICK_TO_SCROLL,
       ENABLE_EDGE_SCROLLING: CONFIG.ENABLE_EDGE_SCROLLING,
       SCROLL_ZONE_SIZE: CONFIG.SCROLL_ZONE_SIZE,
       SCROLL_MAX_SPEED: CONFIG.SCROLL_MAX_SPEED,
@@ -3394,9 +3693,17 @@ function saveUserSettings() {
       DEBUG_MODE: CONFIG.DEBUG_MODE,
       SCREEN_SHAKE_ENABLED: CONFIG.SCREEN_SHAKE_ENABLED,
       SHOW_FPS_COUNTER: CONFIG.SHOW_FPS_COUNTER === true,
+      MAP_ZOOM: snapMapZoomLevel(CONFIG.MAP_ZOOM ?? CONFIG.MAP_ZOOM_DEFAULT ?? 1),
       DISABLE_GAME_TOOLTIPS: CONFIG.DISABLE_GAME_TOOLTIPS === true,
       DISABLE_NOTIFICATIONS: CONFIG.DISABLE_NOTIFICATIONS === true,
       SIMPLIFIED_WATER_VISUALS: CONFIG.SIMPLIFIED_WATER_VISUALS === true,
+      SIMPLIFIED_FIRE_VISUALS: CONFIG.SIMPLIFIED_FIRE_VISUALS === true,
+      WATER_VISIBILITY: (() => {
+        const t = CONFIG.WATER_VISIBILITY;
+        if (typeof t !== 'number' || Number.isNaN(t)) return 1;
+        return Math.max(0, Math.min(1, t));
+      })(),
+      DISABLE_ALL_WATER_EFFECTS: CONFIG.DISABLE_ALL_WATER_EFFECTS === true,
       AUDIO_SFX_ENABLED: CONFIG.AUDIO_SFX_ENABLED,
       AUDIO_MUSIC_ENABLED: CONFIG.AUDIO_MUSIC_ENABLED,
       AUDIO_SFX_VOLUME: CONFIG.AUDIO_SFX_VOLUME,
@@ -3439,7 +3746,29 @@ function updateSettingsUI() {
       }
     });
   }
+
+  // Tower select mode - Update custom dropdown
+  const towerSelectModeText = document.getElementById('settingTowerSelectModeText');
+  const towerSelectModeMenu = document.getElementById('settingTowerSelectModeMenu');
+  const towerSelectMode = CONFIG.TOWER_SELECT_MODE === 'click' ? 'click' : 'hover';
+  if (towerSelectModeText) {
+    towerSelectModeText.textContent = towerSelectMode === 'click' ? 'Click' : 'Hover';
+  }
+  if (towerSelectModeMenu) {
+    towerSelectModeMenu.querySelectorAll('.scenario-dropdown-option').forEach(option => {
+      option.classList.remove('selected');
+      if (option.dataset.value === towerSelectMode) {
+        option.classList.add('selected');
+      }
+    });
+  }
   
+  // Click to Scroll
+  const enableClickToScrollCheckbox = document.getElementById('settingEnableClickToScroll');
+  if (enableClickToScrollCheckbox) {
+    enableClickToScrollCheckbox.checked = CONFIG.ENABLE_CLICK_TO_SCROLL;
+  }
+
   // Enable Edge Scrolling
   const enableEdgeScrollingCheckbox = document.getElementById('settingEnableEdgeScrolling');
   if (enableEdgeScrollingCheckbox) {
@@ -3525,7 +3854,7 @@ function updateSettingsUI() {
   if (enableScreenShakeCheckbox) {
     enableScreenShakeCheckbox.checked = CONFIG.SCREEN_SHAKE_ENABLED !== false;
   }
-  
+
   const showFpsCheckbox = document.getElementById('settingShowFpsCounter');
   if (showFpsCheckbox) {
     showFpsCheckbox.checked = CONFIG.SHOW_FPS_COUNTER === true;
@@ -3533,12 +3862,13 @@ function updateSettingsUI() {
   
   const disableTooltipsCheckbox = document.getElementById('settingDisableGameTooltips');
   if (disableTooltipsCheckbox) {
-    disableTooltipsCheckbox.checked = CONFIG.DISABLE_GAME_TOOLTIPS === true;
+    // Toggle ON = tooltips enabled (CONFIG flag is inverted "disable")
+    disableTooltipsCheckbox.checked = CONFIG.DISABLE_GAME_TOOLTIPS !== true;
   }
 
   const disableNotificationsCheckbox = document.getElementById('settingDisableNotifications');
   if (disableNotificationsCheckbox) {
-    disableNotificationsCheckbox.checked = CONFIG.DISABLE_NOTIFICATIONS === true;
+    disableNotificationsCheckbox.checked = CONFIG.DISABLE_NOTIFICATIONS !== true;
   }
 
   const simplifiedWaterCheckbox = document.getElementById('settingSimplifiedWaterVisuals');
@@ -3546,6 +3876,35 @@ function updateSettingsUI() {
     const sw = CONFIG.SIMPLIFIED_WATER_VISUALS;
     simplifiedWaterCheckbox.checked = sw === true || sw === 1 || sw === 'true';
   }
+
+  const simplifiedFireCheckbox = document.getElementById('settingSimplifiedFireVisuals');
+  if (simplifiedFireCheckbox) {
+    const sf = CONFIG.SIMPLIFIED_FIRE_VISUALS;
+    simplifiedFireCheckbox.checked = sf === true || sf === 1 || sf === 'true';
+  }
+
+  const disableWaterEffectsCheckbox = document.getElementById('settingDisableWaterEffects');
+  const showWaterOn = !(
+    CONFIG.DISABLE_ALL_WATER_EFFECTS === true ||
+    CONFIG.DISABLE_ALL_WATER_EFFECTS === 1 ||
+    CONFIG.DISABLE_ALL_WATER_EFFECTS === 'true'
+  );
+  if (disableWaterEffectsCheckbox) {
+    // Toggle ON = Show water enabled
+    disableWaterEffectsCheckbox.checked = showWaterOn;
+  }
+
+  const waterVisibilitySlider = document.getElementById('settingWaterVisibility');
+  const waterVisibilityValue = document.getElementById('settingWaterVisibilityValue');
+  if (waterVisibilitySlider) {
+    const pct = waterVisibilityToSliderPct(CONFIG.WATER_VISIBILITY);
+    waterVisibilitySlider.value = pct;
+    if (waterVisibilityValue) waterVisibilityValue.textContent = formatWaterVisibilityLabel(pct);
+  }
+
+  updateMapZoomSettingsUI();
+
+  updateDependentWaterSettingsVisibility(showWaterOn);
 
   // Debug Mode
   const debugModeCheckbox = document.getElementById('settingDebugMode');
@@ -3588,6 +3947,18 @@ function updateFpsCounterVisibility() {
 }
 
 /**
+ * Show/hide Water visibility + Simple water rows when "Show water" is toggled.
+ * @param {boolean} showWaterOn
+ */
+function updateDependentWaterSettingsVisibility(showWaterOn) {
+  const visibilityRow = document.getElementById('settingWaterVisibilityRow');
+  const simpleWaterRow = document.getElementById('settingSimpleWaterRow');
+  const display = showWaterOn ? '' : 'none';
+  if (visibilityRow) visibilityRow.style.display = display;
+  if (simpleWaterRow) simpleWaterRow.style.display = display;
+}
+
+/**
  * Jump to a wave group (used after campaign victory "Enable endless" and by debug jump).
  * @param {number} targetWaveGroup - Target wave group (1-indexed)
  * @param {number} targetWaveNumber - Target wave number within group (1-5)
@@ -3620,6 +3991,9 @@ function applyWaveJumpAfterVictory(targetWaveGroup, targetWaveNumber) {
   gameState.waveSystem.introducedDigSites = new Set();
   gameState.waveSystem.introducedMysteryItems = new Set();
   gameState.waveSystem.introducedPlacementModalMapCategories = new Set();
+  gameState.waveSystem.introducedDungeonLevels = new Set();
+  gameState.waveSystem.introducedVortexLevels = new Set();
+  gameState.waveSystem.introducedFastVortexLevels = new Set();
   
   // Set game state wave
   if (gameState.wave) {
@@ -3671,6 +4045,13 @@ function applyWaveJumpAfterVictory(targetWaveGroup, targetWaveNumber) {
   }
   if (gameState.burningVaultSystem) {
     gameState.burningVaultSystem.clearAllItems();
+  }
+  if (gameState.dungeonEntranceSystem) {
+    forceCloseDungeonRewardOverlay(gameState);
+    gameState.dungeonEntranceSystem.clearAllItems();
+  }
+  if (gameState.vortexSystem) {
+    gameState.vortexSystem.clearAllItems();
   }
   if (gameState.artifactSystem) {
     gameState.artifactSystem.clearAllItems();
@@ -3883,6 +4264,55 @@ function setupSettingsControls() {
       });
     });
   }
+
+  // Tower select mode - Custom dropdown
+  const towerSelectModeSelected = document.getElementById('settingTowerSelectModeSelected');
+  const towerSelectModeText = document.getElementById('settingTowerSelectModeText');
+  const towerSelectModeMenu = document.getElementById('settingTowerSelectModeMenu');
+
+  if (towerSelectModeSelected && towerSelectModeMenu) {
+    towerSelectModeSelected.addEventListener('click', (e) => {
+      e.stopPropagation();
+
+      document.querySelectorAll('.scenario-dropdown-selected').forEach(selected => {
+        if (selected !== towerSelectModeSelected) {
+          selected.classList.remove('active');
+          selected.parentElement.querySelector('.scenario-dropdown-menu')?.classList.remove('active');
+        }
+      });
+
+      towerSelectModeSelected.classList.toggle('active');
+      towerSelectModeMenu.classList.toggle('active');
+    });
+
+    towerSelectModeMenu.querySelectorAll('.scenario-dropdown-option').forEach(option => {
+      option.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const value = option.dataset.value === 'click' ? 'click' : 'hover';
+        CONFIG.TOWER_SELECT_MODE = value;
+        if (towerSelectModeText) {
+          towerSelectModeText.textContent = value === 'click' ? 'Click' : 'Hover';
+        }
+
+        towerSelectModeMenu.querySelectorAll('.scenario-dropdown-option').forEach(opt => {
+          opt.classList.remove('selected');
+        });
+        option.classList.add('selected');
+
+        towerSelectModeSelected.classList.remove('active');
+        towerSelectModeMenu.classList.remove('active');
+
+        // Switching to click: drop hover-based selection so arrows don't linger until click.
+        if (value === 'click') {
+          gameState.selectedTowerId = null;
+          gameState.inputHandler?.clearTowerPierceDwell?.();
+          gameState.renderer?.arrowHoverState?.clear?.();
+        }
+
+        saveUserSettings();
+      });
+    });
+  }
   
   // Close dropdowns when clicking outside
   document.addEventListener('click', (e) => {
@@ -3894,6 +4324,15 @@ function setupSettingsControls() {
     }
   });
   
+  // Click to Scroll
+  const enableClickToScrollCheckbox = document.getElementById('settingEnableClickToScroll');
+  if (enableClickToScrollCheckbox) {
+    enableClickToScrollCheckbox.addEventListener('change', (e) => {
+      CONFIG.ENABLE_CLICK_TO_SCROLL = e.target.checked;
+      saveUserSettings();
+    });
+  }
+
   // Enable Edge Scrolling
   const enableEdgeScrollingCheckbox = document.getElementById('settingEnableEdgeScrolling');
   if (enableEdgeScrollingCheckbox) {
@@ -4029,7 +4468,15 @@ function setupSettingsControls() {
       saveUserSettings();
     });
   }
-  
+
+  // Map zoom: 0=75%, 1=100%, 2=125%
+  const mapZoomSlider = document.getElementById('settingMapZoom');
+  if (mapZoomSlider) {
+    mapZoomSlider.addEventListener('input', (e) => {
+      applyMapZoomSetting({ levelIndex: parseInt(e.target.value, 10) || 0 });
+    });
+  }
+
   const showFpsCheckbox = document.getElementById('settingShowFpsCounter');
   if (showFpsCheckbox) {
     showFpsCheckbox.addEventListener('change', (e) => {
@@ -4042,7 +4489,7 @@ function setupSettingsControls() {
   const disableTooltipsCheckbox = document.getElementById('settingDisableGameTooltips');
   if (disableTooltipsCheckbox) {
     disableTooltipsCheckbox.addEventListener('change', (e) => {
-      CONFIG.DISABLE_GAME_TOOLTIPS = e.target.checked;
+      CONFIG.DISABLE_GAME_TOOLTIPS = !e.target.checked;
       gameState?.inputHandler?.tooltipSystem?.hide();
       saveUserSettings();
     });
@@ -4051,7 +4498,7 @@ function setupSettingsControls() {
   const disableNotificationsCheckbox = document.getElementById('settingDisableNotifications');
   if (disableNotificationsCheckbox) {
     disableNotificationsCheckbox.addEventListener('change', (e) => {
-      CONFIG.DISABLE_NOTIFICATIONS = e.target.checked;
+      CONFIG.DISABLE_NOTIFICATIONS = !e.target.checked;
       if (CONFIG.DISABLE_NOTIFICATIONS) {
         gameState?.notificationSystem?.clearToasts?.();
       }
@@ -4065,6 +4512,42 @@ function setupSettingsControls() {
       const on = !!e.target.checked;
       CONFIG.SIMPLIFIED_WATER_VISUALS = on;
       gameState.simplifiedWaterVisuals = on;
+      saveUserSettings();
+    });
+  }
+
+  const simplifiedFireCheckbox = document.getElementById('settingSimplifiedFireVisuals');
+  if (simplifiedFireCheckbox) {
+    simplifiedFireCheckbox.addEventListener('change', (e) => {
+      const on = !!e.target.checked;
+      CONFIG.SIMPLIFIED_FIRE_VISUALS = on;
+      gameState.simplifiedFireVisuals = on;
+      saveUserSettings();
+    });
+  }
+
+  const waterVisibilitySlider = document.getElementById('settingWaterVisibility');
+  const waterVisibilityValue = document.getElementById('settingWaterVisibilityValue');
+  if (waterVisibilitySlider) {
+    waterVisibilitySlider.addEventListener('input', (e) => {
+      const pct = parseInt(e.target.value, 10);
+      const sliderPct = Number.isFinite(pct) ? pct : WATER_VISIBILITY_UI_MAX;
+      CONFIG.WATER_VISIBILITY = sliderPctToWaterVisibility(sliderPct);
+      if (waterVisibilityValue) {
+        waterVisibilityValue.textContent = formatWaterVisibilityLabel(
+          waterVisibilityToSliderPct(CONFIG.WATER_VISIBILITY)
+        );
+      }
+      saveUserSettings();
+    });
+  }
+
+  const disableWaterEffectsCheckbox = document.getElementById('settingDisableWaterEffects');
+  if (disableWaterEffectsCheckbox) {
+    disableWaterEffectsCheckbox.addEventListener('change', (e) => {
+      const showWaterOn = !!e.target.checked;
+      CONFIG.DISABLE_ALL_WATER_EFFECTS = !showWaterOn;
+      updateDependentWaterSettingsVisibility(showWaterOn);
       saveUserSettings();
     });
   }
@@ -4210,6 +4693,9 @@ function setupSettingsControls() {
       resetMetaProgression(gameState);
       gameState.digSiteSystem?.clearAllDigSites?.();
       gameState.burningVaultSystem?.clearAllItems?.();
+      forceCloseDungeonRewardOverlay(gameState);
+      gameState.dungeonEntranceSystem?.clearAllItems?.();
+      gameState.vortexSystem?.clearAllItems?.();
       gameState.artifactSystem?.clearAllItems?.();
       gameState.player.tempPowerUps = (gameState.player.tempPowerUps || []).filter((temp) => isMetaItemUnlocked(gameState, temp.powerUpId));
       Object.keys(gameState.player.powerUps || {}).forEach((powerUpId) => {
@@ -4502,9 +4988,9 @@ function placeDebugDropItems() {
         } else if (entry.type === 'suppression_bomb') {
           let level;
           if (entry.level != null && Number.isFinite(Number(entry.level))) {
-            level = Math.min(4, Math.max(1, Math.round(Number(entry.level))));
+            level = clampSuppressionBombLevel(entry.level);
           } else {
-            level = Math.floor(Math.random() * 4) + 1;
+            level = Math.floor(Math.random() * getSuppressionBombMaxLevel()) + 1;
           }
           didSpawn = !!currencySys.spawnCurrencyItem(q, r, 'suppression_bomb', level);
         } else {
@@ -4877,7 +5363,7 @@ async function updateLoadGameModal() {
               if (shouldBePlacementPhase && !gameState.wave.isActive && gameState.waveSystem) {
                 gameState.wave.isPlacementPhase = true;
                 // Dig sites already restored in applyLoadedState — do not roll again (would desync autosave vs reload exploit)
-                gameState.waveSystem.startPlacementPhase({ skipDigSiteGeneration: true });
+                gameState.waveSystem.startPlacementPhase({ skipDigSiteGeneration: true, skipDungeonGeneration: true });
               } else {
                 const startWaveBtn = document.getElementById('startWaveBtn');
                 if (startWaveBtn) {
@@ -4887,12 +5373,18 @@ async function updateLoadGameModal() {
                 if (backToPlacementBtn) {
                   backToPlacementBtn.remove();
                 }
+                const clearAllBtn = document.getElementById('clearAllItemsBtn');
+                if (clearAllBtn) {
+                  clearAllBtn.remove();
+                }
                 const pauseBtn = document.getElementById('pauseBtn');
                 if (pauseBtn) {
                   pauseBtn.style.display = 'block';
                 }
               }
             }
+            // Mid-wave loads must never leave Clear Items visible from a prior placement phase.
+            gameState.waveSystem?.updateClearAllButtonVisibility?.();
             
             document.body.classList.remove('game-not-started'); // Show game UI
             closeLoadGameModal();
@@ -5054,10 +5546,12 @@ function startNewGame() {
     window.gameLoop.pause();
   }
   gameState.isPaused = true;
+  gameState.pausedByPlayer = false;
   
   // Reset game state
   gameState.gameOver = false;
   gameState.isUpgradeSelectionMode = false;
+  forceCloseDungeonRewardOverlay(gameState);
   document.body.classList.remove('upgrade-selection-mode');
   gameState.isTowerSellbackMode = false;
   document.body.classList.remove('tower-sellback-selection-mode');
@@ -5106,6 +5600,7 @@ function startNewGame() {
   gameState.player.specialtyTimeMilestonePowerUps = null;
   ensureSpecialtyMilestoneRewards(gameState);
   gameState.player.movementTokens = 0;
+  gameState.player.movementTokensPurchased = 0;
   gameState.player.towerSellbacks = 0;
   gameState.player.towerRepairs = 0;
   gameState.player.partsVouchers = 0;
@@ -5126,6 +5621,7 @@ function startNewGame() {
   gameState.player.powerUps = {};
   gameState.player.seenShopItems = new Set();
   gameState.player.newlyUnlockedItems = new Set();
+  gameState.player.announcedUnlocks = new Set();
   gameState.isMovementTokenMode = false;
   gameState.movementTokenTargetTowerId = null;
   gameState.movementTokenRepositioned = false;
@@ -5133,7 +5629,8 @@ function startNewGame() {
   if (typeof document !== 'undefined') {
     document.body.classList.remove('movement-token-mode');
   }
-  hideMovementInstructions();
+  window.hideMovementInstructions?.();
+  window.hideMovementDoneInstructions?.();
   
   // Reset town
   gameState.townLevel = 1;
@@ -5155,6 +5652,7 @@ function startNewGame() {
   gameState.wave.scenarioName = null;
   gameState.wave.pendingGroupRewards = null;
   gameState.wave.townBonusAward = 0;
+  gameState.wave.townNoSpreadBonusAward = 0;
   gameState.wave.currentGroup = 1;
   gameState.wave.waveInGroup = 1;
 
@@ -5167,6 +5665,9 @@ function startNewGame() {
     gameState.waveSystem.introducedDigSites = new Set();
     gameState.waveSystem.introducedMysteryItems = new Set();
     gameState.waveSystem.introducedPlacementModalMapCategories = new Set();
+    gameState.waveSystem.introducedDungeonLevels = new Set();
+  gameState.waveSystem.introducedVortexLevels = new Set();
+  gameState.waveSystem.introducedFastVortexLevels = new Set();
   }
 
   // Clear all systems
@@ -5204,6 +5705,15 @@ function startNewGame() {
 
   if (gameState.burningVaultSystem) {
     gameState.burningVaultSystem.clearAllItems();
+  }
+
+  if (gameState.dungeonEntranceSystem) {
+    forceCloseDungeonRewardOverlay(gameState);
+    gameState.dungeonEntranceSystem.clearAllItems();
+  }
+
+  if (gameState.vortexSystem) {
+    gameState.vortexSystem.clearAllItems();
   }
 
   if (gameState.artifactSystem) {
@@ -5358,13 +5868,13 @@ function checkTutorialTowerMoveAdvance(fromQ, fromR, toQ, toR) {
 }
 
 /** Called from inputHandler when a tower is rotated - advance step 8 when tower at placement hex faces SW toward burning hex */
-const TUTORIAL_TOWER_DIRECTION_TOWARD_FIRE = 4; // SW: from (-5,5) to (-7,7) burning hex
+const TUTORIAL_TOWER_DIRECTION_TOWARD_FIRE = 4; // SW: from (-6,6) to (-7,7) burning hex
 function checkTutorialRotationAdvance(towerId) {
   const progress = getTutorialProgress();
   const tower = gameState.towerSystem?.getTower(towerId);
   if (!tower) return;
 
-  // Step 7: first tower at (-5,5) faces SW toward burning hex
+  // Step 7: first tower at placement hex faces SW toward burning hex
   if (progress === 6) {
     if (tower.q !== TUTORIAL_TOWER_PLACEMENT_HEX.q || tower.r !== TUTORIAL_TOWER_PLACEMENT_HEX.r) return;
     tutorialStep7HasRotated = true;
@@ -5486,7 +5996,9 @@ function resetGameStateForTutorial() {
   hideGameOverReturnButton();
 
   gameState.gameOver = false;
+  gameState.pausedByPlayer = false;
   gameState.isUpgradeSelectionMode = false;
+  forceCloseDungeonRewardOverlay(gameState);
   document.body.classList.remove('upgrade-selection-mode');
   gameState.isTowerSellbackMode = false;
   document.body.classList.remove('tower-sellback-selection-mode');
@@ -5508,6 +6020,7 @@ function resetGameStateForTutorial() {
   gameState.player.specialtyTimeMilestonePowerUps = null;
   ensureSpecialtyMilestoneRewards(gameState);
   gameState.player.movementTokens = 0;
+  gameState.player.movementTokensPurchased = 0;
   gameState.player.towerSellbacks = 0;
   gameState.player.towerRepairs = 0;
   gameState.player.partsVouchers = 0;
@@ -5528,6 +6041,7 @@ function resetGameStateForTutorial() {
   gameState.player.powerUps = {};
   gameState.player.seenShopItems = new Set();
   gameState.player.newlyUnlockedItems = new Set();
+  gameState.player.announcedUnlocks = new Set();
   gameState.isMovementTokenMode = false;
   gameState.movementTokenTargetTowerId = null;
   gameState.movementTokenRepositioned = false;
@@ -5535,7 +6049,8 @@ function resetGameStateForTutorial() {
   if (typeof document !== 'undefined') {
     document.body.classList.remove('movement-token-mode');
   }
-  hideMovementInstructions();
+  window.hideMovementInstructions?.();
+  window.hideMovementDoneInstructions?.();
 
   gameState.townLevel = 1;
   if (gameState.gridSystem) {
@@ -5560,6 +6075,9 @@ function resetGameStateForTutorial() {
     gameState.waveSystem.introducedDigSites = new Set();
     gameState.waveSystem.introducedMysteryItems = new Set();
     gameState.waveSystem.introducedPlacementModalMapCategories = new Set();
+    gameState.waveSystem.introducedDungeonLevels = new Set();
+  gameState.waveSystem.introducedVortexLevels = new Set();
+  gameState.waveSystem.introducedFastVortexLevels = new Set();
   }
   if (gameState.wave) {
     gameState.wave.currentGroup = 1;
@@ -5579,6 +6097,13 @@ function resetGameStateForTutorial() {
   if (gameState.mysteryItemSystem) gameState.mysteryItemSystem.clearAllItems();
   if (gameState.currencyItemSystem) gameState.currencyItemSystem.clearAllItems();
   if (gameState.burningVaultSystem) gameState.burningVaultSystem.clearAllItems();
+  if (gameState.dungeonEntranceSystem) {
+    forceCloseDungeonRewardOverlay(gameState);
+    gameState.dungeonEntranceSystem.clearAllItems();
+  }
+  if (gameState.vortexSystem) {
+    gameState.vortexSystem.clearAllItems();
+  }
   if (gameState.artifactSystem) gameState.artifactSystem.clearAllItems();
   if (gameState.digSiteSystem) gameState.digSiteSystem.clearAllDigSites();
   if (gameState.player.tempPowerUps) gameState.player.tempPowerUps = [];
@@ -5786,6 +6311,52 @@ function updateTutorialAllowedElements(stepIndex, step) {
 }
 
 /**
+ * Scroll the shop Items panel so the shield purchase card is in view (step 23 on short screens).
+ * No-ops when already fully visible inside its scroll container.
+ */
+function ensureTutorialShieldShopItemVisible() {
+  const shieldEl = document.getElementById('shield-1-shop');
+  if (!shieldEl) return;
+
+  /** @param {HTMLElement} el */
+  const findScrollParent = (el) => {
+    let node = el.parentElement;
+    while (node && node !== document.body) {
+      const style = window.getComputedStyle(node);
+      const oy = style.overflowY;
+      if (
+        (oy === 'auto' || oy === 'scroll' || oy === 'overlay') &&
+        node.scrollHeight > node.clientHeight + 1
+      ) {
+        return node;
+      }
+      node = node.parentElement;
+    }
+    return null;
+  };
+
+  const scrollParent = findScrollParent(shieldEl);
+  if (!scrollParent) {
+    shieldEl.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+    return;
+  }
+
+  const parentRect = scrollParent.getBoundingClientRect();
+  const itemRect = shieldEl.getBoundingClientRect();
+  const margin = 12;
+  const fullyVisible =
+    itemRect.top >= parentRect.top + margin &&
+    itemRect.bottom <= parentRect.bottom - margin;
+
+  if (fullyVisible) return;
+
+  // Center the card in the scroller so sticky shop sub-tabs don't cover it.
+  const itemOffsetTop = itemRect.top - parentRect.top + scrollParent.scrollTop;
+  const targetTop = itemOffsetTop - parentRect.height / 2 + itemRect.height / 2;
+  scrollParent.scrollTop = Math.max(0, targetTop);
+}
+
+/**
  * Show speech bubble near water tank (step 27 post-Resume) - no arrow
  */
 function showTutorialWaterTankBubble() {
@@ -5796,8 +6367,12 @@ function showTutorialWaterTankBubble() {
   if (!canvas || !renderer) return;
   const { x: worldX, y: worldY } = axialToPixel(TUTORIAL_WATER_TANK_HEX.q, TUTORIAL_WATER_TANK_HEX.r);
   const canvasRect = canvas.getBoundingClientRect();
-  const tankScreenX = canvasRect.left + worldX + renderer.offsetX;
-  const tankScreenY = canvasRect.top + worldY + renderer.offsetY;
+  // worldToScreen accounts for camera zoom
+  const tankScreen = renderer.worldToScreen
+    ? renderer.worldToScreen(worldX, worldY)
+    : { x: worldX + renderer.offsetX, y: worldY + renderer.offsetY };
+  const tankScreenX = canvasRect.left + tankScreen.x;
+  const tankScreenY = canvasRect.top + tankScreen.y;
   const BUBBLE_OFFSET_LEFT = 400; // Bubble to the left of water tank (100px more than before to avoid covering it)
   bubble.style.left = `${tankScreenX - BUBBLE_OFFSET_LEFT}px`;
   bubble.style.top = `${tankScreenY - 60}px`;
@@ -5881,6 +6456,14 @@ function updateTutorialArrow() {
     const powerupsBtn = document.querySelector('#shopTab .shop-sub-tab-button[data-shop-sub-tab="powerups"]');
     if (towersBtn) towersBtn.classList.add('tutorial-disabled');
     if (powerupsBtn) powerupsBtn.classList.add('tutorial-disabled');
+    // Short screens: shield can sit below the fold — scroll once when the card exists
+    if (!gameState.tutorialStep23ScrolledToShield) {
+      const shieldForScroll = document.getElementById('shield-1-shop');
+      if (shieldForScroll) {
+        ensureTutorialShieldShopItemVisible();
+        gameState.tutorialStep23ScrolledToShield = true;
+      }
+    }
     // Position overlay over shield so click is guaranteed to work
     const shieldEl = document.getElementById('shield-1-shop');
     if (shieldOverlay && shieldEl) {
@@ -5891,8 +6474,11 @@ function updateTutorialArrow() {
       shieldOverlay.style.height = `${rect.height}px`;
       shieldOverlay.style.display = 'block';
     }
-  } else if (shieldOverlay) {
-    shieldOverlay.style.display = 'none';
+  } else {
+    gameState.tutorialStep23ScrolledToShield = false;
+    if (shieldOverlay) {
+      shieldOverlay.style.display = 'none';
+    }
   }
 
   // Set placement hex for tutorial steps that restrict tower placement (6 and 9)
@@ -6033,13 +6619,17 @@ function updateTutorialArrow() {
     }
     const { x, y } = axialToPixel(step.targetHex.q, step.targetHex.r);
     const canvasRect = canvas.getBoundingClientRect();
+    // worldToScreen accounts for camera zoom
+    const hexScreen = renderer.worldToScreen
+      ? renderer.worldToScreen(x, y)
+      : { x: x + renderer.offsetX, y: y + renderer.offsetY };
     rect = {
-      left: canvasRect.left + x + renderer.offsetX,
-      top: canvasRect.top + y + renderer.offsetY,
+      left: canvasRect.left + hexScreen.x,
+      top: canvasRect.top + hexScreen.y,
       width: 0,
       height: 0,
-      right: canvasRect.left + x + renderer.offsetX,
-      bottom: canvasRect.top + y + renderer.offsetY
+      right: canvasRect.left + hexScreen.x,
+      bottom: canvasRect.top + hexScreen.y
     };
 
     // Step 3 & 4: auto-scroll once per step if target + speech bubble would be off-screen (not every frame - avoids glitch)
@@ -6058,13 +6648,16 @@ function updateTutorialArrow() {
         lastTutorialAutoScrollStep = stepIndex;
         // Center on target hex to keep view balanced (scrolling is locked during tutorial)
         mapScroll.scrollToShowHex(step.targetHex?.q ?? 0, step.targetHex?.r ?? 0, { horizontal: 'center', vertical: 'center', animated: true });
+        const hexScreenAfter = renderer.worldToScreen
+          ? renderer.worldToScreen(x, y)
+          : { x: x + renderer.offsetX, y: y + renderer.offsetY };
         rect = {
-          left: canvasRect.left + x + renderer.offsetX,
-          top: canvasRect.top + y + renderer.offsetY,
+          left: canvasRect.left + hexScreenAfter.x,
+          top: canvasRect.top + hexScreenAfter.y,
           width: 0,
           height: 0,
-          right: canvasRect.left + x + renderer.offsetX,
-          bottom: canvasRect.top + y + renderer.offsetY
+          right: canvasRect.left + hexScreenAfter.x,
+          bottom: canvasRect.top + hexScreenAfter.y
         };
       }
     }
@@ -6123,7 +6716,12 @@ function updateTutorialArrow() {
     arrow.style.display = 'flex';
   }
 
-  const displayMessage = (useModalOverlay ? effectiveMessage : step.message) || '';
+  let displayMessage = (useModalOverlay ? effectiveMessage : step.message) || '';
+  // Step 7: hover vs click tower-select wording
+  if (!useModalOverlay && stepIndex === 6 && step.messageClickMode) {
+    displayMessage =
+      CONFIG.TOWER_SELECT_MODE === 'click' ? step.messageClickMode : step.message;
+  }
   const displayStepNumber = useModalOverlay ? stepIndex + 2 : stepIndex + 1;  // Step 22 when modal overlay (step 21 = click shield, step 22 = confirm)
   {
     const bubble = arrow.querySelector('.tutorial-speech-bubble');
@@ -6195,13 +6793,17 @@ function updateTutorialArrow() {
       if (canvas && renderer) {
         const { x, y } = axialToPixel(hexForIndicator.q, hexForIndicator.r);
         const canvasRect = canvas.getBoundingClientRect();
+        // worldToScreen accounts for camera zoom
+        const hexScreen = renderer.worldToScreen
+          ? renderer.worldToScreen(x, y)
+          : { x: x + renderer.offsetX, y: y + renderer.offsetY };
         const hexRect = {
-          left: canvasRect.left + x + renderer.offsetX,
-          top: canvasRect.top + y + renderer.offsetY,
+          left: canvasRect.left + hexScreen.x,
+          top: canvasRect.top + hexScreen.y,
           width: 0,
           height: 0,
-          right: canvasRect.left + x + renderer.offsetX,
-          bottom: canvasRect.top + y + renderer.offsetY
+          right: canvasRect.left + hexScreen.x,
+          bottom: canvasRect.top + hexScreen.y
         };
         const hexSide = 'bottom'; // Arrow from bottom, pointing up at hex
         hexIndicator.classList.remove('tutorial-arrow-from-right', 'tutorial-arrow-from-top', 'tutorial-arrow-from-bottom');
@@ -6262,16 +6864,19 @@ async function exitTutorialMode() {
       if (!resumedRewardModal) {
         if (shouldBePlacementPhase && !gameState.wave.isActive && gameState.waveSystem) {
           gameState.wave.isPlacementPhase = true;
-          gameState.waveSystem.startPlacementPhase({ skipDigSiteGeneration: true });
+          gameState.waveSystem.startPlacementPhase({ skipDigSiteGeneration: true, skipDungeonGeneration: true });
         } else {
           const startWaveBtn = document.getElementById('startWaveBtn');
           if (startWaveBtn) startWaveBtn.remove();
           const backToPlacementBtn = document.getElementById('backToPlacementModalBtn');
           if (backToPlacementBtn) backToPlacementBtn.remove();
+          const clearAllBtn = document.getElementById('clearAllItemsBtn');
+          if (clearAllBtn) clearAllBtn.remove();
           const pauseBtn = document.getElementById('pauseBtn');
           if (pauseBtn) pauseBtn.style.display = 'block';
         }
       }
+      gameState.waveSystem?.updateClearAllButtonVisibility?.();
 
       if (window.updateUI) window.updateUI();
       if (window.updateInventory) window.updateInventory();
@@ -6339,6 +6944,7 @@ function updateStoryScreenUI() {
  * @param {boolean} opts.skipTutorial - If true (e.g. when user clicked Skip), go straight to placement
  */
 function closeStoryScreenAndStart(opts = {}) {
+  setStoryVortexFxActive(false);
   const storyScreenModal = document.getElementById('storyScreenModal');
   const mapProgressionModal = document.getElementById('mapProgressionModal');
   const showTutorial = opts.skipTutorial ? false : getShowTutorialPreference();
@@ -6420,6 +7026,7 @@ function showStoryPanel(panelNumber) {
     nextPanel.style.removeProperty('display');
     nextPanel.style.removeProperty('z-index');
     currentStoryPanel = panelNumber;
+    setStoryVortexFxActive(panelNumber === 2);
     if (releaseAnimating) storyPanelAnimating = false;
     const storyScreenModal = document.getElementById('storyScreenModal');
     if (storyScreenModal?.classList.contains('active')) {
@@ -6433,6 +7040,8 @@ function showStoryPanel(panelNumber) {
     const done = onRevealDone ?? (() => finishReveal());
     nextPanel.style.removeProperty('display');
     nextPanel.classList.remove('story-panel-fade-out', 'story-panel-visible');
+    // Start vortex FX as soon as panel 2 is shown (incl. during fade-in)
+    setStoryVortexFxActive(panelNumber === 2);
     if (reducedMotion) {
       nextPanel.classList.remove('story-panel-fade-in');
       done();
@@ -6573,10 +7182,12 @@ function loadScenario(scenarioName) {
     window.gameLoop.pause();
   }
   gameState.isPaused = true;
+  gameState.pausedByPlayer = false;
   
   // Reset game state
   gameState.gameOver = false;
   gameState.isUpgradeSelectionMode = false;
+  forceCloseDungeonRewardOverlay(gameState);
   document.body.classList.remove('upgrade-selection-mode');
   gameState.isTowerSellbackMode = false;
   document.body.classList.remove('tower-sellback-selection-mode');
@@ -6630,6 +7241,7 @@ function loadScenario(scenarioName) {
   gameState.player.specialtyTimeMilestonePowerUps = null;
   ensureSpecialtyMilestoneRewards(gameState);
   gameState.player.movementTokens = 0;
+  gameState.player.movementTokensPurchased = 0;
   gameState.player.towerSellbacks = 0;
   gameState.player.towerRepairs = 0;
   gameState.player.partsVouchers = 0;
@@ -6649,6 +7261,7 @@ function loadScenario(scenarioName) {
   };
   gameState.player.seenShopItems = new Set();
   gameState.player.newlyUnlockedItems = new Set();
+  gameState.player.announcedUnlocks = new Set();
   gameState.isMovementTokenMode = false;
   gameState.movementTokenTargetTowerId = null;
   gameState.movementTokenRepositioned = false;
@@ -6656,7 +7269,8 @@ function loadScenario(scenarioName) {
   if (typeof document !== 'undefined') {
     document.body.classList.remove('movement-token-mode');
   }
-  hideMovementInstructions();
+  window.hideMovementInstructions?.();
+  window.hideMovementDoneInstructions?.();
   
   // Reset town
   gameState.townLevel = 1;
@@ -6720,6 +7334,15 @@ function loadScenario(scenarioName) {
 
   if (gameState.burningVaultSystem) {
     gameState.burningVaultSystem.clearAllItems();
+  }
+
+  if (gameState.dungeonEntranceSystem) {
+    forceCloseDungeonRewardOverlay(gameState);
+    gameState.dungeonEntranceSystem.clearAllItems();
+  }
+
+  if (gameState.vortexSystem) {
+    gameState.vortexSystem.clearAllItems();
   }
 
   if (gameState.artifactSystem) {
@@ -6950,6 +7573,7 @@ function togglePause() {
     gameState.isPaused = false;
   } else {
     window.AudioManager?.playSFX('pause');
+    gameState.pausedByPlayer = true;
     pauseGameWithAudio();
     gameState.isPaused = true;
   }
@@ -7043,8 +7667,12 @@ async function handleMovementTokenClick() {
     window.syncCancelMovementButton?.();
     updateInventory();
     updateUI();
+    return;
   }
-  // Game remains paused until player resumes (but modal stays visible)
+
+  // Cancelled confirm: only auto-resume if the player had not already paused manually
+  resumeUnlessPausedByPlayer({ withAudio: false });
+  if (window.syncPauseButton) window.syncPauseButton();
 }
 
 async function handleRepairKitClick() {
@@ -7074,7 +7702,7 @@ async function handleRepairKitClick() {
   });
 
   if (!confirmed) {
-    resumeGameSilently();
+    resumeUnlessPausedByPlayer({ withAudio: false });
     if (window.syncPauseButton) window.syncPauseButton();
     return;
   }
@@ -7181,7 +7809,7 @@ function applyTowerRepairFromInventory(storedIndex) {
 
   gameState.notificationSystem?.showToast('Tower repaired!', 3500, 'positive');
 
-  resumeGameSilently();
+  resumeUnlessPausedByPlayer({ withAudio: false });
   if (window.syncPauseButton) window.syncPauseButton();
   updateInventory();
   updateUI();
@@ -7218,7 +7846,7 @@ async function handlePartsVoucherClick() {
   });
 
   if (!confirmed) {
-    resumeGameSilently();
+    resumeUnlessPausedByPlayer({ withAudio: false });
     if (window.syncPauseButton) window.syncPauseButton();
     return;
   }
@@ -7266,7 +7894,7 @@ function applyPartsVoucherFromInventory(storedIndex, floatingTarget = null) {
   }
   gameState.notificationSystem?.showToast(`Recycled tower for $${partsValue}.`, 3500, 'positive');
 
-  resumeGameSilently();
+  resumeUnlessPausedByPlayer({ withAudio: false });
   if (window.syncPauseButton) window.syncPauseButton();
   updateInventory();
   updateUI();
@@ -7311,8 +7939,149 @@ async function handleTowerSellbackClick() {
 // compounded one more concurrent UI-refresh pipeline.
 let _updateUIRafScheduled = false;
 
+// The self-perpetuating rAF chain used to run the FULL updateUI DOM pass at 60 Hz.
+// Only the smoothed meters (XP / grove HP fills) actually need per-frame animation;
+// everything else (counters, classList toggles, dozens of textContent writes) is
+// visually identical at 10 Hz. Direct updateUI() calls still do a full pass instantly.
+const UPDATE_UI_FULL_PASS_INTERVAL_MS = 100;
+let _updateUILastFullPassAt = 0;
+
+/** rAF chain body: full HUD pass at ~10 Hz, smoothed bars every frame in between. */
+function _updateUIChainFrame() {
+  _updateUIRafScheduled = false;
+  if (performance.now() - _updateUILastFullPassAt >= UPDATE_UI_FULL_PASS_INTERVAL_MS) {
+    updateUI(); // full pass; reschedules the chain itself
+    return;
+  }
+  updateSmoothedUiBars();
+  if (!gameState.isPaused && !_updateUIRafScheduled) {
+    _updateUIRafScheduled = true;
+    requestAnimationFrame(_updateUIChainFrame);
+  }
+}
+
+/** Smooth a 0–1 UI meter. XP uses simple lerp (no coasting); HP can use rate-tracking. */
+function smoothUiRatio(key, targetRatio, hintVelocity) {
+  const renderer = gameState?.renderer;
+  const clamped = Math.max(0, Math.min(1, Number(targetRatio) || 0));
+  if (!renderer) return clamped;
+
+  // XP fills in discrete chunks and wraps on level-up — coasting invents progress and can
+  // stick the bar at 100% while the player is still on the previous level.
+  const isXpMeter = key === 'ui-xp-bar' || key === 'ui-overlay-xp';
+  if (isXpMeter) {
+    if (typeof renderer.getAnimatedValue === 'function') {
+      const smoothed = renderer.getAnimatedValue(key, clamped, renderer.deltaTime || 0.016);
+      return Math.max(0, Math.min(1, smoothed));
+    }
+    return clamped;
+  }
+
+  if (typeof renderer.getLinearAnimatedValue !== 'function') return clamped;
+  const tickSec = Math.max(0.05, (CONFIG.GAME_TICK_RATE || 1000) / 1000);
+  const opts = Number.isFinite(hintVelocity) ? { hintVelocity } : {};
+  const smoothed = renderer.getLinearAnimatedValue(
+    key,
+    clamped,
+    renderer.deltaTime || 0.016,
+    tickSec,
+    opts
+  );
+  return Math.max(0, Math.min(1, smoothed));
+}
+
+/** Snap XP bar animators when the player levels (ratio wraps from ~1 → ~0). */
+function resetXpBarAnimation(level) {
+  const renderer = gameState?.renderer;
+  if (!renderer) return;
+  const prev = resetXpBarAnimation._lastLevel;
+  resetXpBarAnimation._lastLevel = level;
+  if (prev == null || prev === level) return;
+  renderer.animatedValues?.delete?.('ui-xp-bar');
+  renderer.animatedValues?.delete?.('ui-overlay-xp');
+  renderer.linearAnimatedValues?.delete?.('ui-xp-bar');
+  renderer.linearAnimatedValues?.delete?.('ui-overlay-xp');
+}
+
+/**
+ * Per-frame animated meters only: legacy XP bar, overlay XP bar, grove HP bar.
+ * These use smoothUiRatio and must run every frame for fluid fills; the rest of
+ * the HUD is refreshed by the throttled full updateUI() pass.
+ */
+function updateSmoothedUiBars() {
+  // Legacy XP bar
+  const playerXP = document.getElementById('playerXP');
+  const xpProgress = document.getElementById('xpProgress');
+  if (playerXP && xpProgress) {
+    const currentXP = gameState.player.xp;
+    const level = gameState.player.level;
+    resetXpBarAnimation(level);
+    const nextLevelXP = getLevelThreshold(level + 1) || 999999;
+    const prevLevelXP = getLevelThreshold(level) || 0;
+    const progressXP = currentXP - prevLevelXP;
+    const requiredXP = nextLevelXP - prevLevelXP;
+    const rawPct = Math.max(0, Math.min(1, requiredXP > 0 ? progressXP / requiredXP : 0));
+    const smoothPct = smoothUiRatio('ui-xp-bar', rawPct);
+
+    playerXP.textContent = String(currentXP);
+    xpProgress.style.width = `${smoothPct * 100}%`;
+  }
+
+  // Overlay XP bar
+  const overlayPlayerXP = document.getElementById('overlayPlayerXP');
+  const overlayXpProgress = document.getElementById('overlayXpProgress');
+  if (overlayPlayerXP && overlayXpProgress) {
+    gameState.progressionSystem?.reconcilePlayerLevelFromXP?.();
+    const currentXP = gameState.player.xp;
+    const level = gameState.player.level;
+    resetXpBarAnimation(level);
+    const nextLevelXP = getLevelThreshold(level + 1) || 999999;
+    const prevLevelXP = getLevelThreshold(level) || 0;
+    const progressXP = currentXP - prevLevelXP;
+    const requiredXP = nextLevelXP - prevLevelXP;
+    const rawPct = Math.max(0, Math.min(1, requiredXP > 0 ? progressXP / requiredXP : 0));
+    const smoothPct = smoothUiRatio('ui-overlay-xp', rawPct);
+
+    overlayPlayerXP.textContent = String(currentXP);
+    overlayXpProgress.style.width = `${smoothPct * 100}%`;
+  }
+
+  // Grove HP bar
+  const overlayTownHealth = document.getElementById('overlayTownHealth');
+  const overlayHpProgress = document.getElementById('overlayHpProgress');
+  const overlayHpContainer = overlayHpProgress?.closest?.('.overlay-hp-container');
+  if (overlayTownHealth && overlayHpProgress && gameState.gridSystem) {
+    const townCenter = gameState.gridSystem.getTownCenter();
+    if (townCenter) {
+      const maxHealth = Math.round(
+        gameState.gridSystem.getCanonicalTownMaxHealth?.(gameState.townLevel) ??
+          (townCenter.maxTownHealth || 1),
+      );
+      const rawHealth = Math.min(maxHealth, townCenter.townHealth || 0);
+      const rawPct = maxHealth > 0 ? Math.min(1, Math.max(0, rawHealth / maxHealth)) : 0;
+      const healthPercent = smoothUiRatio('hp-grove', rawPct);
+      const currentHealth = Math.round(healthPercent * maxHealth);
+      const groveHpColor = getHealthBarFillColor(healthPercent);
+
+      overlayTownHealth.textContent = `${currentHealth} / ${maxHealth}`;
+      overlayHpProgress.style.width = `${healthPercent * 100}%`;
+      overlayHpContainer?.style.setProperty('--grove-hp-color', groveHpColor);
+      overlayHpContainer?.classList.toggle(
+        'grove-on-fire',
+        gameState.gridSystem.isAnyTownHexBurning?.(gameState.vortexSystem) ?? false,
+      );
+    } else if (overlayHpContainer) {
+      overlayHpContainer.classList.remove('grove-on-fire');
+    }
+  } else if (overlayHpContainer) {
+    overlayHpContainer.classList.remove('grove-on-fire');
+  }
+}
+
 // Update UI with current game state
 function updateUI() {
+  _updateUILastFullPassAt = performance.now();
+
   // Wave number (for backwards compatibility)
   const waveNumber = document.getElementById('waveNumber');
   if (waveNumber) {
@@ -7331,21 +8100,10 @@ function updateUI() {
     playerLevel.textContent = gameState.player.level;
   }
   
-  // Player XP (for backwards compatibility)
-  const playerXP = document.getElementById('playerXP');
-  const xpProgress = document.getElementById('xpProgress');
-  if (playerXP && xpProgress) {
-    const currentXP = gameState.player.xp;
-    const nextLevelXP = getLevelThreshold(gameState.player.level + 1) || 999999;
-    const prevLevelXP = getLevelThreshold(gameState.player.level) || 0;
-    const progressXP = currentXP - prevLevelXP;
-    const requiredXP = nextLevelXP - prevLevelXP;
-    const percentage = Math.min(100, (progressXP / requiredXP) * 100);
-    
-    playerXP.textContent = String(currentXP);
-    xpProgress.style.width = `${percentage}%`;
-  }
-  
+  // Smoothed meters (legacy XP, overlay XP, grove HP) — shared with the per-frame
+  // rAF chain; see updateSmoothedUiBars.
+  updateSmoothedUiBars();
+
   // Player Currency (for backwards compatibility)
   const playerCurrency = document.getElementById('playerCurrency');
   if (playerCurrency) {
@@ -7470,21 +8228,8 @@ function updateUI() {
     }
   }
   
-  const overlayPlayerXP = document.getElementById('overlayPlayerXP');
-  const overlayXpProgress = document.getElementById('overlayXpProgress');
-  if (overlayPlayerXP && overlayXpProgress) {
-    gameState.progressionSystem?.reconcilePlayerLevelFromXP?.();
-    const currentXP = gameState.player.xp;
-    const nextLevelXP = getLevelThreshold(gameState.player.level + 1) || 999999;
-    const prevLevelXP = getLevelThreshold(gameState.player.level) || 0;
-    const progressXP = currentXP - prevLevelXP;
-    const requiredXP = nextLevelXP - prevLevelXP;
-    const percentage = Math.min(100, (progressXP / requiredXP) * 100);
-    
-    overlayPlayerXP.textContent = String(currentXP);
-    overlayXpProgress.style.width = `${percentage}%`;
-  }
-  
+  // (Overlay XP bar handled by updateSmoothedUiBars above.)
+
   // Top Right Overlay - Currency, Tokens, Fires, Town
   const overlayCurrency = document.getElementById('overlayCurrency');
   if (overlayCurrency) {
@@ -7531,39 +8276,20 @@ function updateUI() {
     // Set color to white if 0, yellow if > 0
     overlayFireCount.style.color = fireCount === 0 ? '#FFFFFF' : '#FFD700';
   }
+
+  const overlayVortexCount = document.getElementById('overlayVortexCount');
+  if (overlayVortexCount) {
+    const vortexCount = gameState.vortexSystem?.getAllItems?.().length || 0;
+    overlayVortexCount.textContent = String(vortexCount);
+    overlayVortexCount.style.color = vortexCount === 0 ? '#FFFFFF' : '#FFD700';
+  }
   
   const overlayScore = document.getElementById('overlayScore');
   if (overlayScore) {
     overlayScore.textContent = gameState.player.score ?? 0;
   }
 
-  const overlayTownHealth = document.getElementById('overlayTownHealth');
-  const overlayHpProgress = document.getElementById('overlayHpProgress');
-  const overlayHpContainer = overlayHpProgress?.closest?.('.overlay-hp-container');
-  if (overlayTownHealth && overlayHpProgress && gameState.gridSystem) {
-    const townCenter = gameState.gridSystem.getTownCenter();
-    if (townCenter) {
-      const maxHealth = Math.round(
-        gameState.gridSystem.getCanonicalTownMaxHealth?.(gameState.townLevel) ??
-          (townCenter.maxTownHealth || 1),
-      );
-      const currentHealth = Math.round(Math.min(maxHealth, townCenter.townHealth || 0));
-      const healthPercent = maxHealth > 0 ? Math.min(1, currentHealth / maxHealth) : 0;
-      const groveHpColor = getHealthBarFillColor(healthPercent);
-      
-      overlayTownHealth.textContent = `${currentHealth} / ${maxHealth}`;
-      overlayHpProgress.style.width = `${healthPercent * 100}%`;
-      overlayHpContainer?.style.setProperty('--grove-hp-color', groveHpColor);
-      overlayHpContainer?.classList.toggle(
-        'grove-on-fire',
-        gameState.gridSystem.isAnyTownHexBurning?.() ?? false,
-      );
-    } else if (overlayHpContainer) {
-      overlayHpContainer.classList.remove('grove-on-fire');
-    }
-  } else if (overlayHpContainer) {
-    overlayHpContainer.classList.remove('grove-on-fire');
-  }
+  // (Grove HP bar handled by updateSmoothedUiBars above.)
 
   const overlayFiresExtinguishedThisWave = document.getElementById('overlayFiresExtinguishedThisWave');
   if (overlayFiresExtinguishedThisWave && gameState.fireSystem) {
@@ -7599,13 +8325,11 @@ function updateUI() {
   
   // Request next update — gated on _updateUIRafScheduled so we never have more than
   // one rAF chain alive at a time, even though many call sites invoke updateUI()
-  // directly. See comment on _updateUIRafScheduled above for the bug this fixes.
+  // directly. The chain frame throttles full passes to ~10 Hz and only animates the
+  // smoothed meters on in-between frames. See _updateUIChainFrame.
   if (!gameState.isPaused && !_updateUIRafScheduled) {
     _updateUIRafScheduled = true;
-    requestAnimationFrame(() => {
-      _updateUIRafScheduled = false;
-      updateUI();
-    });
+    requestAnimationFrame(_updateUIChainFrame);
   }
 }
 
@@ -7808,11 +8532,10 @@ function createTowerIconHTML(towerType, rangeLevel = 1, powerLevel = 1, isShop =
     const baseSizeRounded = Math.round(baseSize);
     const isChargeTurret = towerType === 'charge';
     const turretSizeRounded = Math.round(turretHeightRelative);
-    // Charge turrets rotate 90° in inventory: CSS width → visual height, CSS height → visual width
-    const turretWidthRounded = turretSizeRounded;
-    const turretHeightRounded = isChargeTurret
-      ? Math.round(turretHeightRelative / getChargeTurretAspectRatio(safeRangeLevel))
-      : turretSizeRounded;
+    // Charge turrets rotate 90° in inventory: CSS width → visual height, CSS height → visual width.
+    // Shop/inventory charge art is a fixed 52×68 CSS box (sprite aspect; ~68×52 after rotate).
+    const turretWidthRounded = isChargeTurret ? 52 : turretSizeRounded;
+    const turretHeightRounded = isChargeTurret ? 68 : turretSizeRounded;
     // Sentinel downscales large art — smooth scaling reads rounder than pixelated at inventory size
     const imageRendering = (towerType === 'sentinel' || towerType === 'perimeter') ? 'auto' : 'pixelated';
     const layerFit = 'object-fit: contain; object-position: center;';
@@ -8028,6 +8751,10 @@ function createShopItemWithTooltip(icon, name, cost, description, isUnlocked, un
       ? 'var(--cursor-x)'
       : (isShopTargetingActive() ? 'not-allowed' : 'var(--cursor-default)');
   }
+
+  if (isTower) {
+    attachTowerDetailsButton(item, gameState);
+  }
   
   return item;
 }
@@ -8122,6 +8849,41 @@ function createInventoryItemWithTooltip(icon, name, stats, extraInfo, borderColo
   return item;
 }
 
+/** Normalize showConfirmModal result for shop multi-buy (quantity number, or legacy `true`). */
+function shopPurchaseQty(confirmed) {
+  if (!confirmed) return 0;
+  if (typeof confirmed === 'number') return Math.max(0, Math.floor(confirmed));
+  return 1;
+}
+
+/** Run a single-item buy function `qty` times (for flat-priced shop items). */
+function buyShopItemTimes(qty, buyFn) {
+  const n = Math.max(0, Math.floor(Number(qty) || 0));
+  for (let i = 0; i < n; i++) buyFn();
+}
+
+/** Cumulative shop cost when buying `qty` movement tokens starting from current purchased count. */
+function getMovementTokenBulkShopCost(startPurchased, qty) {
+  let total = 0;
+  const start = Math.max(0, Math.floor(Number(startPurchased) || 0));
+  const n = Math.max(0, Math.floor(Number(qty) || 0));
+  for (let i = 0; i < n; i++) {
+    total += getMovementTokenShopCost(start + i);
+  }
+  return total;
+}
+
+/** Cumulative shop cost when buying `qty` stacks of a permanent power-up. */
+function getPowerUpBulkShopCost(powerUpId, ownedCount, qty) {
+  let total = 0;
+  const owned = Math.max(0, Math.floor(Number(ownedCount) || 0));
+  const n = Math.max(0, Math.floor(Number(qty) || 0));
+  for (let i = 0; i < n; i++) {
+    total += getPermanentPowerUpShopPurchaseCost(powerUpId, owned + i);
+  }
+  return total;
+}
+
 // Update shop tab (purchasable items)
 function updateShop() {
   const currency = gameState.player.currency || 0;
@@ -8158,7 +8920,7 @@ function updateShopTowers(currency, playerLevel) {
     createTowerIconHTML('jet', 1, 1, true),
     'Jet Tower',
     CONFIG.TOWER_COST_JET,
-    'Single direction jet tower',
+    'Short-range jet with high durability',
     jetStatus.unlocked,
     jetStatus.unlockLevel,
     jetStatus.unlocked && canAffordWater ? async () => {
@@ -8170,9 +8932,8 @@ function updateShopTowers(currency, playerLevel) {
         itemIcon: createTowerIconHTML('jet', 1, 1, true),
         cost: CONFIG.TOWER_COST_JET,
       });
-      if (confirmed) {
-        buyTower('jet');
-      }
+      const qty = shopPurchaseQty(confirmed);
+      if (qty) buyShopItemTimes(qty, () => buyTower('jet'));
     } : null,
     canAffordWater,
     'jet',
@@ -8205,9 +8966,8 @@ function updateShopTowers(currency, playerLevel) {
         itemIcon: createTowerIconHTML('spread', 1, 1, true),
         cost: CONFIG.TOWER_COST_SPREAD,
       });
-      if (confirmed) {
-        buyTower('spread');
-      }
+      const qty = shopPurchaseQty(confirmed);
+      if (qty) buyShopItemTimes(qty, () => buyTower('spread'));
     } : null,
     canAffordSpread,
     'spread',
@@ -8240,9 +9000,8 @@ function updateShopTowers(currency, playerLevel) {
         itemIcon: createTowerIconHTML('rain', 1, 1, true),
         cost: CONFIG.TOWER_COST_RAIN,
       });
-      if (confirmed) {
-        buyTower('rain');
-      }
+      const qty = shopPurchaseQty(confirmed);
+      if (qty) buyShopItemTimes(qty, () => buyTower('rain'));
     } : null,
     canAffordRain,
     'rain',
@@ -8275,9 +9034,8 @@ function updateShopTowers(currency, playerLevel) {
         itemIcon: createTowerIconHTML('pulsing', 1, 1, true),
         cost: CONFIG.TOWER_COST_PULSING,
       });
-      if (confirmed) {
-        buyTower('pulsing');
-      }
+      const qty = shopPurchaseQty(confirmed);
+      if (qty) buyShopItemTimes(qty, () => buyTower('pulsing'));
     } : null,
     canAffordPulsing,
     'pulsing',
@@ -8309,10 +9067,10 @@ function updateShopTowers(currency, playerLevel) {
           cancelText: 'Cancel',
           itemIcon: createTowerIconHTML('perimeter', 1, 1, true),
           cost: CONFIG.TOWER_COST_PERIMETER,
+          allowQuantity: true,
         });
-        if (confirmed) {
-          buyTower('perimeter');
-        }
+        const qty = shopPurchaseQty(confirmed);
+        if (qty) buyShopItemTimes(qty, () => buyTower('perimeter'));
       } : null,
       canAffordPerimeter,
       'perimeter',
@@ -8346,9 +9104,8 @@ function updateShopTowers(currency, playerLevel) {
           itemIcon: createTowerIconHTML('bomber', 1, 1, true),
           cost: CONFIG.TOWER_COST_BOMBER,
         });
-        if (confirmed) {
-          buyTower('bomber');
-        }
+        const qty = shopPurchaseQty(confirmed);
+        if (qty) buyShopItemTimes(qty, () => buyTower('bomber'));
       } : null,
       canAffordBomber,
       'bomber',
@@ -8381,10 +9138,10 @@ function updateShopTowers(currency, playerLevel) {
           cancelText: 'Cancel',
           itemIcon: createTowerIconHTML('charge', 1, 1, true),
           cost: CONFIG.TOWER_COST_CHARGE,
+          allowQuantity: true,
         });
-        if (confirmed) {
-          buyTower('charge');
-        }
+        const qty = shopPurchaseQty(confirmed);
+        if (qty) buyShopItemTimes(qty, () => buyTower('charge'));
       } : null,
       canAffordCharge,
       'charge',
@@ -8417,9 +9174,8 @@ function updateShopTowers(currency, playerLevel) {
           itemIcon: createTowerIconHTML('sentinel', 1, 1, true),
           cost: CONFIG.TOWER_COST_SENTINEL,
         });
-        if (confirmed) {
-          buyTower('sentinel');
-        }
+        const qty = shopPurchaseQty(confirmed);
+        if (qty) buyShopItemTimes(qty, () => buyTower('sentinel'));
       } : null,
       canAffordSentinel,
       'sentinel',
@@ -8462,10 +9218,10 @@ function updateShopItems(currency, playerLevel) {
           <img src="assets/images/items/town.png" style="width: 84px; height: auto; image-rendering: pixelated;" />
         </div>`,
         cost: CONFIG.TOWN_UPGRADE_COST,
+        allowQuantity: true,
       });
-      if (confirmed) {
-        buyTownHealthUpgrade();
-      }
+      const qty = shopPurchaseQty(confirmed);
+      if (qty) buyShopItemTimes(qty, () => buyTownHealthUpgrade());
     } : null,
     canAffordTownUpgrade,
     'town_health'
@@ -8496,9 +9252,8 @@ function updateShopItems(currency, playerLevel) {
         itemIcon: `<img src="assets/images/items/upgrade_token.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
         cost: CONFIG.UPGRADE_PLAN_COST,
       });
-      if (confirmed) {
-        buyUpgradePlan();
-      }
+      const qty = shopPurchaseQty(confirmed);
+      if (qty) buyUpgradePlan(qty);
     } : null,
     canAffordUpgradeToken,
     'upgrade_token'
@@ -8514,29 +9269,37 @@ function updateShopItems(currency, playerLevel) {
 
   // Movement Token Purchase — unlock status from progression (locked during tutorial unless in scenarioUnlockedItems)
   const movementTokenStatus = getTowerUnlockStatus('movement_token', playerLevel, null, false);
-  const canAffordMovementToken = currency >= CONFIG.MOVEMENT_TOKEN_COST;
+  const movementTokenCost = getMovementTokenShopCost(gameState.player.movementTokensPurchased || 0);
+  const canAffordMovementToken = currency >= movementTokenCost;
+  const movementTokenTooltip = gameState.inputHandler?.tooltipSystem?.getLevelUpRewardTooltipContent?.(
+    { towerType: 'movement_token' },
+    gameState
+  ) || null;
   const movementTokenItem = createShopItemWithTooltip(
     `<img src="assets/images/items/movement_token.png" style="width: 56px; height: auto; image-rendering: pixelated;" />`,
     'Movement Token',
-    CONFIG.MOVEMENT_TOKEN_COST,
+    movementTokenCost,
     'Reposition one tower during a wave',
     movementTokenStatus.unlocked,
     movementTokenStatus.unlockLevel,
     movementTokenStatus.unlocked && canAffordMovementToken ? async () => {
+      const purchasedCount = gameState.player.movementTokensPurchased || 0;
+      const cost = getMovementTokenShopCost(purchasedCount);
       const confirmed = await showConfirmModal({
         title: 'Purchase Movement Token?',
         message: '',
         confirmText: 'Purchase',
         cancelText: 'Cancel',
         itemIcon: `<img src="assets/images/items/movement_token.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
-        cost: CONFIG.MOVEMENT_TOKEN_COST,
+        cost,
+        getPurchaseTotalCost: (qty) => getMovementTokenBulkShopCost(purchasedCount, qty),
       });
-      if (confirmed) {
-        buyMovementToken();
-      }
+      const qty = shopPurchaseQty(confirmed);
+      if (qty) buyMovementToken(qty);
     } : null,
     canAffordMovementToken,
-    'movement_token'
+    'movement_token',
+    movementTokenTooltip
   );
   movementTokenItem.id = 'movement-token-shop';
   if (!movementTokenStatus.unlocked) {
@@ -8568,9 +9331,8 @@ function updateShopItems(currency, playerLevel) {
           itemIcon: `<img src="assets/images/items/parts_voucher.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
           cost: CONFIG.PARTS_VOUCHER_COST,
         });
-        if (confirmed) {
-          buyPartsVoucher();
-        }
+        const qty = shopPurchaseQty(confirmed);
+        if (qty) buyPartsVoucher(qty);
       } : null,
       canAffordPartsVoucher,
       'parts_voucher',
@@ -8608,6 +9370,7 @@ function updateShopItems(currency, playerLevel) {
           cancelText: 'Cancel',
           itemIcon: `<img src="assets/images/items/token_voucher.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
           cost: CONFIG.TOKEN_VOUCHER_COST,
+          allowQuantity: false,
         });
         if (confirmed) {
           buyTokenVoucher();
@@ -8647,9 +9410,8 @@ function updateShopItems(currency, playerLevel) {
           itemIcon: `<img src="assets/images/items/sellback.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
           cost: CONFIG.TOWER_SELLBACK_COST,
         });
-        if (confirmed) {
-          buyTowerSellback();
-        }
+        const qty = shopPurchaseQty(confirmed);
+        if (qty) buyTowerSellback(qty);
       } : null,
       canAffordSellback,
       'tower_sellback'
@@ -8684,9 +9446,8 @@ function updateShopItems(currency, playerLevel) {
         itemIcon: `<img src="assets/images/items/repair.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
         cost: CONFIG.TOWER_REPAIR_COST,
       });
-      if (confirmed) {
-        buyTowerRepairKit();
-      }
+      const qty = shopPurchaseQty(confirmed);
+      if (qty) buyTowerRepairKit(qty);
     } : null,
     canAffordRepair,
     'tower_repair',
@@ -8701,18 +9462,22 @@ function updateShopItems(currency, playerLevel) {
   
   // Suppression Bombs (individual levels unlock separately)
   const tooltipSystem = gameState.inputHandler?.tooltipSystem;
-  for (let level = 1; level <= 4; level++) {
+  const maxSuppressionLevel = getSuppressionBombMaxLevel();
+  for (let level = 1; level <= maxSuppressionLevel; level++) {
+    // Meta gate for levels that have a META_PROGRESSION_UNLOCKS entry (e.g. suppression_bomb_5)
+    if (!isMetaItemUnlocked(gameState, `suppression_bomb_${level}`)) continue;
     // Always check unlock status with isWaveActive = false so items are immediately available when unlocked
     const suppressionBombStatus = getTowerUnlockStatus('suppression_bomb', playerLevel, level, false);
     const canAfford = currency >= CONFIG[`SUPPRESSION_BOMB_COST_LEVEL_${level}`];
     const bombCost = CONFIG[`SUPPRESSION_BOMB_COST_LEVEL_${level}`];
     const bombTooltip = tooltipSystem ? tooltipSystem.getSuppressionBombTooltipContentForInventory({ level }, { cost: bombCost }) : null;
     const uses = getSuppressionBombTotalUses(level);
+    const bombPower = formatWaterDamageRate(getEffectiveSuppressionBombPower(gameState, level));
     const item = createShopItemWithTooltip(
       `<img src="assets/images/items/suppression_${level}.png" style="width: 56px; height: auto; image-rendering: pixelated;" />`,
       `Suppression Bomb Level ${level}`,
       bombCost,
-      `Triggered when adjacent to a burning hex. Explodes in a fixed 3-ring area (37 hexes). Uses: ${uses}.`,
+      `Triggered when adjacent to a burning hex. Explodes in a fixed 3-ring area (37 hexes) with ${bombPower} HP. Uses: ${uses}.`,
       suppressionBombStatus.unlocked,
       suppressionBombStatus.unlockLevel,
       suppressionBombStatus.unlocked && canAfford ? async () => {
@@ -8725,9 +9490,8 @@ function updateShopItems(currency, playerLevel) {
           itemIcon: `<img src="assets/images/items/suppression_${level}.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
           cost: cost,
         });
-        if (confirmed) {
-          buySuppressionBomb(level);
-        }
+        const qty = shopPurchaseQty(confirmed);
+        if (qty) buyShopItemTimes(qty, () => buySuppressionBomb(level));
       } : null,
       canAfford,
       `suppression_bomb_${level}`,
@@ -8762,7 +9526,8 @@ function updateShopItems(currency, playerLevel) {
           itemIcon: `<img src="assets/images/items/suppression_bundle.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
           cost: bundleCost,
         });
-        if (confirmed) {
+        const qty = shopPurchaseQty(confirmed);
+        for (let i = 0; i < qty; i++) {
           await buySuppressionBombBundle();
         }
       } : null,
@@ -8802,9 +9567,8 @@ function updateShopItems(currency, playerLevel) {
           itemIcon: `<img src="assets/images/items/shield_${level}.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
           cost: cost,
         });
-        if (confirmed) {
-          buyShield(level);
-        }
+        const qty = shopPurchaseQty(confirmed);
+        if (qty) buyShopItemTimes(qty, () => buyShield(level));
       } : null,
       canAfford,
       `shield_${level}`
@@ -8842,7 +9606,8 @@ function updateShopItems(currency, playerLevel) {
           itemIcon: `<img src="assets/images/items/shield_bundle.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
           cost: bundleCost,
         });
-        if (confirmed) {
+        const qty = shopPurchaseQty(confirmed);
+        for (let i = 0; i < qty; i++) {
           await buyShieldBundle();
         }
       } : null,
@@ -8902,17 +9667,18 @@ function updateShopPowerUps(currency, playerLevel) {
           // Replace width in img tag to make it larger for modal
           modalIcon = powerUpIcon.replace(/width:\s*\d+px/, 'width: 64px');
         }
+        const ownedCount = gameState.player.powerUps?.[powerUp.id] || 0;
         const confirmed = await showConfirmModal({
           title: 'Purchase Power-Up?',
           message: '',
           confirmText: 'Purchase',
           cancelText: 'Cancel',
           itemIcon: modalIcon,
-          cost: getPermanentPowerUpShopPurchaseCost(powerUp.id, gameState.player.powerUps?.[powerUp.id] || 0),
+          cost: getPermanentPowerUpShopPurchaseCost(powerUp.id, ownedCount),
+          getPurchaseTotalCost: (qty) => getPowerUpBulkShopCost(powerUp.id, ownedCount, qty),
         });
-        if (confirmed) {
-          buyPowerUp(powerUp.id);
-        }
+        const qty = shopPurchaseQty(confirmed);
+        if (qty) buyPowerUp(powerUp.id, qty);
       } : null,
       canAfford,
       `powerup_${powerUp.id}`
@@ -9145,6 +9911,7 @@ function updateInventoryItemsSubTab() {
     const stats = ``;
     const towerDiv = createInventoryItemWithTooltip(towerIcon, towerName, stats, fullTooltipContent || '', borderColor, null, 'tower', fullTooltipContent);
     towerDiv.id = kind === 'stored' ? `stored-tower-${index}` : `tower-to-place-${index}`;
+    attachTowerDetailsButton(towerDiv, gameState);
     if (tower.broken) {
       decorateBrokenInventoryTowerCard(towerDiv);
     }
@@ -9269,6 +10036,7 @@ function updateInventoryItemsSubTab() {
       
       const shieldDiv = createInventoryItemWithTooltip(shieldIcon, `Shield Level ${level}`, stats, fullTooltipContent || '', borderColor, null, 'item', fullTooltipContent);
       shieldDiv.id = `shield-to-place-level-${level}`;
+      attachAutoShieldsButton(shieldDiv, gameState);
       
       if (gameState.isUpgradeSelectionMode || gameState.isRepairSelectionMode || gameState.isPartsRecycleMode || gameState.isTowerSellbackMode || gameState.inputHandler?.selectedShieldForPlacement) {
         shieldDiv.classList.add('upgrade-mode-dimmed');
@@ -9875,13 +10643,14 @@ function buyTower(towerType) {
 
 // Buy a suppression bomb with currency
 function buySuppressionBomb(level) {
-  const cost = getSuppressionBombCost(level);
+  const safeLevel = clampSuppressionBombLevel(level);
+  const cost = getSuppressionBombCost(safeLevel);
   
   if (gameState.player.currency >= cost) {
     gameState.player.currency -= cost;
     const rs = gameState.runStats;
     rs?.recordShopSpend?.(cost);
-    rs?.recordShopPurchase?.('suppression_bomb', { level, currency: cost });
+    rs?.recordShopPurchase?.('suppression_bomb', { level: safeLevel, currency: cost });
     
     // Initialize purchasedSuppressionBombs array if it doesn't exist
     if (!gameState.player.inventory.purchasedSuppressionBombs) {
@@ -9889,16 +10658,16 @@ function buySuppressionBomb(level) {
     }
     
     // Add the new suppression bomb to the purchased suppression bombs array
-    const totalUses = getSuppressionBombTotalUses(level);
+    const totalUses = getSuppressionBombTotalUses(safeLevel);
     gameState.player.inventory.purchasedSuppressionBombs.push({
       type: 'suppression_bomb',
-      level: level,
+      level: safeLevel,
       totalUses,
       usesRemaining: totalUses,
     });
     
     // Trigger purchase animation
-    triggerSuppressionBombPurchaseAnimation(level);
+    triggerSuppressionBombPurchaseAnimation(safeLevel);
     
     // Update UI
     updateInventory();
@@ -9930,11 +10699,20 @@ async function buySuppressionBombBundle() {
     gameState.player.inventory.purchasedSuppressionBombs = [];
   }
 
-  const counts = { 1: 0, 2: 0, 3: 0, 4: 0 };
+  const counts = {};
+  for (let lv = 1; lv <= getSuppressionBombMaxLevel(); lv++) counts[lv] = 0;
   let retailTotal = 0;
+  const playerLevel = gameState.player?.level ?? 1;
+  const unlockedLevels = [];
+  for (let lv = 1; lv <= getSuppressionBombMaxLevel(); lv++) {
+    if (!isMetaItemUnlocked(gameState, `suppression_bomb_${lv}`)) continue;
+    if (!getTowerUnlockStatus('suppression_bomb', playerLevel, lv, false).unlocked) continue;
+    unlockedLevels.push(lv);
+  }
+  const pool = unlockedLevels.length > 0 ? unlockedLevels : [1];
   for (let i = 0; i < 10; i++) {
-    const level = Math.floor(Math.random() * 4) + 1;
-    counts[level]++;
+    const level = pool[Math.floor(Math.random() * pool.length)];
+    counts[level] = (counts[level] || 0) + 1;
     retailTotal += getSuppressionBombCost(level);
     const totalUses = getSuppressionBombTotalUses(level);
     gameState.player.inventory.purchasedSuppressionBombs.push({
@@ -9955,8 +10733,10 @@ async function buySuppressionBombBundle() {
   updateUI();
 
   const cUse = SUPPRESSION_BOMB_INVENTORY_COUNT_COLOR;
-  const iconColumns = [1, 2, 3, 4]
+  const iconColumns = Object.keys(counts)
+    .map(Number)
     .filter((lv) => counts[lv] > 0)
+    .sort((a, b) => a - b)
     .map(
       (lv) => `
 <span style="display:inline-flex;flex-direction:column;align-items:center;justify-content:flex-start;margin:0 10px;">
@@ -10108,82 +10888,117 @@ function buyTownHealthUpgrade() {
 }
 
 // Buy an upgrade token with currency
-function buyUpgradePlan() {
-  const cost = CONFIG.UPGRADE_PLAN_COST;
-  if ((gameState.player.currency || 0) >= cost) {
-    gameState.player.currency -= cost;
+function buyUpgradePlan(quantity = 1) {
+  const qty = Math.max(0, Math.floor(Number(quantity) || 0));
+  if (qty <= 0) return;
+  const unitCost = CONFIG.UPGRADE_PLAN_COST;
+  const totalCost = unitCost * qty;
+  if ((gameState.player.currency || 0) >= totalCost) {
+    gameState.player.currency -= totalCost;
     const rs = gameState.runStats;
-    rs?.recordShopSpend?.(cost);
-    rs?.recordShopPurchase?.('upgrade_plan', { currency: cost });
-    rs?.recordUpgradePlanFromShop?.();
-    // Add one upgrade plan
+    rs?.recordShopSpend?.(totalCost);
+    for (let i = 0; i < qty; i++) {
+      rs?.recordShopPurchase?.('upgrade_plan', { currency: unitCost });
+      rs?.recordUpgradePlanFromShop?.();
+    }
     if (!gameState.player.upgradePlans) {
       gameState.player.upgradePlans = 0;
     }
-    gameState.player.upgradePlans += 1;
+    gameState.player.upgradePlans += qty;
     
-    // Show notification
     if (gameState.notificationSystem) {
-      gameState.notificationSystem.showToast('Upgrade plan purchased!', 3000, 'positive');
+      gameState.notificationSystem.showToast(
+        qty === 1 ? 'Upgrade plan purchased!' : `${qty} upgrade plans purchased!`,
+        3000,
+        'positive'
+      );
     }
     
-    // Update UI
     updateInventory();
     updateUI();
   }
 }
 
-// Buy a movement token with currency
-function buyMovementToken() {
-  const cost = CONFIG.MOVEMENT_TOKEN_COST;
-  if ((gameState.player.currency || 0) >= cost) {
-    gameState.player.currency -= cost;
+// Buy a movement token with currency (cost rises after each shop purchase this run)
+function buyMovementToken(quantity = 1) {
+  const qty = Math.max(0, Math.floor(Number(quantity) || 0));
+  if (qty <= 0) return;
+  const startPurchased = gameState.player.movementTokensPurchased || 0;
+  const totalCost = getMovementTokenBulkShopCost(startPurchased, qty);
+  if ((gameState.player.currency || 0) >= totalCost) {
+    gameState.player.currency -= totalCost;
     const rs = gameState.runStats;
-    rs?.recordShopSpend?.(cost);
-    rs?.recordShopPurchase?.('movement_token', { currency: cost });
-    rs?.recordMovementTokenFromShop?.();
+    rs?.recordShopSpend?.(totalCost);
+    for (let i = 0; i < qty; i++) {
+      const cost = getMovementTokenShopCost(startPurchased + i);
+      rs?.recordShopPurchase?.('movement_token', { currency: cost });
+      rs?.recordMovementTokenFromShop?.();
+    }
     if (!gameState.player.movementTokens) {
       gameState.player.movementTokens = 0;
     }
-    gameState.player.movementTokens += 1;
+    gameState.player.movementTokens += qty;
+    gameState.player.movementTokensPurchased = startPurchased + qty;
     if (gameState.notificationSystem) {
-      gameState.notificationSystem.showToast('Movement token purchased!', 3000, 'positive');
+      gameState.notificationSystem.showToast(
+        qty === 1 ? 'Movement token purchased!' : `${qty} movement tokens purchased!`,
+        3000,
+        'positive'
+      );
     }
     updateInventory();
     updateUI();
   }
 }
 
-function buyTowerSellback() {
+function buyTowerSellback(quantity = 1) {
   if (!isMetaItemUnlocked(gameState, 'tower_sellback')) return;
+  const qty = Math.max(0, Math.floor(Number(quantity) || 0));
+  if (qty <= 0) return;
 
-  const cost = CONFIG.TOWER_SELLBACK_COST;
-  if ((gameState.player.currency || 0) >= cost) {
-    gameState.player.currency -= cost;
+  const unitCost = CONFIG.TOWER_SELLBACK_COST;
+  const totalCost = unitCost * qty;
+  if ((gameState.player.currency || 0) >= totalCost) {
+    gameState.player.currency -= totalCost;
     const rs = gameState.runStats;
-    rs?.recordShopSpend?.(cost);
-    rs?.recordShopPurchase?.('tower_sellback', { currency: cost });
+    rs?.recordShopSpend?.(totalCost);
+    for (let i = 0; i < qty; i++) {
+      rs?.recordShopPurchase?.('tower_sellback', { currency: unitCost });
+    }
 
-    gameState.player.towerSellbacks = (gameState.player.towerSellbacks || 0) + 1;
-    gameState.notificationSystem?.showToast('Tower Sellback purchased!', 3000, 'positive');
+    gameState.player.towerSellbacks = (gameState.player.towerSellbacks || 0) + qty;
+    gameState.notificationSystem?.showToast(
+      qty === 1 ? 'Tower Sellback purchased!' : `${qty} Tower Sellbacks purchased!`,
+      3000,
+      'positive'
+    );
 
     updateInventory();
     updateUI();
   }
 }
 
-function buyPartsVoucher() {
+function buyPartsVoucher(quantity = 1) {
   if (!isMetaItemUnlocked(gameState, 'parts_voucher')) return;
+  const qty = Math.max(0, Math.floor(Number(quantity) || 0));
+  if (qty <= 0) return;
 
-  const cost = CONFIG.PARTS_VOUCHER_COST;
-  if ((gameState.player.currency || 0) >= cost) {
-    gameState.player.currency -= cost;
+  const unitCost = CONFIG.PARTS_VOUCHER_COST;
+  const totalCost = unitCost * qty;
+  if ((gameState.player.currency || 0) >= totalCost) {
+    gameState.player.currency -= totalCost;
     const rs = gameState.runStats;
-    rs?.recordShopSpend?.(cost);
-    rs?.recordShopPurchase?.('parts_voucher', { currency: cost });
+    rs?.recordShopSpend?.(totalCost);
+    for (let i = 0; i < qty; i++) {
+      rs?.recordShopPurchase?.('parts_voucher', { currency: unitCost });
+    }
 
-    gameState.player.partsVouchers = (gameState.player.partsVouchers || 0) + 1;
-    gameState.notificationSystem?.showToast('Parts Voucher purchased!', 3000, 'positive');
+    gameState.player.partsVouchers = (gameState.player.partsVouchers || 0) + qty;
+    gameState.notificationSystem?.showToast(
+      qty === 1 ? 'Parts Voucher purchased!' : `${qty} Parts Vouchers purchased!`,
+      3000,
+      'positive'
+    );
 
     updateInventory();
     updateUI();
@@ -10210,65 +11025,75 @@ function buyTokenVoucher() {
   }
 }
 
-function buyTowerRepairKit() {
+function buyTowerRepairKit(quantity = 1) {
   if (!isTowerRepairShopUnlocked(gameState)) return;
+  const qty = Math.max(0, Math.floor(Number(quantity) || 0));
+  if (qty <= 0) return;
 
-  const cost = CONFIG.TOWER_REPAIR_COST;
-  if ((gameState.player.currency || 0) >= cost) {
-    gameState.player.currency -= cost;
+  const unitCost = CONFIG.TOWER_REPAIR_COST;
+  const totalCost = unitCost * qty;
+  if ((gameState.player.currency || 0) >= totalCost) {
+    gameState.player.currency -= totalCost;
     const rs = gameState.runStats;
-    rs?.recordShopSpend?.(cost);
-    rs?.recordShopPurchase?.('tower_repair', { currency: cost });
+    rs?.recordShopSpend?.(totalCost);
+    for (let i = 0; i < qty; i++) {
+      rs?.recordShopPurchase?.('tower_repair', { currency: unitCost });
+    }
 
-    gameState.player.towerRepairs = (gameState.player.towerRepairs || 0) + 1;
-    gameState.notificationSystem?.showToast('Repair Supplies purchased!', 3000, 'positive');
+    gameState.player.towerRepairs = (gameState.player.towerRepairs || 0) + qty;
+    gameState.notificationSystem?.showToast(
+      qty === 1 ? 'Repair Supplies purchased!' : `${qty} Repair Supplies purchased!`,
+      3000,
+      'positive'
+    );
 
     updateInventory();
     updateUI();
   }
 }
 
-function buyPowerUp(powerUpId) {
+function buyPowerUp(powerUpId, quantity = 1) {
   const powerUp = CONFIG.POWER_UPS[powerUpId];
   if (!powerUp) return;
   if (!isMetaItemUnlocked(gameState, powerUpId)) return;
 
+  const qty = Math.max(0, Math.floor(Number(quantity) || 0));
+  if (qty <= 0) return;
+
   const ownedBefore = gameState.player.powerUps?.[powerUpId] || 0;
-  const cost = getPermanentPowerUpShopPurchaseCost(powerUpId, ownedBefore);
-  if ((gameState.player.currency || 0) >= cost) {
-    gameState.player.currency -= cost;
+  const totalCost = getPowerUpBulkShopCost(powerUpId, ownedBefore, qty);
+  if ((gameState.player.currency || 0) >= totalCost) {
+    gameState.player.currency -= totalCost;
     const rs = gameState.runStats;
-    rs?.recordShopSpend?.(cost);
-    rs?.recordShopPurchase?.('power_up', { powerUpId, currency: cost });
-    rs?.recordPowerUpPurchased?.(powerUpId);
+    rs?.recordShopSpend?.(totalCost);
+    for (let i = 0; i < qty; i++) {
+      const cost = getPermanentPowerUpShopPurchaseCost(powerUpId, ownedBefore + i);
+      rs?.recordShopPurchase?.('power_up', { powerUpId, currency: cost });
+      rs?.recordPowerUpPurchased?.(powerUpId);
+    }
     
-    // Initialize powerUps object if needed
     if (!gameState.player.powerUps) {
       gameState.player.powerUps = {};
     }
     
-    // Increment power-up count
     if (!gameState.player.powerUps[powerUpId]) {
       gameState.player.powerUps[powerUpId] = 0;
     }
-    gameState.player.powerUps[powerUpId] += 1;
+    gameState.player.powerUps[powerUpId] += qty;
 
     if (powerUpId === 'tower_health') {
       gameState.towerSystem?.refreshAllTowerMaxHealth?.();
     }
     
-    // Play power-up active sound
     if (window.AudioManager) {
       window.AudioManager.playSFX('power_up_active');
     }
     
-    // Show notification
     if (gameState.notificationSystem) {
       const count = gameState.player.powerUps[powerUpId];
       gameState.notificationSystem.showToast(`${powerUp.name} purchased! (x${count})`, 3000, 'positive');
     }
     
-    // Update UI
     updateShop();
     updatePowerUpPanel();
     updateTempPowerUpPanel();
@@ -10521,9 +11346,9 @@ function updateBottomEdgePowerUps(onlyUpdateTemp = false) {
     
     // Find minimum time remaining
     const minExpiresAt = Math.min(...tempList.map(t => t.expiresAt));
-    const timeRemaining = Math.max(0, Math.floor((minExpiresAt - timeReference) / 1000));
-    // Format as seconds only (e.g., "8" instead of "0:08")
-    const timeText = timeRemaining.toString();
+    const timeRemainingSec = Math.max(0, (minExpiresAt - timeReference) / 1000);
+    // Tenths for a smooth countdown (was whole seconds via Math.floor).
+    const timeText = timeRemainingSec <= 0 ? '0.0' : timeRemainingSec.toFixed(1);
     
     // Create indicator for temporary power-up (no animation)
     const indicator = document.createElement('div');
@@ -10674,9 +11499,9 @@ function updateTempPowerUpCountdowns() {
     const expiresAt = parseInt(circle.getAttribute('data-expires-at'));
     if (isNaN(expiresAt)) return; // Skip invalid data
     
-    const timeRemaining = Math.max(0, Math.floor((expiresAt - timeReference) / 1000));
+    const timeRemainingSec = Math.max(0, (expiresAt - timeReference) / 1000);
     
-    if (timeRemaining <= 0) {
+    if (timeRemainingSec <= 0) {
       // If expired, mark for refresh
       needsRefresh = true;
       const powerUpId = circle.getAttribute('data-power-up-id');
@@ -10686,8 +11511,8 @@ function updateTempPowerUpCountdowns() {
       return;
     }
     
-    // Format as seconds only (e.g., "8" instead of "0:08")
-    const timeText = timeRemaining.toString();
+    // Tenths — refresh ~10×/sec so the circle coasts instead of jumping whole seconds.
+    const timeText = timeRemainingSec.toFixed(1);
     // Only update if the text has changed to avoid unnecessary DOM updates
     if (circle.textContent !== timeText) {
       circle.textContent = timeText;
@@ -10720,8 +11545,8 @@ function updateTempPowerUpCountdowns() {
     return; // Don't schedule another update here - updateBottomEdgePowerUps will handle it
   }
   
-  // Schedule next update only if we didn't need a refresh
-  countdownUpdateTimer = setTimeout(updateTempPowerUpCountdowns, 1000);
+  // Schedule next update only if we didn't need a refresh (~10 Hz for smooth tenths)
+  countdownUpdateTimer = setTimeout(updateTempPowerUpCountdowns, 100);
 }
 
 // Update temporary power-up panel (no longer used - panel removed, power-ups now show at bottom edge)
@@ -10905,11 +11730,17 @@ function handleGameOver() {
     const groveLevel = Math.max(1, Math.floor(Number(gameState.townLevel)) || 1);
     const firesExtinguishedTotal = getTotalRunFiresExtinguished(gameState);
     const completedWaveGroups = getCompletedWaveGroupForRunEnd();
-    const unlockIntro = `You beat wave group ${completedWaveGroups} and unlocked a new item to use in your future runs!`;
-    const unlockHtml = buildMetaProgressionUnlocksHtml(metaUnlocks, {
-      labelText: 'NEW ITEM UNLOCKED!',
-      introText: unlockIntro,
-    });
+    const unlockCount = metaUnlocks.length;
+    const unlockLabelText = unlockCount === 1 ? 'NEW ITEM UNLOCKED!' : 'NEW ITEMS UNLOCKED!';
+    const unlockIntro = unlockCount === 1
+      ? `You beat wave group ${completedWaveGroups} and unlocked a new map item to use in your future runs!`
+      : `You beat wave group ${completedWaveGroups} and unlocked new map items to use in your future runs!`;
+    const unlockHtml = unlockCount > 0
+      ? buildMetaProgressionUnlocksHtml(metaUnlocks, {
+          labelText: unlockLabelText,
+          introText: unlockIntro,
+        })
+      : '';
     const reachedWaveGroup30 = !!gameState.runStats?.data?.reachedWaveGroup30;
     const waveGroup30SurvivalLine = reachedWaveGroup30
       ? formatGameOverStatLine(
@@ -10919,7 +11750,7 @@ function handleGameOver() {
       : '';
 
     statsDiv.innerHTML = `
-      <div class="game-over-columns">
+      <div class="game-over-columns${unlockCount > 0 ? ' game-over-columns--has-unlocks' : ''}">
         <div class="game-over-column game-over-column-stats">
           <div class="game-over-stats-frame">
             <p><strong>Final Stats:</strong></p>
@@ -10932,12 +11763,14 @@ function handleGameOver() {
             ${formatGameOverStatLine('Final Score', finalScore.toLocaleString())}
           </div>
           <div class="modal-choices game-over-stats-actions">
-            <button class="choice-btn cta-button cta-orange" id="gameOverViewMapBtn">VIEW MAP</button>
-            <button class="choice-btn cta-button cta-yellow" id="gameOverRunHistoryBtn">RUN HISTORY</button>
-            <button class="choice-btn cta-button" id="gameOverMainMenuBtn">MAIN MENU</button>
+            <div class="game-over-stats-actions-row">
+              <button class="choice-btn cta-button cta-orange" id="gameOverViewMapBtn">VIEW MAP</button>
+              <button class="choice-btn cta-button cta-yellow" id="gameOverRunHistoryBtn">RUN HISTORY</button>
+            </div>
+            <button class="choice-btn cta-button game-over-main-menu-btn" id="gameOverMainMenuBtn">MAIN MENU</button>
           </div>
         </div>
-        ${metaUnlocks.length > 0 ? `<div class="game-over-column game-over-column-unlock">${unlockHtml}</div>` : ''}
+        ${unlockCount > 0 ? `<div class="game-over-column game-over-column-unlock">${unlockHtml}</div>` : ''}
       </div>
     `;
     

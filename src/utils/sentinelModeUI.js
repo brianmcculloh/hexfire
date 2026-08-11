@@ -92,10 +92,16 @@ export function showSentinelModeModal(gameState, tower, clientX, clientY) {
     icon.src = mode.icon;
     icon.alt = '';
     icon.className = 'sentinel-mode-btn-icon';
+    if (mode.id === CONFIG.SENTINEL_MODE_VORTEX || mode.id === 'vortex') {
+      icon.classList.add('sentinel-mode-btn-icon--vortex');
+    }
     icon.draggable = false;
     const iconScale = mode.iconScale || 1;
     if (iconScale !== 1) {
-      icon.style.height = `${Math.round(34 * iconScale)}px`;
+      // Scale icon visually; fixed button height prevents row size drift
+      const h = Math.round(34 * iconScale);
+      icon.style.height = `${h}px`;
+      icon.style.maxHeight = `${h}px`;
       icon.style.maxWidth = `${Math.round(43 * iconScale)}px`;
     }
     if (mode.iconRotateDeg) {

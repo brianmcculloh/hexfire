@@ -78,6 +78,7 @@ export class ArtifactSystem {
       hex.hasCurrencyItem ||
       hex.hasDigSite ||
       hex.hasBurningVault ||
+      hex.hasDungeonEntrance ||
       hex.hasArtifactItem
     ) {
       return null;
@@ -157,7 +158,7 @@ export class ArtifactSystem {
 
         if (hex.isTown || hex.isPath || hex.hasTower || hex.hasWaterTank || hex.hasFireSpawner ||
             hex.isBurning || hex.hasTempPowerUpItem || hex.hasMysteryItem || hex.hasCurrencyItem ||
-            hex.hasBurningVault || hex.hasDigSite || hex.hasArtifactItem ||
+            hex.hasBurningVault || hex.hasDungeonEntrance || hex.hasDigSite || hex.hasArtifactItem ||
             this.gridSystem.isTownRingHex(q, r)) {
           continue;
         }
@@ -279,7 +280,14 @@ export class ArtifactSystem {
     }
   }
 
-  update(deltaTime) {
+  /**
+   * Per-frame lifetime + fire/vortex damage (smooth HP / countdown).
+   * @param {number} deltaTime
+   */
+  updateHealth(deltaTime) {
+    const dt = Math.max(0, Number(deltaTime) || 0);
+    if (dt <= 0) return;
+
     const toDestroyFire = [];
     const toDestroyExpire = [];
 
@@ -289,34 +297,44 @@ export class ArtifactSystem {
       if (!Number.isFinite(Number(item.timeLeftSeconds))) {
         item.timeLeftSeconds = CONFIG.ARTIFACT_LIFETIME_SECONDS ?? 10;
       }
-      item.timeLeftSeconds -= deltaTime;
+      item.timeLeftSeconds -= dt;
       if (item.timeLeftSeconds <= 0) {
         toDestroyExpire.push(item.id);
         return;
       }
 
       const itemHex = this.gridSystem.getHex(item.q, item.r);
-      if (itemHex && itemHex.isBurning) {
+      const hasVortexThreat = !!(itemHex && itemHex.hasVortex);
+      if (!itemHex || (!itemHex.isBurning && !hasVortexThreat)) return;
+
+      const powerUps = this.gameState?.player?.powerUps || {};
+      const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+      const fireDamageMult = getPowerUpMultiplier('fireDamage', powerUps, tempPowerUps, this.gameState)
+        * getHeroPowerFireDamageResistanceMultiplier(this.gameState);
+      let damagePerSecond = 0;
+      if (itemHex.isBurning) {
         const fireConfig = getFireTypeConfig(itemHex.fireType);
-        const powerUps = this.gameState?.player?.powerUps || {};
-        const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
-        const fireDamageMult = getPowerUpMultiplier('fireDamage', powerUps, tempPowerUps, this.gameState)
-          * getHeroPowerFireDamageResistanceMultiplier(this.gameState);
-        const damagePerSecond = (fireConfig ? fireConfig.damagePerSecond : 1) * fireDamageMult;
-        const damageThisTick = deltaTime * damagePerSecond;
+        damagePerSecond += (fireConfig ? fireConfig.damagePerSecond : 1) * fireDamageMult;
+      }
+      if (hasVortexThreat) {
+        damagePerSecond +=
+          (this.gameState.vortexSystem?.getDamagePerSecondAt?.(item.q, item.r) || 0) * fireDamageMult;
+      }
+      item.health = Math.max(0, item.health - dt * damagePerSecond);
 
-        item.health -= damageThisTick;
-        item.health = Math.max(0, item.health);
-
-        if (item.health <= 0) {
-          toDestroyFire.push(item.id);
-        }
+      if (item.health <= 0) {
+        toDestroyFire.push(item.id);
       }
     });
 
     toDestroyExpire.forEach((id) => this.destroyItem(id, { removeReason: 'expire' }));
     toDestroyFire.forEach((id) => this.destroyItem(id, { removeReason: 'fire' }));
+  }
 
+  /**
+   * 1 Hz tick — spawning only (lifetime/HP in {@link updateHealth}).
+   */
+  update(_deltaTime) {
     this.trySpawnRandomItem();
   }
 

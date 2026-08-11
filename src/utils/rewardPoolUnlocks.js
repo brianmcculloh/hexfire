@@ -79,6 +79,7 @@ export function isWeightedRewardUnlockedInRun(gameState, row) {
   if (t === 'suppression_bomb') {
     const lv = row.level != null ? Number(row.level) : null;
     if (lv != null && Number.isFinite(lv)) {
+      if (!isMetaItemUnlocked(gameState, `suppression_bomb_${lv}`)) return false;
       return getTowerUnlockStatus('suppression_bomb', playerLevel, lv, wa).unlocked;
     }
     return true;

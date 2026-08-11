@@ -1,6 +1,20 @@
 import { getTowerRangeHexBonusFromTemps } from '../config.js';
 
 /**
+ * True only while tower/item HP can actually change from fire/water/vortex.
+ * When false (placement, pause, between waves), HP bar coast hints must be 0 —
+ * otherwise tooltips/map bars invent drain while the sim is frozen.
+ * @param {object|null|undefined} gameState
+ * @returns {boolean}
+ */
+export function isHealthBarDamageSimActive(gameState) {
+  if (!gameState?.wave?.isActive || gameState.wave.isPlacementPhase) return false;
+  if (gameState.isPaused) return false;
+  if (typeof window !== 'undefined' && window.gameLoop?.isPaused) return false;
+  return true;
+}
+
+/**
  * Wall-clock reference for temporary booster duration (UI + expiry checks during waves).
  * Time does not advance while the wave is not running, the loop is paused, upgrade selection
  * is open, or gameState.isPaused is set — matching real-time pause extension in {@link GameLoop#resume}.

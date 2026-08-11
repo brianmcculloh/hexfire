@@ -1,11 +1,10 @@
 // Renderer - Handles all canvas drawing operations
 
-import { CONFIG, getFireTypeDisplayColor, getShieldColorRgba, getHealthBarFillColor, getTowerRange, getSpreadTowerRange, getSuppressionBombImpactZone, getRainRange, getPowerUpGraphicFilename, getArtifactById, getBomberMinDistance, getBossPatternForWaveGroup, getBossPatternForSpeech, getHeroPatternForWaveGroup, getWaterTankTypeConfig, getWaterTankMapSpriteSize, getArtifactMapSpriteSize, getMapCollectibleSpriteBaseSize, isWaterTankSpriteFilename, isArtifactSpriteFilename, getCampaignEndWaveGroup, getGroveIncarnateHeroSpriteGroup, isGroveIncarnateHeroPatternGroup, getBackgroundWaveGroupIndex, getSentinelTurretSizeMultiplier, getPerimeterTurretSizeMultiplier, getPerimeterTurretOffsetPx, getChargeTurretHeightMultiplier, getChargeTurretOffsetPx, clampPerimeterRing, getChargeImpactZone, clampChargeTargetDistance, normalizeChargeMode } from '../config.js';
-import { getTowerRangeHexBonusForGameState } from './tempPowerUpClock.js';
+import { CONFIG, getFireTypeConfig, getFireTypeDisplayColor, getShieldColorRgba, getHealthBarFillColor, getTowerRange, getSpreadTowerRange, getSuppressionBombImpactZone, getRainRange, getPowerUpGraphicFilename, getArtifactById, getBomberMinDistance, getBossPatternForWaveGroup, getBossPatternForSpeech, getHeroPatternForWaveGroup, getWaterTankTypeConfig, getWaterTankMapSpriteSize, getArtifactMapSpriteSize, getMapCollectibleSpriteBaseSize, isWaterTankSpriteFilename, isArtifactSpriteFilename, getCampaignEndWaveGroup, getGroveIncarnateHeroSpriteGroup, isGroveIncarnateHeroPatternGroup, getBackgroundWaveGroupIndex, getSentinelTurretSizeMultiplier, getPerimeterTurretSizeMultiplier, getPerimeterTurretOffsetPx, getChargeTurretHeightMultiplier, getChargeTurretOffsetPx, clampPerimeterRing, getChargeImpactZone, clampChargeTargetDistance, normalizeChargeMode, clampSuppressionBombLevel, getTowerBaseHealth, getVortexLevelConfig, getPowerUpMultiplier, getHeroPowerFireDamageResistanceMultiplier } from '../config.js';
+import { getTowerRangeHexBonusForGameState, getTempPowerUpTimeReference, isHealthBarDamageSimActive } from './tempPowerUpClock.js';
 import { getPerimeterModeModalTowerId, getPerimeterModePreviewRing } from './perimeterModeUI.js';
 import { getChargeModeModalTowerId, getChargeModePreviewDistance, getChargeModePreviewImpactMode } from './chargeModeUI.js';
 import { assetUrl, assetCacheKey } from './assetUrl.js';
-import { getTempPowerUpTimeReference } from './tempPowerUpClock.js';
 import { axialToPixel, pixelToAxial, getHexVertices, getDirectionAngle, getDirectionAngle12, getHexInDirection, getHexLineFromAngle, getSpreadTowerTargets, getSpreadTowerSprayEndpoints, getNeighbors, getHexesInRadius, getHexesInRing, isInBounds } from './hexMath.js';
 
 function getSpawnerDrawColor(hex) {
@@ -41,6 +40,15 @@ function hexQualifiesForDrainingFireBorder(hex) {
   );
 }
 
+// Flat-top hex unit offsets (same as hexMath) — used by organic fire path without allocations.
+const _FIRE_HEX_COS = new Float32Array(6);
+const _FIRE_HEX_SIN = new Float32Array(6);
+for (let i = 0; i < 6; i++) {
+  const a = (Math.PI / 180) * (60 * i - 30);
+  _FIRE_HEX_COS[i] = Math.cos(a);
+  _FIRE_HEX_SIN[i] = Math.sin(a);
+}
+
 export class Renderer {
   constructor(canvas, gameState = null) {
     this.canvas = canvas;
@@ -48,11 +56,43 @@ export class Renderer {
     this.gameState = gameState;
     this.offsetX = 0;
     this.offsetY = 0;
-    this.scale = 1;
+    // Camera zoom (1 = default / 100%). Driven by CONFIG.MAP_ZOOM + setMapZoom.
+    const levels = CONFIG.MAP_ZOOM_LEVELS || [0.75, 1, 1.25];
+    let initialZoom = CONFIG.MAP_ZOOM ?? CONFIG.MAP_ZOOM_DEFAULT ?? 1;
+    let zoomIdx = levels.indexOf(initialZoom);
+    if (zoomIdx < 0) {
+      zoomIdx = levels.indexOf(CONFIG.MAP_ZOOM_DEFAULT ?? 1);
+      if (zoomIdx < 0) zoomIdx = Math.max(0, levels.indexOf(1));
+      if (zoomIdx < 0) zoomIdx = 0;
+      initialZoom = levels[zoomIdx];
+    }
+    this.scale = initialZoom;
+    /** @type {number} Index into CONFIG.MAP_ZOOM_LEVELS */
+    this._mapZoomLevelIndex = zoomIdx;
     
     // Smooth animation properties
     this.animatedValues = new Map(); // Store animated values for smooth transitions
+    /**
+     * Rate-tracking display values (HP bars, overlays, tooltips).
+     * Coasts at last observed velocity between discrete sim updates so meters stay smooth.
+     * @type {Map<string, {
+     *   display: number,
+     *   target: number,
+     *   velocity: number,
+     *   lastTargetMs: number,
+     *   lastIntegrateMs: number,
+     *   lastAccessMs: number,
+     *   expectedInterval: number,
+     * }>}
+     */
+    this.linearAnimatedValues = new Map();
     this.animationSpeed = 3.0; // How fast animations interpolate (higher = faster)
+
+    // Scratch buffers for organic fire hex paths (no per-hex allocations)
+    this._fireVertX = new Float32Array(6);
+    this._fireVertY = new Float32Array(6);
+    this._fireMidX = new Float32Array(6);
+    this._fireMidY = new Float32Array(6);
     
     // Arrow hover state tracking (keyed by "q,r,dir")
     this.arrowHoverState = new Map(); // Map<"q,r,dir", boolean>
@@ -99,6 +139,44 @@ export class Renderer {
     // Fire particle system (for fire/smoke explosions)
     this.fireParticles = new Map(); // Map<explosionId, Array<FireParticle>>
     this.fireParticlePool = []; // Reusable fire particle objects
+    /** Continuous sparks / embers / flame wisps rising from active vortexes */
+    this.vortexEmbers = [];
+    this.vortexEmberPool = [];
+    /** @type {Map<string, number>} fractional spawn credit per vortex id */
+    this._vortexEmberSpawnAcc = new Map();
+    /** Light upward sparks from ordinary burning hexes (full fire visuals only) */
+    this.fireHexSparks = [];
+    this.fireHexSparkPool = [];
+    /** @type {Map<string, number>} fractional spawn credit per burning hex id */
+    this._fireHexSparkSpawnAcc = new Map();
+    /** Simmering orange/red smoulder FX for burning vaults + dungeon entrances */
+    this.smoulderSparks = [];
+    this.smoulderSparkPool = [];
+    /** @type {Map<string, number>} fractional spawn credit per source id */
+    this._smoulderSparkSpawnAcc = new Map();
+    /** Soft rising bubbles from water buckets / tanks / vats */
+    this.waterBubbles = [];
+    this.waterBubblePool = [];
+    /** @type {Map<string, number>} fractional spawn credit per water tank id */
+    this._waterBubbleSpawnAcc = new Map();
+    /**
+     * Soft mist / shear spray peeling off jet & spread water streams.
+     * Full-visuals only — cleared and skipped when "Simple water" is on.
+     */
+    this.jetMist = [];
+    this.jetMistPool = [];
+    /** @type {Map<string, number>} fractional spawn credit per stream segment id */
+    this._jetMistSpawnAcc = new Map();
+    /**
+     * Dedicated pulsing-tower blast FX (independent of the shared water-particle budget).
+     * Short outward water bursts: flash + expanding spray arcs + droplet particles.
+     */
+    this.pulseBurstFlashes = [];
+    this.pulseBurstShells = [];
+    this.pulseMists = [];
+    this.pulseMistPool = [];
+    /** @type {Map<string|number, number>} last consumed pulseBurstId per tower */
+    this._pulsingLastBurstIdByTower = new Map();
     // Hex flash effects (keyed by hex coord string)
     this.hexFlashes = new Map(); // Map<"q,r", {startTime, duration, color}>
     
@@ -121,6 +199,37 @@ export class Renderer {
     // Power-up activation animations
     this.powerUpActivations = []; // Array of {q, r, powerUpId, startTime, duration}
     this.backgroundPulseTime = 0; // Continuous time for background pulse (increments each frame)
+
+    /**
+     * Transient full-canvas FX drawn over wave-group background art, under map hexes/GUI.
+     * @type {{ type: string, mode?: string, phase?: string, startTime: number, fadeOutStart?: number|null, fadeInMs: number, holdMs: number, fadeOutMs: number, washAlpha: number, washRgb: {r:number,g:number,b:number}, streaks: object[] }|null}
+     */
+    this.mapBackgroundFx = null;
+    /** @type {Map<string, { canvas: HTMLCanvasElement, halfW: number, halfH: number, w: number, h: number }>} */
+    this._mapFxStreakSpriteCache = new Map();
+    /** @type {Map<string, { canvas: HTMLCanvasElement, half: number, size: number }>} */
+    this._mapFxSparkSpriteCache = new Map();
+    /**
+     * Soft radial glow sprites for continuous FX (vortex wisps/embers, smoulder, jet mist).
+     * Baked once per quantized color trio — draw path is drawImage + globalAlpha.
+     * @type {Map<string, { canvas: HTMLCanvasElement, half: number, size: number, refRadius: number }>}
+     */
+    this._fxGlowSpriteCache = new Map();
+    /** @type {Map<string, { canvas: HTMLCanvasElement, half: number, size: number, refRadius: number }>} */
+    this._fireParticleSpriteCache = new Map();
+    /** @type {Map<string, { canvas: HTMLCanvasElement, half: number, size: number }>} */
+    this._fireHotCoreSpriteCache = new Map();
+    // Continuous FX + map FX share many hues; keep headroom so we don't thrash-clear mid-wave.
+    this._mapFxSpriteCacheMax = 192;
+    this._fxSpriteCacheMax = 256;
+    /** Reused Set for active-id tracking in continuous FX updaters (avoids new Set() every frame). */
+    this._scratchActiveIds = new Set();
+    /** Frame-local smoulder source list (vaults + dungeons) — rebuilt at most once per render(). */
+    this._smoulderSourcesScratch = [];
+    this._smoulderSourcesFrame = -1;
+    this._fxFrameId = 0;
+    /** Reused axial→screen cache for continuous particle draws. */
+    this._particleHexScreenCache = new Map();
     
     // Large center-screen power-up notifications
     this.largePowerUpNotifications = []; // Array of active notification {powerUpId, name, icon, duration, startTime, totalDuration}
@@ -221,7 +330,7 @@ export class Renderer {
     this.minimapSidebarLastState = null; // Track previous sidebar state
     
     // Throttle particle generation to prevent memory leaks
-    this.lastParticleGenTime = new Map(); // Map<towerId, timestamp>
+    this.lastParticleGenTime = new Map(); // Map<`${towerId}:${beamIndex}`, timestamp>
     
     this.setupCanvas();
     this.loadTowerSprites();
@@ -276,9 +385,47 @@ export class Renderer {
     this.brightenedTurretSpriteCache?.clear?.();
     this.smoothScaledTowerSpriteCache?.clear?.();
     this._waterParticleSpriteCache?.clear?.();
+    this._mapFxStreakSpriteCache?.clear?.();
+    this._mapFxSparkSpriteCache?.clear?.();
+    this._fxGlowSpriteCache?.clear?.();
+    this._fireParticleSpriteCache?.clear?.();
+    this._fireHotCoreSpriteCache?.clear?.();
     this.backgroundCache = null;
     this.gridStaticCache = null;
     this.gridRenderCache = null;
+  }
+
+  /**
+   * O(1) particle removal: swap with last element then pop (avoids Array.splice shifts).
+   * Safe when iterating backwards. Optionally returns the particle to a pool.
+   * @param {object[]} arr
+   * @param {number} i
+   * @param {object[]} [pool]
+   */
+  _swapRemoveParticle(arr, i, pool) {
+    const p = arr[i];
+    const last = arr.length - 1;
+    if (i !== last) arr[i] = arr[last];
+    arr.pop();
+    if (pool) pool.push(p);
+  }
+
+  /**
+   * Resolve (and cache for this frame) screen position of a hex center.
+   * @param {number} q
+   * @param {number} r
+   * @param {Map<number, {x:number,y:number}>} cache
+   * @returns {{x:number,y:number}}
+   */
+  _hexScreenCached(q, r, cache) {
+    const key = q * 1000 + r;
+    let base = cache.get(key);
+    if (base === undefined) {
+      const { x, y } = axialToPixel(q, r);
+      base = { x: x + this.offsetX, y: y + this.offsetY };
+      cache.set(key, base);
+    }
+    return base;
   }
 
   /**
@@ -291,8 +438,9 @@ export class Renderer {
   }
 
   /**
-   * Whether "Simplified water visuals" is on — checks `gameState.simplifiedWaterVisuals` first, then CONFIG.
-   * Handles strict booleans and occasional localStorage string quirks.
+   * Whether "Simple water" (performance mode) is on — checks `gameState.simplifiedWaterVisuals`
+   * first, then CONFIG. Handles strict booleans and occasional localStorage string quirks.
+   * Opacity is controlled separately via {@link getWaterVisualAlphaScale} / WATER_VISIBILITY.
    * @returns {boolean}
    */
   isSimplifiedWaterVisualsEnabled() {
@@ -302,24 +450,110 @@ export class Renderer {
   }
 
   /**
+   * Whether "Simple fire" is on — solid draining hexes, no edge warble / hot core.
+   * @returns {boolean}
+   */
+  isSimplifiedFireVisualsEnabled() {
+    if (this.gameState?.simplifiedFireVisuals === true) return true;
+    const v = CONFIG.SIMPLIFIED_FIRE_VISUALS;
+    return v === true || v === 1 || v === 'true';
+  }
+
+  /**
    * Canvas alpha multiplier for tower water streams/beams/bombs/particles.
-   * Uses `WATER_VISUAL_BASE_ALPHA_SCALE`; simplified mode multiplies by `SIMPLIFIED_WATER_VISUALS_ALPHA_SCALE`.
-   * Full visuals (simplified off) multiply by `WATER_VISUAL_FULL_OPACITY_BOOST` — simplified tier unchanged.
+   * Lerps between the see-through floor (base × SIMPLIFIED_WATER_VISUALS_ALPHA_SCALE) and the
+   * default look (base × WATER_VISUAL_FULL_OPACITY_BOOST) using CONFIG.WATER_VISIBILITY (0–1).
+   * Independent of "Simple water" — that setting only thins/skips effects for performance.
    * @returns {number}
    */
   getWaterVisualAlphaScale() {
     const b = CONFIG.WATER_VISUAL_BASE_ALPHA_SCALE;
-    let m = typeof b === 'number' && b >= 0 && b <= 1 ? b : 0.5625;
-    if (this.isSimplifiedWaterVisualsEnabled()) {
-      const s = CONFIG.SIMPLIFIED_WATER_VISUALS_ALPHA_SCALE;
-      const extra = typeof s === 'number' && s >= 0 && s <= 1 ? s : 0.25;
-      m *= extra;
-    } else {
-      const boost = CONFIG.WATER_VISUAL_FULL_OPACITY_BOOST;
-      const k = typeof boost === 'number' && boost > 0 ? boost : 1.25;
-      m *= k;
-    }
-    return Math.min(1, m);
+    const base = typeof b === 'number' && b >= 0 && b <= 1 ? b : 0.5625;
+    const s = CONFIG.SIMPLIFIED_WATER_VISUALS_ALPHA_SCALE;
+    const floorMult = typeof s === 'number' && s >= 0 && s <= 1 ? s : 0.25;
+    const boost = CONFIG.WATER_VISUAL_FULL_OPACITY_BOOST;
+    const topMult = typeof boost === 'number' && boost > 0 ? boost : 1.25;
+    const minAlpha = base * floorMult;
+    const maxAlpha = base * topMult;
+    let t = CONFIG.WATER_VISIBILITY;
+    if (typeof t !== 'number' || Number.isNaN(t)) t = 1;
+    t = Math.max(0, Math.min(1, t));
+    return Math.min(1, minAlpha + (maxAlpha - minAlpha) * t);
+  }
+
+  /**
+   * Multiplier for how MANY water particles to spawn. 1.0 with full visuals; when
+   * "Simple water" is on, returns CONFIG.SIMPLIFIED_WATER_VISUALS_PARTICLE_SCALE
+   * so the performance setting actually thins particle counts (purely cosmetic — damage is
+   * handled separately in towerSystem). Set the config to 1.0 to restore legacy counts.
+   * @returns {number}
+   */
+  getWaterParticleCountScale() {
+    if (!this.isSimplifiedWaterVisualsEnabled()) return 1;
+    const s = CONFIG.SIMPLIFIED_WATER_VISUALS_PARTICLE_SCALE;
+    return typeof s === 'number' && s > 0 && s <= 1 ? s : 1;
+  }
+
+  /**
+   * Scale a base particle count by the Simple water factor, keeping at least 1 particle
+   * for any effect that would otherwise spawn some.
+   * @param {number} baseCount
+   * @param {{ stream?: boolean }} [opts] - stream:true keeps a spawn floor under budget pressure
+   * @returns {number}
+   */
+  scaledParticleCount(baseCount, opts = undefined) {
+    if (baseCount <= 0) return 0;
+    const budget = this._particleBudgetScale(opts);
+    if (budget <= 0) return 0; // At/over the hard cap: suppress new spawns entirely.
+    const scale = this.getWaterParticleCountScale() * budget;
+    if (scale >= 1) return baseCount;
+    return Math.max(1, Math.round(baseCount * scale));
+  }
+
+  /**
+   * Like {@link scaledParticleCount} but WITHOUT the min-1 floor, using probabilistic
+   * rounding instead. Required for continuous per-frame emitters (beam filler, rain
+   * droplets): those run 60×/s across every tower/hex, so a min-1 floor would let
+   * dozens of towers blow straight through MAX_WATER_PARTICLES (observed ~9k live
+   * particles at wave 25 with 28 towers — ~10× the configured hard cap, which is
+   * exactly the FPS collapse the budget exists to prevent).
+   * @param {number} baseCount
+   * @param {{ stream?: boolean }} [opts] - stream:true keeps a spawn floor under budget pressure
+   * @returns {number}
+   */
+  scaledParticleCountStochastic(baseCount, opts = undefined) {
+    if (baseCount <= 0) return 0;
+    const budget = this._particleBudgetScale(opts);
+    if (budget <= 0) return 0;
+    const scale = this.getWaterParticleCountScale() * budget;
+    if (scale >= 1) return baseCount;
+    const scaled = baseCount * scale;
+    const whole = Math.floor(scaled);
+    return whole + (Math.random() < scaled - whole ? 1 : 0);
+  }
+
+  /**
+   * Global live-particle budget multiplier (0..1). Returns 1 below WATER_PARTICLE_SOFT_CAP,
+   * ramps linearly toward the floor between soft and hard cap.
+   * Burst/splash emitters use floor 0 (hard stop at MAX). Continuous jet/spread/rain
+   * emitters pass `{ stream: true }` so they keep
+   * {@link CONFIG.WATER_PARTICLE_STREAM_MIN_BUDGET_SCALE} and don't pulse on/off when busy.
+   * @param {{ stream?: boolean }} [opts]
+   * @returns {number}
+   */
+  _particleBudgetScale(opts = undefined) {
+    const hardMax = CONFIG.MAX_WATER_PARTICLES;
+    if (!(hardMax > 0)) return 1; // Budget disabled.
+    const count = this._liveWaterParticleCount || 0;
+    const softCfg = CONFIG.WATER_PARTICLE_SOFT_CAP;
+    const soft = softCfg > 0 && softCfg < hardMax ? softCfg : hardMax * 0.7;
+    const streamFloor = opts?.stream
+      ? Math.max(0, Math.min(1, Number(CONFIG.WATER_PARTICLE_STREAM_MIN_BUDGET_SCALE) || 0))
+      : 0;
+    if (count <= soft) return 1;
+    if (count >= hardMax) return streamFloor;
+    const linear = 1 - (count - soft) / (hardMax - soft);
+    return Math.max(streamFloor, linear);
   }
 
   /**
@@ -495,26 +729,54 @@ export class Renderer {
   }
 
   /**
-   * Pulsing tower burst particles — bright electric orange tint to match pulsing tower graphics.
+   * Pulsing tower burst particles — bright water white (optional cool tint).
    * RGB is quantized so the particle-sprite cache stays bounded (see _quantizeColorChannel).
-   * Without quantization the ~60‑80 unique random colors per burst thrashed the sprite
-   * cache (fresh offscreen canvas + fill per particle), dropping FPS with just 2 towers.
    * @returns {string} RGBA color string
    */
   getRandomPulsingBurstColor() {
-    const phase = Math.random();
-    const jitter = () => (Math.random() - 0.5) * 22;
-    const [r, g, b] = this._boostWaterBombSaturation(
+    const [r, g, b] = this._getPulsingBurstRgb();
+    const a = (0.88 + Math.random() * 0.1).toFixed(2);
+    return `rgba(${r}, ${g}, ${b}, ${a})`;
+  }
+
+  /**
+   * Bright white / cool-white body color for pulsing water-burst FX.
+   * @returns {[number, number, number]}
+   */
+  _getPulsingBurstRgb() {
+    const roll = Math.random();
+    if (roll < 0.55) {
+      // Pure / near-pure white
+      const v = 250 + Math.floor(Math.random() * 6);
+      return [this._quantizeColorChannel(v), this._quantizeColorChannel(v), this._quantizeColorChannel(v)];
+    }
+    if (roll < 0.85) {
+      // Cool water white-blue
+      return [
+        this._quantizeColorChannel(235 + Math.random() * 20),
+        this._quantizeColorChannel(245 + Math.random() * 10),
+        255,
+      ];
+    }
+    // Soft cream (minor warm body, not orange fog)
+    return [
       255,
-      95 + phase * 75 + jitter(),
-      25 + phase * 45 + jitter() * 0.6,
-      1.38,
-    );
-    const qr = this._quantizeColorChannel(r);
-    const qg = this._quantizeColorChannel(g);
-    const qb = this._quantizeColorChannel(b);
-    const a = (0.84 + Math.random() * 0.12).toFixed(2);
-    return `rgba(${qr}, ${qg}, ${qb}, ${a})`;
+      this._quantizeColorChannel(248 + Math.random() * 7),
+      this._quantizeColorChannel(240 + Math.random() * 12),
+    ];
+  }
+
+  /**
+   * Orange highlight accent for pulsing water bursts (sparks/rims only — not the main body).
+   * @returns {[number, number, number]}
+   */
+  _getPulsingBurstGlowRgb() {
+    const warm = Math.random();
+    return [
+      255,
+      this._quantizeColorChannel(165 + warm * 55),
+      this._quantizeColorChannel(70 + warm * 60),
+    ];
   }
 
   /**
@@ -2692,16 +2954,25 @@ export class Renderer {
   generateRainParticles(tower, affectedHexes) {
     if (!CONFIG.USE_WATER_PARTICLES) return;
     const powerLevel = tower.powerLevel || 1;
+
+    // Continuous emitter: honor Simple water thinning + the global live-particle
+    // budget. Stream floor keeps rain from hard-stopping under load (same heartbeat
+    // fix as jet/spread). Without any budget, one lvl-4 rain tower alone can hold
+    // ~900 live droplets.
+    const emitScale =
+      this.getWaterParticleCountScale() * this._particleBudgetScale({ stream: true });
+    if (emitScale <= 0) return;
     
-    // Scale particle count based on power level (level 2 reduced by another 25%)
-    let particlesPerHex;
+    // Spawn chance per hex (+25% twice from original rates)
+    let spawnChance;
     switch (powerLevel) {
-      case 1: particlesPerHex = 1; break; // Level 1: 1 particle per hex (unchanged)
-      case 2: particlesPerHex = 1; break; // Level 2: 1 particle per hex (0.75 * 0.75 = 0.5625 rounded up)
-      case 3: particlesPerHex = 1; break; // Level 3: 1 particle per hex (unchanged)
-      case 4: particlesPerHex = 2; break; // Level 4: 2 particles per hex (unchanged)
-      default: particlesPerHex = 1; break;
+      case 1: spawnChance = 0.0390625; break; // was 2.5% → 3.125% → 3.906%
+      case 2: spawnChance = 0.09375; break;   // was 6% → 7.5% → 9.375%
+      case 3: spawnChance = 0.1875; break;    // was 12% → 15% → 18.75%
+      case 4: spawnChance = 0.390625; break;  // was 25% → 31.25% → 39.06%
+      default: spawnChance = 0.0390625; break;
     }
+    spawnChance *= emitScale;
     
     // Generate particles for each affected hex
     affectedHexes.forEach(hexCoord => {
@@ -2709,18 +2980,7 @@ export class Renderer {
       const screenX = x + this.offsetX;
       const screenY = y + this.offsetY;
       
-      // Generate particles for this hex (optimized for stability with many towers)
-      let actualParticlesPerHex;
-      if (powerLevel === 1) {
-        actualParticlesPerHex = Math.random() < 0.025 ? 1 : 0; // Level 1: 2.5% chance (reduced for stability)
-      } else if (powerLevel === 2) {
-        actualParticlesPerHex = Math.random() < 0.06 ? 1 : 0; // Level 2: 6% chance (reduced for stability)
-      } else if (powerLevel === 3) {
-        actualParticlesPerHex = Math.random() < 0.12 ? 1 : 0; // Level 3: 12% chance (reduced for stability)
-      } else {
-        // Level 4: 25% chance (reduced for stability)
-        actualParticlesPerHex = Math.random() < 0.25 ? 1 : 0;
-      }
+      const actualParticlesPerHex = Math.random() < spawnChance ? 1 : 0;
       
       for (let i = 0; i < actualParticlesPerHex; i++) {
         // Random position within the entire hex area
@@ -2746,6 +3006,8 @@ export class Renderer {
         // Rain particles have varied sizes (increased by 25% for better visibility with fewer particles)
         particle.size = 1.5 + Math.random() * 2.5; // 1.5-4.0 pixels (25% increase from 1.2-3.2)
         particle.sizeMultiplier = 0.7 + Math.random() * 0.3; // 0.7-1.0 multiplier
+        // +25% opacity twice from baseline so rain reads brighter / less washed out
+        particle.alphaScale = 1.5625;
         
         // Rain particles stay within hex boundaries
         particle.maxDistance = CONFIG.HEX_RADIUS * 0.7; // Limit to 70% of hex radius
@@ -2795,7 +3057,13 @@ export class Renderer {
     }
     
     const baseFillerCount = Math.max(2, Math.floor(distance / fillerDensityDivisor));
-    const fillerCount = Math.floor(baseFillerCount * (0.7 + powerLevel * 0.3)); // Same scaling
+    // Continuous 60 Hz stream emitter — stochastic scale (no min-1 floor) + stream
+    // budget floor so beams stay visibly spraying under heavy particle load.
+    const fillerCount = this.scaledParticleCountStochastic(
+      Math.floor(baseFillerCount * (0.7 + powerLevel * 0.3)),
+      { stream: true }
+    );
+    if (fillerCount <= 0) return;
     
     for (let i = 0; i < fillerCount; i++) {
       // Distribute particles along the path
@@ -2814,13 +3082,13 @@ export class Renderer {
       const velocityX = sprayDirectionX * baseSpeed + (Math.random() - 0.5) * 3; // Minimal randomness
       const velocityY = sprayDirectionY * baseSpeed + (Math.random() - 0.5) * 3;
       
-      // Create tiny particle with same life as main particles
+      // Create tiny particle with same life as main stream particles
       const particle = this.createWaterParticle(
         particleX + randomOffsetX,
         particleY + randomOffsetY,
         velocityX,
         velocityY,
-        0.3 + Math.random() * 0.2, // Same life as main particles: 0.3-0.5 seconds
+        0.55 + Math.random() * 0.35,
         this.getRandomBrightWaterColor(), // Use brighter colors for better visibility
         tower.q, // Pass tower hex coordinates
         tower.r
@@ -2863,207 +3131,453 @@ export class Renderer {
   }
 
   /**
-   * Generate particles for pulsing tower burst (all 6 directions)
-   * @param {Object} tower - Tower object
-   * @param {number} screenCenterX - Tower center X position
-   * @param {number} screenCenterY - Tower center Y position
+   * Power-tier look for pulsing water bursts. Short-lived so map tiles show between pulses;
+   * higher power adds denser / faster spray more than linger time.
+   * @param {number} powerLevel
    */
-  generatePulsingParticles(tower, screenCenterX, screenCenterY) {
-    const burstAlphaScale = CONFIG.PULSING_WATER_BURST_ALPHA_SCALE ?? 0.5;
-    // Scale particle intensity based on power level (1-4) with more dramatic differences
-    const powerLevel = tower.powerLevel || 1;
-    let intensityMultiplier;
-    
-    switch (powerLevel) {
-      case 1: intensityMultiplier = 0.1; break; // Level 1: 10% intensity (further reduced for minimal visual impact)
-      case 2: intensityMultiplier = 0.88; break; // Level 2: 88% intensity (increased from 80% - +10%)
-      case 3: intensityMultiplier = 1.8; break; // Level 3: 180% intensity (increased from 140%)
-      case 4: intensityMultiplier = 2.5; break; // Level 4: 250% intensity (increased from 200%)
-      default: intensityMultiplier = 0.1; break;
+  _getPulseBurstTier(powerLevel) {
+    const level = Math.min(4, Math.max(1, Math.floor(Number(powerLevel) || 1)));
+    // reachMult is vs first-ring neighbor distance — keep FX on the adjacent hexes
+    // with only a slight spill into the next ring. Coverage is nearly level-matched;
+    // power reads as thickness/density (droplets, shellWidth, size, alpha).
+    // L1 baseline density; L2/L3/L4 bumped +10% / +20% / +30% for clearer power read.
+    switch (level) {
+      case 1:
+        return {
+          droplets: 36, arcs: 9, reachMult: 1.48, drift: 220, grow: 8,
+          size: 5.5, flash: 1.15, shellWidth: 7, life: 0.38, alpha: 1.0,
+        };
+      case 2:
+        return {
+          droplets: 51, arcs: 12, reachMult: 1.51, drift: 270, grow: 11,
+          size: 7.2, flash: 1.38, shellWidth: 8.8, life: 0.46, alpha: 1.16,
+        };
+      case 3:
+        return {
+          droplets: 70, arcs: 17, reachMult: 1.54, drift: 324, grow: 14,
+          size: 9.0, flash: 1.62, shellWidth: 10.8, life: 0.55, alpha: 1.32,
+        };
+      case 4:
+      default:
+        return {
+          droplets: 94, arcs: 22, reachMult: 1.56, drift: 384, grow: 18,
+          size: 11.1, flash: 1.95, shellWidth: 13, life: 0.65, alpha: 1.5,
+        };
     }
-    
+  }
+
+  /**
+   * Spawn a sharp outward water burst from a pulsing tower center
+   * (flash + expanding spray arcs + fast droplets — not lingering mist).
+   * @param {Object} tower
+   * @returns {boolean} whether FX were spawned
+   */
+  spawnPulseBurst(tower) {
+    if (!tower || CONFIG.DISABLE_ALL_WATER_EFFECTS || !CONFIG.USE_WATER_PARTICLES) return false;
+
+    const powerLevel = Math.min(4, Math.max(1, Math.floor(Number(tower.powerLevel) || 1)));
+    const tier = this._getPulseBurstTier(powerLevel);
+    const simplified = this.isSimplifiedWaterVisualsEnabled();
+    const countScale = simplified ? 0.55 : 1;
+    // Opacity comes from getWaterVisualAlphaScale() at draw time — Simple water only thins counts.
+    const alphaScale = (CONFIG.PULSING_WATER_BURST_ALPHA_SCALE ?? 0.95) * tier.alpha;
+
     const hexRadius = CONFIG.HEX_RADIUS;
-    const adjacentDistance = hexRadius * 1.5;
-    const { x: towerWorldX, y: towerWorldY } = axialToPixel(tower.q, tower.r);
+    // Visuals only cover the first ring of adjacent hexes (neighbor center distance),
+    // with a slight spill into the next ring — do not follow Range Extender AoE.
+    const firstRingDist = hexRadius * Math.sqrt(3);
+    const maxReach = firstRingDist * tier.reachMult;
+    const TAU = Math.PI * 2;
+    const [glowR, glowG, glowB] = this._getPulsingBurstGlowRgb();
+    const [coreR, coreG, coreB] = this._getPulsingBurstRgb();
 
-    // Aim bursts at every hex in the tower AoE (includes Range Extender rings)
-    const burstTargets = (tower.affectedHexes || []).filter(
-      (hex) => hex.q !== tower.q || hex.r !== tower.r
-    );
-    const directions = burstTargets.length > 0
-      ? burstTargets.map((hex) => {
-          const { x, y } = axialToPixel(hex.q, hex.r);
-          const dx = x - towerWorldX;
-          const dy = y - towerWorldY;
-          return { angle: Math.atan2(dy, dx), distance: Math.hypot(dx, dy) };
-        })
-      : [
-          { angle: 0, distance: adjacentDistance },
-          { angle: Math.PI / 3, distance: adjacentDistance },
-          { angle: 2 * Math.PI / 3, distance: adjacentDistance },
-          { angle: Math.PI, distance: adjacentDistance },
-          { angle: 4 * Math.PI / 3, distance: adjacentDistance },
-          { angle: 5 * Math.PI / 3, distance: adjacentDistance },
-        ];
-
-    const perDirectionScale = burstTargets.length > 6 ? 6 / burstTargets.length : 1;
-
-    // Resolve tower particle bucket once; without this the hot inner loop did a
-    // has/set/get triple per particle push (3 Map ops × ~70+ particles per burst).
-    let towerBucket = this.waterParticles.get(tower.id);
-    if (!towerBucket) {
-      towerBucket = [];
-      this.waterParticles.set(tower.id, towerBucket);
-    }
-
-    directions.forEach((direction) => {
-      const targetDistance = (direction.distance || adjacentDistance) * 1.05;
-      // Generate particles for this direction (scaled by power level) - halved for performance
-      const baseParticleCount = 4;
-      const particleCount = Math.max(
-        1,
-        Math.floor(baseParticleCount * intensityMultiplier * perDirectionScale)
-      );
-      
-      for (let i = 0; i < particleCount; i++) {
-        // Start particles from tower center with increased random spread
-        const randomOffsetX = (Math.random() - 0.5) * 14; // Increased from 10 to 14
-        const randomOffsetY = (Math.random() - 0.5) * 14;
-        const particleX = screenCenterX + randomOffsetX;
-        const particleY = screenCenterY + randomOffsetY;
-        
-        // Create more controlled erratic movement patterns
-        const progress = i / particleCount;
-        
-        // Mix of direct direction and random angles for more coverage
-        let targetAngle;
-        if (Math.random() < 0.75) {
-          // 75% chance: direct direction with some spread (increased from 70%)
-          let angleSpread = (Math.random() - 0.5) * Math.PI / 5; // Reduced from ±22.5° to ±18°
-          
-          // Increase fan spread for levels 2-4 for better visual distinction (reduced by 20%)
-          if (tower.powerLevel === 2) {
-            angleSpread *= 1.44; // 44% more angle spread for level 2 (reduced from 80%)
-          } else if (tower.powerLevel === 3) {
-            angleSpread *= 1.12; // 12% more angle spread for level 3 (reduced from 40%)
-          } else if (tower.powerLevel === 4) {
-            angleSpread *= 0.96; // 4% less angle spread for level 4 (reduced from 20%)
-          }
-          
-          targetAngle = direction.angle + angleSpread;
-        } else {
-          // 25% chance: completely random direction for erratic coverage (reduced from 30%)
-          targetAngle = Math.random() * Math.PI * 2;
-        }
-        
-        // Variable speeds for more dynamic effect
-        const baseSpeed = (75 + Math.random() * 50) * intensityMultiplier; // Narrowed speed range further
-        const velocityRandomness = Math.max(0.35, intensityMultiplier);
-        
-        // Add moderate randomness to velocity
-        const velocityX = Math.cos(targetAngle) * baseSpeed + (Math.random() - 0.5) * 25 * velocityRandomness;
-        const velocityY = Math.sin(targetAngle) * baseSpeed + (Math.random() - 0.5) * 25 * velocityRandomness;
-        
-        // Create particle with variable lifetime and random color
-        const particle = this.createWaterParticle(
-          particleX,
-          particleY,
-          velocityX,
-          velocityY,
-          0.4 + Math.random() * 0.3, // 0.4-0.7 seconds (reduced from 0.4-0.8)
-          this.getRandomPulsingBurstColor(),
-          tower.q, // Pass tower hex coordinates
-          tower.r
-        );
-        
-        // Scale particle size based on power level
-        particle.sizeMultiplier = Math.max(1.0, intensityMultiplier);
-        
-        particle.maxDistance = targetDistance * (0.92 + Math.random() * 0.12);
-        particle.startOffsetX = particle.offsetX;
-        particle.startOffsetY = particle.offsetY;
-        particle.alphaScale = burstAlphaScale;
-        
-        towerBucket.push(particle);
-      }
+    // Brief center splash — white core, orange accent rim; dies fast so tiles show between pulses
+    const flashLife = 0.14 + powerLevel * 0.02;
+    this.pulseBurstFlashes.push({
+      hexQ: tower.q,
+      hexR: tower.r,
+      life: flashLife,
+      maxLife: flashLife,
+      radius: hexRadius * (0.42 + powerLevel * 0.06),
+      alpha: tier.flash * alphaScale,
+      r: coreR,
+      g: coreG,
+      b: coreB,
+      glowR,
+      glowG,
+      glowB,
     });
-    
-    // Add fewer additional random particles for controlled erratic coverage - halved for performance
-    const extraParticleCount = Math.floor(2 * intensityMultiplier); // Halved from 4 to 2
-    for (let i = 0; i < extraParticleCount; i++) {
-      // Moderately random starting position within tower hex
-      const randomOffsetX = (Math.random() - 0.5) * hexRadius * 1.0; // Reduced from 1.2 to 1.0
-      const randomOffsetY = (Math.random() - 0.5) * hexRadius * 1.0;
-      const particleX = screenCenterX + randomOffsetX;
-      const particleY = screenCenterY + randomOffsetY;
-      
-      // Completely random direction
-      const randomAngle = Math.random() * Math.PI * 2;
-      const randomSpeed = (60 + Math.random() * 70) * intensityMultiplier; // Narrowed speed range further
-      
-      const velocityX = Math.cos(randomAngle) * randomSpeed;
-      const velocityY = Math.sin(randomAngle) * randomSpeed;
-      
-      const particle = this.createWaterParticle(
-        particleX,
-        particleY,
-        velocityX,
-        velocityY,
-        0.5 + Math.random() * 0.2, // 0.5-0.7 seconds (reduced from 0.5-0.8)
-        this.getRandomPulsingBurstColor(),
-        tower.q, // Pass tower hex coordinates
-        tower.r
-      );
-      
-      particle.sizeMultiplier = Math.max(1.0, intensityMultiplier);
-      particle.maxDistance = adjacentDistance * (1.1 + Math.random() * 0.4); // 110-150% of adjacent distance (middle ground)
-      particle.startOffsetX = particle.offsetX;
-      particle.startOffsetY = particle.offsetY;
-      particle.alphaScale = burstAlphaScale;
-      
-      towerBucket.push(particle);
+
+    // Expanding water-sheet arcs — broken wedges, thin, snappy fade-out
+    const arcCount = Math.max(6, Math.round((simplified ? tier.arcs * 0.6 : tier.arcs) * countScale));
+    for (let i = 0; i < arcCount; i++) {
+      const [ar, ag, ab] = this._getPulsingBurstRgb();
+      const [gr, gg, gb] = this._getPulsingBurstGlowRgb();
+      const span = (0.4 + Math.random() * 1.05) * (0.9 + powerLevel * 0.04);
+      const startAngle = Math.random() * TAU;
+      this.pulseBurstShells.push({
+        hexQ: tower.q,
+        hexR: tower.r,
+        age: -Math.random() * 0.04,
+        duration: 0.22 + Math.random() * 0.14 + powerLevel * 0.02,
+        maxRadius: maxReach * (0.72 + Math.random() * 0.28),
+        lineWidth: tier.shellWidth * (0.7 + Math.random() * 0.6),
+        alpha: (0.55 + Math.random() * 0.35) * alphaScale,
+        startAngle,
+        endAngle: startAngle + span,
+        radiusWarp: 0.92 + Math.random() * 0.14,
+        r: ar,
+        g: ag,
+        b: ab,
+        glowR: gr,
+        glowG: gg,
+        glowB: gb,
+        hasOrangeAccent: Math.random() < 0.45,
+      });
     }
-    
-    // Add inner ring particles for levels 2, 3, and 4 to fill empty space between center and outer ring
-    if (powerLevel >= 2) {
-      const innerRingMultiplier = powerLevel === 2 ? 0.6 : powerLevel === 3 ? 1.0 : 1.4; // Scale inner ring intensity
-      const innerParticleCount = Math.floor(8 * innerRingMultiplier); // Increased from 6 to 8 for better coverage near tower
-      
-      for (let i = 0; i < innerParticleCount; i++) {
-        // Start particles from random positions within the inner area (closer to tower center for better coverage)
-        const innerRadius = hexRadius * (0.1 + Math.random() * 0.5); // Random distance between 10% and 60% of hex radius (closer to center)
-        const innerAngle = Math.random() * Math.PI * 2; // Random angle
-        
-        const particleX = screenCenterX + Math.cos(innerAngle) * innerRadius;
-        const particleY = screenCenterY + Math.sin(innerAngle) * innerRadius;
-        
-        // Create particles that move outward to fill the space
-        const outwardAngle = innerAngle + (Math.random() - 0.5) * Math.PI / 3; // Some spread
-        const outwardSpeed = (40 + Math.random() * 40) * innerRingMultiplier; // Moderate speed
-        
-        const velocityX = Math.cos(outwardAngle) * outwardSpeed;
-        const velocityY = Math.sin(outwardAngle) * outwardSpeed;
-        
-        const particle = this.createWaterParticle(
-          particleX,
-          particleY,
-          velocityX,
-          velocityY,
-          0.3 + Math.random() * 0.2, // Shorter lifetime (0.3-0.5 seconds)
-          this.getRandomPulsingBurstColor(),
-          tower.q, // Pass tower hex coordinates
-          tower.r
-        );
-        
-        particle.sizeMultiplier = Math.max(0.8, innerRingMultiplier * 0.8); // Slightly smaller particles
-        particle.maxDistance = adjacentDistance * (0.5 + Math.random() * 0.5); // Travel to adjacent distance
-        particle.startOffsetX = particle.offsetX;
-        particle.startOffsetY = particle.offsetY;
-        particle.alphaScale = burstAlphaScale;
-        
-        towerBucket.push(particle);
+
+    // Fast outward droplets (not soft fog clouds)
+    const hardCap = 360;
+    const room = Math.max(0, hardCap - this.pulseMists.length);
+    const dropletCount = Math.min(room, Math.max(18, Math.round(tier.droplets * countScale)));
+
+    const lobeCount = Math.max(6, Math.round(7 + powerLevel * 1.5));
+    const lobes = [];
+    for (let i = 0; i < lobeCount; i++) {
+      lobes.push({
+        angle: Math.random() * TAU,
+        spread: 0.2 + Math.random() * 0.55,
+        reachBias: 0.8 + Math.random() * 0.2,
+        speedBias: 0.7 + Math.random() * 0.55,
+      });
+    }
+
+    for (let i = 0; i < dropletCount; i++) {
+      let p = this.pulseMistPool.pop();
+      if (!p) p = {};
+
+      const lobe = lobes[i % lobes.length];
+      const angle = lobe.angle + (Math.random() - 0.5) * lobe.spread;
+      const finalAngle = Math.random() < 0.15 ? Math.random() * TAU : angle;
+      const birth = Math.random() * 3;
+      const drift = tier.drift * lobe.speedBias * (0.55 + Math.random() * 0.65);
+
+      p.hexQ = tower.q;
+      p.hexR = tower.r;
+      p.ox = Math.cos(finalAngle) * birth;
+      p.oy = Math.sin(finalAngle) * birth;
+      p.vx = Math.cos(finalAngle) * drift;
+      p.vy = Math.sin(finalAngle) * drift;
+      // Short life with a hard cutoff so bursts don't linger into the next pulse
+      p.life = tier.life * (0.75 + Math.random() * 0.35);
+      p.maxLife = p.life;
+      p.size = tier.size * (0.55 + Math.random() * 0.7);
+      p.grow = tier.grow * (0.35 + Math.random() * 0.45);
+      p.maxReach = Math.min(maxReach, maxReach * lobe.reachBias * (0.88 + Math.random() * 0.18));
+      p.friction = 0.86 + Math.random() * 0.06;
+      p.alphaScale = alphaScale * (0.7 + Math.random() * 0.35);
+      // Stretch along travel direction — reads as flung water, not a round fog puff
+      p.stretch = 1.35 + Math.random() * 1.1;
+      p.rotation = finalAngle;
+      const [r, g, b] = this._getPulsingBurstRgb();
+      const [gr, gg, gb] = this._getPulsingBurstGlowRgb();
+      p.r = r;
+      p.g = g;
+      p.b = b;
+      p.glowR = gr;
+      p.glowG = gg;
+      p.glowB = gb;
+      // Only some droplets carry an orange highlight speck
+      p.hasOrangeAccent = Math.random() < 0.35;
+      p.isSparkle = Math.random() < 0.22;
+      this.pulseMists.push(p);
+    }
+
+    return true;
+  }
+
+  /**
+   * Consume pending / pulseBurstId flags and advance mist blast FX.
+   * @param {number} deltaTime
+   */
+  updatePulseBursts(deltaTime) {
+    if (CONFIG.DISABLE_ALL_WATER_EFFECTS || !CONFIG.USE_WATER_PARTICLES) {
+      if (this.pulseMists.length || this.pulseBurstShells.length || this.pulseBurstFlashes.length) {
+        this._clearPulseBursts();
+      }
+      const towersOff = this.gameState?.towerSystem?.getAllTowers?.();
+      if (towersOff) {
+        for (let i = 0; i < towersOff.length; i++) {
+          const t = towersOff[i];
+          if (t?.pendingPulseBurst) t.pendingPulseBurst = false;
+        }
+      }
+      return;
+    }
+
+    const dt = Math.max(0, Math.min(0.05, Number(deltaTime) || 0));
+
+    // Spawn from pending flag AND/OR monotonic pulseBurstId (fast speed tiers used to
+    // lose bursts when flashTime never fully decayed between shots).
+    const towers = this.gameState?.towerSystem?.getAllTowers?.();
+    if (towers) {
+      for (let i = 0; i < towers.length; i++) {
+        const tower = towers[i];
+        if (!tower || tower.type !== CONFIG.TOWER_TYPE_PULSING) continue;
+        const burstId = tower.pulseBurstId || 0;
+        const lastId = this._pulsingLastBurstIdByTower.get(tower.id) || 0;
+        const shouldSpawn = !!tower.pendingPulseBurst || burstId > lastId;
+        if (!shouldSpawn) continue;
+
+        if (this.spawnPulseBurst(tower)) {
+          tower.pendingPulseBurst = false;
+          if (burstId > 0) this._pulsingLastBurstIdByTower.set(tower.id, burstId);
+          if (tower.flashTime > 0) {
+            this._pulsingLastFlashTimeByTower.set(tower.id, tower.flashTime);
+          }
+        }
       }
     }
+
+    for (let i = this.pulseBurstFlashes.length - 1; i >= 0; i--) {
+      const f = this.pulseBurstFlashes[i];
+      f.life -= dt;
+      if (f.life <= 0) this.pulseBurstFlashes.splice(i, 1);
+    }
+
+    for (let i = this.pulseBurstShells.length - 1; i >= 0; i--) {
+      const shell = this.pulseBurstShells[i];
+      shell.age += dt;
+      if (shell.age > shell.duration) this.pulseBurstShells.splice(i, 1);
+    }
+
+    const mists = this.pulseMists;
+    const pool = this.pulseMistPool;
+    for (let i = mists.length - 1; i >= 0; i--) {
+      const p = mists[i];
+      p.ox += p.vx * dt;
+      p.oy += p.vy * dt;
+      p.vx *= p.friction;
+      p.vy *= p.friction;
+      p.size += p.grow * dt;
+      p.life -= dt;
+
+      const distSq = p.ox * p.ox + p.oy * p.oy;
+      const maxR = p.maxReach;
+      if (distSq > maxR * maxR) {
+        const dist = Math.sqrt(distSq) || 1;
+        const s = maxR / dist;
+        p.ox *= s;
+        p.oy *= s;
+        p.vx *= 0.3;
+        p.vy *= 0.3;
+      }
+
+      if (p.life <= 0) {
+        mists.splice(i, 1);
+        pool.push(p);
+      }
+    }
+  }
+
+  _clearPulseBursts() {
+    for (let i = 0; i < this.pulseMists.length; i++) {
+      this.pulseMistPool.push(this.pulseMists[i]);
+    }
+    this.pulseMists.length = 0;
+    this.pulseBurstShells.length = 0;
+    this.pulseBurstFlashes.length = 0;
+  }
+
+  /**
+   * Draw pulsing tower water bursts — sharp splash + spray arcs + flung droplets.
+   * White body with optional orange highlight accents (not a solid orange fog).
+   * Opacity follows {@link getWaterVisualAlphaScale} / Water visibility like other tower water FX.
+   */
+  drawPulseBursts() {
+    if (CONFIG.DISABLE_ALL_WATER_EFFECTS || !CONFIG.USE_WATER_PARTICLES) return;
+    if (!this.pulseMists.length && !this.pulseBurstShells.length && !this.pulseBurstFlashes.length) {
+      return;
+    }
+
+    const ctx = this.ctx;
+    const wVis = this.getWaterVisualAlphaScale();
+    if (wVis <= 0.001) return;
+    const offsetX = this.offsetX;
+    const offsetY = this.offsetY;
+    // Outer layer alpha (map-reveal, etc.) × water-visibility. Effect-local alphas are
+    // clamped to ≤1 before multiply so high power tiers can't saturate past the slider.
+    const visScale = ctx.globalAlpha * wVis;
+
+    ctx.save();
+
+    // Center splash pop — bright white, thin orange rim; short-lived
+    for (let i = 0; i < this.pulseBurstFlashes.length; i++) {
+      const f = this.pulseBurstFlashes[i];
+      const { x, y } = axialToPixel(f.hexQ, f.hexR);
+      const sx = x + offsetX;
+      const sy = y + offsetY;
+      if (!this.isHexInViewport(sx, sy)) continue;
+      const t = Math.max(0, f.life / f.maxLife);
+      // Peak early, hard cut at end (no long fog linger)
+      const localAlpha = Math.min(1, f.alpha * Math.pow(t, 0.55) * (0.35 + 0.65 * Math.sin(t * Math.PI)));
+      const alpha = localAlpha * visScale;
+      if (alpha <= 0.02) continue;
+      const radius = f.radius * (0.55 + (1 - t) * 0.9);
+      const gr = f.glowR ?? 255;
+      const gg = f.glowG ?? 190;
+      const gb = f.glowB ?? 110;
+
+      // Put Water visibility entirely in globalAlpha; gradient stops stay relative (0–1).
+      ctx.globalAlpha = alpha;
+      const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, radius);
+      grad.addColorStop(0, 'rgba(255,255,255,1)');
+      grad.addColorStop(0.28, `rgba(${f.r},${f.g},${f.b},0.75)`);
+      grad.addColorStop(0.55, 'rgba(255,255,255,0.25)');
+      grad.addColorStop(0.78, `rgba(${gr},${gg},${gb},0.28)`);
+      grad.addColorStop(1, `rgba(${gr},${gg},${gb},0)`);
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Expanding water-sheet arcs
+    for (let i = 0; i < this.pulseBurstShells.length; i++) {
+      const shell = this.pulseBurstShells[i];
+      if (shell.age < 0) continue;
+      const { x, y } = axialToPixel(shell.hexQ, shell.hexR);
+      const sx = x + offsetX;
+      const sy = y + offsetY;
+      if (!this.isHexInViewport(sx, sy)) continue;
+      const u = Math.min(1, shell.age / shell.duration);
+      // Ease-out expand, alpha dies hard near the end
+      const ease = 1 - (1 - u) * (1 - u);
+      const warp = shell.radiusWarp || 1;
+      const radius = Math.max(3, shell.maxRadius * ease * warp);
+      const fade = u < 0.55 ? 1 : Math.pow(1 - (u - 0.55) / 0.45, 1.6);
+      const localAlpha = Math.min(1, shell.alpha * fade);
+      const alpha = localAlpha * visScale;
+      if (alpha <= 0.02) continue;
+
+      const start = shell.startAngle ?? 0;
+      const end = shell.endAngle ?? (start + Math.PI * 0.8);
+      const lineW = Math.max(2.5, shell.lineWidth * (1.15 - u * 0.65));
+      const gr = shell.glowR ?? 255;
+      const gg = shell.glowG ?? 185;
+      const gb = shell.glowB ?? 100;
+
+      ctx.save();
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      if (shell.hasOrangeAccent) {
+        ctx.globalAlpha = alpha * 0.4;
+        ctx.strokeStyle = `rgba(${gr},${gg},${gb},0.95)`;
+        ctx.lineWidth = lineW * 1.7;
+        ctx.beginPath();
+        ctx.arc(sx, sy, radius, start, end);
+        ctx.stroke();
+      }
+
+      // Main white water sheet
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = `rgba(${shell.r},${shell.g},${shell.b},0.95)`;
+      ctx.lineWidth = lineW;
+      ctx.beginPath();
+      ctx.arc(sx, sy, radius, start, end);
+      ctx.stroke();
+
+      // Bright white highlight edge
+      ctx.globalAlpha = alpha * 0.85;
+      ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+      ctx.lineWidth = Math.max(1.5, lineW * 0.35);
+      ctx.beginPath();
+      ctx.arc(sx, sy, radius, start, end);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Flung water droplets — elongated along travel, distinct shapes (not fog blobs)
+    const mists = this.pulseMists;
+    for (let i = 0; i < mists.length; i++) {
+      const p = mists[i];
+      const { x, y } = axialToPixel(p.hexQ, p.hexR);
+      const sx = x + offsetX + p.ox;
+      const sy = y + offsetY + p.oy;
+      if (!this.isHexInViewport(sx, sy)) continue;
+
+      const lifeRatio = Math.max(0, Math.min(1, p.life / p.maxLife));
+      // Quick pop-in, hold briefly, hard fade — map readable between pulses
+      const envelope = lifeRatio < 0.12
+        ? lifeRatio / 0.12
+        : lifeRatio > 0.45
+          ? Math.pow((1 - lifeRatio) / 0.55, 1.35)
+          : 1;
+      const localAlpha = Math.min(1, envelope * p.alphaScale);
+      const alpha = localAlpha * visScale;
+      if (alpha <= 0.03) continue;
+
+      const radius = Math.max(2.2, p.size);
+      const stretch = p.stretch || 1.5;
+      const rot = p.rotation ?? 0;
+      const gr = p.glowR ?? 255;
+      const gg = p.glowG ?? 185;
+      const gb = p.glowB ?? 100;
+
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.rotate(rot);
+      ctx.scale(stretch, 1 / Math.max(0.65, Math.sqrt(stretch)));
+      ctx.globalAlpha = alpha;
+
+      // Solid-ish water droplet body (sharper falloff than fog)
+      const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, radius);
+      grad.addColorStop(0, 'rgba(255,255,255,0.95)');
+      grad.addColorStop(0.35, `rgba(${p.r},${p.g},${p.b},0.85)`);
+      grad.addColorStop(0.75, `rgba(${p.r},${p.g},${p.b},0.35)`);
+      grad.addColorStop(1, `rgba(${p.r},${p.g},${p.b},0)`);
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Specular white highlight
+      ctx.globalAlpha = alpha * 0.9;
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      ctx.beginPath();
+      ctx.ellipse(-radius * 0.22, -radius * 0.28, radius * 0.28, radius * 0.18, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Optional orange accent spark on some droplets
+      if (p.hasOrangeAccent) {
+        ctx.globalAlpha = alpha * 0.75;
+        ctx.fillStyle = `rgba(${gr},${gg},${gb},0.9)`;
+        ctx.beginPath();
+        ctx.arc(radius * 0.35, radius * 0.1, Math.max(1.2, radius * 0.22), 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Tiny bright sparkle flecks for splash diversity
+      if (p.isSparkle) {
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = 'rgba(255,255,255,1)';
+        ctx.beginPath();
+        ctx.arc(radius * 0.55, -radius * 0.15, Math.max(1, radius * 0.16), 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.restore();
+    }
+
+    ctx.restore();
+  }
+
+  /**
+   * @deprecated Kept as a shim — pulsing FX now use spawnPulseBurst / drawPulseBursts.
+   */
+  generatePulsingParticles(tower) {
+    if (tower) this.spawnPulseBurst(tower);
   }
 
   /**
@@ -3093,18 +3607,20 @@ export class Renderer {
     
     // For jet and spread towers: consistent particle count per hex per range level, power only affects size
     if (isJetTower || isSpreadTower) {
-      // Time-based throttling for consistent particle generation regardless of FPS
-      // Generate particles at a consistent rate (every ~50ms = ~20 times per second)
+      // Time-based throttling for consistent particle generation regardless of FPS.
+      // Key by tower + beam so spread's 5 fan beams each get their own cadence —
+      // a shared tower-only key made beams 2–5 skip spray particles every tick.
       const now = performance.now();
       const particleGenInterval = 50; // milliseconds between particle generations
-      const lastGenTime = this.lastParticleGenTime.get(tower.id) || 0;
+      const genKey = `${tower.id}:${beamIndex >= 0 ? beamIndex : 0}`;
+      const lastGenTime = this.lastParticleGenTime.get(genKey) || 0;
       
       if (now - lastGenTime < particleGenInterval) {
         return; // Skip generation - not enough time has passed
       }
       
       // Update last generation time
-      this.lastParticleGenTime.set(tower.id, now);
+      this.lastParticleGenTime.set(genKey, now);
       
       // Consistent particle density per hex regardless of power level
       // Use consistent density divisor for all power levels
@@ -3118,7 +3634,8 @@ export class Renderer {
     }
     
     const baseParticleCount = Math.floor(distance / densityDivisor);
-      const particleCount = baseParticleCount; // No power level scaling for count
+      // Stream floor keeps spray particles coming under global budget pressure
+      const particleCount = this.scaledParticleCount(baseParticleCount, { stream: true });
       
         // Power level only affects particle size
       // NOTE: We use jetSizeMultiplier below for power level scaling, so particleSizeMultiplier is set to 1.0
@@ -3153,7 +3670,9 @@ export class Renderer {
           spacingRandomness = 0.5; // 50% variation for power level 1 (more noticeable with smaller particles)
         }
         progress += (Math.random() - 0.5) * spacingRandomness;
-        progress = Math.max(0, Math.min(1, progress));
+        // Power-1 spread: keep spawns off the tip so droplets don't pool into end-blobs
+        const progressMax = isSpreadTower && powerLevel === 1 ? 0.88 : 1;
+        progress = Math.max(0, Math.min(progressMax, progress));
         
       const particleX = screenStartX + deltaX * progress;
       const particleY = screenStartY + deltaY * progress;
@@ -3199,13 +3718,14 @@ export class Renderer {
         const velocityX = dirX * baseSpeed * speedMultiplier + randomOffsetX * 2 * velocityRandomness;
         const velocityY = dirY * baseSpeed * speedMultiplier + randomOffsetY * 2 * velocityRandomness;
       
-        // Create particle
+        // Longer life than before so streams stay covered between spawn ticks
+        // (short life + budget thinning was the "heartbeat" gaps on busy maps).
       const particle = this.createWaterParticle(
         particleX + randomOffsetX,
         particleY + randomOffsetY,
         velocityX,
         velocityY,
-          0.3 + Math.random() * 0.2,
+          0.55 + Math.random() * 0.35,
           this.getRandomWaterColor(),
           tower.q,
         tower.r
@@ -3240,32 +3760,19 @@ export class Renderer {
         const spreadSizeMultiplier = isSpreadTower ? 1.25 : 1.0;
         
         // Additional size increases for spread towers at power levels 1 and 2
-        // CRITICAL: This MUST apply to ALL 5 beams (center + 4 flanking) identically
-        // All beams use the same tower object, so isSpreadTower and powerLevel are identical
         let spreadPowerSizeMultiplier = 1.0;
-        if (isSpreadTower && (powerLevel === 1 || powerLevel === 2)) {
-          if (powerLevel === 1) {
-            // SPECIAL FIX: For power level 1, reduce center beam (index 0) particle size
-            // The center beam is longer and generates more particles, making it appear larger
-            // By reducing its size significantly, we compensate for the visual density difference
-            // Then increase all power level 1 particles by 50%, then reduce by 25%
-            if (beamIndex === 0) {
-              spreadPowerSizeMultiplier = 1.125; // 1.5 * 0.75 = 25% reduction
-      } else {
-              spreadPowerSizeMultiplier = 1.6875; // 2.25 * 0.75 = 25% reduction
-            }
-          } else if (powerLevel === 2) {
-            spreadPowerSizeMultiplier = 1.2; // Another 20% increase for power level 2
-          }
+        if (isSpreadTower && powerLevel === 1) {
+          // Uniform modest size on all 5 beams — old flanking boost (1.6875) + tip freeze
+          // made power-1 sprays end in large circular boluses.
+          spreadPowerSizeMultiplier = 1.15;
+        } else if (isSpreadTower && powerLevel === 2) {
+          spreadPowerSizeMultiplier = 1.2;
         }
         
         // Calculate particle size - ensure all beams use identical calculation regardless of distance
         // For spread towers, all 5 beams (center + 4 flanking) must have identical particle sizes
         particle.size = baseSize * sizeMultiplier * particleSizeMultiplier * jetSizeMultiplier * spreadSizeMultiplier * spreadPowerSizeMultiplier;
         particle.sizeMultiplier = 1.0;
-        
-        // DEBUG: Verify all spread tower beams use same multipliers
-        // (This should be identical for all 5 beams since isSpreadTower is the same for all)
         
         // Distance constraint — jet towers get a slight overshoot for fade; spread endpoints
         // already match hit hexes in hexMath, so 10% extra reads as ~1 hex past damage range.
@@ -3274,6 +3781,10 @@ export class Renderer {
         const remainingDistance = targetTerminationDistance - currentDistanceFromStart;
 
         particle.maxDistance = Math.max(0, remainingDistance);
+        // Power-1 spread: dissolve at the tip instead of stacking into end-blobs
+        if (isSpreadTower && powerLevel === 1) {
+          particle.expireAtMaxDistance = true;
+        }
       particle.startOffsetX = particle.offsetX;
       particle.startOffsetY = particle.offsetY;
       
@@ -3336,6 +3847,8 @@ export class Renderer {
     particle.friction = 0.98; // Air resistance
     particle.color = color; // Store particle color
     particle.alphaScale = undefined;
+    particle.expireAtMaxDistance = false;
+    particle.maxDistance = undefined;
     
     // Cache color string with base alpha for performance (avoid regex on every frame)
     if (color) {
@@ -3404,25 +3917,29 @@ export class Renderer {
         }
         const distSq = dx * dx + dy * dy;
         if (distSq > maxDist * maxDist) {
-          const currentDistance = Math.sqrt(distSq);
-          const scale = maxDist / currentDistance;
-          if (usesHex) {
-            particle.offsetX = particle.startOffsetX + dx * scale;
-            particle.offsetY = particle.startOffsetY + dy * scale;
+          // Stream droplets: die at the tip instead of freezing into a bolus blob
+          if (particle.expireAtMaxDistance) {
+            particle.life = 0;
           } else {
-            particle.x = particle.startX + dx * scale;
-            particle.y = particle.startY + dy * scale;
+            const currentDistance = Math.sqrt(distSq);
+            const scale = maxDist / currentDistance;
+            if (usesHex) {
+              particle.offsetX = particle.startOffsetX + dx * scale;
+              particle.offsetY = particle.startOffsetY + dy * scale;
+            } else {
+              particle.x = particle.startX + dx * scale;
+              particle.y = particle.startY + dy * scale;
+            }
+            particle.velocityX = 0;
+            particle.velocityY = 0;
           }
-          particle.velocityX = 0;
-          particle.velocityY = 0;
         }
       }
 
       particle.life -= lifeDecay;
 
       if (particle.life <= 0) {
-        particles.splice(i, 1);
-        particlePool.push(particle);
+        this._swapRemoveParticle(particles, i, particlePool);
       }
     }
 
@@ -3739,8 +4256,7 @@ export class Renderer {
       
       // Remove dead particles
       if (particle.life <= 0) {
-        particles.splice(i, 1);
-        this.fireParticlePool.push(particle); // Return to pool
+        this._swapRemoveParticle(particles, i, this.fireParticlePool);
       }
     }
     
@@ -3753,74 +4269,80 @@ export class Renderer {
    * @param {string} explosionId - Explosion ID
    */
   drawFireParticles(explosionId) {
-    const particles = this.fireParticles.get(explosionId) || [];
-    
-    this.ctx.save();
-    
-    particles.forEach(particle => {
-      // Recalculate screen position if particle has hex coordinates
-      let screenX, screenY;
+    const particles = this.fireParticles.get(explosionId);
+    if (!particles || particles.length === 0) return;
+
+    const ctx = this.ctx;
+    const cullMargin = CONFIG.PARTICLE_CULL_MARGIN ?? 40;
+    const cssW = this.canvasCssWidth ?? (this.canvas.width / (this.dpr || 1));
+    const cssH = this.canvasCssHeight ?? (this.canvas.height / (this.dpr || 1));
+    const minX = -cullMargin;
+    const maxX = cssW + cullMargin;
+    const minY = -cullMargin;
+    const maxY = cssH + cullMargin;
+    const hexCache = this._particleHexScreenCache;
+    hexCache.clear();
+
+    ctx.save();
+    let lastKey = null;
+    let lastSprite = null;
+
+    for (let i = 0; i < particles.length; i++) {
+      const particle = particles[i];
+
+      let screenX;
+      let screenY;
       if (particle.offsetX !== null && particle.offsetY !== null && particle.hexQ !== null && particle.hexR !== null) {
-        // Recalculate from hex coordinates and relative offset
-        const { x, y } = axialToPixel(particle.hexQ, particle.hexR);
-        screenX = x + this.offsetX + particle.offsetX;
-        screenY = y + this.offsetY + particle.offsetY;
+        const base = this._hexScreenCached(particle.hexQ, particle.hexR, hexCache);
+        screenX = base.x + particle.offsetX;
+        screenY = base.y + particle.offsetY;
       } else {
-        // Use absolute position (for backward compatibility)
         screenX = particle.x;
         screenY = particle.y;
       }
-      
-      // Smoke particles fade faster (start fading immediately, quadratic fade)
+
+      if (screenX < minX || screenX > maxX || screenY < minY || screenY > maxY) continue;
+
       let alpha;
       if (particle.isSmoke && particle.quickFade) {
-        // Quadratic fade for smoke (fades faster, starts immediately)
         const lifeProgress = 1.0 - (particle.life / particle.maxLife);
-        alpha = 1.0 - (lifeProgress * lifeProgress); // Quadratic fade curve
+        alpha = 1.0 - (lifeProgress * lifeProgress);
       } else {
-        // Linear fade for other particles
         alpha = particle.life / particle.maxLife;
       }
-      
-      // Calculate size with animation for center fire particles
+
       let finalSize;
       if (particle.isCenterFire && particle.baseSize !== undefined) {
-        // Center fire particles pulse/grow/shrink over time
-        const time = (particle.maxLife - particle.life); // Time elapsed
+        const time = particle.maxLife - particle.life;
         const pulse = Math.sin(time * Math.PI * 2 * particle.sizePulseSpeed) * particle.sizePulseAmount;
-        const animatedSize = particle.baseSize * (1.0 + pulse); // Pulse between baseSize and baseSize * (1 + pulseAmount)
-        finalSize = animatedSize * (0.6 + alpha * 0.4); // Less size fade for center fire
+        finalSize = particle.baseSize * (1.0 + pulse) * (0.6 + alpha * 0.4);
       } else {
-        finalSize = particle.size * (0.5 + alpha * 0.5); // Slightly fade size for other particles
+        finalSize = particle.size * (0.5 + alpha * 0.5);
       }
-      
-      // Use cached RGB(A) (parsed once at spawn) instead of per-frame regex on `particle.color`.
+      if (finalSize <= 0.15) continue;
+
       const r = particle.colorR ?? 255;
       const g = particle.colorG ?? 100;
       const b = particle.colorB ?? 0;
       let baseAlpha = particle.colorA ?? 0.9;
+      if (particle.isCenterFire) baseAlpha = Math.min(1.0, baseAlpha * 1.1);
 
-      // Center fire particles are more visible (higher alpha)
-      if (particle.isCenterFire) {
-        baseAlpha = Math.min(1.0, baseAlpha * 1.1); // 10% brighter
+      const spriteKey = `${particle.isSmoke ? 's' : 'f'}:${r},${g},${b}`;
+      if (spriteKey !== lastKey) {
+        lastSprite = this._getFireParticleSprite(r, g, b, !!particle.isSmoke);
+        lastKey = spriteKey;
       }
 
-      // Draw particle with alpha fade
-      this.ctx.beginPath();
-      this.ctx.arc(screenX, screenY, finalSize, 0, 2 * Math.PI);
-      this.ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha * baseAlpha * (particle.isCenterFire ? 1.0 : 0.9)})`;
-      this.ctx.fill();
+      // Sprite bakes body@0.9 + glow; modulate remaining life/base alpha on top.
+      const lifeAlpha = alpha * baseAlpha * (particle.isCenterFire ? (1.0 / 0.9) : 1.0);
+      const scale = finalSize / lastSprite.refRadius;
+      const drawSize = lastSprite.size * scale;
+      const half = drawSize * 0.5;
+      ctx.globalAlpha = Math.min(1, lifeAlpha);
+      ctx.drawImage(lastSprite.canvas, screenX - half, screenY - half, drawSize, drawSize);
+    }
 
-      // Add glow effect (stronger for fire, softer for smoke)
-      const glowSize = particle.isSmoke ? finalSize * 1.8 : finalSize * 2.0;
-      const glowAlpha = particle.isSmoke ? alpha * baseAlpha * 0.2 : alpha * baseAlpha * 0.4;
-      this.ctx.beginPath();
-      this.ctx.arc(screenX, screenY, glowSize, 0, 2 * Math.PI);
-      this.ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${glowAlpha})`;
-      this.ctx.fill();
-    });
-    
-    this.ctx.restore();
+    ctx.restore();
   }
 
   /**
@@ -3862,6 +4384,10 @@ export class Renderer {
     const nonPlayerPlaced = ['waterTank', 'tempPowerUp', 'mysteryItem', 'currencyItem'].includes(itemType);
     const dScale = nonPlayerPlaced ? 0.5 : 1;
     particleCount = Math.max(12, Math.floor(particleCount * dScale));
+    // Simple fire: thinner explosions (cosmetic only — destruction is already done).
+    if (this.isSimplifiedFireVisualsEnabled()) {
+      particleCount = Math.max(8, Math.floor(particleCount * 0.4));
+    }
     const R = hexRadiusPx * dScale;
     
     const explosionId = `fire_explosion_${itemType}_${q}_${r}_${Date.now()}`;
@@ -4113,6 +4639,265 @@ export class Renderer {
   }
 
   /**
+   * Hint options for map HP bars (ratio/sec). Mirrors tooltip `_hintHealthRatioVelocity`.
+   * Frozen sim → `{ hintVelocity: 0 }`. Live with no current rate → `{}` so residual coast
+   * between 1 Hz HP samples is preserved (passing 0 every frame used to fight the coast).
+   * @param {number} q
+   * @param {number} r
+   * @param {number} maxHealth
+   * @param {{ gaining?: boolean, waterOnly?: boolean, ignoreWater?: boolean }} [opts]
+   * @returns {{ hintVelocity?: number }}
+   */
+  _mapHealthBarHintOpts(q, r, maxHealth, opts = {}) {
+    if (!isHealthBarDamageSimActive(this.gameState)) {
+      return { hintVelocity: 0 };
+    }
+    const max = Math.max(1, Number(maxHealth) || 1);
+    const hex = this.gameState?.gridSystem?.getHex?.(q, r);
+    const waterRate = Math.max(0, this.gameState?.gridSystem?.getWaterHitRate?.(q, r) || 0);
+
+    let threatDps = 0;
+    if (hex?.isBurning) {
+      const fireConfig = getFireTypeConfig(hex.fireType);
+      threatDps += fireConfig ? fireConfig.damagePerSecond : 1;
+    }
+    if (hex?.hasVortex) {
+      threatDps += this.gameState?.vortexSystem?.getDamagePerSecondAt?.(q, r) || 0;
+    }
+
+    let netHpPerSec = 0;
+    if (opts.gaining) {
+      // Dungeon flood bar: fill rises with water
+      netHpPerSec = waterRate;
+    } else if (opts.fireRefills) {
+      // Burning vault: fire refills HP, water drains it
+      netHpPerSec = threatDps - waterRate;
+    } else if (opts.waterOnly) {
+      netHpPerSec = waterRate > 0 ? -waterRate : 0;
+    } else if (opts.ignoreWater) {
+      // Towers/shields: match towerSystem fire/vortex damage (power-up + hero resistance).
+      if (threatDps > 0) {
+        const powerUps = this.gameState?.player?.powerUps || {};
+        const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+        const fireDamageMult =
+          getPowerUpMultiplier('fireDamage', powerUps, tempPowerUps, this.gameState) *
+          getHeroPowerFireDamageResistanceMultiplier(this.gameState);
+        netHpPerSec = -threatDps * fireDamageMult;
+      }
+    } else if (opts.waterProtects) {
+      // Dig sites: water blocks fire; water alone does not damage
+      netHpPerSec = -Math.max(0, threatDps - waterRate);
+    } else {
+      // Tanks / pickups / grove: water and fire both reduce HP
+      netHpPerSec = -(waterRate + threatDps);
+    }
+
+    if (!Number.isFinite(netHpPerSec) || Math.abs(netHpPerSec) < 1e-6) {
+      return {};
+    }
+    return { hintVelocity: netHpPerSec / max };
+  }
+
+  /**
+   * Coast hint for a tower's health bar. While a shield is absorbing, health is unchanged —
+   * pin with hintVelocity:0 so the shared animator does not invent drain.
+   * @param {{ q: number, r: number, maxHealth?: number, shield?: { health?: number }|null }} tower
+   * @returns {{ hintVelocity?: number }}
+   */
+  _towerHealthBarHintOpts(tower) {
+    if (!tower) return { hintVelocity: 0 };
+    if (tower.shield && tower.shield.health > 0) {
+      return { hintVelocity: 0 };
+    }
+    const max = Math.max(1, Number(tower.maxHealth) || 1);
+    return this._mapHealthBarHintOpts(tower.q, tower.r, max, { ignoreWater: true });
+  }
+
+  /**
+   * Coast hint for a tower's shield bar — must use shield max HP (not tower max).
+   * @param {{ q: number, r: number, shield?: { health?: number, maxHealth?: number }|null }} tower
+   * @returns {{ hintVelocity?: number }}
+   */
+  _towerShieldBarHintOpts(tower) {
+    const sh = tower?.shield;
+    if (!sh || !(sh.health > 0)) return { hintVelocity: 0 };
+    const max = Math.max(1, Number(sh.maxHealth) || 1);
+    return this._mapHealthBarHintOpts(tower.q, tower.r, max, { ignoreWater: true });
+  }
+
+  /**
+   * Smooth a displayed meter/value toward a (possibly tick-batched) target.
+   * Uses wall-clock integration so map + tooltip can share a key without double-stepping,
+   * and coasts at the last observed rate between discrete updates so bars never
+   * "finish then pause" for a full game tick.
+   * @param {string} key
+   * @param {number} targetValue
+   * @param {number} [_deltaTime] - Unused (wall-clock); kept for call-site compatibility
+   * @param {number} [durationSeconds=1] - Expected update interval (game tick); used for stale/velocity decay
+   * @param {{ hintVelocity?: number }} [options] - Optional units/sec to start moving before the first real sample.
+   *   Pass `hintVelocity: 0` explicitly when HP is known-stable (e.g. vortex with no water) so the
+   *   display does not invent drain from a stale or incorrect coast.
+   * @returns {number}
+   */
+  getLinearAnimatedValue(key, targetValue, _deltaTime, durationSeconds = 1, options = {}) {
+    const target = Number(targetValue);
+    const expectedInterval = Math.max(0.05, Number(durationSeconds) || 1);
+    const nowMs = (typeof performance !== 'undefined' && performance.now)
+      ? performance.now()
+      : Date.now();
+    const hintProvided =
+      options != null &&
+      Object.prototype.hasOwnProperty.call(options, 'hintVelocity') &&
+      Number.isFinite(Number(options.hintVelocity));
+    const hintVelocity = hintProvided ? Number(options.hintVelocity) : NaN;
+    const hasNonZeroHint = hintProvided && Math.abs(hintVelocity) > 1e-9;
+
+    let state = this.linearAnimatedValues.get(key);
+    if (!state) {
+      const initial = Number.isFinite(target) ? target : 0;
+      state = {
+        display: initial,
+        target: initial,
+        // Seed coast immediately so the first painted frame already moves.
+        velocity: hasNonZeroHint ? hintVelocity : 0,
+        lastTargetMs: nowMs,
+        // Backdate slightly so the first integrate below isn't a no-op dt=0.
+        lastIntegrateMs: nowMs - 16,
+        lastAccessMs: nowMs,
+        expectedInterval,
+      };
+      this.linearAnimatedValues.set(key, state);
+      if (!hasNonZeroHint) {
+        return state.display;
+      }
+      // Fall through to integrate with the seeded hint velocity.
+    }
+
+    state.lastAccessMs = nowMs;
+    state.expectedInterval = expectedInterval;
+
+    // Long gap without sampling (off-screen / no consumers) — snap, optionally re-seed velocity.
+    const sinceIntegrateMs = nowMs - (state.lastIntegrateMs || nowMs);
+    const staleMs = Math.max(250, expectedInterval * 1000 * 1.5);
+    if (sinceIntegrateMs > staleMs) {
+      if (Number.isFinite(target)) {
+        state.display = target;
+        state.target = target;
+      }
+      state.velocity = hasNonZeroHint ? hintVelocity : 0;
+      state.lastTargetMs = nowMs;
+      state.lastIntegrateMs = nowMs - (hasNonZeroHint ? 16 : 0);
+      if (!hasNonZeroHint) {
+        return state.display;
+      }
+    }
+
+    if (!Number.isFinite(target)) {
+      return state.display;
+    }
+
+    // Stable hint (0): stop inventing *new* drain, but do not hard-snap every frame.
+    // Jet/pulse gaps omit hints or pass 0 between water samples. If the authoritative
+    // target moved (per-frame HP or a 1 Hz tick), adopt it — otherwise residual coast.
+    if (hintProvided && Math.abs(hintVelocity) < 1e-9) {
+      // Tower/shield ratio meters: explicit pin means show truth (e.g. HP behind an
+      // active shield). Kill residual velocity so a prior overshoot cannot keep draining.
+      if (options?.clampUnitInterval) {
+        state.velocity = 0;
+        state.display = Math.max(0, Math.min(1, target));
+        state.target = target;
+        state.lastTargetMs = nowMs;
+        state.lastIntegrateMs = nowMs;
+        return state.display;
+      }
+      const dtStable = Math.min(0.1, Math.max(0, (nowMs - state.lastIntegrateMs) / 1000));
+      state.lastIntegrateMs = nowMs;
+      if (Math.abs(target - state.target) > 1e-7) {
+        // Truth advanced while we had no live rate — follow it (smooth catch-up, not a 1s hold).
+        const drift = target - state.display;
+        state.display += drift * Math.min(1, dtStable > 0 ? 1 - Math.exp(-14 * dtStable) : 1);
+        state.target = target;
+        state.lastTargetMs = nowMs;
+        state.velocity = 0;
+        return state.display;
+      }
+      const sinceTargetMs = nowMs - state.lastTargetMs;
+      // Outside the tick window with no damage samples — lock to truth.
+      if (sinceTargetMs > expectedInterval * 1000 * 1.35) {
+        state.velocity = 0;
+        state.display = target;
+        state.target = target;
+        return state.display;
+      }
+      // Still inside a tick window: keep residual coast. Do NOT lerp toward stale `target`.
+      if (dtStable > 0 && Math.abs(state.velocity) > 1e-9) {
+        state.display += state.velocity * dtStable;
+      }
+      return state.display;
+    }
+
+    // New authoritative sample — learn rate and correct gently if we drifted.
+    if (Math.abs(target - state.target) > 1e-7) {
+      const sinceTargetSec = Math.max(0.001, (nowMs - state.lastTargetMs) / 1000);
+      const observedV = (target - state.target) / sinceTargetSec;
+      if (Math.abs(state.velocity) < 1e-9) {
+        state.velocity = hasNonZeroHint ? hintVelocity : observedV;
+      } else {
+        state.velocity = state.velocity * 0.3 + observedV * 0.7;
+      }
+      // Prefer live water/fire hint when present — more stable than sparse tick samples.
+      if (hasNonZeroHint) {
+        state.velocity = state.velocity * 0.35 + hintVelocity * 0.65;
+      }
+      // Soft catch-up if coast drifted far from the new truth
+      const drift = target - state.display;
+      if (Math.abs(drift) > Math.abs(observedV) * expectedInterval * 1.75) {
+        state.display += drift * 0.45;
+      }
+      state.target = target;
+      state.lastTargetMs = nowMs;
+    } else if (hasNonZeroHint) {
+      // Keep coasting at the live rate even when the discrete HP sample hasn't changed yet.
+      if (Math.abs(state.velocity) < 1e-9) {
+        state.velocity = hintVelocity;
+      } else {
+        state.velocity = state.velocity * 0.5 + hintVelocity * 0.5;
+      }
+    }
+
+    // Integrate once per wall-clock slice (safe if map + tooltip both sample this frame).
+    const dt = Math.min(0.1, Math.max(0, (nowMs - state.lastIntegrateMs) / 1000));
+    state.lastIntegrateMs = nowMs;
+    if (dt <= 0) return state.display;
+
+    state.display += state.velocity * dt;
+
+    // Ratio meters (HP bars): never paint outside [0, 1], and don't invent drain/fill
+    // past the latest authoritative sample (coast only bridges between samples).
+    if (options?.clampUnitInterval) {
+      if (state.velocity < 0 && state.display < state.target) {
+        state.display = state.target;
+      } else if (state.velocity > 0 && state.display > state.target) {
+        state.display = state.target;
+      }
+      state.display = Math.max(0, Math.min(1, state.display));
+    }
+
+    // If updates stopped (extinguished / left alone), ease velocity out so we settle.
+    const sinceTargetMs = nowMs - state.lastTargetMs;
+    if (sinceTargetMs > expectedInterval * 1000 * 2.25) {
+      state.velocity *= Math.exp(-3 * dt);
+      // Ease remaining error toward last known target once coasting dies
+      if (Math.abs(state.velocity) < 1e-4) {
+        state.display += (state.target - state.display) * (1 - Math.exp(-6 * dt));
+        state.velocity = 0;
+      }
+    }
+
+    return state.display;
+  }
+
+  /**
    * Get flashing color between two colors based on animation time
    * @param {string} color1 - First color (hex format)
    * @param {string} color2 - Second color (hex format)
@@ -4209,6 +4994,8 @@ export class Renderer {
     // Without this the per-call recompute showed up disproportionately at late waves
     // where isHexInViewport is hit hundreds of times per frame.
     this._refreshViewportBounds();
+    // Frame id for caches that should rebuild at most once per render() (smoulder sources, etc.).
+    this._fxFrameId = (this._fxFrameId || 0) + 1;
     
     // Update flash animation time
     this.flashAnimationTime += deltaTime;
@@ -4235,12 +5022,28 @@ export class Renderer {
     // Draw is only in drawAllWaterParticles(). updateWaterParticles is allowed to delete
     // its own entry from the Map when empty; per JS spec, deleting the current entry
     // during Map iteration is safe (already-visited).
+    let liveWaterParticles = 0;
     for (const towerId of this.waterParticles.keys()) {
-      this.updateWaterParticles(towerId, deltaTime);
+      liveWaterParticles += this.updateWaterParticles(towerId, deltaTime);
     }
+    // Cache total live count for the global spawn budget (_particleBudgetScale).
+    this._liveWaterParticleCount = liveWaterParticles;
     
     // Update all fire particles
     this.updateAllFireParticles(deltaTime);
+
+    // Continuous vortex ember / spark FX
+    this.updateVortexEmbers(deltaTime);
+    // Light sparks on ordinary burning hexes (full fire visuals only)
+    this.updateFireHexSparks(deltaTime);
+    // Smoulder sparks on burning vaults + dungeon entrances
+    this.updateSmoulderSparks(deltaTime);
+    // Soft bubbles rising from water buckets / tanks / vats
+    this.updateWaterTankBubbles(deltaTime);
+    // Soft mist / shear spray on jet & spread streams (full visuals only)
+    this.updateJetMist(deltaTime);
+    // Pulsing tower radial blasts (dedicated FX; consumes pendingPulseBurst)
+    this.updatePulseBursts(deltaTime);
     
     // Note: Hex flash effects are now drawn in gameLoop.js for proper z-index
   }
@@ -4417,6 +5220,795 @@ export class Renderer {
     }
   }
   
+  /**
+   * Parse CSS color (hex / hsl) into RGB 0–255 components.
+   * @param {string} color
+   * @returns {{ r: number, g: number, b: number }|null}
+   */
+  _parseColorToRgb(color) {
+    if (!color || typeof color !== 'string') return null;
+
+    if (color.startsWith('hsl(')) {
+      const m = color.match(/hsl\(\s*([\d.]+)\s*,\s*([\d.]+)%\s*,\s*([\d.]+)%\s*\)/i);
+      if (!m) return null;
+      const h = ((Number(m[1]) % 360) + 360) % 360;
+      const s = Math.max(0, Math.min(100, Number(m[2]))) / 100;
+      const l = Math.max(0, Math.min(100, Number(m[3]))) / 100;
+      const c = (1 - Math.abs(2 * l - 1)) * s;
+      const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+      const m0 = l - c / 2;
+      let r1 = 0;
+      let g1 = 0;
+      let b1 = 0;
+      if (h < 60) { r1 = c; g1 = x; }
+      else if (h < 120) { r1 = x; g1 = c; }
+      else if (h < 180) { g1 = c; b1 = x; }
+      else if (h < 240) { g1 = x; b1 = c; }
+      else if (h < 300) { r1 = x; b1 = c; }
+      else { r1 = c; b1 = x; }
+      return {
+        r: Math.round((r1 + m0) * 255),
+        g: Math.round((g1 + m0) * 255),
+        b: Math.round((b1 + m0) * 255),
+      };
+    }
+
+    const hex = color.startsWith('#') ? color.slice(1) : color;
+    if (/^[0-9a-fA-F]{6}$/.test(hex)) {
+      return {
+        r: parseInt(hex.slice(0, 2), 16),
+        g: parseInt(hex.slice(2, 4), 16),
+        b: parseInt(hex.slice(4, 6), 16),
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Quantize RGB for map-FX sprite cache keys (limits unique offscreen canvases).
+   * @param {number} r
+   * @param {number} g
+   * @param {number} b
+   * @returns {string}
+   */
+  _mapFxColorKey(r, g, b) {
+    const q = (v) => Math.max(0, Math.min(255, Math.round(Number(v) / 32) * 32));
+    return `${q(r)},${q(g)},${q(b)}`;
+  }
+
+  /**
+   * Soft horizontal energy streak sprite (pre-baked gradient ellipse).
+   * Hot path uses drawImage + scale instead of createLinearGradient per particle.
+   * @param {number} r
+   * @param {number} g
+   * @param {number} b
+   * @returns {{ canvas: HTMLCanvasElement, halfW: number, halfH: number, w: number, h: number }}
+   */
+  _getMapFxStreakSprite(r, g, b) {
+    const key = this._mapFxColorKey(r, g, b);
+    let entry = this._mapFxStreakSpriteCache.get(key);
+    if (entry) return entry;
+
+    const w = 128;
+    const h = 24;
+    const off = document.createElement('canvas');
+    off.width = w;
+    off.height = h;
+    const octx = off.getContext('2d');
+    const [qr, qg, qb] = key.split(',').map(Number);
+    const cx = w * 0.5;
+    const cy = h * 0.5;
+    const halfW = w * 0.5;
+    const halfH = h * 0.5;
+    const grad = octx.createLinearGradient(0, cy, w, cy);
+    grad.addColorStop(0, `rgba(${qr},${qg},${qb},0)`);
+    grad.addColorStop(0.35, `rgba(${qr},${qg},${qb},0.85)`);
+    grad.addColorStop(0.5, 'rgba(255,240,230,1)');
+    grad.addColorStop(0.65, `rgba(${qr},${qg},${qb},0.85)`);
+    grad.addColorStop(1, `rgba(${qr},${qg},${qb},0)`);
+    octx.fillStyle = grad;
+    octx.beginPath();
+    octx.ellipse(cx, cy, halfW, halfH, 0, 0, Math.PI * 2);
+    octx.fill();
+
+    entry = { canvas: off, halfW, halfH, w, h };
+    if (this._mapFxStreakSpriteCache.size >= this._mapFxSpriteCacheMax) {
+      this._mapFxStreakSpriteCache.clear();
+    }
+    this._mapFxStreakSpriteCache.set(key, entry);
+    return entry;
+  }
+
+  /**
+   * Soft radial spark/glow sprite (pre-baked). Avoids createRadialGradient per spark/frame.
+   * @param {number} r
+   * @param {number} g
+   * @param {number} b
+   * @returns {{ canvas: HTMLCanvasElement, half: number, size: number }}
+   */
+  _getMapFxSparkSprite(r, g, b) {
+    const key = this._mapFxColorKey(r, g, b);
+    let entry = this._mapFxSparkSpriteCache.get(key);
+    if (entry) return entry;
+
+    const size = 48;
+    const half = size * 0.5;
+    const off = document.createElement('canvas');
+    off.width = size;
+    off.height = size;
+    const octx = off.getContext('2d');
+    const [qr, qg, qb] = key.split(',').map(Number);
+    const glow = octx.createRadialGradient(half, half, 0, half, half, half);
+    glow.addColorStop(0, `rgba(${qr},${qg},${qb},1)`);
+    glow.addColorStop(0.35, `rgba(${qr},${qg},${qb},0.55)`);
+    glow.addColorStop(0.7, `rgba(${qr},${qg},${qb},0.15)`);
+    glow.addColorStop(1, `rgba(${qr},${qg},${qb},0)`);
+    octx.fillStyle = glow;
+    octx.beginPath();
+    octx.arc(half, half, half, 0, Math.PI * 2);
+    octx.fill();
+    // Hot core baked in
+    octx.fillStyle = 'rgba(255,250,255,0.95)';
+    octx.beginPath();
+    octx.arc(half, half, half * 0.18, 0, Math.PI * 2);
+    octx.fill();
+
+    entry = { canvas: off, half, size };
+    if (this._mapFxSparkSpriteCache.size >= this._mapFxSpriteCacheMax) {
+      this._mapFxSparkSpriteCache.clear();
+    }
+    this._mapFxSparkSpriteCache.set(key, entry);
+    return entry;
+  }
+
+  /**
+   * Soft multi-stop radial glow (pre-baked). Used by vortex wisps/embers, smoulder glows,
+   * and jet mist so the hot path never calls createRadialGradient per particle.
+   * @param {number} coreR
+   * @param {number} coreG
+   * @param {number} coreB
+   * @param {number} midR
+   * @param {number} midG
+   * @param {number} midB
+   * @param {number} tipR
+   * @param {number} tipG
+   * @param {number} tipB
+   * @param {'flame'|'soft'|'mist'} [variant='soft']
+   * @returns {{ canvas: HTMLCanvasElement, half: number, size: number, refRadius: number }}
+   */
+  _getFxGlowSprite(coreR, coreG, coreB, midR, midG, midB, tipR, tipG, tipB, variant = 'soft') {
+    const q = (v) => Math.max(0, Math.min(255, Math.round(Number(v) / 16) * 16));
+    const key = `${variant}:${q(coreR)},${q(coreG)},${q(coreB)}|${q(midR)},${q(midG)},${q(midB)}|${q(tipR)},${q(tipG)},${q(tipB)}`;
+    let entry = this._fxGlowSpriteCache.get(key);
+    if (entry) return entry;
+
+    const size = 64;
+    const half = size * 0.5;
+    const refRadius = half;
+    const off = document.createElement('canvas');
+    off.width = size;
+    off.height = size;
+    const octx = off.getContext('2d');
+    const cr = q(coreR); const cg = q(coreG); const cb = q(coreB);
+    const mr = q(midR); const mg = q(midG); const mb = q(midB);
+    const tr = q(tipR); const tg = q(tipG); const tb = q(tipB);
+
+    // Bake at alpha=1; callers modulate with globalAlpha for life fade.
+    if (variant === 'flame') {
+      const grad = octx.createRadialGradient(half, half + refRadius * 0.35, 0, half, half, refRadius);
+      grad.addColorStop(0, `rgba(${cr},${cg},${cb},1)`);
+      grad.addColorStop(0.45, `rgba(${mr},${mg},${mb},0.7)`);
+      grad.addColorStop(0.8, `rgba(${tr},${tg},${tb},0.32)`);
+      grad.addColorStop(1, `rgba(${tr},${tg},${tb},0)`);
+      octx.fillStyle = grad;
+      octx.beginPath();
+      octx.ellipse(half, half, refRadius * 0.5, refRadius, 0, 0, Math.PI * 2);
+      octx.fill();
+    } else if (variant === 'mist') {
+      const grad = octx.createRadialGradient(half, half, 0, half, half, refRadius);
+      grad.addColorStop(0, `rgba(${cr},${cg},${cb},1)`);
+      grad.addColorStop(0.45, `rgba(${mr},${mg},${mb},0.45)`);
+      grad.addColorStop(1, `rgba(${mr},${mg},${mb},0)`);
+      octx.fillStyle = grad;
+      octx.beginPath();
+      octx.ellipse(half, half, refRadius * 0.55, refRadius * 0.85, 0, 0, Math.PI * 2);
+      octx.fill();
+    } else {
+      // soft ember / smoulder glow
+      const grad = octx.createRadialGradient(half, half, 0, half, half, refRadius);
+      grad.addColorStop(0, `rgba(${cr},${cg},${cb},1)`);
+      grad.addColorStop(0.5, `rgba(${mr},${mg},${mb},0.52)`);
+      grad.addColorStop(1, `rgba(${mr},${mg},${mb},0)`);
+      octx.fillStyle = grad;
+      octx.beginPath();
+      octx.arc(half, half, refRadius, 0, Math.PI * 2);
+      octx.fill();
+    }
+
+    entry = { canvas: off, half, size, refRadius };
+    if (this._fxGlowSpriteCache.size >= this._fxSpriteCacheMax) {
+      this._fxGlowSpriteCache.clear();
+    }
+    this._fxGlowSpriteCache.set(key, entry);
+    return entry;
+  }
+
+  /**
+   * Fire/smoke explosion particle sprite (body + glow baked). Matches prior two-arc look.
+   * @param {number} r
+   * @param {number} g
+   * @param {number} b
+   * @param {boolean} isSmoke
+   * @returns {{ canvas: HTMLCanvasElement, refRadius: number, size: number }}
+   */
+  _getFireParticleSprite(r, g, b, isSmoke) {
+    const qr = this._quantizeColorChannel(r, 16);
+    const qg = this._quantizeColorChannel(g, 16);
+    const qb = this._quantizeColorChannel(b, 16);
+    const key = `${isSmoke ? 's' : 'f'}:${qr},${qg},${qb}`;
+    let entry = this._fireParticleSpriteCache.get(key);
+    if (entry) return entry;
+
+    const REF_RADIUS = 12;
+    const glowMult = isSmoke ? 1.8 : 2.0;
+    const GLOW_RADIUS = REF_RADIUS * glowMult;
+    const MARGIN = 2;
+    const size = Math.ceil(GLOW_RADIUS * 2 + MARGIN * 2);
+    const off = document.createElement('canvas');
+    off.width = size;
+    off.height = size;
+    const octx = off.getContext('2d');
+    const cx = size * 0.5;
+    const cy = size * 0.5;
+
+    // Body (alpha 0.9 fire / handled by caller for center) then glow — same order as legacy path.
+    octx.fillStyle = `rgba(${qr},${qg},${qb},0.9)`;
+    octx.beginPath();
+    octx.arc(cx, cy, REF_RADIUS, 0, Math.PI * 2);
+    octx.fill();
+
+    const glowA = isSmoke ? 0.2 : 0.4;
+    octx.fillStyle = `rgba(${qr},${qg},${qb},${glowA})`;
+    octx.beginPath();
+    octx.arc(cx, cy, GLOW_RADIUS, 0, Math.PI * 2);
+    octx.fill();
+
+    entry = { canvas: off, refRadius: REF_RADIUS, size };
+    if (this._fireParticleSpriteCache.size >= this._fxSpriteCacheMax) {
+      this._fireParticleSpriteCache.clear();
+    }
+    this._fireParticleSpriteCache.set(key, entry);
+    return entry;
+  }
+
+  /**
+   * Soft hot-core glow for organic fire fills (pre-baked per fire color).
+   * @param {string} color
+   * @returns {{ canvas: HTMLCanvasElement, half: number, size: number }}
+   */
+  _getFireHotCoreSprite(color) {
+    let entry = this._fireHotCoreSpriteCache.get(color);
+    if (entry) return entry;
+
+    const rgb = this._fireSparkPaletteFromColor(color);
+    const size = 96;
+    const half = size * 0.5;
+    const off = document.createElement('canvas');
+    off.width = size;
+    off.height = size;
+    const octx = off.getContext('2d');
+    const cx = half;
+    const cy = half;
+    const glowR = half;
+    const grad = octx.createRadialGradient(cx, cy - half * 0.04, 0, cx, cy, glowR);
+    grad.addColorStop(0, 'rgba(255, 255, 248, 1)');
+    grad.addColorStop(0.18, 'rgba(255, 245, 210, 0.67)');
+    grad.addColorStop(
+      0.42,
+      `rgba(${Math.min(255, rgb.r + 40)},${Math.min(255, rgb.g + 30)},${Math.min(255, rgb.b + 10)},0.39)`
+    );
+    grad.addColorStop(0.72, `rgba(${rgb.r},${rgb.g},${rgb.b},0.17)`);
+    grad.addColorStop(1, `rgba(${rgb.r},${rgb.g},${rgb.b},0)`);
+    octx.fillStyle = grad;
+    octx.beginPath();
+    octx.ellipse(cx, cy, glowR * 0.92, glowR, 0, 0, Math.PI * 2);
+    octx.fill();
+
+    entry = { canvas: off, half, size };
+    if (this._fireHotCoreSpriteCache.size >= 64) {
+      this._fireHotCoreSpriteCache.clear();
+    }
+    this._fireHotCoreSpriteCache.set(color, entry);
+    return entry;
+  }
+
+  /**
+   * Trigger a full-canvas background FX (behind map hexes / GUI overlays).
+   * @param {'vortex_spawn'|'boss_power'} type
+   * @param {{ color?: string }} [options]
+   */
+  triggerMapBackgroundFx(type, options = {}) {
+    if (type !== 'vortex_spawn' && type !== 'boss_power') return;
+
+    // Don't let a short vortex flash interrupt an active boss-power aura
+    if (
+      type === 'vortex_spawn' &&
+      this.mapBackgroundFx?.type === 'boss_power' &&
+      this.mapBackgroundFx.mode === 'sustained' &&
+      this.mapBackgroundFx.phase !== 'fadingOut'
+    ) {
+      return;
+    }
+
+    const isBoss = type === 'boss_power';
+    const isVortex = type === 'vortex_spawn';
+    const fxCfg = isBoss
+      ? (CONFIG.BOSS_POWER_SCREEN_FX || {})
+      : (CONFIG.VORTEX?.spawnScreenFx || {});
+    const w = (this.canvasCssWidth ?? (this.canvas.width / (this.dpr || 1))) || 800;
+    const h = (this.canvasCssHeight ?? (this.canvas.height / (this.dpr || 1))) || 600;
+    const simplified = this.isSimplifiedFireVisualsEnabled();
+    let streakCount = Math.max(
+      12,
+      Math.floor(Number(fxCfg.streakCount) || (isBoss ? 72 : 105))
+    );
+    if (simplified) streakCount = Math.max(10, Math.floor(streakCount * 0.4));
+    const colorStr = isBoss
+      ? (fxCfg.color || options.color || '#C010A8')
+      : (options.color || CONFIG.COLOR_FIRE_FLAME || '#FF8C00');
+    const base =
+      this._parseColorToRgb(colorStr) ||
+      this._parseColorToRgb(isBoss ? '#C010A8' : '#FF8C00') ||
+      { r: 192, g: 16, b: 168 };
+    const whiteChance = isBoss
+      ? Math.max(0, Math.min(1, Number(fxCfg.whiteStreakChance) || 0.55))
+      : Math.max(0, Math.min(1, Number(fxCfg.whiteStreakChance) || 0.4));
+    const streaks = [];
+    /** @type {object[]} */
+    const sparks = [];
+    /** @type {object[]} */
+    const flourishes = [];
+    // Vortex spawn: radial black-hole swirl. Boss power: horizontal Super-Saiyan rush.
+    const layout = isVortex ? 'radial' : 'horizontal';
+    const maxOrbit = Math.hypot(w, h) * 0.55;
+
+    const pickStreakColor = () => {
+      const hot = Math.random();
+      if (hot < whiteChance) {
+        return {
+          r: Math.min(255, Math.round(base.r * 0.2 + 210 + Math.random() * 40)),
+          g: Math.min(255, Math.round(base.g * 0.2 + 200 + Math.random() * 45)),
+          b: Math.min(255, Math.round(base.b * 0.2 + 190 + Math.random() * 45)),
+          a: 0.65 + Math.random() * 0.35,
+        };
+      }
+      if (hot < whiteChance + 0.35) {
+        return {
+          r: Math.min(255, Math.round(base.r + (255 - base.r) * 0.25 + Math.random() * 20)),
+          g: Math.min(255, Math.round(base.g + (255 - base.g) * 0.15 + Math.random() * 20)),
+          b: Math.min(255, Math.round(base.b + (255 - base.b) * 0.15 + Math.random() * 20)),
+          a: 0.45 + Math.random() * 0.4,
+        };
+      }
+      return {
+        r: Math.max(0, Math.round(base.r * (0.35 + Math.random() * 0.25))),
+        g: Math.max(0, Math.round(base.g * (0.35 + Math.random() * 0.25))),
+        b: Math.max(0, Math.round(base.b * (0.35 + Math.random() * 0.25))),
+        a: 0.35 + Math.random() * 0.35,
+      };
+    };
+
+    for (let i = 0; i < streakCount; i++) {
+      const { r, g, b, a } = pickStreakColor();
+
+      if (layout === 'radial') {
+        // Orbital streak: swirls around center while slowly spiraling inward (black-hole feel)
+        const radius = maxOrbit * (0.08 + Math.random() * 0.92);
+        // ~25% fewer/smaller than the original radial streak pass
+        const length = (70 + Math.random() * 200) * (0.55 + radius / maxOrbit) * 0.75;
+        streaks.push({
+          radius,
+          angle: Math.random() * Math.PI * 2,
+          length,
+          thickness: (1.6 + Math.random() * 4.8) * 0.75,
+          // rad/sec — denser near the core spins faster
+          omega: (1.4 + Math.random() * 3.8) * (0.55 + (1 - radius / maxOrbit) * 1.4),
+          dir: Math.random() < 0.55 ? 1 : -1,
+          // px/sec inward; wraps at the outer rim so the swirl stays populated
+          inwardSpeed: 50 + Math.random() * 140,
+          wobble: (Math.random() - 0.5) * 16,
+          wobbleSpeed: 2 + Math.random() * 5,
+          phase: Math.random() * Math.PI * 2,
+          r,
+          g,
+          b,
+          // Brighter / less transparent than the boss-neutral palette pick
+          a: Math.min(1, a * 1.35 + 0.12),
+        });
+      } else {
+        // Boss: denser / longer / faster Super-Saiyan rush
+        streaks.push({
+          y: Math.random() * h,
+          x: Math.random() * (w + 400) - 200,
+          length: 120 + Math.random() * 420,
+          thickness: 1.4 + Math.random() * 4.6,
+          speed: 1100 + Math.random() * 2400,
+          dir: Math.random() < 0.5 ? 1 : -1,
+          wobble: (Math.random() - 0.5) * 28,
+          wobbleSpeed: 3 + Math.random() * 7,
+          phase: Math.random() * Math.PI * 2,
+          shear: 0.12 + Math.random() * 0.08,
+          r,
+          g,
+          b,
+          a,
+        });
+      }
+    }
+
+    // Vortex-only: soft concentric ring flourishes + full swirl circles
+    if (isVortex) {
+      const ringCount = Math.max(8, Math.floor(Number(fxCfg.ringCount) || 16));
+      for (let i = 0; i < ringCount; i++) {
+        const white = Math.random() < 0.45;
+        flourishes.push({
+          kind: 'arc',
+          radius: maxOrbit * (0.12 + Math.random() * 0.85),
+          angle: Math.random() * Math.PI * 2,
+          arcSpan: 0.9 + Math.random() * 2.4,
+          thickness: 10 + Math.random() * 22,
+          omega: 0.55 + Math.random() * 1.8,
+          dir: Math.random() < 0.5 ? 1 : -1,
+          inwardSpeed: 25 + Math.random() * 80,
+          pulseSpeed: 2 + Math.random() * 3.5,
+          phase: Math.random() * Math.PI * 2,
+          r: white ? 255 : Math.min(255, base.r + 70),
+          g: white ? 240 : Math.min(255, Math.round(base.g * 0.65 + 55)),
+          b: white ? 255 : Math.min(255, base.b + 50),
+          a: 0.38 + Math.random() * 0.35,
+        });
+      }
+
+      const circleCount = Math.max(6, Math.floor(Number(fxCfg.circleCount) || 10));
+      for (let i = 0; i < circleCount; i++) {
+        const white = Math.random() < 0.4;
+        const t = (i + 0.35 + Math.random() * 0.4) / circleCount;
+        flourishes.push({
+          kind: 'circle',
+          radius: maxOrbit * (0.1 + t * 0.88),
+          angle: Math.random() * Math.PI * 2,
+          arcSpan: Math.PI * 2,
+          thickness: 2.5 + Math.random() * 5.5,
+          omega: 0.35 + Math.random() * 1.1,
+          dir: i % 2 === 0 ? 1 : -1,
+          inwardSpeed: 15 + Math.random() * 45,
+          pulseSpeed: 1.5 + Math.random() * 2.5,
+          phase: Math.random() * Math.PI * 2,
+          r: white ? 255 : Math.min(255, base.r + 50),
+          g: white ? 245 : Math.min(255, Math.round(base.g * 0.7 + 45)),
+          b: white ? 255 : Math.min(255, base.b + 35),
+          a: 0.32 + Math.random() * 0.3,
+        });
+      }
+    }
+
+    // Boss-only: crackling sparks + huge aura flourishes (Super Saiyan energy)
+    if (isBoss) {
+      let sparkCount = Math.max(0, Math.floor(Number(fxCfg.sparkCount) || 36));
+      if (simplified) sparkCount = 0; // wash + streaks are enough in reduced mode
+      for (let i = 0; i < sparkCount; i++) {
+        const white = Math.random() < 0.55;
+        sparks.push({
+          x: Math.random() * w,
+          y: Math.random() * h,
+          vx: (Math.random() - 0.5) * 90,
+          vy: -(40 + Math.random() * 160),
+          size: 1.2 + Math.random() * 3.6,
+          lifePhase: Math.random() * Math.PI * 2,
+          flickerSpeed: 8 + Math.random() * 14,
+          riseWrap: 0.35 + Math.random() * 0.9,
+          r: white ? 255 : Math.min(255, base.r + 40),
+          g: white ? 245 : Math.min(255, base.g + 30),
+          b: white ? 255 : Math.min(255, base.b + 50),
+          a: 0.55 + Math.random() * 0.45,
+        });
+      }
+
+      let flourishCount = Math.max(2, Math.floor(Number(fxCfg.flourishCount) || 8));
+      if (simplified) flourishCount = Math.max(2, Math.floor(flourishCount * 0.4));
+      for (let i = 0; i < flourishCount; i++) {
+        const white = Math.random() < 0.4;
+        flourishes.push({
+          y: Math.random() * h,
+          x: Math.random() * (w + 600) - 300,
+          length: 280 + Math.random() * 520,
+          thickness: 10 + Math.random() * 22,
+          speed: 600 + Math.random() * 1200,
+          dir: Math.random() < 0.5 ? 1 : -1,
+          wobble: (Math.random() - 0.5) * 50,
+          wobbleSpeed: 1.5 + Math.random() * 3.5,
+          phase: Math.random() * Math.PI * 2,
+          shear: 0.18 + Math.random() * 0.14,
+          pulseSpeed: 2 + Math.random() * 3,
+          r: white ? 255 : Math.min(255, base.r + 60),
+          g: white ? 236 : Math.min(255, Math.round(base.g * 0.7 + 40)),
+          b: white ? 255 : Math.min(255, base.b + 40),
+          a: 0.22 + Math.random() * 0.28,
+        });
+      }
+    }
+
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    this.mapBackgroundFx = {
+      type,
+      layout,
+      mode: isBoss ? 'sustained' : 'timed',
+      phase: 'holding',
+      startTime: now,
+      fadeOutStart: null,
+      fadeInMs: Math.max(0, Number(fxCfg.fadeInMs) || 120),
+      holdMs: isBoss ? Infinity : Math.max(0, Number(fxCfg.holdMs) || 500),
+      fadeOutMs: Math.max(0, Number(fxCfg.fadeOutMs) || (isBoss ? 420 : 380)),
+      washAlpha: Math.max(0, Math.min(1, Number(fxCfg.washAlpha) || (isVortex ? 0.48 : 0.25))),
+      washRgb: base,
+      streaks,
+      sparks,
+      flourishes,
+    };
+  }
+
+  /**
+   * Begin fade-out for the current map background FX (used for sustained boss aura).
+   */
+  beginMapBackgroundFxFadeOut() {
+    const fx = this.mapBackgroundFx;
+    if (!fx || fx.phase === 'fadingOut') return;
+    fx.phase = 'fadingOut';
+    fx.fadeOutStart = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  }
+
+  /**
+   * Keep boss-power background FX in sync with boss casting portrait enlarge state.
+   * Active for entering / active / exiting on main or summoned boss.
+   */
+  syncBossPowerMapBackgroundFx() {
+    const boss = this.gameState?.bossSystem;
+    const mainCasting = !!(boss?.castingState && boss.castingState !== 'idle');
+    const summonedCasting = !!(
+      boss?.summonedBoss?.castingState &&
+      boss.summonedBoss.castingState !== 'idle'
+    );
+    const shouldShow = mainCasting || summonedCasting;
+    const fx = this.mapBackgroundFx;
+    const bossFxActive =
+      fx?.type === 'boss_power' &&
+      fx.mode === 'sustained' &&
+      fx.phase !== 'fadingOut';
+
+    if (shouldShow) {
+      if (!bossFxActive) {
+        this.triggerMapBackgroundFx('boss_power');
+      }
+      return;
+    }
+
+    if (bossFxActive) {
+      this.beginMapBackgroundFxFadeOut();
+    }
+  }
+
+  /**
+   * Draw transient FX over wave-group background art only (call after clear, before map hexes).
+   */
+  drawMapBackgroundFx() {
+    const fx = this.mapBackgroundFx;
+    if (!fx) return;
+
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const fadeInMs = fx.fadeInMs;
+    const fadeOutMs = fx.fadeOutMs;
+    let alpha;
+
+    if (fx.phase === 'fadingOut' && fx.fadeOutStart != null) {
+      const fadeElapsed = now - fx.fadeOutStart;
+      if (fadeElapsed >= fadeOutMs) {
+        this.mapBackgroundFx = null;
+        return;
+      }
+      const t = fadeOutMs > 0 ? fadeElapsed / fadeOutMs : 1;
+      alpha = (1 - t) * (1 - t);
+    } else if (fx.mode === 'sustained') {
+      const elapsed = now - fx.startTime;
+      if (elapsed < fadeInMs) {
+        const t = fadeInMs > 0 ? elapsed / fadeInMs : 1;
+        alpha = 1 - (1 - t) * (1 - t);
+      } else {
+        alpha = 1;
+      }
+    } else {
+      // Timed vortex-style flash
+      const elapsed = now - fx.startTime;
+      const holdMs = Number.isFinite(fx.holdMs) ? fx.holdMs : 500;
+      const totalMs = fadeInMs + holdMs + fadeOutMs;
+      if (elapsed >= totalMs) {
+        this.mapBackgroundFx = null;
+        return;
+      }
+      if (elapsed < fadeInMs) {
+        const t = fadeInMs > 0 ? elapsed / fadeInMs : 1;
+        alpha = 1 - (1 - t) * (1 - t);
+      } else if (elapsed < fadeInMs + holdMs) {
+        alpha = 1;
+      } else {
+        const t = fadeOutMs > 0 ? (elapsed - fadeInMs - holdMs) / fadeOutMs : 1;
+        alpha = (1 - t) * (1 - t);
+      }
+    }
+
+    if (alpha <= 0.01) return;
+
+    const w = this.canvasCssWidth ?? (this.canvas.width / (this.dpr || 1));
+    const h = this.canvasCssHeight ?? (this.canvas.height / (this.dpr || 1));
+    const ctx = this.ctx;
+    const tSec = (now - fx.startTime) / 1000;
+    const washRgb = fx.washRgb || { r: 192, g: 16, b: 168 };
+    const isRadial = fx.layout === 'radial';
+    // Radial vortex FX is world-anchored to the map center (grove at 0,0) so it pans
+    // with the hex grid when scrolling — not pinned to the fixed background art.
+    // Boss horizontal rush stays viewport-centered.
+    let cx = w * 0.5;
+    let cy = h * 0.5;
+    if (isRadial) {
+      const origin = axialToPixel(0, 0);
+      cx = origin.x + this.offsetX;
+      cy = origin.y + this.offsetY;
+    }
+    const maxOrbit = Math.hypot(w, h) * 0.55;
+
+    ctx.save();
+
+    // Color wash — radial black-hole for vortex; flat wash for boss rush
+    const wash = (fx.washAlpha != null ? fx.washAlpha : 0.25) * alpha;
+    ctx.globalCompositeOperation = 'source-over';
+    const darkR = Math.round(washRgb.r * 0.45);
+    const darkG = Math.round(washRgb.g * 0.45);
+    const darkB = Math.round(washRgb.b * 0.45);
+    if (isRadial) {
+      const washGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, maxOrbit);
+      // Darker core + brighter mid wash so the swirl reads more Super-Saiyan
+      washGrad.addColorStop(0, `rgba(0,0,0,${Math.min(0.95, wash * 2.6)})`);
+      washGrad.addColorStop(0.14, `rgba(${darkR},${darkG},${darkB},${Math.min(0.95, wash * 1.85)})`);
+      washGrad.addColorStop(0.36, `rgba(${washRgb.r},${washRgb.g},${washRgb.b},${Math.min(0.95, wash * 1.35)})`);
+      washGrad.addColorStop(0.62, `rgba(${Math.min(255, washRgb.r + 40)},${Math.min(255, washRgb.g + 30)},${Math.min(255, washRgb.b + 10)},${wash * 0.85})`);
+      washGrad.addColorStop(0.85, `rgba(${washRgb.r},${washRgb.g},${washRgb.b},${wash * 0.4})`);
+      washGrad.addColorStop(1, `rgba(${washRgb.r},${washRgb.g},${washRgb.b},0)`);
+      ctx.fillStyle = washGrad;
+      ctx.fillRect(0, 0, w, h);
+    } else {
+      ctx.fillStyle = `rgba(${washRgb.r},${washRgb.g},${washRgb.b},${wash})`;
+      ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = `rgba(${darkR},${darkG},${darkB},${wash * 0.45})`;
+      ctx.fillRect(0, 0, w, h);
+    }
+
+    ctx.globalCompositeOperation = 'lighter';
+
+    const flourishes = fx.flourishes || [];
+    if (isRadial) {
+      // Soft accretion-disk arcs + full concentric swirl circles
+      for (let i = 0; i < flourishes.length; i++) {
+        const f = flourishes[i];
+        const orbit = Math.max(
+          8,
+          ((f.radius - tSec * (f.inwardSpeed || 40)) % maxOrbit + maxOrbit) % maxOrbit
+        );
+        const startAng = f.angle + tSec * (f.omega || 1) * (f.dir || 1);
+        const pulse = 0.7 + 0.3 * Math.sin(tSec * (f.pulseSpeed || 2) + f.phase);
+        const flourishAlpha = Math.min(1, f.a * alpha * pulse * 1.15);
+        const isCircle = f.kind === 'circle' || (f.arcSpan != null && f.arcSpan >= Math.PI * 1.95);
+        const span = isCircle ? Math.PI * 2 : (f.arcSpan || 1);
+        const thick = Math.max(isCircle ? 2 : 4, f.thickness * pulse);
+
+        ctx.save();
+        ctx.lineCap = 'round';
+        ctx.globalAlpha = flourishAlpha;
+        ctx.strokeStyle = `rgba(${f.r},${f.g},${f.b},0.95)`;
+        ctx.lineWidth = thick;
+        ctx.beginPath();
+        ctx.arc(cx, cy, orbit, startAng, startAng + span);
+        ctx.stroke();
+        // Hot white core along the same curve
+        ctx.globalAlpha = flourishAlpha * (isCircle ? 0.55 : 0.75);
+        ctx.strokeStyle = 'rgba(255,250,255,0.95)';
+        ctx.lineWidth = Math.max(1.2, thick * (isCircle ? 0.35 : 0.3));
+        ctx.beginPath();
+        ctx.arc(cx, cy, orbit, startAng, startAng + span);
+        ctx.stroke();
+        ctx.restore();
+      }
+    } else {
+      // Boss: huge soft aura ribbons behind the finer streaks (cached sprites)
+      for (let i = 0; i < flourishes.length; i++) {
+        const f = flourishes[i];
+        if (f.radius != null) continue; // skip any radial-shaped leftovers
+        const travel = ((f.x + tSec * f.speed * f.dir) % (w + f.length + 400) + (w + f.length + 400)) % (w + f.length + 400);
+        const x = travel - f.length;
+        const y = f.y + Math.sin(tSec * f.wobbleSpeed + f.phase) * f.wobble;
+        const pulse = 0.7 + 0.3 * Math.sin(tSec * f.pulseSpeed + f.phase);
+        const flourishAlpha = f.a * alpha * pulse;
+        const sprite = this._getMapFxStreakSprite(f.r, f.g, f.b);
+        const thick = f.thickness * pulse;
+
+        ctx.save();
+        ctx.translate(x + f.length * 0.5, y);
+        ctx.transform(1, 0, f.dir * f.shear, 1, 0, 0);
+        ctx.globalAlpha = Math.min(1, flourishAlpha);
+        ctx.drawImage(sprite.canvas, -f.length * 0.5, -thick * 0.5, f.length, thick);
+        ctx.restore();
+      }
+    }
+
+    // Energy streaks — radial swirl (vortex) or horizontal rush (boss)
+    const streaks = fx.streaks || [];
+    for (let i = 0; i < streaks.length; i++) {
+      const s = streaks[i];
+      const streakAlpha = s.a * alpha;
+      const sprite = this._getMapFxStreakSprite(s.r, s.g, s.b);
+
+      if (isRadial && s.radius != null) {
+        const orbit = Math.max(
+          6,
+          ((s.radius - tSec * (s.inwardSpeed || 60)) % maxOrbit + maxOrbit) % maxOrbit
+          + Math.sin(tSec * s.wobbleSpeed + s.phase) * (s.wobble || 0)
+        );
+        const ang = s.angle + tSec * (s.omega || 2) * (s.dir || 1);
+        const x = cx + Math.cos(ang) * orbit;
+        const y = cy + Math.sin(ang) * orbit;
+        const thick = s.thickness;
+
+        ctx.save();
+        ctx.translate(x, y);
+        // Align streak tangent to the orbit (swirl direction)
+        ctx.rotate(ang + Math.PI / 2 * (s.dir || 1));
+        ctx.globalAlpha = Math.min(1, streakAlpha);
+        ctx.drawImage(sprite.canvas, -s.length * 0.5, -thick * 0.5, s.length, thick);
+        ctx.restore();
+      } else if (!isRadial) {
+        const travel = ((s.x + tSec * s.speed * s.dir) % (w + s.length + 200) + (w + s.length + 200)) % (w + s.length + 200);
+        const x = travel - s.length;
+        const y = s.y + Math.sin(tSec * s.wobbleSpeed + s.phase) * s.wobble;
+        const shear = s.shear != null ? s.shear : 0.08;
+        const thick = s.thickness;
+
+        ctx.save();
+        ctx.translate(x + s.length * 0.5, y);
+        ctx.transform(1, 0, s.dir * shear, 1, 0, 0);
+        ctx.globalAlpha = Math.min(1, streakAlpha);
+        ctx.drawImage(sprite.canvas, -s.length * 0.5, -thick * 0.5, s.length, thick);
+        ctx.restore();
+      }
+    }
+
+    // Boss-only: rising aura sparks (cached radial sprites; no per-frame gradients)
+    const sparks = fx.sparks || [];
+    for (let i = 0; i < sparks.length; i++) {
+      const p = sparks[i];
+      const rise = ((p.y + tSec * Math.abs(p.vy) * p.riseWrap) % (h + 40));
+      const x = p.x + Math.sin(tSec * 2.2 + p.lifePhase) * 18 + p.vx * 0.08 * Math.sin(tSec + p.lifePhase);
+      const y = h - rise;
+      const flicker = 0.45 + 0.55 * Math.abs(Math.sin(tSec * p.flickerSpeed + p.lifePhase));
+      const sparkAlpha = p.a * alpha * flicker;
+      const size = p.size * (0.75 + flicker * 0.5);
+      const drawSize = size * 6.4; // matches old glow radius ~size*3.2 diameter
+      const sprite = this._getMapFxSparkSprite(p.r, p.g, p.b);
+
+      ctx.globalAlpha = Math.min(1, sparkAlpha);
+      ctx.drawImage(sprite.canvas, x - drawSize * 0.5, y - drawSize * 0.5, drawSize, drawSize);
+    }
+
+    ctx.restore();
+  }
+
   /**
    * Draw blue border glow effect when temporary power-ups are active
    */
@@ -4909,12 +6501,17 @@ export class Renderer {
       return screenX >= bounds.minX && screenX <= bounds.maxX
         && screenY >= bounds.minY && screenY <= bounds.maxY;
     }
+    // custom-margin path also uses logical (pre-zoom) extents
     const canvasWidth = this.canvasCssWidth ?? (this.canvas.width / (this.dpr || 1));
     const canvasHeight = this.canvasCssHeight ?? (this.canvas.height / (this.dpr || 1));
-    return screenX >= -viewportMargin &&
-           screenX <= canvasWidth + viewportMargin &&
-           screenY >= -viewportMargin &&
-           screenY <= canvasHeight + viewportMargin;
+    const z = this.getMapZoom();
+    const cx = canvasWidth / 2;
+    const cy = canvasHeight / 2;
+    const minX = (0 - cx) / z + cx - viewportMargin;
+    const maxX = (canvasWidth - cx) / z + cx + viewportMargin;
+    const minY = (0 - cy) / z + cy - viewportMargin;
+    const maxY = (canvasHeight - cy) / z + cy + viewportMargin;
+    return screenX >= minX && screenX <= maxX && screenY >= minY && screenY <= maxY;
   }
 
   /**
@@ -4925,14 +6522,129 @@ export class Renderer {
   _refreshViewportBounds() {
     const canvasWidth = this.canvasCssWidth ?? (this.canvas.width / (this.dpr || 1));
     const canvasHeight = this.canvasCssHeight ?? (this.canvas.height / (this.dpr || 1));
-    const margin = CONFIG.HEX_RADIUS * 2;
+    // cull in pre-zoom logical screen space (world + offset).
+    // Zoom-out expands the visible logical rect; zoom-in shrinks it.
+    const z = this.getMapZoom();
+    const cx = canvasWidth / 2;
+    const cy = canvasHeight / 2;
+    const logicalMinX = (0 - cx) / z + cx;
+    const logicalMaxX = (canvasWidth - cx) / z + cx;
+    const logicalMinY = (0 - cy) / z + cy;
+    const logicalMaxY = (canvasHeight - cy) / z + cy;
+    const margin = CONFIG.HEX_RADIUS * 2 / Math.min(1, z);
     this._defaultViewportMargin = margin;
     this._viewportBounds = {
       margin,
-      minX: -margin,
-      minY: -margin,
-      maxX: canvasWidth + margin,
-      maxY: canvasHeight + margin,
+      minX: logicalMinX - margin,
+      minY: logicalMinY - margin,
+      maxX: logicalMaxX + margin,
+      maxY: logicalMaxY + margin,
+    };
+  }
+
+  /** @returns {number} Current map camera zoom (1 = default / 100%). */
+  getMapZoom() {
+    const z = this.scale;
+    return Number.isFinite(z) && z > 0 ? z : 1;
+  }
+
+  /**
+   * Set zoom to an absolute scale, snapping to the nearest configured level.
+   * @param {number} zoom
+   * @returns {number} Snapped zoom scale
+   */
+  setMapZoom(zoom) {
+    const levels = CONFIG.MAP_ZOOM_LEVELS || [0.75, 1, 1.25];
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < levels.length; i++) {
+      const d = Math.abs(levels[i] - zoom);
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = i;
+      }
+    }
+    this._mapZoomLevelIndex = bestIdx;
+    this.scale = levels[bestIdx];
+    this._refreshViewportBounds();
+    return this.scale;
+  }
+
+  /**
+   * Step zoom by ±1 level through CONFIG.MAP_ZOOM_LEVELS.
+   * @param {number} direction - +1 zoom in, -1 zoom out
+   * @returns {number} New zoom scale
+   */
+  cycleMapZoom(direction) {
+    const levels = CONFIG.MAP_ZOOM_LEVELS || [0.75, 1, 1.25];
+    const idx = Math.max(0, Math.min(levels.length - 1, (this._mapZoomLevelIndex || 0) + Math.sign(direction || 0)));
+    this._mapZoomLevelIndex = idx;
+    this.scale = levels[idx];
+    this._refreshViewportBounds();
+    return this.scale;
+  }
+
+  /** Begin canvas transform so subsequent world draws zoom around viewport center. */
+  beginWorldZoomTransform() {
+    const z = this.getMapZoom();
+    if (z === 1) {
+      this._worldZoomTransformActive = false;
+      return;
+    }
+    const cx = (this.canvasCssWidth ?? 0) / 2;
+    const cy = (this.canvasCssHeight ?? 0) / 2;
+    this.ctx.save();
+    this.ctx.translate(cx, cy);
+    this.ctx.scale(z, z);
+    this.ctx.translate(-cx, -cy);
+    this._worldZoomTransformActive = true;
+  }
+
+  /** End canvas transform started by {@link beginWorldZoomTransform}. */
+  endWorldZoomTransform() {
+    if (!this._worldZoomTransformActive) return;
+    this.ctx.restore();
+    this._worldZoomTransformActive = false;
+  }
+
+  /**
+   * Visible world-axis extents for the current camera (zoom-aware).
+   * Used by map scroll boundary checks.
+   * @param {number} [offsetX]
+   * @param {number} [offsetY]
+   * @returns {{ left: number, right: number, top: number, bottom: number, canvasWidth: number, canvasHeight: number }}
+   */
+  getVisibleWorldExtents(offsetX = this.offsetX, offsetY = this.offsetY) {
+    const canvasWidth = this.canvasCssWidth ?? (this.canvas.width / (this.dpr || 1));
+    const canvasHeight = this.canvasCssHeight ?? (this.canvas.height / (this.dpr || 1));
+    const z = this.getMapZoom();
+    const cx = canvasWidth / 2;
+    const cy = canvasHeight / 2;
+    return {
+      left: (0 - cx) / z + cx - offsetX,
+      right: (canvasWidth - cx) / z + cx - offsetX,
+      top: (0 - cy) / z + cy - offsetY,
+      bottom: (canvasHeight - cy) / z + cy - offsetY,
+      canvasWidth,
+      canvasHeight,
+    };
+  }
+
+  /**
+   * Convert world coords to canvas CSS-pixel screen coords (zoom-aware).
+   * @param {number} worldX
+   * @param {number} worldY
+   * @returns {{x: number, y: number}}
+   */
+  worldToScreen(worldX, worldY) {
+    const z = this.getMapZoom();
+    const cx = (this.canvasCssWidth ?? 0) / 2;
+    const cy = (this.canvasCssHeight ?? 0) / 2;
+    const logicalX = worldX + this.offsetX;
+    const logicalY = worldY + this.offsetY;
+    return {
+      x: (logicalX - cx) * z + cx,
+      y: (logicalY - cy) * z + cy,
     };
   }
 
@@ -4953,7 +6665,7 @@ export class Renderer {
     return this.isInViewport(screenX, screenY, hexRadius * 2 + margin);
   }
 
-  drawHex(x, y, fillColor, strokeColor, lineWidth = 1, backgroundImage = null) {
+  drawHex(x, y, fillColor, strokeColor, lineWidth = 1, backgroundImage = null, tintColor = null) {
     const vertices = getHexVertices(x, y);
     
     // Draw background image if provided
@@ -4981,6 +6693,24 @@ export class Renderer {
       
       // Draw image with fixed width and auto height (preserves aspect ratio)
       this.ctx.drawImage(backgroundImage, imageX, imageY, imageWidth, imageHeight);
+
+      // Per-path hue shift (board tint colors) — only over the hex tile body
+      if (tintColor) {
+        this.ctx.save();
+        this.ctx.beginPath();
+        this.ctx.moveTo(vertices[0].x, vertices[0].y);
+        for (let i = 1; i < vertices.length; i++) {
+          this.ctx.lineTo(vertices[i].x, vertices[i].y);
+        }
+        this.ctx.closePath();
+        this.ctx.clip();
+        // Keep sprite luminance; pull hue/sat toward this path's board tint
+        this.ctx.globalCompositeOperation = 'color';
+        this.ctx.globalAlpha = 0.96;
+        this.ctx.fillStyle = tintColor;
+        this.ctx.fill();
+        this.ctx.restore();
+      }
     } else if (fillColor) {
       // Fallback to solid color fill if no image or image not loaded
       // Create hex path for solid fill
@@ -5015,20 +6745,6 @@ export class Renderer {
   drawGrid(gridSystem) {
     if (!this.isBuildingGridCache) {
       // Failsafe: every 2s when town is not burning, invalidate cache if it still thinks town was burning
-      // Ensures red borders can never get stuck if cache ever falls out of sync
-      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-      if ((now - this.lastTownBorderFailsafeCheck) > 2000) {
-        this.lastTownBorderFailsafeCheck = now;
-        const townHexCoordsForFailsafe = [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 0, r: -1 }, { q: -1, r: 0 }, { q: 0, r: 1 }, { q: 1, r: -1 }, { q: -1, r: 1 }];
-        const isTownBurningNow = townHexCoordsForFailsafe.some(({ q, r }) => {
-          const hex = gridSystem.getHex(q, r);
-          return hex && hex.isBurning === true;
-        });
-        if (!isTownBurningNow && this.gridStaticCache?.townHexesBurning) {
-          this.gridStaticCache = null; // Force rebuild to clear any stale red
-        }
-      }
-
       const needsRenderCache =
         !this.gridRenderCache ||
         this.gridRenderCache.hexRadius !== CONFIG.HEX_RADIUS ||
@@ -5039,27 +6755,29 @@ export class Renderer {
 
       const cache = this.gridStaticCache;
       const structureVersion = gridSystem.structureVersion || 0;
-      // Include town burning state so cache is invalidated when fires are extinguished (prevents stuck red borders)
-      const townHexCoords = [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 0, r: -1 }, { q: -1, r: 0 }, { q: 0, r: 1 }, { q: 1, r: -1 }, { q: -1, r: 1 }];
-      const isAnyTownHexBurning = townHexCoords.some(({ q, r }) => {
-        const hex = gridSystem.getHex(q, r);
-        return hex && hex.isBurning === true;
-      });
+      // viewport-sized static cache can't cover zoom-out (more world visible).
+      // Skip the blit and draw live whenever zoom !== 1 so outer hexes aren't missing.
+      const mapZoom = this.getMapZoom();
+      const canUseStaticCache = mapZoom === 1;
+      // Town/grove burning is drawn dynamically (borders + center flash) after the blit —
+      // do NOT invalidate the full-map static cache when grove ignites/clears (provoked-burn
+      // used to force a complete rebuild every time the grove caught fire).
       const needsStaticCache =
+        canUseStaticCache && (
         !cache ||
         cache.hexRadius !== CONFIG.HEX_RADIUS ||
         cache.structureVersion !== structureVersion ||
-        cache.townHexesBurning !== isAnyTownHexBurning ||
         cache.width !== (this.canvasCssWidth ?? (this.canvas.width / (this.dpr || 1))) ||
         cache.height !== (this.canvasCssHeight ?? (this.canvas.height / (this.dpr || 1))) ||
         cache.offsetX !== this.offsetX ||
-        cache.offsetY !== this.offsetY;
+        cache.offsetY !== this.offsetY
+        );
 
       if (needsStaticCache) {
         this.buildGridStaticCache(gridSystem);
       }
 
-      if (this.gridStaticCache?.canvas) {
+      if (canUseStaticCache && this.gridStaticCache?.canvas) {
         this.ctx.save();
         this.ctx.drawImage(
           this.gridStaticCache.canvas,
@@ -5101,6 +6819,19 @@ export class Renderer {
     }
 
     const centerNeighbors = getNeighbors(0, 0).map(hex => `${hex.q},${hex.r}`);
+
+    // Live path colors from pathSystem (not baked hex.pathColor) so palette tweaks apply
+    // immediately on cache rebuild / reload, including saves with stale pathColor strings.
+    const pathColorByHex = new Map();
+    const currentPaths = this.gameState?.pathSystem?.currentPaths;
+    if (currentPaths && this.gameState.pathSystem?.getPathColor) {
+      currentPaths.forEach((path, pathIndex) => {
+        const color = this.gameState.pathSystem.getPathColor(pathIndex);
+        path.forEach(({ q, r }) => {
+          pathColorByHex.set(`${q},${r}`, color);
+        });
+      });
+    }
     
     // Viewport culling: only render hexes that are visible (with margin for smooth scrolling)
     this.gridRenderCache.hexPositions.forEach(({ q, r, worldX, worldY }) => {
@@ -5120,6 +6851,10 @@ export class Renderer {
       if (!hex) {
         return;
       }
+
+      const livePathColor = hex.isPath
+        ? (pathColorByHex.get(`${q},${r}`) || hex.pathColor || CONFIG.COLOR_PATH)
+        : null;
       
       // Determine hex color based on state
       let fillColor = CONFIG.COLOR_HEX_NORMAL;
@@ -5127,7 +6862,7 @@ export class Renderer {
       let strokeColor = 'rgba(255, 255, 255, 0.125)';
       
       if (hex.isPath) {
-        fillColor = hex.pathColor || CONFIG.COLOR_PATH;
+        fillColor = livePathColor;
         strokeColor = 'rgba(255, 255, 255, 0.125)'; // White with 50% opacity for path hexes
       }
       
@@ -5162,7 +6897,8 @@ export class Renderer {
         // Draw the hex background with the appropriate color/image (path, normal, or town_ring)
         // Use the correct border color and width (path border if path or town, normal border otherwise)
         const borderWidth = (hex.isPath || hex.isTown) ? 2 : 1; // Path and town hexes need thicker borders
-        this.drawHex(screenX, screenY, fillColor, strokeColor, borderWidth, backgroundImage);
+        const pathTint = livePathColor;
+        this.drawHex(screenX, screenY, fillColor, strokeColor, borderWidth, backgroundImage, pathTint);
         // Tower icon will be drawn on top in drawTower()
         return;
       }
@@ -5196,7 +6932,9 @@ export class Renderer {
         // (gridSystem.isAnyTownHexBurning) instead of scanning the (potentially huge) burning hex list.
         let isAnyTownHexBurning = false;
         if (this.gameState?.gridSystem) {
-          isAnyTownHexBurning = this.gameState.gridSystem.isAnyTownHexBurning();
+          isAnyTownHexBurning = this.gameState.gridSystem.isAnyTownHexBurning(
+            this.gameState.vortexSystem
+          );
         }
         
         // Always draw the green town background (fire will be drawn on top by drawFires)
@@ -5256,8 +6994,9 @@ export class Renderer {
       const variation = this.getHexVariation(hex.q, hex.r, maxVariations);
       const backgroundImage = this.getHexBackgroundSprite(hexType, variation);
       
-      // Draw hex background and border first
-      this.drawHex(screenX, screenY, fillColor, strokeColor, lineWidth, backgroundImage);
+      // Draw hex background and border first (path tiles get a per-path hue tint)
+      const pathTint = livePathColor;
+      this.drawHex(screenX, screenY, fillColor, strokeColor, lineWidth, backgroundImage, pathTint);
       
       // Don't draw spawners here - they'll be drawn later in redrawAllSpawners() 
       // to ensure they're not covered by borders or other elements
@@ -5779,6 +7518,8 @@ export class Renderer {
 
     for (let i = 0; i < burningHexes.length; i++) {
       const hex = burningHexes[i];
+      // Vortexes draw their own draining fill + icon overlay
+      if (hex.hasVortex) continue;
       const { x, y } = axialToPixel(hex.q, hex.r);
       const screenX = x + this.offsetX;
       const screenY = y + this.offsetY;
@@ -5808,7 +7549,7 @@ export class Renderer {
         this.drawHex(screenX, screenY, null, borderColor, 2);
       }
       
-      // Fire glow and animation removed - only background color draining effect remains
+      // Organic warble + hot core replace the old solid fill (see drawDrainingFireHexWithKey)
       
       // Draw fire type text and countdown timer (only when SHOW_FIRE_HEALTH_ON_HEX is true)
       if (CONFIG.SHOW_FIRE_HEALTH_ON_HEX) {
@@ -5896,11 +7637,11 @@ export class Renderer {
    * @param {number} fillLevel - Fill level (0.0 to 1.0)
    * @param {string} animationKey - Unique animation key to prevent interference
    * @param {number} inset - Optional inset in pixels to show underlying hex border (default: 0)
+   * @param {number} [opacity=0.75]
    */
   drawDrainingFireHexWithKey(x, y, color, fillLevel, animationKey, inset = 0, opacity = 0.75) {
     // Use inset to show underlying hex border and color
     const fireRadius = CONFIG.HEX_RADIUS - inset;
-    const vertices = getHexVertices(x, y, fireRadius);
 
     // Clamp fillLevel to valid range
     const clampedFillLevel = fillLevel < 0 ? 0 : (fillLevel > 1 ? 1 : fillLevel);
@@ -5910,6 +7651,12 @@ export class Renderer {
 
     // Resolve color + opacity once (memoized).
     const colorWithOpacity = this._cachedColorWithOpacity(color, opacity);
+
+    // Organic edge warble for burning fires / vortex fills (not town grove, not reduced mode).
+    const useOrganic =
+      !this.isSimplifiedFireVisualsEnabled() &&
+      (typeof animationKey === 'string') &&
+      (animationKey.startsWith('fire-') || animationKey.startsWith('vortex-'));
 
     // Common-case fast path: fire is "full" (no drain to clip). Skips the save/clip/restore
     // overhead. At hundreds of burning hexes per frame this is ~4 fewer canvas state ops per fire.
@@ -5926,25 +7673,404 @@ export class Renderer {
       this.ctx.clip();
     }
 
-    // Hex path (clipped to fillRect when not full)
-    this.ctx.beginPath();
-    this.ctx.moveTo(vertices[0].x, vertices[0].y);
-    for (let i = 1; i < vertices.length; i++) {
-      this.ctx.lineTo(vertices[i].x, vertices[i].y);
+    if (useOrganic) {
+      this._pathOrganicFireHex(x, y, fireRadius, animationKey);
+    } else {
+      const vertices = getHexVertices(x, y, fireRadius);
+      this.ctx.beginPath();
+      this.ctx.moveTo(vertices[0].x, vertices[0].y);
+      for (let i = 1; i < vertices.length; i++) {
+        this.ctx.lineTo(vertices[i].x, vertices[i].y);
+      }
+      this.ctx.closePath();
     }
-    this.ctx.closePath();
 
     this.ctx.fillStyle = colorWithOpacity;
     this.ctx.fill();
 
-    // Border: white 50% for default hex border (inset = 0), fire-color for animated drains.
+    // Border while current path is still the fire hex (hot core must come after stroke).
     this.ctx.strokeStyle = inset === 0 ? 'rgba(255, 255, 255, 0.125)' : colorWithOpacity;
     this.ctx.lineWidth = 2;
     this.ctx.stroke();
 
+    // Soft hot core on top of the fill (full organic visuals only)
+    if (useOrganic) {
+      this._drawFireHotCore(x, y, fireRadius, animationKey, color, opacity);
+    }
+
     if (!isFull) {
       this.ctx.restore();
     }
+  }
+
+  /**
+   * Phase seed from animation keys like `fire-3,-1` / `vortex-2,4`.
+   * @param {string} animationKey
+   * @returns {number}
+   */
+  _firePhaseFromKey(animationKey) {
+    const m = /(-?\d+)\s*,\s*(-?\d+)/.exec(animationKey || '');
+    if (!m) return 0;
+    return Number(m[1]) * 2.17 + Number(m[2]) * 3.41;
+  }
+
+  /**
+   * Build a warped fire hex path (radial vertex wobble + mid-edge bulges via quadratic curves).
+   * Writes into scratch buffers — zero GC per call.
+   * @param {number} x
+   * @param {number} y
+   * @param {number} radius
+   * @param {string} animationKey
+   */
+  _pathOrganicFireHex(x, y, radius, animationKey) {
+    const phase = this._firePhaseFromKey(animationKey);
+    const time = this.flashAnimationTime || 0;
+    // Prior flame-speed × 1.5; warble amplitude halved
+    const t1 = time * 10.8 + phase;
+    const t2 = time * 15.6 + phase * 1.37;
+
+    const vx = this._fireVertX;
+    const vy = this._fireVertY;
+    const mx = this._fireMidX;
+    const my = this._fireMidY;
+
+    // Vertices: breathe in/out along radial direction (keeps shape hex-like but alive)
+    for (let i = 0; i < 6; i++) {
+      const radial =
+        1 +
+        0.025 * Math.sin(t1 + i * 1.73) +
+        0.016 * Math.sin(t2 + i * 2.41);
+      vx[i] = x + radius * _FIRE_HEX_COS[i] * radial;
+      vy[i] = y + radius * _FIRE_HEX_SIN[i] * radial;
+    }
+
+    // Mid-edge control points: bulge outward / inward for organic flame tongues
+    for (let i = 0; i < 6; i++) {
+      const j = (i + 1) % 6;
+      const midX = (vx[i] + vx[j]) * 0.5;
+      const midY = (vy[i] + vy[j]) * 0.5;
+      let nx = midX - x;
+      let ny = midY - y;
+      const nlen = Math.hypot(nx, ny) || 1;
+      nx /= nlen;
+      ny /= nlen;
+      const bulge =
+        radius * (0.03 * Math.sin(t1 * 1.45 + i * 2.05) + 0.02 * Math.cos(t2 + i * 1.6));
+      mx[i] = midX + nx * bulge;
+      my[i] = midY + ny * bulge;
+    }
+
+    const ctx = this.ctx;
+    ctx.beginPath();
+    ctx.moveTo(vx[0], vy[0]);
+    for (let i = 0; i < 6; i++) {
+      const next = (i + 1) % 6;
+      ctx.quadraticCurveTo(mx[i], my[i], vx[next], vy[next]);
+    }
+    ctx.closePath();
+  }
+
+  /**
+   * Soft radial hot-core glow — white-hot center fading into the fire color (no hard circles).
+   * @param {number} x
+   * @param {number} y
+   * @param {number} radius
+   * @param {string} animationKey
+   * @param {string} color
+   * @param {number} opacity
+   */
+  _drawFireHotCore(x, y, radius, animationKey, color, opacity) {
+    const phase = this._firePhaseFromKey(animationKey);
+    const time = this.flashAnimationTime || 0;
+    const bob = Math.sin(time * 7.5 + phase) * radius * 0.04;
+    const pulse = 0.88 + 0.12 * Math.sin(time * 9.2 + phase * 0.7);
+    const cx = x;
+    const cy = y + bob * 0.55 - radius * 0.04;
+    const op = Math.max(0.35, Math.min(1, opacity));
+    // Prior 0.55 → +50% to 0.825 → +25% again to ~1.031
+    const glowR = radius * 1.03125 * pulse;
+
+    const sprite = this._getFireHotCoreSprite(color);
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    // Sprite is baked at peak stop alphas (~1.0 / 0.67 / …); modulate to match prior 0.72*op*pulse peak.
+    ctx.globalAlpha = Math.min(1, 0.72 * op * pulse);
+    const drawW = glowR * 0.92 * 2;
+    const drawH = glowR * 2;
+    ctx.drawImage(sprite.canvas, cx - drawW * 0.5, cy - drawH * 0.5, drawW, drawH);
+    ctx.restore();
+  }
+
+  /**
+   * Light upward flame sparks from ordinary burning hexes.
+   * Far quieter than vortex embers / dungeon smoulder — just enough to sell "on fire".
+   * Fully skipped when Simple fire is on.
+   */
+
+  _acquireFireHexSpark() {
+    return this.fireHexSparkPool.pop() || {};
+  }
+
+  _clearFireHexSparks() {
+    const particles = this.fireHexSparks;
+    for (let i = 0; i < particles.length; i++) {
+      this.fireHexSparkPool.push(particles[i]);
+    }
+    particles.length = 0;
+    this._fireHexSparkSpawnAcc.clear();
+  }
+
+  /**
+   * Parse fire fill color into RGB for spark palette (memoized).
+   * @param {string} color
+   * @returns {{r:number,g:number,b:number,coreR:number,coreG:number,coreB:number}}
+   */
+  _fireSparkPaletteFromColor(color) {
+    if (!this._fireSparkPaletteCache) this._fireSparkPaletteCache = new Map();
+    let pal = this._fireSparkPaletteCache.get(color);
+    if (pal) return pal;
+
+    let r = 255;
+    let g = 140;
+    let b = 40;
+    const hex = /^#?([0-9a-f]{6})$/i.exec(String(color).trim());
+    if (hex) {
+      const n = parseInt(hex[1], 16);
+      r = (n >> 16) & 255;
+      g = (n >> 8) & 255;
+      b = n & 255;
+    } else {
+      const hsl = /^hsl\(\s*([\d.]+)\s*,\s*([\d.]+)%\s*,\s*([\d.]+)%\s*\)$/i.exec(String(color).trim());
+      if (hsl) {
+        const rgb = this._hslToRgb(Number(hsl[1]) / 360, Number(hsl[2]) / 100, Number(hsl[3]) / 100);
+        r = rgb.r;
+        g = rgb.g;
+        b = rgb.b;
+      }
+    }
+    pal = {
+      r,
+      g,
+      b,
+      coreR: Math.min(255, Math.round(r + (255 - r) * 0.7)),
+      coreG: Math.min(255, Math.round(g + (255 - g) * 0.65)),
+      coreB: Math.min(255, Math.round(b + (255 - b) * 0.55)),
+    };
+    this._fireSparkPaletteCache.set(color, pal);
+    return pal;
+  }
+
+  /**
+   * @param {number} deltaTime
+   */
+  updateFireHexSparks(deltaTime) {
+    if (this.isSimplifiedFireVisualsEnabled()) {
+      if (this.fireHexSparks.length || this._fireHexSparkSpawnAcc.size) this._clearFireHexSparks();
+      return;
+    }
+
+    const dt = Math.max(0, Math.min(0.05, Number(deltaTime) || 0));
+    const particles = this.fireHexSparks;
+
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.life -= dt;
+      if (p.life <= 0) {
+        this._swapRemoveParticle(particles, i, this.fireHexSparkPool);
+        continue;
+      }
+      p.vx += (p.ax || 0) * dt;
+      p.vy += (p.ay || 0) * dt;
+      p.vx *= p.friction || 0.98;
+      p.vy *= p.friction || 0.98;
+      p.ox += p.vx * dt;
+      p.oy += p.vy * dt;
+    }
+
+    if (dt <= 0) return;
+
+    const burning = this.gameState?.gridSystem?.getBurningHexes?.() || [];
+    if (!burning.length) {
+      if (this._fireHexSparkSpawnAcc.size) this._fireHexSparkSpawnAcc.clear();
+      return;
+    }
+
+    const activeIds = this._scratchActiveIds;
+    activeIds.clear();
+    // Quiet vs vault(360) / vortex(640) — light accent only
+    const MAX_SPARKS = 250;
+    const hexR = CONFIG.HEX_RADIUS || 40;
+    // ~3.1 sparks/sec/hex when visible (+25%); hard-cap burst so dense fires don't spike
+    const SPAWN_RATE = 3.125;
+
+    for (let i = 0; i < burning.length; i++) {
+      const hex = burning[i];
+      if (!hex || hex.hasVortex) continue; // vortexes have their own ember system
+
+      const { x, y } = axialToPixel(hex.q, hex.r);
+      const screenX = x + this.offsetX;
+      const screenY = y + this.offsetY;
+      if (!this.isHexInViewport(screenX, screenY)) continue;
+
+      const id = `${hex.q},${hex.r}`;
+      activeIds.add(id);
+
+      let credit = this._fireHexSparkSpawnAcc.get(id) || 0;
+      credit += SPAWN_RATE * dt;
+      const toSpawn = Math.min(Math.floor(credit), 2);
+      credit -= toSpawn;
+      this._fireHexSparkSpawnAcc.set(id, credit);
+
+      if (toSpawn <= 0 || particles.length >= MAX_SPARKS) continue;
+
+      const fillColor = getFireTypeDisplayColor(hex.fireType);
+      const pal = this._fireSparkPaletteFromColor(fillColor);
+
+      for (let s = 0; s < toSpawn && particles.length < MAX_SPARKS; s++) {
+        const p = this._acquireFireHexSpark();
+        p.hexQ = hex.q;
+        p.hexR = hex.r;
+        p.sourceId = id;
+        // Birth across more of the fill (+25% spread from center)
+        p.ox = (Math.random() - 0.5) * hexR * 0.5625;
+        p.oy = (Math.random() - 0.5) * hexR * 0.25 + hexR * 0.08;
+        p.vx = (Math.random() - 0.5) * 22;
+        // Stronger upward launch so sparks travel clearly above the hex
+        p.vy = -(55 + Math.random() * 70);
+        p.ax = (Math.random() - 0.5) * 10;
+        p.ay = 28 + Math.random() * 25; // lighter gravity → stays aloft longer
+        p.friction = 0.988;
+        p.life = 0.45 + Math.random() * 0.4;
+        p.maxLife = p.life;
+        // Wider size range: same max (~5.2), much smaller floor
+        p.size = 0.7 + Math.random() * 4.5;
+        p.r = pal.r;
+        p.g = pal.g;
+        p.b = pal.b;
+        p.coreR = pal.coreR;
+        p.coreG = pal.coreG;
+        p.coreB = pal.coreB;
+        particles.push(p);
+      }
+    }
+
+    for (const id of this._fireHexSparkSpawnAcc.keys()) {
+      if (!activeIds.has(id)) this._fireHexSparkSpawnAcc.delete(id);
+    }
+  }
+
+  /**
+   * Draw light upward sparks from ordinary burning hexes (additive streaks).
+   */
+  drawFireHexSparks() {
+    if (this.isSimplifiedFireVisualsEnabled()) return;
+    const particles = this.fireHexSparks;
+    if (!particles.length) return;
+
+    const ctx = this.ctx;
+    const hexCache = this._particleHexScreenCache;
+    hexCache.clear();
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      const base = this._hexScreenCached(p.hexQ, p.hexR, hexCache);
+      const screenX = base.x + p.ox;
+      const screenY = base.y + p.oy;
+      if (!this.isHexInViewport(screenX, screenY)) continue;
+
+      const alpha = Math.max(0, p.life / p.maxLife);
+      if (alpha <= 0.04) continue;
+
+      const size = Math.max(0.7, p.size * (0.55 + alpha * 0.65));
+      const speed = Math.hypot(p.vx, p.vy) || 1;
+      const angle = Math.atan2(p.vy, p.vx);
+      const streak = Math.min(11, 2.2 + speed * 0.04);
+      const sprite = this._getMapFxStreakSprite(p.r, p.g, p.b);
+      const thick = Math.max(1.2, size);
+
+      ctx.save();
+      ctx.translate(screenX, screenY);
+      ctx.rotate(angle);
+      ctx.globalAlpha = Math.min(1, alpha * 0.9);
+      ctx.drawImage(sprite.canvas, -streak, -thick * 0.5, streak * 2, thick);
+      // Hot core — small spark sprite
+      const core = this._getMapFxSparkSprite(p.coreR, p.coreG, p.coreB);
+      const coreSize = size * 1.7;
+      ctx.globalAlpha = Math.min(1, alpha * 0.95);
+      ctx.drawImage(core.canvas, -coreSize * 0.5, -coreSize * 0.5, coreSize, coreSize);
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  /**
+   * Lerp a CSS color toward white (memoized via opacity cache keying on result string path).
+   * @param {string} color
+   * @param {number} amount 0..1
+   * @returns {string} rgb(...)
+   */
+  _mixColorTowardWhite(color, amount) {
+    const a = Math.max(0, Math.min(1, amount));
+    const key = `${color}|w${a.toFixed(2)}`;
+    if (!this._fireHotColorCache) this._fireHotColorCache = new Map();
+    let cached = this._fireHotColorCache.get(key);
+    if (cached) return cached;
+
+    let r = 255;
+    let g = 160;
+    let b = 40;
+    const hex = /^#?([0-9a-f]{6})$/i.exec(String(color).trim());
+    if (hex) {
+      const n = parseInt(hex[1], 16);
+      r = (n >> 16) & 255;
+      g = (n >> 8) & 255;
+      b = n & 255;
+    } else {
+      const hsl = /^hsl\(\s*([\d.]+)\s*,\s*([\d.]+)%\s*,\s*([\d.]+)%\s*\)$/i.exec(String(color).trim());
+      if (hsl) {
+        const rgb = this._hslToRgb(Number(hsl[1]) / 360, Number(hsl[2]) / 100, Number(hsl[3]) / 100);
+        r = rgb.r;
+        g = rgb.g;
+        b = rgb.b;
+      }
+    }
+    r = Math.round(r + (255 - r) * a);
+    g = Math.round(g + (255 - g) * a);
+    b = Math.round(b + (255 - b) * a);
+    cached = `rgb(${r},${g},${b})`;
+    this._fireHotColorCache.set(key, cached);
+    return cached;
+  }
+
+  /**
+   * @param {number} h 0..1
+   * @param {number} s 0..1
+   * @param {number} l 0..1
+   * @returns {{r:number,g:number,b:number}}
+   */
+  _hslToRgb(h, s, l) {
+    if (s === 0) {
+      const v = Math.round(l * 255);
+      return { r: v, g: v, b: v };
+    }
+    const hue2rgb = (p, q, t) => {
+      let tt = t;
+      if (tt < 0) tt += 1;
+      if (tt > 1) tt -= 1;
+      if (tt < 1 / 6) return p + (q - p) * 6 * tt;
+      if (tt < 1 / 2) return q;
+      if (tt < 2 / 3) return p + (q - p) * (2 / 3 - tt) * 6;
+      return p;
+    };
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    return {
+      r: Math.round(hue2rgb(p, q, h + 1 / 3) * 255),
+      g: Math.round(hue2rgb(p, q, h) * 255),
+      b: Math.round(hue2rgb(p, q, h - 1 / 3) * 255),
+    };
   }
 
   /**
@@ -6080,6 +8206,7 @@ export class Renderer {
     if (currentHealth >= maxHealth) {
       if (animationKey) {
         this.animatedValues.delete(animationKey);
+        this.linearAnimatedValues.delete(animationKey);
       }
       return;
     }
@@ -6089,8 +8216,14 @@ export class Renderer {
     barHeight *= scale;
 
     const targetPercent = Math.max(0, Math.min(1, currentHealth / maxHealth));
+    // Short settle window — HP is applied per-frame now; keep a light ease, not a 1s coast.
+    const tickSec = 0.12;
+    const hintOpts =
+      options != null && Object.prototype.hasOwnProperty.call(options, 'hintVelocity')
+        ? { hintVelocity: Number(options.hintVelocity) || 0 }
+        : {};
     const healthPercent = animationKey
-      ? this.getAnimatedValue(animationKey, targetPercent, this.deltaTime || 0.016)
+      ? this.getLinearAnimatedValue(animationKey, targetPercent, this.deltaTime || 0.016, tickSec, hintOpts)
       : targetPercent;
     const barX = x - barWidth / 2;
     const barY = y - 8 * scale; // Position above the anchor point
@@ -6135,11 +8268,13 @@ export class Renderer {
       return;
     }
 
-    // Check if any town hexes are actually burning. Use the 7-hex town cluster cache
-    // (gridSystem.isAnyTownHexBurning) instead of scanning the (potentially huge) burning hex list.
+    // Check if any town hexes are actually burning / hosting a live vortex.
+    // Use the 7-hex town cluster cache instead of scanning the burning hex list.
     let isAnyTownHexBurning = false;
     if (this.gameState?.gridSystem) {
-      isAnyTownHexBurning = this.gameState.gridSystem.isAnyTownHexBurning();
+      isAnyTownHexBurning = this.gameState.gridSystem.isAnyTownHexBurning(
+        this.gameState.vortexSystem
+      );
     }
 
     let townColor = CONFIG.COLOR_TOWN;
@@ -6162,49 +8297,31 @@ export class Renderer {
    * @param {GridSystem} gridSystem - The grid system
    */
   drawTownHexFireBorders(gridSystem) {
-    if (!this.gameState?.gridSystem) return;
-    
-    // Robust check: read directly from grid for each town hex (avoids cache sync issues)
-    // Only show red borders when at least one grove hex actually has isBurning === true
-    const townHexCoords = [
-      { q: 0, r: 0 }, { q: 1, r: 0 }, { q: 0, r: -1 }, { q: -1, r: 0 },
-      { q: 0, r: 1 }, { q: 1, r: -1 }, { q: -1, r: 1 }
-    ];
-    const isAnyTownHexBurning = townHexCoords.some(({ q, r }) => {
-      const hex = gridSystem.getHex(q, r);
-      return hex && hex.isBurning === true;
-    });
-    
-    if (isAnyTownHexBurning) {
-      // Calculate flashing color once for all edges to ensure they flash in sync
-      const redColor = this.getFlashingColor('#FF0000', '#FF6666', 3.0);
-      const allTownHexes = gridSystem.getAllTownHexes();
-      
-      // For each town hex, draw all 6 edges with a thick red flashing border
-      allTownHexes.forEach(townHex => {
-        const { x, y } = axialToPixel(townHex.q, townHex.r);
-        const screenX = x + this.offsetX;
-        const screenY = y + this.offsetY;
-        
-        // Get vertices for this hex
-        const vertices = getHexVertices(screenX, screenY);
-        
-        // Draw all 6 edges of the hex
-        this.ctx.save();
-        this.ctx.strokeStyle = redColor;
-        this.ctx.lineWidth = 5; // Thick, noticeable border
-        this.ctx.lineCap = 'round';
-        this.ctx.lineJoin = 'round';
-        this.ctx.beginPath();
-        this.ctx.moveTo(vertices[0].x, vertices[0].y);
-        for (let i = 1; i < vertices.length; i++) {
-          this.ctx.lineTo(vertices[i].x, vertices[i].y);
-        }
-        this.ctx.closePath();
-        this.ctx.stroke();
-        this.ctx.restore();
-      });
+    // Runs every frame while grove is lit (common during provoked-burn) — keep this cheap.
+    // Pass vortexSystem so stale hasVortex flags don't leave red borders stuck on.
+    if (!gridSystem?.isAnyTownHexBurning?.(this.gameState?.vortexSystem)) return;
+
+    const redColor = this.getFlashingColor('#FF0000', '#FF6666', 3.0);
+    const allTownHexes = gridSystem.getAllTownHexes();
+
+    this.ctx.save();
+    this.ctx.strokeStyle = redColor;
+    this.ctx.lineWidth = 5;
+    this.ctx.lineCap = 'round';
+    this.ctx.lineJoin = 'round';
+    for (let h = 0; h < allTownHexes.length; h++) {
+      const townHex = allTownHexes[h];
+      const { x, y } = axialToPixel(townHex.q, townHex.r);
+      const vertices = getHexVertices(x + this.offsetX, y + this.offsetY);
+      this.ctx.beginPath();
+      this.ctx.moveTo(vertices[0].x, vertices[0].y);
+      for (let i = 1; i < vertices.length; i++) {
+        this.ctx.lineTo(vertices[i].x, vertices[i].y);
+      }
+      this.ctx.closePath();
+      this.ctx.stroke();
     }
+    this.ctx.restore();
   }
 
   drawTownCenterGraphic(centerHex, screenX, screenY) {
@@ -6262,11 +8379,6 @@ export class Renderer {
     this.ctx = prevCtx;
     this.isBuildingGridCache = prevIsBuilding;
 
-    const townHexCoords = [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 0, r: -1 }, { q: -1, r: 0 }, { q: 0, r: 1 }, { q: 1, r: -1 }, { q: -1, r: 1 }];
-    const townHexesBurning = townHexCoords.some(({ q, r }) => {
-      const hex = gridSystem.getHex(q, r);
-      return hex && hex.isBurning === true;
-    });
     this.gridStaticCache = {
       canvas,
       width: w,
@@ -6275,7 +8387,6 @@ export class Renderer {
       offsetY: this.offsetY,
       structureVersion: gridSystem.structureVersion || 0,
       hexRadius: CONFIG.HEX_RADIUS,
-      townHexesBurning,
     };
   }
 
@@ -6411,11 +8522,156 @@ export class Renderer {
   }
 
   /**
+   * Draw a tower's power-level base sprite (no turret).
+   * @param {Object} tower
+   * @param {boolean} [isSelected=false]
+   */
+  drawTowerBase(tower, isSelected = false) {
+    if (!tower) return;
+    const { x, y } = axialToPixel(tower.q, tower.r);
+    const screenX = x + this.offsetX;
+    const screenY = y + this.offsetY;
+
+    if (!isSelected && !this.isHexInViewport(screenX, screenY)) {
+      return;
+    }
+
+    const usesBaseTurret =
+      tower.type === CONFIG.TOWER_TYPE_PULSING ||
+      tower.type === CONFIG.TOWER_TYPE_RAIN ||
+      tower.type === CONFIG.TOWER_TYPE_SPREAD ||
+      tower.type === CONFIG.TOWER_TYPE_JET ||
+      tower.type === CONFIG.TOWER_TYPE_BOMBER ||
+      tower.type === CONFIG.TOWER_TYPE_SENTINEL ||
+      tower.type === CONFIG.TOWER_TYPE_PERIMETER ||
+      tower.type === CONFIG.TOWER_TYPE_CHARGE;
+    if (!usesBaseTurret) return;
+
+    const powerLevel = tower.powerLevel || 1;
+    const baseSprite = this.loadTowerSprite(tower.type, 'power', powerLevel);
+    // Power level 1 uses a 1×1 transparent placeholder — nothing to draw
+    if (!(powerLevel > 1 && baseSprite && baseSprite.complete && baseSprite.naturalWidth > 0)) {
+      return;
+    }
+
+    this.ctx.save();
+    this.ctx.translate(screenX, screenY);
+
+    let baseSizeMultiplier = 3.8709 * 0.5 * 0.9; // Base: 45% of original
+    if (powerLevel === 2) {
+      baseSizeMultiplier *= 0.85;
+    } else if (powerLevel === 3) {
+      baseSizeMultiplier *= 0.9;
+    } else if (powerLevel === 4) {
+      baseSizeMultiplier *= 1.2;
+    }
+    baseSizeMultiplier *= CONFIG.MAP_TOWER_SPRITE_SCALE ?? 1;
+
+    const baseSize = CONFIG.HEX_RADIUS * baseSizeMultiplier;
+    const baseDrawSize = Math.round(baseSize);
+    const baseOffsetY =
+      (tower.type === CONFIG.TOWER_TYPE_RAIN ||
+        tower.type === CONFIG.TOWER_TYPE_PULSING ||
+        tower.type === CONFIG.TOWER_TYPE_SENTINEL ||
+        tower.type === CONFIG.TOWER_TYPE_PERIMETER) &&
+      powerLevel === 1
+        ? -3
+        : 0;
+
+    const isRainOrPulsing =
+      tower.type === CONFIG.TOWER_TYPE_RAIN ||
+      tower.type === CONFIG.TOWER_TYPE_PULSING ||
+      tower.type === CONFIG.TOWER_TYPE_SENTINEL ||
+      tower.type === CONFIG.TOWER_TYPE_PERIMETER;
+    const shouldDarkenBase =
+      tower.type === CONFIG.TOWER_TYPE_JET ||
+      tower.type === CONFIG.TOWER_TYPE_SPREAD ||
+      tower.type === CONFIG.TOWER_TYPE_BOMBER ||
+      tower.type === CONFIG.TOWER_TYPE_CHARGE ||
+      isRainOrPulsing;
+
+    if (shouldDarkenBase) {
+      let brightnessMultiplier = 0.6;
+      if (tower.type === CONFIG.TOWER_TYPE_RAIN) {
+        brightnessMultiplier = 0.8;
+      } else if (tower.type === CONFIG.TOWER_TYPE_PULSING) {
+        brightnessMultiplier = 0.9;
+      } else if (tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER) {
+        brightnessMultiplier = 0.8;
+      }
+
+      if (tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER) {
+        this._drawSmoothTowerSprite(
+          baseSprite,
+          -baseDrawSize / 2,
+          -baseDrawSize / 2 + baseOffsetY,
+          baseDrawSize,
+          baseDrawSize,
+          brightnessMultiplier
+        );
+      } else {
+        const darkenedSprite = this.getDarkenedTowerSprite(baseSprite, baseDrawSize, brightnessMultiplier);
+        if (darkenedSprite) {
+          this.ctx.drawImage(
+            darkenedSprite,
+            -baseDrawSize / 2,
+            -baseDrawSize / 2 + baseOffsetY,
+            baseDrawSize,
+            baseDrawSize
+          );
+        } else {
+          this.ctx.drawImage(
+            baseSprite,
+            -baseDrawSize / 2,
+            -baseDrawSize / 2 + baseOffsetY,
+            baseDrawSize,
+            baseDrawSize
+          );
+        }
+      }
+    } else if (tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER) {
+      this._drawSmoothTowerSprite(
+        baseSprite,
+        -baseDrawSize / 2,
+        -baseDrawSize / 2 + baseOffsetY,
+        baseDrawSize,
+        baseDrawSize,
+        0.8
+      );
+    } else {
+      this.ctx.drawImage(
+        baseSprite,
+        -baseDrawSize / 2,
+        -baseDrawSize / 2 + baseOffsetY,
+        baseDrawSize,
+        baseDrawSize
+      );
+    }
+
+    this.ctx.restore();
+  }
+
+  /**
+   * Draw all tower bases (placement-phase pass so bases sit above AOE/water overlays).
+   * @param {import('../systems/towerSystem.js').TowerSystem} towerSystem
+   */
+  drawAllTowerBases(towerSystem) {
+    if (!towerSystem?.getAllTowers) return;
+    const towers = towerSystem.getAllTowers();
+    for (let i = 0; i < towers.length; i++) {
+      const tower = towers[i];
+      const isSelected = tower.id === this.gameState?.selectedTowerId;
+      this.drawTowerBase(tower, isSelected);
+    }
+  }
+
+  /**
    * Draw a tower
    * @param {Object} tower - Tower data
    * @param {boolean} isSelected - Whether tower is selected
+   * @param {{ omitBase?: boolean }} [options] - omitBase: skip base sprite (drawn later above AOE in placement)
    */
-  drawTower(tower, isSelected = false) {
+  drawTower(tower, isSelected = false, options = {}) {
     const { x, y } = axialToPixel(tower.q, tower.r);
     const screenX = x + this.offsetX;
     const screenY = y + this.offsetY;
@@ -6462,95 +8718,18 @@ export class Renderer {
       this.drawHex(screenX, screenY, null, borderColor, finalBorderWidth);
     }
     
-    if (tower.type === CONFIG.TOWER_TYPE_PULSING || tower.type === CONFIG.TOWER_TYPE_RAIN || tower.type === CONFIG.TOWER_TYPE_SPREAD || tower.type === CONFIG.TOWER_TYPE_JET || tower.type === CONFIG.TOWER_TYPE_BOMBER || tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER || tower.type === CONFIG.TOWER_TYPE_CHARGE) {
-      // Draw tower with base + turret sprites (all types use same base + turret system)
-      const rangeLevel = tower.rangeLevel || 1;
-      const powerLevel = tower.powerLevel || 1;
-      
-      // Load sprites using naming convention: [type]_[upgrade]_[level].png
-      // Power always maps to base, range always maps to turret
-      const baseSprite = this.loadTowerSprite(tower.type, 'power', powerLevel);
-      
-      // Draw base sprite (fills the hex) — power level 1 uses a 1×1 transparent placeholder
-      if (powerLevel > 1 && baseSprite && baseSprite.complete && baseSprite.naturalWidth > 0) {
-        this.ctx.save();
-        this.ctx.translate(screenX, screenY);
-        
-        // Base size: equal for all tower types, adjusted by power level
-        let baseSizeMultiplier = 3.8709 * 0.5 * 0.9; // Base: 45% of original
-        if (powerLevel === 2) {
-          baseSizeMultiplier *= 0.85; // Reduce by 15%
-        } else if (powerLevel === 3) {
-          baseSizeMultiplier *= 0.9; // Reduce by 10%
-        } else if (powerLevel === 4) {
-          baseSizeMultiplier *= 1.2; // Increase by 20%
-        }
-        
-        // Rain and pulsing bases: match the exact same sizing rules as jet/spread/bomber (no special scaling)
-        
-        // Bases are 1:1 aspect ratio, so use same size for width and height
-        const baseSize = CONFIG.HEX_RADIUS * baseSizeMultiplier;
-        const baseDrawSize = Math.round(baseSize);
-        
-        // Rain and pulsing power level 1: shift up 3px
-        const baseOffsetY = ((tower.type === CONFIG.TOWER_TYPE_RAIN || tower.type === CONFIG.TOWER_TYPE_PULSING || tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER) && powerLevel === 1) ? -3 : 0;
-        
-        // Darken base: 40% for jet/spread/bomber, 20% for rain/pulsing (half as much darkening)
-        const isRainOrPulsing = tower.type === CONFIG.TOWER_TYPE_RAIN || tower.type === CONFIG.TOWER_TYPE_PULSING || tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER;
-        const shouldDarkenBase =
-          tower.type === CONFIG.TOWER_TYPE_JET ||
-          tower.type === CONFIG.TOWER_TYPE_SPREAD ||
-          tower.type === CONFIG.TOWER_TYPE_BOMBER ||
-          tower.type === CONFIG.TOWER_TYPE_CHARGE ||
-          isRainOrPulsing;
-        
-        if (shouldDarkenBase) {
-          // Brightness multiplier: 0.6 for jet/spread/bomber (40% darker), 0.8 for rain (20% darker), 0.9 for pulsing (10% darker, half of rain's darkening)
-          let brightnessMultiplier = 0.6; // Default for jet/spread/bomber
-          if (tower.type === CONFIG.TOWER_TYPE_RAIN) {
-            brightnessMultiplier = 0.8; // 20% darker
-          } else if (tower.type === CONFIG.TOWER_TYPE_PULSING) {
-            brightnessMultiplier = 0.9; // 10% darker (half of rain's darkening)
-          } else if (tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER) {
-            brightnessMultiplier = 0.8; // Same as rain
-          }
-          
-          if (tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER) {
-            this._drawSmoothTowerSprite(
-              baseSprite,
-              -baseDrawSize / 2,
-              -baseDrawSize / 2 + baseOffsetY,
-              baseDrawSize,
-              baseDrawSize,
-              brightnessMultiplier
-            );
-          } else {
-            const darkenedSprite = this.getDarkenedTowerSprite(baseSprite, baseDrawSize, brightnessMultiplier);
-            if (darkenedSprite) {
-              this.ctx.drawImage(darkenedSprite, -baseDrawSize / 2, -baseDrawSize / 2 + baseOffsetY, baseDrawSize, baseDrawSize);
-            } else {
-              this.ctx.drawImage(baseSprite, -baseDrawSize / 2, -baseDrawSize / 2 + baseOffsetY, baseDrawSize, baseDrawSize);
-            }
-          }
-        } else {
-          // Draw base sprite normally (shouldn't happen with current logic)
-          if (tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER) {
-            this._drawSmoothTowerSprite(
-              baseSprite,
-              -baseDrawSize / 2,
-              -baseDrawSize / 2 + baseOffsetY,
-              baseDrawSize,
-              baseDrawSize,
-              0.8
-            );
-          } else {
-            this.ctx.drawImage(baseSprite, -baseDrawSize / 2, -baseDrawSize / 2 + baseOffsetY, baseDrawSize, baseDrawSize);
-          }
-        }
-        
-        this.ctx.restore();
-      }
-      
+    if (
+      !options.omitBase &&
+      (tower.type === CONFIG.TOWER_TYPE_PULSING ||
+        tower.type === CONFIG.TOWER_TYPE_RAIN ||
+        tower.type === CONFIG.TOWER_TYPE_SPREAD ||
+        tower.type === CONFIG.TOWER_TYPE_JET ||
+        tower.type === CONFIG.TOWER_TYPE_BOMBER ||
+        tower.type === CONFIG.TOWER_TYPE_SENTINEL ||
+        tower.type === CONFIG.TOWER_TYPE_PERIMETER ||
+        tower.type === CONFIG.TOWER_TYPE_CHARGE)
+    ) {
+      this.drawTowerBase(tower, isSelected);
       // Turret will be drawn later in drawAllTowerTurrets() (after water particles for proper z-index)
     }
     
@@ -7074,6 +9253,37 @@ export class Renderer {
     this.ctx.restore();
   }
 
+  /**
+   * Soft additive halo around a water beam — cheap depth for full visuals only.
+   * Drawn once per stream axis (not stacked per hex).
+   * Caller should already be inside the water-visuals alpha scale when applicable.
+   */
+  drawWaterBeamBloom(tower, startX, startY, endX, endY) {
+    if (this.isSimplifiedWaterVisualsEnabled() || CONFIG.DISABLE_ALL_WATER_EFFECTS) return;
+    const dx = endX - startX;
+    const dy = endY - startY;
+    if (dx * dx + dy * dy < 4) return;
+
+    const powerLevel = tower.powerLevel || 1;
+    const coreWidth = 3 + (powerLevel - 1) * 3;
+
+    this.ctx.save();
+    this.ctx.globalCompositeOperation = 'lighter';
+    this.ctx.lineCap = 'round';
+    this.ctx.beginPath();
+    this.ctx.moveTo(startX, startY);
+    this.ctx.lineTo(endX, endY);
+
+    this.ctx.strokeStyle = 'rgba(110, 190, 255, 0.16)';
+    this.ctx.lineWidth = coreWidth * 3.2;
+    this.ctx.stroke();
+
+    this.ctx.strokeStyle = 'rgba(190, 235, 255, 0.1)';
+    this.ctx.lineWidth = coreWidth * 1.55;
+    this.ctx.stroke();
+    this.ctx.restore();
+  }
+
   drawTowerSpray(tower, affectedHexes, isSelected = false, isDragging = false) {
     if (!affectedHexes || affectedHexes.length === 0) return;
     
@@ -7096,9 +9306,10 @@ export class Renderer {
       typeof window !== 'undefined' ? window.gameLoop : null
     );
 
-    // Rain/pulsing AOE tint: placement phase only (not during active waves, including with Range Extender)
+    // Rain/pulsing AOE tint: placement phase only (not during active waves, including with Range Extender).
+    // Hovered tower is skipped here and redrawn later (2× opacity, above other AOE fills).
     const showAoeOverlay = this.gameState?.wave?.isPlacementPhase;
-    if (showAoeOverlay) {
+    if (showAoeOverlay && !this._isTowerHexHovered(tower)) {
       const overlayFill =
         tower.type === CONFIG.TOWER_TYPE_RAIN
           ? CONFIG.AOE_HEX_OVERLAY_RAIN
@@ -7106,24 +9317,13 @@ export class Renderer {
             ? CONFIG.AOE_HEX_OVERLAY_PULSING
             : null;
       if (overlayFill) {
-        this.ctx.save();
-        this.ctx.fillStyle = overlayFill;
-        this.ctx.beginPath();
-        affectedHexes.forEach(hex => {
-          const { x, y } = axialToPixel(hex.q, hex.r);
-          const screenX = x + this.offsetX;
-          const screenY = y + this.offsetY;
-          const vertices = getHexVertices(screenX, screenY);
-          this.ctx.moveTo(vertices[0].x, vertices[0].y);
-          for (let i = 1; i < vertices.length; i++) {
-            this.ctx.lineTo(vertices[i].x, vertices[i].y);
-          }
-          this.ctx.closePath();
-        });
-        this.ctx.fill();
-        this.ctx.restore();
+        this._drawAoeHexOverlayFill(affectedHexes, overlayFill);
       }
     }
+
+    // Diagnostic kill-switch: no water streams/beams or particle spawning at all.
+    // Placement-phase AoE overlay above still draws so targeting stays legible.
+    if (CONFIG.DISABLE_ALL_WATER_EFFECTS) return;
 
     // Rain and pulsing towers don't paint anything in this function — they only
     // spawn particles that drawAllWaterParticles() renders later. Skip the ctx
@@ -7136,17 +9336,25 @@ export class Renderer {
       return;
     }
     if (tower.type === CONFIG.TOWER_TYPE_PULSING) {
-      // Generate pulsing particles once per attack burst (flashTime jumps to 0.3 then decays).
-      if (CONFIG.USE_WATER_PARTICLES && this.gameState?.wave?.isActive && tower.flashTime > 0) {
-        const prevFlash = this._pulsingLastFlashTimeByTower.get(tower.id) ?? 0;
-        if (tower.flashTime > prevFlash) {
-          this.generatePulsingParticles(tower, screenStartX, screenStartY);
+      // Primary spawn is updatePulseBursts() via pendingPulseBurst / pulseBurstId.
+      // flashTime-edge fallback covers older paths that only bump flashTime.
+      if (CONFIG.USE_WATER_PARTICLES && this.gameState?.wave?.isActive) {
+        const burstId = tower.pulseBurstId || 0;
+        const lastId = this._pulsingLastBurstIdByTower.get(tower.id) || 0;
+        if (burstId > lastId) {
+          if (this.spawnPulseBurst(tower)) {
+            this._pulsingLastBurstIdByTower.set(tower.id, burstId);
+            tower.pendingPulseBurst = false;
+          }
+        } else if (tower.flashTime > 0) {
+          const prevFlash = this._pulsingLastFlashTimeByTower.get(tower.id) ?? 0;
+          if (tower.flashTime > prevFlash) {
+            this.spawnPulseBurst(tower);
+          }
+          this._pulsingLastFlashTimeByTower.set(tower.id, tower.flashTime);
+        } else if (this._pulsingLastFlashTimeByTower.has(tower.id)) {
+          this._pulsingLastFlashTimeByTower.delete(tower.id);
         }
-        this._pulsingLastFlashTimeByTower.set(tower.id, tower.flashTime);
-      } else if (this._pulsingLastFlashTimeByTower.has(tower.id)) {
-        // Avoid a Map.delete() call every frame when the tower is idle; only
-        // clear when the entry actually exists.
-        this._pulsingLastFlashTimeByTower.delete(tower.id);
       }
       return;
     }
@@ -7168,6 +9376,8 @@ export class Renderer {
           const screenTargetX = endpoint.x + this.offsetX;
           const screenTargetY = endpoint.y + this.offsetY;
           
+          // Soft bloom under the beam (full visuals only)
+          this.drawWaterBeamBloom(tower, screenStartX, screenStartY, screenTargetX, screenTargetY);
           // Draw thin animated water beam underneath particles
           this.drawWaterBeam(tower, screenStartX, screenStartY, screenTargetX, screenTargetY);
           
@@ -7216,20 +9426,37 @@ export class Renderer {
       if (CONFIG.USE_WATER_PARTICLES) {
         // Generate water particles for jet tower spray
         if (affectedHexes.length > 0) {
-          affectedHexes.forEach(hex => {
-            const { x, y } = axialToPixel(hex.q, hex.r);
-            const screenTargetX = x + this.offsetX;
-            const screenTargetY = y + this.offsetY;
-            
-            // Draw thin animated water beam underneath particles
-            this.drawWaterBeam(tower, screenStartX, screenStartY, screenTargetX, screenTargetY);
-            
-            // Generate main spray particles
-            this.generateSprayParticles(tower, screenStartX, screenStartY, screenTargetX, screenTargetY);
-            
-            // Generate tiny filler particles for visual coverage
-            this.generateFillerParticles(tower, screenStartX, screenStartY, screenTargetX, screenTargetY);
-          });
+          // Jet hexes sit on one straight axis — emit + draw once to the farthest
+          // hex only. Per-hex spawn used to stack fillers along the same line and
+          // burn the global particle budget (causing heartbeat thinning mid-wave).
+          let farHex = null;
+          let farDist2 = -1;
+          for (let h = 0; h < affectedHexes.length; h++) {
+            const hex = affectedHexes[h];
+            const dq = hex.q - tower.q;
+            const dr = hex.r - tower.r;
+            const dist2 = dq * dq + dr * dr + (dq + dr) * (dq + dr);
+            if (dist2 > farDist2) {
+              farDist2 = dist2;
+              farHex = hex;
+            }
+          }
+
+          if (farHex && farDist2 > 0) {
+            const { x, y } = axialToPixel(farHex.q, farHex.r);
+            const farScreenX = x + this.offsetX;
+            const farScreenY = y + this.offsetY;
+            this.drawWaterBeamBloom(
+              tower,
+              screenStartX,
+              screenStartY,
+              farScreenX,
+              farScreenY
+            );
+            this.drawWaterBeam(tower, screenStartX, screenStartY, farScreenX, farScreenY);
+            this.generateSprayParticles(tower, screenStartX, screenStartY, farScreenX, farScreenY, 0);
+            this.generateFillerParticles(tower, screenStartX, screenStartY, farScreenX, farScreenY, 0);
+          }
         }
         
         // Particle updates are handled globally in Renderer.render() to avoid double-updating.
@@ -7257,6 +9484,67 @@ export class Renderer {
     }
 
     this.ctx.restore();
+  }
+
+  /**
+   * @param {object} tower
+   * @returns {boolean}
+   */
+  _isTowerHexHovered(tower) {
+    const hovered = this.gameState?.inputHandler?.hoveredHex;
+    return !!(tower && hovered && hovered.q === tower.q && hovered.r === tower.r);
+  }
+
+  /**
+   * Fill a batch of hexes with a solid AOE tint (single path for stacking).
+   * @param {Array<{q: number, r: number}>} hexes
+   * @param {string} fillStyle
+   */
+  _drawAoeHexOverlayFill(hexes, fillStyle) {
+    if (!hexes?.length || !fillStyle) return;
+    this.ctx.save();
+    this.ctx.fillStyle = fillStyle;
+    this.ctx.beginPath();
+    for (let i = 0; i < hexes.length; i++) {
+      const hex = hexes[i];
+      const { x, y } = axialToPixel(hex.q, hex.r);
+      const screenX = x + this.offsetX;
+      const screenY = y + this.offsetY;
+      const vertices = getHexVertices(screenX, screenY);
+      this.ctx.moveTo(vertices[0].x, vertices[0].y);
+      for (let v = 1; v < vertices.length; v++) {
+        this.ctx.lineTo(vertices[v].x, vertices[v].y);
+      }
+      this.ctx.closePath();
+    }
+    this.ctx.fill();
+    this.ctx.restore();
+  }
+
+  /**
+   * Placement phase: redraw hovered rain/pulsing AOE at 2× opacity above other towers' AOE fills.
+   * @param {import('../systems/towerSystem.js').TowerSystem} towerSystem
+   */
+  drawHoveredRainPulsingAoeOverlay(towerSystem) {
+    if (!towerSystem?.getAllTowers) return;
+    if (!this.gameState?.wave?.isPlacementPhase) return;
+
+    const hovered = this.gameState?.inputHandler?.hoveredHex;
+    if (!hovered) return;
+
+    const tower = towerSystem.getTowerAt?.(hovered.q, hovered.r)
+      || towerSystem.getAllTowers().find((t) => t.q === hovered.q && t.r === hovered.r);
+    if (!tower?.affectedHexes?.length) return;
+
+    const overlayFill =
+      tower.type === CONFIG.TOWER_TYPE_RAIN
+        ? CONFIG.AOE_HEX_OVERLAY_RAIN_HOVER
+        : tower.type === CONFIG.TOWER_TYPE_PULSING
+          ? CONFIG.AOE_HEX_OVERLAY_PULSING_HOVER
+          : null;
+    if (!overlayFill) return;
+
+    this._drawAoeHexOverlayFill(tower.affectedHexes, overlayFill);
   }
 
   /**
@@ -7824,6 +10112,7 @@ export class Renderer {
    * @param {Array} waterBombs - Array of active water bombs
    */
   drawWaterBombs(waterBombs) {
+    if (CONFIG.DISABLE_ALL_WATER_EFFECTS) return; // Diagnostic: hide bomb projectiles + skip explosion cleanup
     const wVis = this.getWaterVisualAlphaScale();
     this.ctx.save();
     this.ctx.lineCap = 'round';
@@ -7887,8 +10176,13 @@ export class Renderer {
       this.waterParticles.delete(towerId);
     }
     
-    // Clean up throttle tracking (time-based)
-    this.lastParticleGenTime.delete(towerId);
+    // Clean up throttle tracking (keys are `${towerId}:${beamIndex}`)
+    const genPrefix = `${towerId}:`;
+    for (const key of this.lastParticleGenTime.keys()) {
+      if (key === towerId || key.startsWith(genPrefix)) {
+        this.lastParticleGenTime.delete(key);
+      }
+    }
   }
 
   /**
@@ -7897,6 +10191,7 @@ export class Renderer {
    * @param {Array} impactHexes - Array of hexes in impact zone
    */
   spawnSuppressionBombExplosionParticles(bomb, impactHexes) {
+    if (CONFIG.DISABLE_ALL_WATER_EFFECTS) return; // Diagnostic: no suppression gas particles
     if (!bomb || !impactHexes || impactHexes.length === 0) return;
     const explosionId = `suppression_explosion_${bomb.id}`;
     // Mark group in explosionParticles so updater renders it
@@ -7964,6 +10259,7 @@ export class Renderer {
    * @param {Array} impactHexes - Array of hexes in impact zone
    */
   spawnBomberExplosionParticles(bomb, impactHexes) {
+    if (CONFIG.DISABLE_ALL_WATER_EFFECTS) return; // Diagnostic: no explosion splashes/flashes
     if (!bomb || !impactHexes || impactHexes.length === 0) return;
     const explosionAlphaScale = CONFIG.BOMBER_WATER_EXPLOSION_ALPHA_SCALE ?? 0.5;
     const isSentinel = bomb.isSentinel === true;
@@ -7992,7 +10288,13 @@ export class Renderer {
     // Particles per hex scales with impact size
     const level = bomb.impactLevel || 1;
     const particlesPerHexBase = 40; // drastically bigger baseline for bomb effect
-    const particlesPerHex = Math.floor((particlesPerHexBase + (level - 1) * 30) * 0.5); // 20, 35, 50, 65 (50% reduction)
+    // 20, 35, 50, 65 (50% reduction). Skip scaledParticleCount — its hard budget returns 0
+    // and was wiping out impact explosions while continuous jet spray kept the cap full.
+    const basePerHex = Math.floor((particlesPerHexBase + (level - 1) * 30) * 0.5);
+    const simplifiedScale = this.getWaterParticleCountScale();
+    const particlesPerHex = simplifiedScale >= 1
+      ? basePerHex
+      : Math.max(1, Math.round(basePerHex * simplifiedScale));
     const hexRadiusPx = CONFIG.HEX_RADIUS;
     
     // Generate particles within each impact hex area
@@ -9176,9 +11478,15 @@ export class Renderer {
    * @returns {{x: number, y: number}} World coordinates
    */
   screenToWorld(screenX, screenY) {
+    // invert center-zoom before subtracting pan offset
+    const z = this.getMapZoom();
+    const cx = (this.canvasCssWidth ?? 0) / 2;
+    const cy = (this.canvasCssHeight ?? 0) / 2;
+    const logicalX = (screenX - cx) / z + cx;
+    const logicalY = (screenY - cy) / z + cy;
     return {
-      x: screenX - this.offsetX,
-      y: screenY - this.offsetY,
+      x: logicalX - this.offsetX,
+      y: logicalY - this.offsetY,
     };
   }
 
@@ -9291,6 +11599,12 @@ export class Renderer {
       const { x, y } = axialToPixel(notif.q, notif.r);
       const screenX = x + this.offsetX;
       const screenY = y + this.offsetY;
+
+      // Viewport culling — stroked/filled canvas text is expensive to rasterize and
+      // late waves can have dozens of live XP popups scattered across the whole map.
+      if (!this.isHexInViewport(screenX, screenY, CONFIG.PARTICLE_CULL_MARGIN)) {
+        return;
+      }
       
       // Calculate animation values
       const progress = notif.life / notif.maxLife; // 0 to 1
@@ -9665,16 +11979,16 @@ export class Renderer {
         const landY = this.getMapSpawnLandDropYOffsetMs(tank.mysteryLandDropAtMs);
         this.ctx.translate(screenX, screenY + landY);
         
-        // Flash opacity if being hit by water
+        const spriteWidth = getWaterTankMapSpriteSize();
+        const spriteHeight = (waterTankSprite.naturalHeight / waterTankSprite.naturalWidth) * spriteWidth;
+
+        // Flash opacity if being hit by water (aura stays bright)
         if (isBeingHitByWater) {
           // Create a flashing effect by alternating between full and reduced opacity
           const flashTime = (performance.now() / 1000) * 3.0; // 3 flashes per second
           const flashValue = (Math.sin(flashTime) + 1) / 2; // 0 to 1
           this.ctx.globalAlpha = 0.5 + flashValue * 0.5; // Fade between 0.5 and 1.0
         }
-        
-        const spriteWidth = getWaterTankMapSpriteSize();
-        const spriteHeight = (waterTankSprite.naturalHeight / waterTankSprite.naturalWidth) * spriteWidth;
         
         this.ctx.imageSmoothingEnabled = true;
         this.ctx.imageSmoothingQuality = 'high';
@@ -9972,6 +12286,7 @@ export class Renderer {
    * substitutes for the per-particle rgba string concatenation.
    */
   drawAllWaterParticles() {
+    if (CONFIG.DISABLE_ALL_WATER_EFFECTS) return; // Diagnostic: skip drawing any water particles
     if (this.waterParticles.size === 0) return;
 
     // Viewport culling bounds (margin keeps fade-in/out smooth). ctx is in CSS-pixel
@@ -10189,6 +12504,7 @@ export class Renderer {
             } else if (tower.type === CONFIG.TOWER_TYPE_CHARGE) {
               offsetDistance = getChargeTurretOffsetPx(rangeLevel);
             }
+            offsetDistance *= CONFIG.MAP_TOWER_SPRITE_SCALE ?? 1;
             const offsetX = Math.cos(angle) * offsetDistance;
             const offsetY = Math.sin(angle) * offsetDistance;
             this.ctx.translate(offsetX, offsetY);
@@ -10235,7 +12551,7 @@ export class Renderer {
             if (tower.type === CONFIG.TOWER_TYPE_PERIMETER) {
               // Aim turret at current ring target; shift forward so pivot sits at cannon base.
               const aimAngle = towerSystem.getPerimeterTurretAngleRadians(tower);
-              const offsetDistance = getPerimeterTurretOffsetPx(rangeLevel);
+              const offsetDistance = getPerimeterTurretOffsetPx(rangeLevel) * (CONFIG.MAP_TOWER_SPRITE_SCALE ?? 1);
               const offsetX = Math.cos(aimAngle) * offsetDistance;
               const offsetY = Math.sin(aimAngle) * offsetDistance;
               this.ctx.translate(offsetX, offsetY);
@@ -10248,6 +12564,8 @@ export class Renderer {
               this.ctx.rotate(rotationAngle);
             }
           }
+
+          turretHeightMultiplier *= CONFIG.MAP_TOWER_SPRITE_SCALE ?? 1;
           
           // Turret size: preserve sprite aspect ratio. Rotatable towers rotate 90° so draw
           // width maps to on-screen height and draw height to on-screen width.
@@ -10311,7 +12629,7 @@ export class Renderer {
     for (let i = 0; i < towers.length; i++) {
       const tower = towers[i];
       const rawHealth = tower.health || 0;
-      const rawMax = tower.maxHealth || CONFIG.TOWER_HEALTH;
+      const rawMax = tower.maxHealth || getTowerBaseHealth(tower.type);
       const sh = tower.shield;
       const showHealth = rawHealth < rawMax;
       const showShield = !!(sh && sh.health > 0);
@@ -10326,12 +12644,31 @@ export class Renderer {
       const barX = screenX - barWidth / 2;
       const healthBarY = anchorY - baseLift;
 
+      // Per-bar hints: shield uses shield max; health pins while shield absorbs.
+      const tickSec = 0.12;
+      const healthHintOpts = {
+        ...this._towerHealthBarHintOpts(tower),
+        clampUnitInterval: true,
+      };
+      const shieldHintOpts = {
+        ...this._towerShieldBarHintOpts(tower),
+        clampUnitInterval: true,
+      };
+
       if (showHealth) {
         const targetPercent = Math.max(0, Math.min(1, rawHealth / Math.max(1, rawMax)));
-        const fillPercent = this.getAnimatedValue(
-          `hp-tower-${tower.id}`,
-          targetPercent,
-          this.deltaTime || 0.016
+        const fillPercent = Math.max(
+          0,
+          Math.min(
+            1,
+            this.getLinearAnimatedValue(
+              `hp-tower-${tower.id}`,
+              targetPercent,
+              this.deltaTime || 0.016,
+              tickSec,
+              healthHintOpts
+            )
+          )
         );
         this._drawMapStatusBar(
           barX,
@@ -10347,10 +12684,18 @@ export class Renderer {
       if (showShield) {
         const shieldBarY = healthBarY + (showHealth ? stackStep : 0);
         const targetPercent = Math.max(0, Math.min(1, sh.health / Math.max(1, sh.maxHealth)));
-        const fillPercent = this.getAnimatedValue(
-          `hp-shield-${tower.id}`,
-          targetPercent,
-          this.deltaTime || 0.016
+        const fillPercent = Math.max(
+          0,
+          Math.min(
+            1,
+            this.getLinearAnimatedValue(
+              `hp-shield-${tower.id}`,
+              targetPercent,
+              this.deltaTime || 0.016,
+              tickSec,
+              shieldHintOpts
+            )
+          )
         );
         this._drawMapStatusBar(
           barX,
@@ -10386,6 +12731,7 @@ export class Renderer {
     const healthY = screenY + Math.max(18, CONFIG.HEX_RADIUS * 0.45) - 3;
     this.drawHealthBar(screenX, healthY, currentHealth, maxHealth, 51, 7.5, 'hp-grove', {
       cornerRadius: GROVE_MAP_HEALTH_BAR_CORNER_RADIUS,
+      ...this._mapHealthBarHintOpts(0, 0, maxHealth),
     });
   }
 
@@ -10405,7 +12751,16 @@ export class Renderer {
       const maxHealth = Math.max(1, tank.maxHealth || getWaterTankTypeConfig(tank.typeId).health);
       const healthLabelY = screenY + CONFIG.HEX_RADIUS * 0.6;
       if (currentHealth < maxHealth) {
-        this.drawHealthBar(screenX, healthLabelY, currentHealth, maxHealth, CONFIG.HEX_RADIUS * 0.8, 4, `hp-tank-${tank.id}`);
+        this.drawHealthBar(
+          screenX,
+          healthLabelY,
+          currentHealth,
+          maxHealth,
+          CONFIG.HEX_RADIUS * 0.8,
+          4,
+          `hp-tank-${tank.id}`,
+          this._mapHealthBarHintOpts(tank.q, tank.r, maxHealth)
+        );
       }
     });
   }
@@ -10429,7 +12784,16 @@ export class Renderer {
       const maxHealth = Math.max(1, site.maxHealth || siteConfig.health);
       const healthLabelY = screenY + CONFIG.HEX_RADIUS * 0.6;
       if (currentHealth < maxHealth) {
-        this.drawHealthBar(screenX, healthLabelY, currentHealth, maxHealth, CONFIG.HEX_RADIUS * 0.8, 4, `hp-dig-${site.id}`);
+        this.drawHealthBar(
+          screenX,
+          healthLabelY,
+          currentHealth,
+          maxHealth,
+          CONFIG.HEX_RADIUS * 0.8,
+          4,
+          `hp-dig-${site.id}`,
+          this._mapHealthBarHintOpts(site.q, site.r, maxHealth, { waterProtects: true })
+        );
       }
     });
   }
@@ -10452,7 +12816,85 @@ export class Renderer {
       const healthLabelY = screenY + landY + CONFIG.HEX_RADIUS * 0.62;
       const currentHealth = Math.max(0, item.health || 0);
       const maxHealth = Math.max(1, item.maxHealth || 1);
-      this.drawHealthBar(screenX, healthLabelY, currentHealth, maxHealth, CONFIG.HEX_RADIUS * 0.8, 4, `hp-vault-${item.id}`);
+      this.drawHealthBar(
+        screenX,
+        healthLabelY,
+        currentHealth,
+        maxHealth,
+        CONFIG.HEX_RADIUS * 0.8,
+        4,
+        `hp-vault-${item.id}`,
+        this._mapHealthBarHintOpts(item.q, item.r, maxHealth, { fireRefills: true })
+      );
+    });
+  }
+
+  /**
+   * Dungeon flood progress bars — blue fill counts up as water floods the entrance.
+   */
+  drawDungeonEntranceHealthBarsOverlay(dungeonEntranceSystem) {
+    if (!dungeonEntranceSystem) return;
+
+    dungeonEntranceSystem.getAllItems().forEach((item) => {
+      if (!item.isActive) return;
+      const maxHealth = Math.max(1, item.maxHealth || 1);
+      const remaining = Math.max(0, item.health || 0);
+      const flooded = Math.max(0, maxHealth - remaining);
+      if (flooded <= 0) return;
+
+      const { x, y } = axialToPixel(item.q, item.r);
+      const screenX = x + this.offsetX;
+      const screenY = y + this.offsetY;
+      if (!this.isHexInViewport(screenX, screenY)) return;
+
+      const landY = this.getMapSpawnLandDropYOffsetMs(item.mysteryLandDropAtMs);
+      const healthLabelY = screenY + landY + CONFIG.HEX_RADIUS * 0.62;
+      const scale = CONFIG.HEALTH_BAR_RENDER_SCALE ?? 1;
+      let barWidth = CONFIG.HEX_RADIUS * 0.8 * scale;
+      let barHeight = 4 * scale;
+      const targetPercent = Math.max(0, Math.min(1, flooded / maxHealth));
+      const hintOpts = this._mapHealthBarHintOpts(item.q, item.r, maxHealth, { gaining: true });
+      const fillPercent = this.getLinearAnimatedValue(
+        `hp-dungeon-${item.id}`,
+        targetPercent,
+        this.deltaTime || 0.016,
+        0.12,
+        hintOpts
+      );
+      const barX = screenX - barWidth / 2;
+      const barY = healthLabelY - 8 * scale;
+      this._drawMapStatusBar(barX, barY, barWidth, barHeight, fillPercent, '#4FC3F7', 0);
+    });
+  }
+
+  /**
+   * Vortex health bars (remaining HP; same style as burning vaults / dig sites).
+   */
+  drawVortexHealthBarsOverlay(vortexSystem) {
+    if (!vortexSystem) return;
+
+    vortexSystem.getAllItems().forEach((item) => {
+      if (!item.isActive || item.health >= item.maxHealth) return;
+
+      const { screenX, screenY } = this.getVortexVisualScreenPos(item);
+      if (!this.isHexInViewport(screenX, screenY)) return;
+
+      const landY = this.getMapSpawnLandDropYOffsetMs(item.mysteryLandDropAtMs);
+      const healthLabelY = screenY + landY + CONFIG.HEX_RADIUS * 0.62;
+      const currentHealth = Math.max(0, item.health || 0);
+      const maxHealth = Math.max(1, item.maxHealth || 1);
+      // Water-only: vortex self-DPS must never seed a fake drain on the shared HP key.
+      // Omit hint when rate is briefly 0 (jet gaps) so residual coast survives the tick window.
+      this.drawHealthBar(
+        screenX,
+        healthLabelY,
+        currentHealth,
+        maxHealth,
+        CONFIG.HEX_RADIUS * 0.8,
+        4,
+        `hp-vortex-${item.id}`,
+        this._mapHealthBarHintOpts(item.q, item.r, maxHealth, { waterOnly: true })
+      );
     });
   }
 
@@ -10471,14 +12913,16 @@ export class Renderer {
       const screenX = x + this.offsetX;
       const screenY = y + this.offsetY;
       if (!this.isHexInViewport(screenX, screenY)) return;
+      const maxHealth = Math.max(1, item.maxHealth);
       this.drawHealthBar(
         screenX,
         labelY(screenY, item),
         Math.max(0, item.health),
-        Math.max(1, item.maxHealth),
+        maxHealth,
         CONFIG.HEX_RADIUS * 0.8,
         4,
-        `${keyPrefix}-${item.id}`
+        `${keyPrefix}-${item.id}`,
+        this._mapHealthBarHintOpts(q, r, maxHealth)
       );
     };
 
@@ -10531,6 +12975,12 @@ export class Renderer {
     if (gameState.burningVaultSystem) {
       this.drawBurningVaultHealthBarsOverlay(gameState.burningVaultSystem);
     }
+    if (gameState.dungeonEntranceSystem) {
+      this.drawDungeonEntranceHealthBarsOverlay(gameState.dungeonEntranceSystem);
+    }
+    if (gameState.vortexSystem) {
+      this.drawVortexHealthBarsOverlay(gameState.vortexSystem);
+    }
     if (gameState.towerSystem) {
       this.drawAllTowerHealthBars(gameState.towerSystem);
     }
@@ -10541,24 +12991,24 @@ export class Renderer {
    * @param {number} deltaTime - Time elapsed since last frame
    */
   updateAllFireParticles(deltaTime) {
-    const emptyKeys = [];
-    this.fireParticles.forEach((particles, explosionId) => {
+    if (this.fireParticles.size === 0) return;
+    for (const explosionId of this.fireParticles.keys()) {
       this.updateFireParticles(explosionId, deltaTime);
-      if (this.fireParticles.get(explosionId).length === 0) {
-        emptyKeys.push(explosionId);
+      const particles = this.fireParticles.get(explosionId);
+      if (!particles || particles.length === 0) {
+        this.fireParticles.delete(explosionId);
       }
-    });
-    // Cleanup finished explosions
-    emptyKeys.forEach(key => this.fireParticles.delete(key));
+    }
   }
 
   /**
    * Draw all fire particles (highest z-index, after water particles)
    */
   drawAllFireParticles() {
-    this.fireParticles.forEach((particles, explosionId) => {
+    if (this.fireParticles.size === 0) return;
+    for (const explosionId of this.fireParticles.keys()) {
       this.drawFireParticles(explosionId);
-    });
+    }
   }
 
   /**
@@ -10688,18 +13138,24 @@ export class Renderer {
         
         // Draw power-up graphic if loaded
         if (powerUpSprite.complete && powerUpSprite.naturalWidth > 0) {
-          // Flash opacity if being hit by water
+          // Size the sprite to fit nicely in the hex (50% larger, then reduced by 15%)
+          const spriteSize = CONFIG.HEX_RADIUS * 0.8 * 1.5 * 0.85;
+          const spriteWidth = spriteSize;
+          const spriteHeight = (powerUpSprite.naturalHeight / powerUpSprite.naturalWidth) * spriteWidth;
+
+          // Electric blue shimmer on all map power-ups
+          this.drawTreasureShimmerAura(spriteWidth, spriteHeight, item.id || item.powerUpId, {
+            palette: 'blue',
+            scale: 1.15,
+          });
+
+          // Flash opacity if being hit by water (aura stays bright)
           if (isBeingHitByWater) {
             // Create a flashing effect by alternating between full and reduced opacity
             const flashTime = (performance.now() / 1000) * 3.0; // 3 flashes per second
             const flashValue = (Math.sin(flashTime) + 1) / 2; // 0 to 1
             this.ctx.globalAlpha = 0.5 + flashValue * 0.5; // Fade between 0.5 and 1.0
           }
-          
-          // Size the sprite to fit nicely in the hex (50% larger, then reduced by 15%)
-          const spriteSize = CONFIG.HEX_RADIUS * 0.8 * 1.5 * 0.85;
-          const spriteWidth = spriteSize;
-          const spriteHeight = (powerUpSprite.naturalHeight / powerUpSprite.naturalWidth) * spriteWidth;
           
           this.ctx.imageSmoothingEnabled = true;
           this.ctx.imageSmoothingQuality = 'high';
@@ -10751,6 +13207,165 @@ export class Renderer {
    * Draw mystery items on the map
    * @param {MysteryItemSystem} mysteryItemSystem - The mystery item system
    */
+  /**
+   * Slow shimmer aura drawn behind valuable map pickups (gifts / artifacts).
+   * Soft radial bloom + rotating light rays + rim sparkles.
+   * @param {number} spriteW
+   * @param {number} spriteH
+   * @param {string} [seedKey] - per-item phase offset so items don't sync-lock
+   * @param {{ palette?: 'gold'|'fuchsia', scale?: number }} [options]
+   */
+  drawTreasureShimmerAura(spriteW, spriteH, seedKey = '', options = {}) {
+    const palette =
+      options.palette === 'fuchsia' ||
+      options.palette === 'blue' ||
+      options.palette === 'green' ||
+      options.palette === 'gold'
+        ? options.palette
+        : 'gold';
+    const scale = Number.isFinite(options.scale) ? Math.max(0.1, options.scale) : 1;
+    // Gifts of the Grove: +25% brightness (lerp toward white + higher alphas)
+    const intensity = palette === 'gold' ? 1.25 : 1;
+    const brighten = (rgb) =>
+      rgb.map((c) => Math.min(255, Math.round(c + (255 - c) * (intensity - 1))));
+    const paletteColors =
+      palette === 'fuchsia'
+        ? {
+            // Bright electric pink / fuchsia
+            bloom0: [255, 190, 255],
+            bloom1: [255, 60, 210],
+            bloom2: [255, 20, 180],
+            bloom3: [200, 0, 160],
+            ray0: [255, 210, 255],
+            ray1: [255, 80, 230],
+            ray2: [255, 0, 200],
+            spark0: [255, 230, 255],
+            spark1: [255, 100, 240],
+            spark2: [255, 40, 200],
+          }
+        : palette === 'blue'
+          ? {
+              // Electric / bright blue (power-ups)
+              bloom0: [200, 235, 255],
+              bloom1: [80, 180, 255],
+              bloom2: [40, 140, 255],
+              bloom3: [20, 90, 220],
+              ray0: [220, 245, 255],
+              ray1: [90, 190, 255],
+              ray2: [40, 140, 255],
+              spark0: [235, 250, 255],
+              spark1: [120, 210, 255],
+              spark2: [50, 160, 255],
+            }
+          : palette === 'green'
+            ? {
+                // Neon / electric green (gift drops)
+                bloom0: [200, 255, 210],
+                bloom1: [60, 255, 120],
+                bloom2: [20, 230, 80],
+                bloom3: [0, 180, 50],
+                ray0: [220, 255, 230],
+                ray1: [80, 255, 140],
+                ray2: [20, 230, 90],
+                spark0: [235, 255, 240],
+                spark1: [100, 255, 150],
+                spark2: [30, 230, 90],
+              }
+            : {
+                // Gold (Gifts of the Grove) — base hues; intensity applied below
+                bloom0: [255, 236, 150],
+                bloom1: [255, 200, 70],
+                bloom2: [255, 170, 40],
+                bloom3: [255, 140, 20],
+                ray0: [255, 245, 180],
+                ray1: [255, 210, 80],
+                ray2: [255, 180, 40],
+                spark0: [255, 250, 210],
+                spark1: [255, 215, 90],
+                spark2: [255, 180, 40],
+              };
+    const colors = {
+      bloom0: brighten(paletteColors.bloom0),
+      bloom1: brighten(paletteColors.bloom1),
+      bloom2: brighten(paletteColors.bloom2),
+      bloom3: brighten(paletteColors.bloom3),
+      ray0: brighten(paletteColors.ray0),
+      ray1: brighten(paletteColors.ray1),
+      ray2: brighten(paletteColors.ray2),
+      spark0: brighten(paletteColors.spark0),
+      spark1: brighten(paletteColors.spark1),
+      spark2: brighten(paletteColors.spark2),
+    };
+
+    const ctx = this.ctx;
+    const nowSec = (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+    let phase = 0;
+    if (seedKey) {
+      let h = 0;
+      for (let i = 0; i < seedKey.length; i++) h = (h * 31 + seedKey.charCodeAt(i)) | 0;
+      phase = ((h >>> 0) % 1000) / 1000 * Math.PI * 2;
+    }
+    const t = nowSec * 0.13125 + phase;
+    const pulse = 0.82 + Math.sin(nowSec * 0.9 + phase) * 0.18;
+    const radius = Math.max(spriteW, spriteH) * (1.05 + pulse * 0.12) * 0.6 * scale;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+
+    const bloom = ctx.createRadialGradient(0, 0, 0, 0, 0, radius);
+    bloom.addColorStop(0, `rgba(${colors.bloom0.join(',')},${Math.min(1, 0.58 * pulse * intensity)})`);
+    bloom.addColorStop(0.35, `rgba(${colors.bloom1.join(',')},${Math.min(1, 0.4 * pulse * intensity)})`);
+    bloom.addColorStop(0.7, `rgba(${colors.bloom2.join(',')},${Math.min(1, 0.2 * pulse * intensity)})`);
+    bloom.addColorStop(1, `rgba(${colors.bloom3.join(',')},0)`);
+    ctx.fillStyle = bloom;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, radius * 0.98, radius * 0.86, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    const rayCount = 7;
+    for (let i = 0; i < rayCount; i++) {
+      const angle = t + (i / rayCount) * Math.PI * 2;
+      const rayPhase = phase + i * 1.73;
+      const fade = 0.35 + Math.sin(nowSec * 1.15 + rayPhase) * 0.35;
+      const lengthPulse = 0.88 + Math.sin(nowSec * 0.95 + rayPhase * 1.3) * 0.14;
+      if (fade < 0.08) continue;
+      const rayLen = radius * (1.05 + Math.sin(nowSec * 0.7 + i + phase) * 0.06) * lengthPulse * 1.4;
+      ctx.save();
+      ctx.rotate(angle);
+      const ray = ctx.createLinearGradient(0, 0, rayLen, 0);
+      ray.addColorStop(0, `rgba(${colors.ray0.join(',')},${Math.min(1, 0.5 * pulse * fade * intensity)})`);
+      ray.addColorStop(0.35, `rgba(${colors.ray1.join(',')},${Math.min(1, 0.28 * pulse * fade * intensity)})`);
+      ray.addColorStop(1, `rgba(${colors.ray2.join(',')},0)`);
+      ctx.fillStyle = ray;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.ellipse(rayLen * 0.48, 0, rayLen * 0.55, radius * 0.13 * 1.4, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    const sparkleCount = 10;
+    for (let i = 0; i < sparkleCount; i++) {
+      const a = t * 0.7 + (i / sparkleCount) * Math.PI * 2 + phase;
+      const orbit = radius * (0.62 + (i % 3) * 0.14);
+      const twinkle = 0.45 + Math.sin(nowSec * 2.0 + i * 1.7 + phase) * 0.4;
+      if (twinkle < 0.25) continue;
+      const sx = Math.cos(a) * orbit;
+      const sy = Math.sin(a) * orbit * 0.85;
+      const sz = (1.5 + twinkle * 2.6) * 0.6 * 0.5;
+      const spark = ctx.createRadialGradient(sx, sy, 0, sx, sy, sz * 2.4);
+      spark.addColorStop(0, `rgba(${colors.spark0.join(',')},${Math.min(1, twinkle * 1.15 * intensity)})`);
+      spark.addColorStop(0.45, `rgba(${colors.spark1.join(',')},${Math.min(1, twinkle * 0.75 * intensity)})`);
+      spark.addColorStop(1, `rgba(${colors.spark2.join(',')},0)`);
+      ctx.fillStyle = spark;
+      ctx.beginPath();
+      ctx.arc(sx, sy, sz * 2.4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }
+
   drawMysteryItems(mysteryItemSystem) {
     if (!mysteryItemSystem) return;
     
@@ -10801,18 +13416,23 @@ export class Renderer {
       
       // Draw mystery item graphic if loaded
       if (mysterySprite.complete && mysterySprite.naturalWidth > 0) {
-        // Flash opacity if being hit by water
-        if (isBeingHitByWater) {
-          // Create a flashing effect by alternating between full and reduced opacity
-          const flashTime = (performance.now() / 1000) * 3.0; // 3 flashes per second
-          const flashValue = (Math.sin(flashTime) + 1) / 2; // 0 to 1
-          this.ctx.globalAlpha = 0.5 + flashValue * 0.5; // Fade between 0.5 and 1.0
-        }
-        
         // Size the sprite to fit nicely in the hex (doubled size)
         const spriteSize = CONFIG.HEX_RADIUS * 1.6;
         const spriteWidth = spriteSize;
         const spriteHeight = (mysterySprite.naturalHeight / mysterySprite.naturalWidth) * spriteWidth;
+
+        // Green shimmer aura behind the gift (matches bonus items that drop from them)
+        this.drawTreasureShimmerAura(spriteWidth, spriteHeight, item.id || item.itemId, {
+          palette: 'green',
+          scale: 1.15,
+        });
+
+        // Flash sprite opacity if being hit by water (aura stays bright)
+        if (isBeingHitByWater) {
+          const flashTime = (performance.now() / 1000) * 3.0;
+          const flashValue = (Math.sin(flashTime) + 1) / 2;
+          this.ctx.globalAlpha = 0.5 + flashValue * 0.5;
+        }
         
         this.ctx.imageSmoothingEnabled = true;
         this.ctx.imageSmoothingQuality = 'high';
@@ -10881,14 +13501,20 @@ export class Renderer {
       );
 
       if (artSprite.complete && artSprite.naturalWidth > 0) {
+        const spriteWidth = getArtifactMapSpriteSize();
+        const spriteHeight = (artSprite.naturalHeight / artSprite.naturalWidth) * spriteWidth;
+
+        // Electric fuchsia shimmer — same motion as gifts, +20% size
+        this.drawTreasureShimmerAura(spriteWidth, spriteHeight, item.id || item.artifactId, {
+          palette: 'fuchsia',
+          scale: 1.2,
+        });
+
         if (isBeingHitByWater) {
           const flashTime = (performance.now() / 1000) * 3.0;
           const flashValue = (Math.sin(flashTime) + 1) / 2;
           this.ctx.globalAlpha = 0.5 + flashValue * 0.5;
         }
-
-        const spriteWidth = getArtifactMapSpriteSize();
-        const spriteHeight = (artSprite.naturalHeight / artSprite.naturalWidth) * spriteWidth;
 
         this.ctx.imageSmoothingEnabled = true;
         this.ctx.imageSmoothingQuality = 'high';
@@ -10993,6 +13619,1449 @@ export class Renderer {
   }
 
   /**
+   * Draw Dungeon Entrance map objects (water floods; fire does not affect the entrance).
+   * @param {import('../systems/dungeonEntranceSystem.js').DungeonEntranceSystem} dungeonEntranceSystem
+   */
+  drawDungeonEntrances(dungeonEntranceSystem) {
+    if (!dungeonEntranceSystem) return;
+
+    const items = dungeonEntranceSystem.getAllItems();
+
+    items.forEach((item) => {
+      if (!item.isActive) return;
+
+      const { x, y } = axialToPixel(item.q, item.r);
+      const screenX = x + this.offsetX;
+      const screenY = y + this.offsetY;
+      if (!this.isHexInViewport(screenX, screenY)) return;
+
+      const itemHex = this.gameState?.gridSystem?.getHex(item.q, item.r);
+      const isSprayed = !!(itemHex && itemHex.isBeingSprayed && this.isWaveActiveForSprayHitVisuals());
+
+      // Border: spray flash only — fire on the hex is allowed but does not affect the entrance.
+      if (!itemHex || !itemHex.isPath) {
+        let borderColor = 'rgba(255, 255, 255, 0.125)';
+        let finalBorderWidth = 1;
+        if (isSprayed) {
+          borderColor = this.getFlashingColor('#FFFFFF', CONFIG.COLOR_TOWER, 3.0);
+          finalBorderWidth = 5;
+        }
+        this.drawHex(screenX, screenY, null, borderColor, finalBorderWidth);
+      }
+
+      const level = Math.max(1, Math.floor(Number(item.level) || 1));
+      const levelCfg = CONFIG.DUNGEON_ENTRANCE?.levels?.[level];
+      const spriteKey = levelCfg?.sprite || `dungeon_${level}.png`;
+      const dungeonSprite = this.getItemSprite(spriteKey);
+
+      if (dungeonSprite.complete && dungeonSprite.naturalWidth > 0) {
+        this.ctx.save();
+        const landY = this.getMapSpawnLandDropYOffsetMs(item.mysteryLandDropAtMs);
+        this.ctx.translate(screenX, screenY + landY);
+
+        this._setCtxGlobalAlphaDigSiteStyleItemPulse(this.ctx, false, isSprayed);
+
+        const spriteSize = CONFIG.HEX_RADIUS * 1.2555; // ~10% smaller again from prior dungeon scale
+        const spriteWidth = spriteSize;
+        const spriteHeight = (dungeonSprite.naturalHeight / dungeonSprite.naturalWidth) * spriteWidth;
+
+        this.ctx.imageSmoothingEnabled = true;
+        this.ctx.imageSmoothingQuality = 'high';
+        this.ctx.drawImage(
+          dungeonSprite,
+          -spriteWidth / 2,
+          -spriteHeight / 2,
+          spriteWidth,
+          spriteHeight
+        );
+        this.ctx.imageSmoothingEnabled = false;
+        this.ctx.imageSmoothingQuality = 'low';
+
+        this._resetCtxGlobalAlphaAfterDigSiteStyleItemPulse(this.ctx, false, isSprayed);
+        this.ctx.restore();
+      }
+    });
+  }
+
+  /**
+   * Screen position for a vortex sprite / HP bar.
+   * During a path hop, lerps from the vacated hex toward the gameplay hex (ease-out).
+   * Hex fill / occupancy always use item.q/r directly.
+   * @param {object} item
+   * @returns {{ screenX: number, screenY: number, hexScreenX: number, hexScreenY: number }}
+   */
+  getVortexVisualScreenPos(item) {
+    const to = axialToPixel(item.q, item.r);
+    const hexScreenX = to.x + this.offsetX;
+    const hexScreenY = to.y + this.offsetY;
+
+    const fromQ = item.moveAnimFromQ;
+    const fromR = item.moveAnimFromR;
+    const tRaw = item.moveAnimT;
+    if (
+      fromQ == null || fromR == null ||
+      tRaw == null || !(tRaw < 1) ||
+      (fromQ === item.q && fromR === item.r)
+    ) {
+      return { screenX: hexScreenX, screenY: hexScreenY, hexScreenX, hexScreenY };
+    }
+
+    const from = axialToPixel(fromQ, fromR);
+    const t = Math.max(0, Math.min(1, Number(tRaw) || 0));
+    // Ease-out cubic — quick departure, soft settle onto the new hex
+    const ease = 1 - (1 - t) ** 3;
+    return {
+      screenX: from.x + (to.x - from.x) * ease + this.offsetX,
+      screenY: from.y + (to.y - from.y) * ease + this.offsetY,
+      hexScreenX,
+      hexScreenY,
+    };
+  }
+
+  /**
+   * Draw vortexes: draining fire-style fill + icon overlay.
+   * @param {import('../systems/vortexSystem.js').VortexSystem} vortexSystem
+   */
+  drawVortexes(vortexSystem) {
+    if (!vortexSystem) return;
+
+    const fireInset = CONFIG.FIRE_HEX_INSET || 5;
+    const itemsMap = vortexSystem.items;
+    if (!itemsMap || itemsMap.size === 0) return;
+
+    for (const item of itemsMap.values()) {
+      if (!item.isActive) continue;
+
+      const { screenX, screenY, hexScreenX, hexScreenY } = this.getVortexVisualScreenPos(item);
+      // Cull if either the gameplay hex or the sliding sprite is on-screen
+      if (!this.isHexInViewport(hexScreenX, hexScreenY) && !this.isHexInViewport(screenX, screenY)) {
+        continue;
+      }
+
+      const level = Math.max(1, Math.floor(Number(item.level) || 1));
+      const isFast = !!item.isFast;
+      const levelCfg = getVortexLevelConfig(level, { isFast }) || {};
+      const fillColor = levelCfg.color || CONFIG.COLOR_FIRE_FLAME || '#FF8C00';
+      const maxHealth = Math.max(1, item.maxHealth || 1);
+      const rawFill = (item.health || 0) / maxHealth;
+      const fillLevel = rawFill < 0 ? 0 : rawFill > 1 ? 1 : rawFill;
+
+      // Fill/border stay on the gameplay hex (instant); only the icon slides.
+      const animationKey = `vortex-${item.q},${item.r}`;
+      if (this.animatedValues.get(animationKey) === undefined) {
+        this.animatedValues.set(animationKey, 0);
+      }
+      this.drawDrainingFireHexWithKey(hexScreenX, hexScreenY, fillColor, fillLevel, animationKey, fireInset);
+
+      const itemHex = this.gameState?.gridSystem?.getHex(item.q, item.r);
+      const isSprayed = !!(itemHex && itemHex.isBeingSprayed && this.isWaveActiveForSprayHitVisuals());
+      if (isSprayed) {
+        const borderColor = this.getFlashingColor('#FFFFFF', CONFIG.COLOR_TOWER, 3.0);
+        this.drawHex(hexScreenX, hexScreenY, null, borderColor, 5);
+      } else {
+        this.drawHex(hexScreenX, hexScreenY, null, 'rgba(255, 255, 255, 0.125)', 2);
+      }
+
+      const spriteKey = levelCfg.sprite || 'vortex_squall.png';
+      const vortexSprite = this.getItemSprite(spriteKey);
+      if (vortexSprite.complete && vortexSprite.naturalWidth > 0) {
+        this.ctx.save();
+        const landY = this.getMapSpawnLandDropYOffsetMs(item.mysteryLandDropAtMs);
+        this.ctx.translate(screenX, screenY + landY);
+
+        // Spin icon in place; fast variants use 2× rps from fastLevels config.
+        const spinRps = Math.max(0, Number(levelCfg.spinRevolutionsPerSecond) || 0.35);
+        const nowSec = (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+        // Stable per-instance phase so multiple vortexes don't lock-step identically
+        let phase = 0;
+        if (item.id) {
+          let h = 0;
+          for (let i = 0; i < item.id.length; i++) h = (h * 31 + item.id.charCodeAt(i)) | 0;
+          phase = ((h >>> 0) % 1000) / 1000 * Math.PI * 2;
+        }
+        this.ctx.rotate(nowSec * spinRps * Math.PI * 2 + phase);
+
+        this._setCtxGlobalAlphaDigSiteStyleItemPulse(this.ctx, false, isSprayed);
+
+        const spriteSize = CONFIG.HEX_RADIUS * 1.782 * (CONFIG.MAP_VORTEX_SPRITE_SCALE ?? 1); // 1.35 → +20% → +10%
+        const spriteWidth = spriteSize;
+        const spriteHeight = (vortexSprite.naturalHeight / vortexSprite.naturalWidth) * spriteWidth;
+
+        // 'medium' is visually close to 'high' at these sizes and much cheaper when many vortexes spin.
+        this.ctx.imageSmoothingEnabled = true;
+        this.ctx.imageSmoothingQuality = 'medium';
+        this.ctx.drawImage(
+          vortexSprite,
+          -spriteWidth / 2,
+          -spriteHeight / 2,
+          spriteWidth,
+          spriteHeight
+        );
+        this.ctx.imageSmoothingEnabled = false;
+        this.ctx.imageSmoothingQuality = 'low';
+
+        this._resetCtxGlobalAlphaAfterDigSiteStyleItemPulse(this.ctx, false, isSprayed);
+        this.ctx.restore();
+      }
+    }
+  }
+
+  /**
+   * Palette for vortex ember FX by level (RGB + accent).
+   * @param {number} level
+   * @returns {{ core: [number,number,number], mid: [number,number,number], tip: [number,number,number], spark: [number,number,number] }}
+   */
+  _vortexEmberPalette(level) {
+    const palettes = {
+      1: { core: [255, 220, 80], mid: [255, 140, 30], tip: [255, 70, 20], spark: [255, 250, 200] },
+      2: { core: [255, 180, 60], mid: [255, 100, 25], tip: [230, 40, 15], spark: [255, 240, 180] },
+      3: { core: [255, 120, 80], mid: [255, 50, 60], tip: [200, 20, 80], spark: [255, 210, 160] },
+      4: { core: [255, 90, 180], mid: [230, 40, 160], tip: [160, 20, 200], spark: [255, 180, 230] },
+      5: { core: [220, 120, 255], mid: [170, 60, 255], tip: [100, 30, 200], spark: [240, 200, 255] },
+    };
+    return palettes[Math.max(1, Math.min(5, level))] || palettes[1];
+  }
+
+  /**
+   * @returns {object}
+   */
+  _acquireVortexEmber() {
+    const p = this.vortexEmberPool.pop();
+    return p || {};
+  }
+
+  /**
+   * Spawn continuous sparks / embers / flame wisps from active vortexes.
+   * Sparks burst in all directions (streaked). Orange/yellow wisps rise + fade upright.
+   * Runs whenever vortexes are on the map (including placement).
+   * @param {number} deltaTime
+   */
+  updateVortexEmbers(deltaTime) {
+    // Mirror fire-hex sparks: Simple fire clears + skips continuous vortex FX.
+    if (this.isSimplifiedFireVisualsEnabled()) {
+      if (this.vortexEmbers.length || this._vortexEmberSpawnAcc.size) {
+        for (let i = 0; i < this.vortexEmbers.length; i++) {
+          this.vortexEmberPool.push(this.vortexEmbers[i]);
+        }
+        this.vortexEmbers.length = 0;
+        this._vortexEmberSpawnAcc.clear();
+      }
+      return;
+    }
+
+    const dt = Math.max(0, Math.min(0.05, Number(deltaTime) || 0));
+    const vortexSystem = this.gameState?.vortexSystem;
+    const activeIds = this._scratchActiveIds;
+    activeIds.clear();
+
+    // Physics pass
+    for (let i = this.vortexEmbers.length - 1; i >= 0; i--) {
+      const p = this.vortexEmbers[i];
+      p.life -= dt;
+      if (p.life <= 0) {
+        this._swapRemoveParticle(this.vortexEmbers, i, this.vortexEmberPool);
+        continue;
+      }
+
+      p.vx += p.ax * dt;
+      p.vy += p.ay * dt;
+      p.vx *= p.friction;
+      p.vy *= p.friction;
+      p.ox += p.vx * dt;
+      p.oy += p.vy * dt;
+      if (p.kind === 'wisp') {
+        p.size += dt * (p.grow || 8);
+      } else if (p.kind === 'ember') {
+        p.size = Math.max(0.5, p.size - dt * 1.35);
+      }
+    }
+
+    // Spawn whenever vortexes exist (placement pauses the sim, but render still runs).
+    if (!vortexSystem || dt <= 0) {
+      return;
+    }
+
+    const MAX_EMBERS = 640;
+    // Iterate the Map directly — avoids Array.from allocation every frame.
+    const itemsMap = vortexSystem.items;
+    if (!itemsMap || itemsMap.size === 0) {
+      if (this._vortexEmberSpawnAcc.size) this._vortexEmberSpawnAcc.clear();
+      return;
+    }
+    const hexR = CONFIG.HEX_RADIUS || 40;
+    for (const item of itemsMap.values()) {
+      if (!item?.isActive) continue;
+      activeIds.add(item.id);
+
+      const level = Math.max(1, Math.min(5, Math.floor(Number(item.level) || 1)));
+      const isFast = !!item.isFast;
+      const levelCfg = getVortexLevelConfig(level, { isFast }) || {};
+      const spinRps = Math.max(0.2, Number(levelCfg.spinRevolutionsPerSecond) || 0.35);
+      // Dense sparks in all directions; calmer rising flame ellipses — fast variants more aggressive
+      const fxScale = isFast ? 1.85 : 1;
+      // Fast: +20% spark count on top of the shared fxScale
+      const sparkRate = (14 + level * 6) * fxScale * (isFast ? 1.2 : 1); // /sec
+      const emberRate = (4 + level * 1.5) * fxScale;
+      const wispRate = (2.5 + level * 1) * fxScale;
+      // Size & travel area: ×1.25 → ×1.5625 → +10% → ×1.71875 (regular + fast)
+      const speedScale = (isFast ? 1.55 : 1) * 1.71875;
+      const sizeScale = (isFast ? 1.2 : 1) * 1.71875;
+      const reachScale = 1.71875;
+
+      let credit = this._vortexEmberSpawnAcc.get(item.id) || 0;
+      credit += (sparkRate + emberRate + wispRate) * dt;
+      const toSpawn = Math.min(Math.floor(credit), isFast ? 26 : 16);
+      credit -= toSpawn;
+      this._vortexEmberSpawnAcc.set(item.id, credit);
+
+      if (toSpawn <= 0 || this.vortexEmbers.length >= MAX_EMBERS) continue;
+
+      const palette = this._vortexEmberPalette(level);
+      const nowSec = (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+      const spinAngle = nowSec * spinRps * Math.PI * 2;
+
+      for (let s = 0; s < toSpawn && this.vortexEmbers.length < MAX_EMBERS; s++) {
+        const roll = Math.random();
+        const kind =
+          roll < sparkRate / (sparkRate + emberRate + wispRate)
+            ? 'spark'
+            : roll < (sparkRate + emberRate) / (sparkRate + emberRate + wispRate)
+              ? 'ember'
+              : 'wisp';
+
+        const p = this._acquireVortexEmber();
+        p.hexQ = item.q;
+        p.hexR = item.r;
+        p.vortexId = item.id;
+        p.kind = kind;
+        p.spin = 0;
+        p.rotation = 0;
+
+        if (kind === 'spark') {
+          // Sparks burst outward in all directions (white for standard; tinted for fast)
+          const angle = Math.random() * Math.PI * 2;
+          // Fast: +20% spray reach (birth radius + outward speed); all vortexes +25% reach
+          const birthR = hexR * (0.12 + Math.random() * (isFast ? 0.78 : 0.5)) * reachScale;
+          p.ox = Math.cos(angle) * birthR;
+          p.oy = Math.sin(angle) * birthR * 0.85;
+          const outward = 80 * (0.7 + Math.random() * 0.9) * speedScale * (isFast ? 1.2 : 1);
+          const tangent = spinRps * Math.PI * 2 * birthR * (0.4 + Math.random() * 0.6);
+          const tangDir = spinAngle + angle + Math.PI / 2;
+          const outDir = angle + (Math.random() - 0.5) * (isFast ? 1.0 : 0.6);
+          p.vx = Math.cos(outDir) * outward + Math.cos(tangDir) * tangent;
+          p.vy = Math.sin(outDir) * outward * 0.75 + Math.sin(tangDir) * tangent - 8 * reachScale;
+          p.ax = 0;
+          p.ay = isFast ? 140 : 110; // sparks fall after the burst
+          p.friction = isFast ? 0.978 : 0.985;
+          p.life = (0.3 + Math.random() * 0.4) * (isFast ? 0.85 : 1);
+          p.maxLife = p.life;
+          p.size = (2 + Math.random() * 3) * sizeScale;
+          p.grow = 0;
+          p.stretch = (1.8 + Math.random()) * (isFast ? 1.25 : 1);
+          p.sparkTinted = isFast;
+        } else {
+          p.sparkTinted = false;
+          // Orange/yellow oblong flames — rise + fade upright (no rotation)
+          p.ox = (Math.random() - 0.5) * hexR * (isFast ? 0.7 : 0.55) * reachScale;
+          p.oy = (Math.random() - 0.5) * hexR * 0.25 + hexR * 0.05;
+          p.vx = (Math.random() - 0.5) * 12 * speedScale;
+          p.vy = (kind === 'ember' ? -(40 + Math.random() * 35) : -(50 + Math.random() * 40)) * speedScale;
+          p.ax = (Math.random() - 0.5) * 8 * speedScale;
+          p.ay = (isFast ? -28 : -18) * 1.71875;
+          p.friction = isFast ? 0.965 : 0.98;
+          p.life = (kind === 'ember' ? 0.45 + Math.random() * 0.4 : 0.55 + Math.random() * 0.45) * (isFast ? 0.8 : 1);
+          p.maxLife = p.life;
+          // Halfway between the reduced size and the prior large size
+          p.size = (kind === 'ember' ? 3 + Math.random() * 3.75 : 4.25 + Math.random() * 5.75) * sizeScale;
+          p.grow = kind === 'wisp' ? (8.5 + Math.random() * 11.5) * (isFast ? 1.35 : 1) * 1.71875 : 0;
+          p.stretch = kind === 'wisp' ? (1.5 + Math.random() * 0.9) * (isFast ? 1.2 : 1) : 1;
+        }
+
+        let rgb;
+        if (kind === 'spark') {
+          if (isFast) {
+            // Fast vortex sparks: vivid orange / red / pink (whole blob, not just glow)
+            const roll = Math.random();
+            if (roll < 0.34) {
+              rgb = [255, 120 + Math.floor(Math.random() * 40), 10 + Math.floor(Math.random() * 25)]; // orange
+            } else if (roll < 0.67) {
+              rgb = [255, 30 + Math.floor(Math.random() * 40), 20 + Math.floor(Math.random() * 35)]; // red
+            } else {
+              rgb = [255, 55 + Math.floor(Math.random() * 50), 170 + Math.floor(Math.random() * 55)]; // pink
+            }
+            // Keep core / tip in the same hue family (slightly brighter core, deeper tip)
+            p.coreR = rgb[0];
+            p.coreG = Math.min(255, rgb[1] + 40);
+            p.coreB = Math.min(255, rgb[2] + 20);
+            p.tipR = Math.max(180, rgb[0] - 20);
+            p.tipG = Math.max(0, Math.floor(rgb[1] * 0.45));
+            p.tipB = Math.max(0, Math.floor(rgb[2] * 0.55));
+          } else {
+            rgb = palette.spark;
+            p.coreR = palette.core[0];
+            p.coreG = palette.core[1];
+            p.coreB = palette.core[2];
+            p.tipR = palette.tip[0];
+            p.tipG = palette.tip[1];
+            p.tipB = palette.tip[2];
+          }
+        } else if (isFast) {
+          // Fast vortex flames: bright red / pink (same family as tinted sparks)
+          const hot = Math.random() < 0.5;
+          if (hot) {
+            // Bright red-orange flame
+            rgb = [255, 40 + Math.floor(Math.random() * 55), 25 + Math.floor(Math.random() * 40)];
+            p.coreR = 255;
+            p.coreG = Math.min(255, rgb[1] + 70);
+            p.coreB = Math.min(255, rgb[2] + 30);
+            p.tipR = 220;
+            p.tipG = 10;
+            p.tipB = 40;
+          } else {
+            // Hot pink / magenta flame
+            rgb = [255, 50 + Math.floor(Math.random() * 60), 140 + Math.floor(Math.random() * 70)];
+            p.coreR = 255;
+            p.coreG = Math.min(255, rgb[1] + 50);
+            p.coreB = Math.min(255, rgb[2] + 40);
+            p.tipR = 200;
+            p.tipG = 20;
+            p.tipB = 120;
+          }
+        } else {
+          rgb = kind === 'ember' ? (Math.random() < 0.5 ? palette.core : palette.mid) : palette.mid;
+          p.coreR = palette.core[0];
+          p.coreG = palette.core[1];
+          p.coreB = palette.core[2];
+          p.tipR = palette.tip[0];
+          p.tipG = palette.tip[1];
+          p.tipB = palette.tip[2];
+        }
+        p.r = rgb[0];
+        p.g = rgb[1];
+        p.b = rgb[2];
+
+        this.vortexEmbers.push(p);
+      }
+    }
+
+    // Drop spawn credit for destroyed vortexes
+    for (const id of this._vortexEmberSpawnAcc.keys()) {
+      if (!activeIds.has(id)) this._vortexEmberSpawnAcc.delete(id);
+    }
+  }
+
+  /**
+   * Draw continuous vortex fire FX (wisps + embers + additive sparks).
+   * Prefers pre-baked glow/streak sprites — same look, no per-particle gradients.
+   */
+  drawVortexEmbers() {
+    if (this.isSimplifiedFireVisualsEnabled()) return;
+    const particles = this.vortexEmbers;
+    if (!particles.length) return;
+
+    const ctx = this.ctx;
+    const hexCache = this._particleHexScreenCache;
+    hexCache.clear();
+
+    // Pass 1: soft flame wisps + embers (upright — no rotation)
+    ctx.save();
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      if (p.kind === 'spark') continue;
+
+      const base = this._hexScreenCached(p.hexQ, p.hexR, hexCache);
+      const screenX = base.x + p.ox;
+      const screenY = base.y + p.oy;
+      if (!this.isHexInViewport(screenX, screenY)) continue;
+
+      const lifeRatio = Math.max(0, Math.min(1, p.life / p.maxLife));
+      const alpha = p.kind === 'wisp'
+        ? Math.sin(lifeRatio * Math.PI) * 0.65
+        : lifeRatio * lifeRatio * 0.8;
+      if (alpha <= 0.02) continue;
+
+      const size = Math.max(0.5, p.size);
+      const stretch = p.stretch || 1;
+      ctx.globalAlpha = Math.min(1, alpha);
+
+      if (p.kind === 'wisp') {
+        const sprite = this._getFxGlowSprite(
+          p.coreR, p.coreG, p.coreB, p.r, p.g, p.b, p.tipR, p.tipG, p.tipB, 'flame'
+        );
+        // Flame sprite is an ellipse of half-w = ref*0.5, half-h = ref; stretch via draw height.
+        const drawW = size;
+        const drawH = size * 2 * stretch;
+        ctx.drawImage(sprite.canvas, screenX - drawW * 0.5, screenY - drawH * 0.5, drawW, drawH);
+      } else {
+        const sprite = this._getFxGlowSprite(
+          p.coreR, p.coreG, p.coreB, p.r, p.g, p.b, p.r, p.g, p.b, 'soft'
+        );
+        const draw = size * 2.9; // matches prior arc radius size*1.45
+        ctx.drawImage(sprite.canvas, screenX - draw * 0.5, screenY - draw * 0.5, draw, draw);
+      }
+    }
+    ctx.restore();
+
+    // Pass 2: hot sparks with additive blending — streaked bursts in all directions
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      if (p.kind !== 'spark') continue;
+
+      const base = this._hexScreenCached(p.hexQ, p.hexR, hexCache);
+      const screenX = base.x + p.ox;
+      const screenY = base.y + p.oy;
+      if (!this.isHexInViewport(screenX, screenY)) continue;
+
+      const alpha = Math.max(0, p.life / p.maxLife);
+      if (alpha <= 0.02) continue;
+      const size = Math.max(0.4, p.size * (0.5 + alpha * 0.5));
+      const speed = Math.hypot(p.vx, p.vy) || 1;
+      const angle = Math.atan2(p.vy, p.vx);
+      const tinted = !!p.sparkTinted;
+      const coreR = tinted ? p.coreR : 255;
+      const coreG = tinted ? p.coreG : 255;
+      const coreB = tinted ? p.coreB : 255;
+      const streak = Math.min(13.75, 2.75 + speed * 0.055);
+      const thick = Math.max(1.1, size * 1.1);
+      const streakSprite = this._getMapFxStreakSprite(p.r, p.g, p.b);
+      const coreSprite = this._getMapFxSparkSprite(coreR, coreG, coreB);
+
+      ctx.save();
+      ctx.translate(screenX, screenY);
+      ctx.rotate(angle);
+      ctx.globalAlpha = Math.min(1, alpha * 0.95);
+      ctx.drawImage(streakSprite.canvas, -streak, -thick * 0.5, streak * 2, thick);
+      const coreSize = size * 1.8;
+      ctx.globalAlpha = Math.min(1, alpha);
+      ctx.drawImage(coreSprite.canvas, -coreSize * 0.5, -coreSize * 0.5, coreSize, coreSize);
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  /**
+   * @returns {object}
+   */
+  _acquireSmoulderSpark() {
+    return this.smoulderSparkPool.pop() || {};
+  }
+
+  /**
+   * Deep orange / red smoulder colors (no white / yellow-white).
+   * @param {'spark'|'glow'} kind
+   * @returns {{ r: number, g: number, b: number, coreR: number, coreG: number, coreB: number }}
+   */
+  _smoulderPalette(kind) {
+    const roll = Math.random();
+    if (kind === 'glow') {
+      // Darker coal-bed tones for simmering heat haze
+      if (roll < 0.45) return { r: 180, g: 55, b: 20, coreR: 220, coreG: 90, coreB: 30 };
+      if (roll < 0.8) return { r: 200, g: 85, b: 25, coreR: 235, coreG: 120, coreB: 35 };
+      return { r: 150, g: 35, b: 25, coreR: 200, coreG: 60, coreB: 30 };
+    }
+    // Sparks: brighter orange/red only
+    if (roll < 0.4) return { r: 255, g: 90, b: 35, coreR: 255, coreG: 110, coreB: 40 };
+    if (roll < 0.75) return { r: 255, g: 140, b: 40, coreR: 255, coreG: 155, coreB: 50 };
+    return { r: 230, g: 55, b: 30, coreR: 255, coreG: 80, coreB: 35 };
+  }
+
+  /**
+   * Active vault + dungeon hexes that should smoulder.
+   * Rebuilt at most once per render() frame into a reused array.
+   * @returns {Array<{id: string, q: number, r: number}>}
+   */
+  _getSmoulderSources() {
+    if (this._smoulderSourcesFrame === this._fxFrameId) {
+      return this._smoulderSourcesScratch;
+    }
+    const sources = this._smoulderSourcesScratch;
+    sources.length = 0;
+
+    const vaultMap = this.gameState?.burningVaultSystem?.items;
+    if (vaultMap) {
+      for (const item of vaultMap.values()) {
+        if (item?.isActive) sources.push({ id: `vault_${item.id}`, q: item.q, r: item.r });
+      }
+    } else {
+      const vaults = this.gameState?.burningVaultSystem?.getAllItems?.() || [];
+      for (let i = 0; i < vaults.length; i++) {
+        const item = vaults[i];
+        if (item?.isActive) sources.push({ id: `vault_${item.id}`, q: item.q, r: item.r });
+      }
+    }
+
+    const dungeonMap = this.gameState?.dungeonEntranceSystem?.items;
+    if (dungeonMap) {
+      for (const item of dungeonMap.values()) {
+        if (item?.isActive) sources.push({ id: `dungeon_${item.id}`, q: item.q, r: item.r });
+      }
+    } else {
+      const dungeons = this.gameState?.dungeonEntranceSystem?.getAllItems?.() || [];
+      for (let i = 0; i < dungeons.length; i++) {
+        const item = dungeons[i];
+        if (item?.isActive) sources.push({ id: `dungeon_${item.id}`, q: item.q, r: item.r });
+      }
+    }
+
+    this._smoulderSourcesFrame = this._fxFrameId;
+    return sources;
+  }
+
+  /**
+   * Simmering smoulder FX for burning vaults + dungeon entrances.
+   * Full-size orange/red sparks + soft rising heat-glow (not vortex blaze).
+   * @param {number} deltaTime
+   */
+  updateSmoulderSparks(deltaTime) {
+    if (this.isSimplifiedFireVisualsEnabled()) {
+      if (this.smoulderSparks.length || this._smoulderSparkSpawnAcc.size) {
+        for (let i = 0; i < this.smoulderSparks.length; i++) {
+          this.smoulderSparkPool.push(this.smoulderSparks[i]);
+        }
+        this.smoulderSparks.length = 0;
+        this._smoulderSparkSpawnAcc.clear();
+      }
+      return;
+    }
+
+    const dt = Math.max(0, Math.min(0.05, Number(deltaTime) || 0));
+    const particles = this.smoulderSparks;
+    const activeIds = this._scratchActiveIds;
+    activeIds.clear();
+    const nowSec = (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.life -= dt;
+      if (p.life <= 0) {
+        this._swapRemoveParticle(particles, i, this.smoulderSparkPool);
+        continue;
+      }
+
+      if (p.kind === 'glow') {
+        // Lazy heat shimmer — slow rise + soft sway
+        p.vx += Math.sin(nowSec * 1.8 + (p.phase || 0)) * 8 * dt;
+        p.vy += p.ay * dt;
+        p.vx *= 0.97;
+        p.vy *= 0.995;
+        p.ox += p.vx * dt;
+        p.oy += p.vy * dt;
+        if (p.grow) p.size += p.grow * dt;
+      } else {
+        p.vx += p.ax * dt;
+        p.vy += p.ay * dt;
+        p.vx *= p.friction;
+        p.vy *= p.friction;
+        p.ox += p.vx * dt;
+        p.oy += p.vy * dt;
+      }
+    }
+
+    if (dt <= 0) return;
+
+    const sources = this._getSmoulderSources();
+    const MAX_SPARKS = 360;
+    const hexR = CONFIG.HEX_RADIUS || 40;
+    // Vault/dungeon baseline — sparks +10%, glow +20% vs original
+    const SPARK_SCALE = 1.1;
+    const GLOW_SCALE = 1.2;
+    const sparkRate = 10 * SPARK_SCALE;
+    const glowRate = 4 * GLOW_SCALE;
+
+    for (let i = 0; i < sources.length; i++) {
+      const src = sources[i];
+      activeIds.add(src.id);
+
+      let credit = this._smoulderSparkSpawnAcc.get(src.id) || 0;
+      credit += (sparkRate + glowRate) * dt;
+      const toSpawn = Math.min(Math.floor(credit), 14);
+      credit -= toSpawn;
+      this._smoulderSparkSpawnAcc.set(src.id, credit);
+
+      if (toSpawn <= 0 || particles.length >= MAX_SPARKS) continue;
+
+      // Dungeon entrances: +25% particle/flame size & travel (vaults keep prior look)
+      const dungeonBoost = String(src.id).startsWith('dungeon_') ? 1.25 : 1;
+
+      for (let s = 0; s < toSpawn && particles.length < MAX_SPARKS; s++) {
+        const kind = Math.random() < sparkRate / (sparkRate + glowRate) ? 'spark' : 'glow';
+        const p = this._acquireSmoulderSpark();
+        p.hexQ = src.q;
+        p.hexR = src.r;
+        p.sourceId = src.id;
+        p.kind = kind;
+        p.phase = Math.random() * Math.PI * 2;
+
+        if (kind === 'glow') {
+          // Soft heat-glow rising from the icon body
+          p.ox = (Math.random() - 0.5) * hexR * 0.5;
+          p.oy = (Math.random() - 0.5) * hexR * 0.25 + hexR * 0.05;
+          p.vx = (Math.random() - 0.5) * 8 * dungeonBoost;
+          p.vy = -(10 + Math.random() * 16) * dungeonBoost;
+          p.ax = 0;
+          p.ay = -4 * dungeonBoost;
+          p.friction = 1;
+          p.life = 0.85 + Math.random() * 0.85;
+          p.maxLife = p.life;
+          p.size = (10 + Math.random() * 12) * GLOW_SCALE * dungeonBoost;
+          p.grow = (4 + Math.random() * 6) * GLOW_SCALE * dungeonBoost;
+          p.stretch = 1.25 + Math.random() * 0.4;
+        } else {
+          // Same spark scale/motion as the original vault sparks — orange/red only
+          const angle = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 1.35;
+          const birthR = hexR * (0.08 + Math.random() * 0.42) * dungeonBoost;
+          p.ox = Math.cos(angle) * birthR * 0.85;
+          p.oy = Math.sin(angle) * birthR * 0.7 + hexR * 0.08;
+          const outward = (28 + Math.random() * 55) * dungeonBoost;
+          const upBoost = (35 + Math.random() * 50) * dungeonBoost;
+          p.vx = Math.cos(angle) * outward * 0.85 + (Math.random() - 0.5) * 22 * dungeonBoost;
+          p.vy = Math.sin(angle) * outward * 0.55 - upBoost;
+          p.ax = (Math.random() - 0.5) * 10;
+          p.ay = 70 + Math.random() * 50;
+          p.friction = 0.984;
+          p.life = 0.35 + Math.random() * 0.45;
+          p.maxLife = p.life;
+          p.size = (2 + Math.random() * 3) * SPARK_SCALE * dungeonBoost;
+          p.grow = 0;
+          p.stretch = 1.8 + Math.random();
+        }
+
+        const pal = this._smoulderPalette(kind);
+        p.r = pal.r;
+        p.g = pal.g;
+        p.b = pal.b;
+        p.coreR = pal.coreR;
+        p.coreG = pal.coreG;
+        p.coreB = pal.coreB;
+
+        particles.push(p);
+      }
+    }
+
+    for (const id of this._smoulderSparkSpawnAcc.keys()) {
+      if (!activeIds.has(id)) this._smoulderSparkSpawnAcc.delete(id);
+    }
+  }
+
+  /**
+   * Draw simmering smoulder FX (ambient heat halo + soft glow + orange/red sparks).
+   */
+  drawSmoulderSparks() {
+    if (this.isSimplifiedFireVisualsEnabled()) return;
+    const particles = this.smoulderSparks;
+    const sources = this._getSmoulderSources();
+    if (!particles.length && !sources.length) return;
+
+    const ctx = this.ctx;
+    const hexR = CONFIG.HEX_RADIUS || 40;
+    const nowSec = (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+    const hexCache = this._particleHexScreenCache;
+    hexCache.clear();
+    // Shared warm halo sprite (one color); pulse via globalAlpha + draw size.
+    const haloSprite = this._getFxGlowSprite(255, 120, 40, 230, 70, 25, 180, 40, 15, 'soft');
+
+    // Pass 0: persistent ambient heat halo under each vault / dungeon (always visible)
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < sources.length; i++) {
+      const src = sources[i];
+      const base = this._hexScreenCached(src.q, src.r, hexCache);
+      const screenX = base.x;
+      const screenY = base.y + hexR * 0.1;
+      if (!this.isHexInViewport(screenX, screenY)) continue;
+
+      const pulse = 0.55 + Math.sin(nowSec * 2.4 + src.q * 0.7 + src.r * 1.1) * 0.15;
+      const radius = hexR * (1.05 + pulse * 0.12) * 1.2; // glow +20%
+      ctx.globalAlpha = Math.min(1, 0.34 * pulse * 1.2);
+      ctx.drawImage(
+        haloSprite.canvas,
+        screenX - radius * 0.85,
+        screenY - radius * 0.7,
+        radius * 1.7,
+        radius * 1.4
+      );
+    }
+    ctx.restore();
+
+    if (!particles.length) return;
+
+    // Pass 1: rising heat-glow blobs (additive so they read on dark hexes)
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      if (p.kind !== 'glow') continue;
+
+      const base = this._hexScreenCached(p.hexQ, p.hexR, hexCache);
+      const screenX = base.x + p.ox;
+      const screenY = base.y + p.oy;
+      if (!this.isHexInViewport(screenX, screenY)) continue;
+
+      const lifeRatio = Math.max(0, Math.min(1, p.life / p.maxLife));
+      const alpha = Math.sin(lifeRatio * Math.PI) * 0.42 * 1.2; // glow +20%
+      if (alpha <= 0.02) continue;
+
+      const size = Math.max(1, p.size);
+      const stretch = p.stretch || 1.25;
+      const sprite = this._getFxGlowSprite(
+        p.coreR, p.coreG, p.coreB, p.r, p.g, p.b, p.r, p.g, p.b, 'soft'
+      );
+      ctx.globalAlpha = Math.min(1, alpha);
+      // Prior ellipse half-w = size*0.5, half-h = size*0.9 after scale(1,stretch)
+      const drawW = size;
+      const drawH = size * 1.8 * stretch;
+      ctx.drawImage(sprite.canvas, screenX - drawW * 0.5, screenY - drawH * 0.5, drawW, drawH);
+    }
+    ctx.restore();
+
+    // Pass 2: orange/red sparks (+10% size/noticeability; no white cores)
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      if (p.kind === 'glow') continue;
+
+      const base = this._hexScreenCached(p.hexQ, p.hexR, hexCache);
+      const screenX = base.x + p.ox;
+      const screenY = base.y + p.oy;
+      if (!this.isHexInViewport(screenX, screenY)) continue;
+
+      const alpha = Math.max(0, p.life / p.maxLife);
+      if (alpha <= 0.02) continue;
+      const size = Math.max(0.4, p.size * (0.55 + alpha * 0.55));
+      const speed = Math.hypot(p.vx, p.vy) || 1;
+      const angle = Math.atan2(p.vy, p.vx);
+      const streak = Math.min(9.9, (1.8 + speed * 0.035) * 1.1);
+      const thick = Math.max(1.0, size);
+      const streakSprite = this._getMapFxStreakSprite(p.r, p.g, p.b);
+      const coreSprite = this._getMapFxSparkSprite(p.coreR, p.coreG, p.coreB);
+
+      ctx.save();
+      ctx.translate(screenX, screenY);
+      ctx.rotate(angle);
+      ctx.globalAlpha = Math.min(1, alpha * 0.9);
+      ctx.drawImage(streakSprite.canvas, -streak, -thick * 0.5, streak * 2, thick);
+      const coreSize = size * 1.6;
+      ctx.globalAlpha = Math.min(1, alpha);
+      ctx.drawImage(coreSprite.canvas, -coreSize * 0.5, -coreSize * 0.5, coreSize, coreSize);
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  /**
+   * Soft mist / shear spray peeling off jet & spread water streams.
+   * Full-visuals only (skipped entirely when "Simple water" is on).
+   * Pattern mirrors vault/dungeon smoulder sparks: credit spawn, pool, additive draw.
+   */
+
+  _acquireJetMist() {
+    const p = this.jetMistPool.pop();
+    return p || {};
+  }
+
+  _clearJetMist() {
+    const particles = this.jetMist;
+    for (let i = 0; i < particles.length; i++) {
+      this.jetMistPool.push(particles[i]);
+    }
+    particles.length = 0;
+    this._jetMistSpawnAcc.clear();
+  }
+
+  _jetMistPalette(kind) {
+    // Cool cyan / ice-white — reads as aerosol over the existing blue beam
+    if (kind === 'fleck') {
+      return {
+        r: 170 + Math.floor(Math.random() * 60),
+        g: 220 + Math.floor(Math.random() * 30),
+        b: 255,
+        coreR: 240,
+        coreG: 250,
+        coreB: 255,
+      };
+    }
+    if (kind === 'glint') {
+      return {
+        r: 200 + Math.floor(Math.random() * 40),
+        g: 235 + Math.floor(Math.random() * 20),
+        b: 255,
+        coreR: 255,
+        coreG: 255,
+        coreB: 255,
+      };
+    }
+    // mist
+    return {
+      r: 90 + Math.floor(Math.random() * 50),
+      g: 170 + Math.floor(Math.random() * 40),
+      b: 230 + Math.floor(Math.random() * 25),
+      coreR: 180 + Math.floor(Math.random() * 40),
+      coreG: 220 + Math.floor(Math.random() * 25),
+      coreB: 255,
+    };
+  }
+
+  /**
+   * Active stream segments for jet (1 axis) and spread (up to 5 fan beams).
+   * Positions are world pixels (pre-offset) so particles stay map-anchored.
+   * @returns {Array<{id: string, towerQ: number, towerR: number, x0: number, y0: number, x1: number, y1: number, power: number, rateScale: number}>}
+   */
+  _getJetMistStreamSegments() {
+    const segments = [];
+    const towers = this.gameState?.towerSystem?.getAllTowers?.() || [];
+    if (!towers.length) return segments;
+
+    const rangeHexBonus = getTowerRangeHexBonusForGameState(
+      this.gameState,
+      typeof window !== 'undefined' ? window.gameLoop : null
+    );
+
+    for (let i = 0; i < towers.length; i++) {
+      const tower = towers[i];
+      if (!tower?.affectedHexes?.length) continue;
+
+      const { x: tx, y: ty } = axialToPixel(tower.q, tower.r);
+      const screenTX = tx + this.offsetX;
+      const screenTY = ty + this.offsetY;
+      if (!this.isHexInViewport(screenTX, screenTY, CONFIG.PARTICLE_CULL_MARGIN)) continue;
+
+      const power = Math.max(1, tower.powerLevel || 1);
+
+      if (tower.type === CONFIG.TOWER_TYPE_SPREAD) {
+        const range = getSpreadTowerRange(tower.rangeLevel) + rangeHexBonus;
+        const endpoints = getSpreadTowerSprayEndpoints(tower.q, tower.r, tower.direction, range);
+        for (let e = 0; e < endpoints.length; e++) {
+          const ep = endpoints[e];
+          segments.push({
+            id: `spread_${tower.id}_${e}`,
+            towerQ: tower.q,
+            towerR: tower.r,
+            x0: tx,
+            y0: ty,
+            x1: ep.x,
+            y1: ep.y,
+            power,
+            // 5 beams — keep total mist budget similar to a single jet
+            rateScale: e === 0 ? 0.55 : 0.32,
+          });
+        }
+        continue;
+      }
+
+      // Jet (default continuous single-direction stream) — skip non-stream tower types
+      if (
+        tower.type === CONFIG.TOWER_TYPE_RAIN ||
+        tower.type === CONFIG.TOWER_TYPE_PULSING ||
+        tower.type === CONFIG.TOWER_TYPE_BOMBER ||
+        tower.type === CONFIG.TOWER_TYPE_SENTINEL ||
+        tower.type === CONFIG.TOWER_TYPE_PERIMETER ||
+        tower.type === CONFIG.TOWER_TYPE_CHARGE ||
+        tower.type === CONFIG.TOWER_TYPE_SPREAD
+      ) {
+        continue;
+      }
+
+      // Jet (and legacy/untyped continuous streams)
+      let farHex = null;
+      let farDist2 = -1;
+      const hexes = tower.affectedHexes;
+      for (let h = 0; h < hexes.length; h++) {
+        const hex = hexes[h];
+        const dq = hex.q - tower.q;
+        const dr = hex.r - tower.r;
+        // cube distance proxy (axial)
+        const dist2 = dq * dq + dr * dr + (dq + dr) * (dq + dr);
+        if (dist2 > farDist2) {
+          farDist2 = dist2;
+          farHex = hex;
+        }
+      }
+      if (!farHex || farDist2 <= 0) continue;
+
+      const { x: ex, y: ey } = axialToPixel(farHex.q, farHex.r);
+      segments.push({
+        id: `jet_${tower.id}`,
+        towerQ: tower.q,
+        towerR: tower.r,
+        x0: tx,
+        y0: ty,
+        x1: ex,
+        y1: ey,
+        power,
+        rateScale: 1,
+      });
+    }
+
+    return segments;
+  }
+
+  /**
+   * @param {number} deltaTime
+   */
+  updateJetMist(deltaTime) {
+    // Simple water / disabled water: no mist at all (instant clear so it never lingers).
+    if (
+      !CONFIG.USE_WATER_PARTICLES ||
+      CONFIG.DISABLE_ALL_WATER_EFFECTS ||
+      this.isSimplifiedWaterVisualsEnabled()
+    ) {
+      if (this.jetMist.length || this._jetMistSpawnAcc.size) this._clearJetMist();
+      return;
+    }
+
+    const dt = Math.max(0, Math.min(0.05, Number(deltaTime) || 0));
+    const particles = this.jetMist;
+    const nowSec = (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.life -= dt;
+      if (p.life <= 0) {
+        this._swapRemoveParticle(particles, i, this.jetMistPool);
+        continue;
+      }
+
+      if (p.kind === 'mist') {
+        // Soft aerosol — sway perpendicular to birth stream, slowly expand
+        p.vx += Math.sin(nowSec * 2.6 + (p.phase || 0)) * 14 * dt;
+        p.vy += Math.cos(nowSec * 2.1 + (p.phase || 0) * 0.7) * 10 * dt;
+        p.vx *= 0.96;
+        p.vy *= 0.97;
+        p.ox += p.vx * dt;
+        p.oy += p.vy * dt;
+        if (p.grow) p.size += p.grow * dt;
+      } else if (p.kind === 'glint') {
+        // Tiny caustic sparkles that ride the stream briefly then wink out
+        p.vx *= 0.99;
+        p.vy *= 0.99;
+        p.ox += p.vx * dt;
+        p.oy += p.vy * dt;
+      } else {
+        // fleck — fast shear droplets peeling off the beam edge
+        p.vx += (p.ax || 0) * dt;
+        p.vy += (p.ay || 0) * dt;
+        p.vx *= p.friction || 0.98;
+        p.vy *= p.friction || 0.98;
+        p.ox += p.vx * dt;
+        p.oy += p.vy * dt;
+      }
+    }
+
+    if (dt <= 0) return;
+
+    const segments = this._getJetMistStreamSegments();
+    const activeIds = this._scratchActiveIds;
+    activeIds.clear();
+    const MAX_MIST = 320;
+    const hexR = CONFIG.HEX_RADIUS || 40;
+
+    for (let s = 0; s < segments.length; s++) {
+      const seg = segments[s];
+      activeIds.add(seg.id);
+
+      const dx = seg.x1 - seg.x0;
+      const dy = seg.y1 - seg.y0;
+      const len = Math.hypot(dx, dy);
+      if (len < 8) continue;
+
+      const ux = dx / len;
+      const uy = dy / len;
+      const px = -uy; // perpendicular
+      const py = ux;
+
+      // Base rates; power levels thicken the jet visually a bit
+      const powerBoost = 1 + (seg.power - 1) * 0.18;
+      const mistRate = 14 * seg.rateScale * powerBoost;
+      const fleckRate = 22 * seg.rateScale * powerBoost;
+      const glintRate = 6 * seg.rateScale * powerBoost;
+      const totalRate = mistRate + fleckRate + glintRate;
+
+      let credit = this._jetMistSpawnAcc.get(seg.id) || 0;
+      credit += totalRate * dt;
+      const toSpawn = Math.min(Math.floor(credit), 12);
+      credit -= toSpawn;
+      this._jetMistSpawnAcc.set(seg.id, credit);
+
+      if (toSpawn <= 0 || particles.length >= MAX_MIST) continue;
+
+      for (let n = 0; n < toSpawn && particles.length < MAX_MIST; n++) {
+        const roll = Math.random() * totalRate;
+        let kind = 'fleck';
+        if (roll < mistRate) kind = 'mist';
+        else if (roll < mistRate + fleckRate) kind = 'fleck';
+        else kind = 'glint';
+
+        const p = this._acquireJetMist();
+        p.hexQ = seg.towerQ;
+        p.hexR = seg.towerR;
+        p.sourceId = seg.id;
+        p.kind = kind;
+        p.phase = Math.random() * Math.PI * 2;
+        p.ux = ux;
+        p.uy = uy;
+
+        // Bias spawn toward tip (impact spray) + a little near nozzle
+        let t;
+        const tipBias = Math.random();
+        if (tipBias < 0.22) t = 0.05 + Math.random() * 0.18; // nozzle
+        else if (tipBias < 0.55) t = 0.72 + Math.random() * 0.28; // tip spray
+        else t = 0.15 + Math.random() * 0.7; // along stream
+
+        const along = t * len;
+        const side = (Math.random() - 0.5) * hexR * (kind === 'mist' ? 0.35 : 0.18);
+        // Offset from tower hex center along the stream axis
+        p.ox = ux * along + px * side;
+        p.oy = uy * along + py * side;
+
+        if (kind === 'mist') {
+          const peel = (Math.random() < 0.5 ? -1 : 1) * (18 + Math.random() * 36);
+          const drift = 10 + Math.random() * 28;
+          p.vx = px * peel + ux * drift * 0.35;
+          p.vy = py * peel + uy * drift * 0.35 - (4 + Math.random() * 10);
+          p.ax = 0;
+          p.ay = -6;
+          p.friction = 1;
+          p.life = 0.45 + Math.random() * 0.55;
+          p.maxLife = p.life;
+          p.size = 7 + Math.random() * 11 + (seg.power - 1) * 1.5;
+          p.grow = 6 + Math.random() * 10;
+          p.stretch = 1.15 + Math.random() * 0.45;
+        } else if (kind === 'glint') {
+          const speed = 40 + Math.random() * 70;
+          p.vx = ux * speed + px * (Math.random() - 0.5) * 18;
+          p.vy = uy * speed + py * (Math.random() - 0.5) * 18;
+          p.ax = 0;
+          p.ay = 0;
+          p.friction = 0.99;
+          p.life = 0.12 + Math.random() * 0.18;
+          p.maxLife = p.life;
+          p.size = 1.2 + Math.random() * 1.8;
+          p.grow = 0;
+          p.stretch = 1;
+        } else {
+          // fleck
+          const peel = (Math.random() < 0.5 ? -1 : 1) * (30 + Math.random() * 70);
+          const forward = 50 + Math.random() * 90;
+          p.vx = ux * forward + px * peel;
+          p.vy = uy * forward + py * peel - (Math.random() * 20);
+          p.ax = px * peel * 0.15;
+          p.ay = 25 + Math.random() * 40;
+          p.friction = 0.975;
+          p.life = 0.22 + Math.random() * 0.32;
+          p.maxLife = p.life;
+          p.size = 1.4 + Math.random() * 2.2;
+          p.grow = 0;
+          p.stretch = 2 + Math.random() * 1.4;
+        }
+
+        const pal = this._jetMistPalette(kind);
+        p.r = pal.r;
+        p.g = pal.g;
+        p.b = pal.b;
+        p.coreR = pal.coreR;
+        p.coreG = pal.coreG;
+        p.coreB = pal.coreB;
+
+        particles.push(p);
+      }
+    }
+
+    for (const id of this._jetMistSpawnAcc.keys()) {
+      if (!activeIds.has(id)) this._jetMistSpawnAcc.delete(id);
+    }
+  }
+
+  /**
+   * Draw soft stream mist / shear flecks / caustic glints (additive).
+   */
+  drawJetMist() {
+    if (
+      !CONFIG.USE_WATER_PARTICLES ||
+      CONFIG.DISABLE_ALL_WATER_EFFECTS ||
+      this.isSimplifiedWaterVisualsEnabled()
+    ) {
+      return;
+    }
+
+    const particles = this.jetMist;
+    if (!particles.length) return;
+
+    const ctx = this.ctx;
+    const wVis = this.getWaterVisualAlphaScale();
+    const hexCache = this._particleHexScreenCache;
+    hexCache.clear();
+
+    // Pass 1: soft mist blobs
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      if (p.kind !== 'mist') continue;
+
+      const base = this._hexScreenCached(p.hexQ, p.hexR, hexCache);
+      const screenX = base.x + p.ox;
+      const screenY = base.y + p.oy;
+      if (!this.isHexInViewport(screenX, screenY)) continue;
+
+      const lifeRatio = Math.max(0, Math.min(1, p.life / p.maxLife));
+      const alpha = Math.sin(lifeRatio * Math.PI) * 0.28 * wVis;
+      if (alpha <= 0.015) continue;
+
+      const size = Math.max(1, p.size);
+      const stretch = p.stretch || 1.2;
+      const angle = Math.atan2(p.uy || 0, p.ux || 1) + Math.PI / 2;
+      const sprite = this._getFxGlowSprite(
+        p.coreR, p.coreG, p.coreB, p.r, p.g, p.b, p.r, p.g, p.b, 'mist'
+      );
+      // Mist sprite baked as ellipse (0.55 × 0.85); stretch + stream angle via transform.
+      ctx.save();
+      ctx.translate(screenX, screenY);
+      ctx.rotate(angle);
+      ctx.globalAlpha = Math.min(1, alpha);
+      const drawW = size * 1.1;
+      const drawH = size * 1.7 * stretch;
+      ctx.drawImage(sprite.canvas, -drawW * 0.5, -drawH * 0.5, drawW, drawH);
+      ctx.restore();
+    }
+    ctx.restore();
+
+    // Pass 2: shear flecks (streaked)
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      if (p.kind !== 'fleck') continue;
+
+      const base = this._hexScreenCached(p.hexQ, p.hexR, hexCache);
+      const screenX = base.x + p.ox;
+      const screenY = base.y + p.oy;
+      if (!this.isHexInViewport(screenX, screenY)) continue;
+
+      const alpha = Math.max(0, p.life / p.maxLife) * 0.85 * wVis;
+      if (alpha <= 0.02) continue;
+
+      const size = Math.max(0.4, p.size * (0.5 + alpha * 0.6));
+      const speed = Math.hypot(p.vx, p.vy) || 1;
+      const angle = Math.atan2(p.vy, p.vx);
+      const streak = Math.min(8, 1.6 + speed * 0.03);
+      const thick = Math.max(0.9, size * 0.9);
+      const streakSprite = this._getMapFxStreakSprite(p.r, p.g, p.b);
+      const coreSprite = this._getMapFxSparkSprite(p.coreR, p.coreG, p.coreB);
+
+      ctx.save();
+      ctx.translate(screenX, screenY);
+      ctx.rotate(angle);
+      ctx.globalAlpha = Math.min(1, alpha * 0.85);
+      ctx.drawImage(streakSprite.canvas, -streak, -thick * 0.5, streak * 2, thick);
+      const coreSize = size * 1.4;
+      ctx.globalAlpha = Math.min(1, alpha);
+      ctx.drawImage(coreSprite.canvas, -coreSize * 0.5, -coreSize * 0.5, coreSize, coreSize);
+      ctx.restore();
+    }
+    ctx.restore();
+
+    // Pass 3: caustic glints (tiny bright pops) — still cheap arcs (few particles)
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      if (p.kind !== 'glint') continue;
+
+      const base = this._hexScreenCached(p.hexQ, p.hexR, hexCache);
+      const screenX = base.x + p.ox;
+      const screenY = base.y + p.oy;
+      if (!this.isHexInViewport(screenX, screenY)) continue;
+
+      const lifeRatio = Math.max(0, Math.min(1, p.life / p.maxLife));
+      const alpha = Math.sin(lifeRatio * Math.PI) * 0.95 * wVis;
+      if (alpha <= 0.03) continue;
+
+      const size = Math.max(0.5, p.size);
+      const sprite = this._getMapFxSparkSprite(p.coreR, p.coreG, p.coreB);
+      const draw = size * 4.4;
+      ctx.globalAlpha = Math.min(1, alpha);
+      ctx.drawImage(sprite.canvas, screenX - draw * 0.5, screenY - draw * 0.5, draw, draw);
+      // Tiny cross sparkle
+      ctx.strokeStyle = `rgba(${p.coreR},${p.coreG},${p.coreB},${alpha * 0.7})`;
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.moveTo(screenX - size * 2.2, screenY);
+      ctx.lineTo(screenX + size * 2.2, screenY);
+      ctx.moveTo(screenX, screenY - size * 2.2);
+      ctx.lineTo(screenX, screenY + size * 2.2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /**
+   * Soft white/blue bubbles rising from active water buckets / tanks / vats.
+   * Subtle + irregular so containers read as filled with water.
+   * @param {number} deltaTime
+   */
+  updateWaterTankBubbles(deltaTime) {
+    const dt = Math.max(0, Math.min(0.05, Number(deltaTime) || 0));
+    const particles = this.waterBubbles;
+    const activeIds = this._scratchActiveIds;
+    activeIds.clear();
+    const nowSec = (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.life -= dt;
+      if (p.life <= 0) {
+        this._swapRemoveParticle(particles, i, this.waterBubblePool);
+        continue;
+      }
+
+      // Gentle lateral wobble + slow rise
+      p.vx += Math.sin(nowSec * (2.2 + (p.wobbleFreq || 1)) + (p.phase || 0)) * (p.wobbleAmp || 12) * dt;
+      p.vy += p.ay * dt;
+      p.vx *= 0.96;
+      p.vy *= 0.995;
+      p.ox += p.vx * dt;
+      p.oy += p.vy * dt;
+      if (p.grow) p.size += p.grow * dt;
+    }
+
+    if (dt <= 0) return;
+
+    const tanks = this.gameState?.waterTankSystem?.getAllWaterTanks?.() || [];
+    const MAX_BUBBLES = 570;
+    const hexR = CONFIG.HEX_RADIUS || 40;
+    // Bucket baseline (+10% vs prior); tank +20% on that; vat +20% on tank
+    const BASE_SPAWN_RATE = 3.9 * 1.1;
+    const BASE_SIZE_MIN = 1.40625 * 1.1;
+    const BASE_SIZE_RANGE = 3.75 * 1.1;
+    const BASE_GROW_MIN = 0.1875 * 1.1;
+    const BASE_GROW_RANGE = 0.6875 * 1.1;
+
+    for (let s = 0; s < tanks.length; s++) {
+      const tank = tanks[s];
+      if (!tank || tank.isActive === false) continue;
+      const id = String(tank.id ?? `${tank.q},${tank.r}`);
+      activeIds.add(id);
+
+      const typeId = tank.typeId || 'water_bucket';
+      const tierScale =
+        typeId === 'water_vat' ? 1.2 * 1.2 : typeId === 'water_tank' ? 1.2 : 1;
+      // Travel height: +25% baseline; tank/vat climb a bit higher still
+      const riseScale =
+        1.25 * (typeId === 'water_vat' ? 1.2 : typeId === 'water_tank' ? 1.1 : 1);
+
+      let acc = this._waterBubbleSpawnAcc.get(id) || 0;
+      acc += BASE_SPAWN_RATE * tierScale * dt;
+      // Slight per-tank jitter so they don't pulse in sync
+      const jitter = 0.35 + (Math.abs(Math.sin((tank.q || 0) * 12.9898 + (tank.r || 0) * 78.233)) * 0.9);
+      while (acc >= 1 && particles.length < MAX_BUBBLES) {
+        acc -= 1;
+        if (Math.random() > 0.72 * jitter) continue; // irregular gaps
+
+        const p = this.waterBubblePool.pop() || {};
+        p.hexQ = tank.q;
+        p.hexR = tank.r;
+        p.sourceId = id;
+        // Spawn near top of the container sprite
+        const spreadX = hexR * (0.12 + Math.random() * 0.28);
+        p.ox = (Math.random() - 0.5) * 2 * spreadX;
+        p.oy = -hexR * (0.05 + Math.random() * 0.22);
+        p.vx = (Math.random() - 0.5) * 8;
+        p.vy = -(10 + Math.random() * 18) * riseScale; // rise
+        p.ay = -(6 + Math.random() * 10) * riseScale;
+        p.phase = Math.random() * Math.PI * 2;
+        p.wobbleFreq = 0.8 + Math.random() * 1.8;
+        p.wobbleAmp = 8 + Math.random() * 14;
+        p.size = (BASE_SIZE_MIN + Math.random() * BASE_SIZE_RANGE) * tierScale;
+        p.grow = (BASE_GROW_MIN + Math.random() * BASE_GROW_RANGE) * tierScale;
+        // Longer life so they keep rising further before fading
+        p.maxLife = (0.7 + Math.random() * 1.1) * riseScale;
+        p.life = p.maxLife;
+
+        // Mostly white, occasional soft blue
+        const useBlue = Math.random() < 0.28;
+        if (useBlue) {
+          p.r = 170 + Math.floor(Math.random() * 50);
+          p.g = 210 + Math.floor(Math.random() * 35);
+          p.b = 245 + Math.floor(Math.random() * 10);
+          p.strokeA = 0.55;
+          p.fillA = 0.18;
+        } else {
+          p.r = 235 + Math.floor(Math.random() * 20);
+          p.g = 245 + Math.floor(Math.random() * 10);
+          p.b = 255;
+          p.strokeA = 0.5;
+          p.fillA = 0.14;
+        }
+        p.highlight = Math.random() < 0.7;
+
+        particles.push(p);
+      }
+      this._waterBubbleSpawnAcc.set(id, acc);
+    }
+
+    // Drop spawn credit for tanks that are gone
+    for (const key of this._waterBubbleSpawnAcc.keys()) {
+      if (!activeIds.has(key)) this._waterBubbleSpawnAcc.delete(key);
+    }
+  }
+
+  drawWaterTankBubbles() {
+    const particles = this.waterBubbles;
+    if (!particles.length) return;
+    const ctx = this.ctx;
+    const hexCache = this._particleHexScreenCache;
+    hexCache.clear();
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      const base = this._hexScreenCached(p.hexQ, p.hexR, hexCache);
+      const screenX = base.x + p.ox;
+      const screenY = base.y + p.oy;
+      if (!this.isHexInViewport(screenX, screenY)) continue;
+
+      const t = Math.max(0, Math.min(1, p.life / p.maxLife));
+      // Fade in briefly, then fade out
+      const fade = t > 0.75 ? (1 - t) / 0.25 : Math.min(1, t / 0.2);
+      const alpha = fade * fade;
+      if (alpha <= 0.01) continue;
+      const size = Math.max(0.5, p.size);
+
+      ctx.save();
+      ctx.translate(screenX, screenY);
+      ctx.globalAlpha = alpha;
+
+      // Soft fill
+      ctx.beginPath();
+      ctx.arc(0, 0, size, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${p.r},${p.g},${p.b},${p.fillA})`;
+      ctx.fill();
+
+      // Bubble rim
+      ctx.beginPath();
+      ctx.arc(0, 0, size, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(${p.r},${p.g},${p.b},${p.strokeA})`;
+      ctx.lineWidth = Math.max(0.6, size * 0.22);
+      ctx.stroke();
+
+      // Tiny highlight speck (classic soap-bubble cue)
+      if (p.highlight) {
+        ctx.beginPath();
+        ctx.arc(-size * 0.28, -size * 0.32, Math.max(0.35, size * 0.22), 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255,255,255,${0.55 * alpha})`;
+        ctx.fill();
+      }
+
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  /**
    * Draw currency items on the map
    * @param {CurrencyItemSystem} currencyItemSystem - The currency item system
    */
@@ -11045,10 +15114,12 @@ export class Renderer {
         const level = Math.min(4, Math.max(1, item.value || 1));
         spriteFilename = `shield_${level}.png`;
       } else if (item.itemType === 'suppression_bomb') {
-        const level = Math.min(4, Math.max(1, item.value || 1));
+        const level = clampSuppressionBombLevel(item.value || 1);
         spriteFilename = `suppression_${level}.png`;
       } else if (item.itemType === 'upgrade_plans') {
         spriteFilename = 'upgrade_token.png';
+      } else if (item.itemType === 'specialty_plans') {
+        spriteFilename = 'special.png';
       } else if (item.itemType === 'tree_juice') {
         spriteFilename = 'town_defense.png';
       }
@@ -11056,18 +15127,24 @@ export class Renderer {
       
       // Draw currency item graphic if loaded
       if (currencySprite.complete && currencySprite.naturalWidth > 0) {
-        // Flash opacity if being hit by water
+        // Size the sprite to match temp power-ups (same size as temp power-ups)
+        const spriteSize = CONFIG.HEX_RADIUS * 0.8 * 1.5 * 0.85;
+        const spriteWidth = spriteSize;
+        const spriteHeight = (currencySprite.naturalHeight / currencySprite.naturalWidth) * spriteWidth;
+
+        // Neon green shimmer on all currency / bonus map items (+25% vs prior green size)
+        this.drawTreasureShimmerAura(spriteWidth, spriteHeight, item.id || item.itemType, {
+          palette: 'green',
+          scale: 1.15 * 0.75 * 1.25,
+        });
+
+        // Flash opacity if being hit by water (aura stays bright)
         if (isBeingHitByWater) {
           // Create a flashing effect by alternating between full and reduced opacity
           const flashTime = (performance.now() / 1000) * 3.0; // 3 flashes per second
           const flashValue = (Math.sin(flashTime) + 1) / 2; // 0 to 1
           this.ctx.globalAlpha = 0.5 + flashValue * 0.5; // Fade between 0.5 and 1.0
         }
-        
-        // Size the sprite to match temp power-ups (same size as temp power-ups)
-        const spriteSize = CONFIG.HEX_RADIUS * 0.8 * 1.5 * 0.85;
-        const spriteWidth = spriteSize;
-        const spriteHeight = (currencySprite.naturalHeight / currencySprite.naturalWidth) * spriteWidth;
         
         this.ctx.imageSmoothingEnabled = true;
         this.ctx.imageSmoothingQuality = 'high';
@@ -11287,16 +15364,32 @@ export class Renderer {
       this.minimapSidebarOffset = targetOffset;
     }
     
-    // Apply offset to minimap container (pill + minimap move together)
-    const minimapContainer = document.getElementById('minimapContainer');
-    if (minimapContainer) {
-      minimapContainer.style.transform = `translateX(${this.minimapSidebarOffset}px)`;
+    // Apply offset to minimap container (pill + minimap move together).
+    // Only touch the DOM when the offset actually changed — style writes every
+    // frame force style recalc even when the value is identical.
+    if (this._minimapLastAppliedOffset !== this.minimapSidebarOffset) {
+      const minimapContainer = document.getElementById('minimapContainer');
+      if (minimapContainer) {
+        minimapContainer.style.transform = `translateX(${this.minimapSidebarOffset}px)`;
+        this._minimapLastAppliedOffset = this.minimapSidebarOffset;
+      }
     }
+
+    // Throttle the actual canvas redraw — a 5 Hz minimap is visually identical and
+    // the full redraw (bounding box rescan, 5 lookup maps, per-hex path fills) was
+    // ~2% of frame time at wave 25 when run at 60 Hz.
+    const nowMs = performance.now();
+    if (this._minimapLastDrawAt !== undefined && nowMs - this._minimapLastDrawAt < 200) {
+      return;
+    }
+    this._minimapLastDrawAt = nowMs;
     
     const minimapCtx = minimapCanvas.getContext('2d');
     const minimapSize = 200;
-    minimapCanvas.width = minimapSize;
-    minimapCanvas.height = minimapSize;
+    if (minimapCanvas.width !== minimapSize || minimapCanvas.height !== minimapSize) {
+      minimapCanvas.width = minimapSize;
+      minimapCanvas.height = minimapSize;
+    }
     
     // Clear minimap with completely transparent background - no wrapper
     minimapCtx.clearRect(0, 0, minimapSize, minimapSize);
@@ -11304,50 +15397,52 @@ export class Renderer {
     // Calculate scale to fit the map
     const mapSize = CONFIG.MAP_SIZE;
     const halfSize = Math.floor(mapSize / 2);
-    
-    // Calculate the bounding box of the hexagonal map
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    const cornerHexes = []; // Store corner hexes for background shape
-    for (let q = -halfSize; q <= halfSize; q++) {
-      for (let r = -halfSize; r <= halfSize; r++) {
-        if (isInBounds(q, r)) {
-          const { x, y } = axialToPixel(q, r, 1);
-          minX = Math.min(minX, x);
-          maxX = Math.max(maxX, x);
-          minY = Math.min(minY, y);
-          maxY = Math.max(maxY, y);
-          // Track corner hexes (hexes at the boundary)
-          const neighbors = getNeighbors(q, r);
-          const isCorner = neighbors.some(n => !isInBounds(n.q, n.r));
-          if (isCorner) {
-            cornerHexes.push({ q, r, x, y });
+
+    // Static geometry (bounding box / scale / centering) only depends on map size —
+    // cache it instead of rescanning every hex coordinate on each redraw.
+    let geom = this._minimapGeomCache;
+    if (!geom || geom.mapSize !== mapSize || geom.minimapSize !== minimapSize) {
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (let q = -halfSize; q <= halfSize; q++) {
+        for (let r = -halfSize; r <= halfSize; r++) {
+          if (isInBounds(q, r)) {
+            const { x, y } = axialToPixel(q, r, 1);
+            minX = Math.min(minX, x);
+            maxX = Math.max(maxX, x);
+            minY = Math.min(minY, y);
+            maxY = Math.max(maxY, y);
           }
         }
       }
+
+      const mapWidth = maxX - minX;
+      const mapHeight = maxY - minY;
+
+      // Calculate scale to fit tightly within the hexagon
+      // Account for hexagon's effective size (hexagon in square uses ~86.6% of square)
+      const hexEfficiency = Math.sqrt(3) / 2;
+      const effectiveWidth = minimapSize * hexEfficiency;
+      const effectiveHeight = minimapSize * hexEfficiency;
+
+      const scaleX = effectiveWidth / mapWidth;
+      const scaleY = effectiveHeight / mapHeight;
+      const scale = Math.min(scaleX, scaleY) * 0.95; // Slight reduction to ensure no clipping
+
+      // Center the map
+      const centerX = minimapSize / 2;
+      const centerY = minimapSize / 2;
+      geom = {
+        mapSize,
+        minimapSize,
+        scale,
+        offsetX: centerX - (minX + maxX) / 2 * scale,
+        offsetY: centerY - (minY + maxY) / 2 * scale,
+      };
+      this._minimapGeomCache = geom;
     }
-    
-    const mapWidth = maxX - minX;
-    const mapHeight = maxY - minY;
-    
-    // Fill the entire hexagon shape - use full canvas size
-    const availableWidth = minimapSize;
-    const availableHeight = minimapSize;
-    
-    // Calculate scale to fit tightly within the hexagon
-    // Account for hexagon's effective size (hexagon in square uses ~86.6% of square)
-    const hexEfficiency = Math.sqrt(3) / 2;
-    const effectiveWidth = availableWidth * hexEfficiency;
-    const effectiveHeight = availableHeight * hexEfficiency;
-    
-    const scaleX = effectiveWidth / mapWidth;
-    const scaleY = effectiveHeight / mapHeight;
-    const scale = Math.min(scaleX, scaleY) * 0.95; // Slight reduction to ensure no clipping
-    
-    // Center the map
-    const centerX = minimapSize / 2;
-    const centerY = minimapSize / 2;
-    const offsetX = centerX - (minX + maxX) / 2 * scale;
-    const offsetY = centerY - (minY + maxY) / 2 * scale;
+    const scale = geom.scale;
+    const offsetX = geom.offsetX;
+    const offsetY = geom.offsetY;
     
     // Get all hexes
     const hexes = this.gameState.gridSystem.getAllHexes();
@@ -11387,6 +15482,18 @@ export class Renderer {
       const key = `${site.q},${site.r}`;
       digSiteMap.set(key, site);
     });
+
+    // Path index → high-contrast minimap fill (distinct from softer board tints)
+    const pathMinimapColorByHex = new Map();
+    const currentPaths = this.gameState.pathSystem?.currentPaths;
+    if (currentPaths && this.gameState.pathSystem?.getMinimapPathColor) {
+      currentPaths.forEach((path, pathIndex) => {
+        const color = this.gameState.pathSystem.getMinimapPathColor(pathIndex);
+        path.forEach(({ q, r }) => {
+          pathMinimapColorByHex.set(`${q},${r}`, color);
+        });
+      });
+    }
     
     // Helper function to darken a hex color by a percentage
     const darkenColor = (hexColor, percent) => {
@@ -11402,6 +15509,16 @@ export class Renderer {
     
     // Darken the background color by 20% for blank hexes
     const darkenedBackground = darkenColor(CONFIG.COLOR_BACKGROUND, 0.2);
+
+    // Palette: CONFIG.MINIMAP (tweak colors there)
+    const mm = CONFIG.MINIMAP || {};
+    const mmFire = mm.FIRE || 'hsl(16, 100%, 50%)';
+    const mmVortexDot = mm.VORTEX_DOT || 'hsl(0, 0%, 0%)';
+    const mmSpawner = mm.SPAWNER || 'hsl(275, 100%, 72%)';
+    const mmItem = mm.ITEM || 'hsl(207, 90%, 54%)';
+    const mmSite = mm.SITE || 'hsl(320, 100%, 50%)';
+    const mmTowerDot = mm.TOWER_DOT || 'hsl(0, 0%, 100%)';
+    const mmDotRadius = Number(mm.MARKER_DOT_RADIUS) > 0 ? Number(mm.MARKER_DOT_RADIUS) : 2.25;
     
     // Draw each hex with solid colors, no borders
     // The CSS backdrop-filter on the canvas will blur the main map behind it
@@ -11416,35 +15533,47 @@ export class Renderer {
       
       // Determine color based on hex state
       let fillColor = darkenedBackground; // Use darkened background color for empty hexes
+      let isTower = false;
+      const isVortex = !!hex.hasVortex;
       
+      // Vortexes do not override fill — underlying path/town/fire/empty shows through
       if (hex.isBurning) {
-        fillColor = getFireTypeDisplayColor(hex.fireType);
+        fillColor = mmFire;
       } else if (hex.hasFireSpawner) {
-        // Fire spawner - use spawner's fire type color (slightly brighter to distinguish from fires)
-        const spawnerColor = getSpawnerDrawColor(hex);
-        // Brighten the spawner color by 20% to make it stand out
-        fillColor = this.brightenColor(spawnerColor, 1.2);
+        fillColor = mmSpawner;
       } else if (hex.isTown) {
         // Town hex
         fillColor = CONFIG.COLOR_TOWN; // Use same color for all town hexes including center
       } else if (hex.isPath) {
-        // Path hex
-        fillColor = hex.pathColor || CONFIG.COLOR_PATH;
+        // Path hex — use high-contrast minimap colors when available
+        fillColor = pathMinimapColorByHex.get(`${hex.q},${hex.r}`)
+          || hex.pathColor
+          || CONFIG.COLOR_PATH;
       }
       
-      // Check for items/towers (these override the base color, but not spawners or fires)
+      // Towers / sites / items (towers & vortexes keep underlying hex fill — center-dot markers only)
       const hexKey = `${hex.q},${hex.r}`;
-      if (!hex.isBurning && !hex.hasFireSpawner) {
-        if (towerMap.has(hexKey) || waterTankMap.has(hexKey) || hex.hasWaterTank) {
-          // Towers and water tanks are blue
-          fillColor = CONFIG.COLOR_TOWER;
-        } else if (digSiteMap.has(hexKey) || hex.hasDigSite) {
-          // Dig sites are white
-          fillColor = '#FFFFFF'; // White
-        } else if (tempPowerUpMap.has(hexKey) || artifactMap.has(hexKey) || hex.hasTempPowerUpItem || hex.hasMysteryItem || hex.hasCurrencyItem ||
-          hex.hasBurningVault || hex.hasArtifactItem) {
-          // Power-ups, mystery items, currency items, burning vaults, artifacts are fuschia
-          fillColor = '#FF00FF'; // Fuschia
+      if (!hex.isBurning && !hex.hasFireSpawner && !hex.hasVortex) {
+        if (towerMap.has(hexKey)) {
+          isTower = true;
+        } else if (
+          digSiteMap.has(hexKey) ||
+          hex.hasDigSite ||
+          hex.hasBurningVault ||
+          hex.hasDungeonEntrance
+        ) {
+          fillColor = mmSite;
+        } else if (
+          waterTankMap.has(hexKey) ||
+          hex.hasWaterTank ||
+          tempPowerUpMap.has(hexKey) ||
+          artifactMap.has(hexKey) ||
+          hex.hasTempPowerUpItem ||
+          hex.hasMysteryItem ||
+          hex.hasCurrencyItem ||
+          hex.hasArtifactItem
+        ) {
+          fillColor = mmItem;
         }
       }
       
@@ -11458,6 +15587,22 @@ export class Renderer {
       minimapCtx.closePath();
       minimapCtx.fillStyle = fillColor;
       minimapCtx.fill();
+
+      // Tower: white center dot only (hex fill stays path/empty/town underneath)
+      if (isTower) {
+        minimapCtx.beginPath();
+        minimapCtx.arc(minimapX, minimapY, mmDotRadius, 0, Math.PI * 2);
+        minimapCtx.fillStyle = mmTowerDot;
+        minimapCtx.fill();
+      }
+
+      // Vortex: black center dot only (hex fill stays path/empty/town/fire underneath)
+      if (isVortex) {
+        minimapCtx.beginPath();
+        minimapCtx.arc(minimapX, minimapY, mmDotRadius, 0, Math.PI * 2);
+        minimapCtx.fillStyle = mmVortexDot;
+        minimapCtx.fill();
+      }
     });
   }
 }

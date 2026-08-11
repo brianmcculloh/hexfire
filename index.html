@@ -114,21 +114,29 @@
                     </div>
                     <div class="overlay-divider"></div>
                     <div class="overlay-map-stats">
-                    <div class="overlay-row overlay-row-values-column overlay-row-tooltip" data-tooltip="Number of hexes currently on fire on the map.">
-                        <span class="overlay-label">Map Fires:</span>
-                        <span class="overlay-value fire-count" id="overlayFireCount" style="color: #FFFFFF;">0</span>
+                    <div class="overlay-row overlay-row-resource-combined overlay-map-stats-row">
+                        <span class="overlay-resource-pair overlay-row-tooltip" data-tooltip="Map Vortexes — vortexes currently active on the map.">
+                            <span class="overlay-label overlay-label-compact"><img src="assets/images/items/vortex_whirlwind.png" class="overlay-map-stat-icon" alt="" /></span>
+                            <span class="overlay-value" id="overlayVortexCount" style="color: #FFFFFF;">0</span>
+                        </span>
+                        <span class="overlay-resource-pair overlay-row-tooltip" data-tooltip="Map Items — items on the map (water tanks, suppression bombs, power-ups).">
+                            <span class="overlay-label overlay-label-compact"><img src="assets/images/items/mystery_common.png" class="overlay-map-stat-icon" alt="" /></span>
+                            <span class="overlay-value" id="overlayPlacedItems" style="color: #FFFFFF;">0</span>
+                        </span>
+                        <span class="overlay-resource-pair overlay-row-tooltip" data-tooltip="Map Towers — towers currently placed on the map.">
+                            <span class="overlay-label overlay-label-compact"><img src="assets/images/towers/spread_range_1.png" class="overlay-map-stat-icon overlay-map-stat-icon-tower" alt="" /></span>
+                            <span class="overlay-value" id="overlayPlacedTowers" style="color: #FFFFFF;">0</span>
+                        </span>
                     </div>
-                    <div class="overlay-row overlay-row-values-column overlay-row-tooltip" data-tooltip="Number of towers placed on the map.">
-                        <span class="overlay-label">Map Towers:</span>
-                        <span class="overlay-value" id="overlayPlacedTowers" style="color: #FFFFFF;">0</span>
-                    </div>
-                    <div class="overlay-row overlay-row-values-column overlay-row-tooltip" data-tooltip="Number of items on the map (water tanks, suppression bombs, power-ups).">
-                        <span class="overlay-label">Map Items:</span>
-                        <span class="overlay-value" id="overlayPlacedItems" style="color: #FFFFFF;">0</span>
-                    </div>
-                    <div class="overlay-row overlay-row-values-column overlay-row-tooltip" data-tooltip="Fires extinguished during the current wave. Resets when the next wave starts.">
-                        <span class="overlay-label">Extinguished:</span>
-                        <span class="overlay-value" id="overlayFiresExtinguishedThisWave" style="color: #FFFFFF;">0</span>
+                    <div class="overlay-row overlay-row-resource-combined overlay-map-stats-row">
+                        <span class="overlay-resource-pair overlay-row-tooltip" data-tooltip="Map Fires — hexes currently on fire on the map.">
+                            <span class="overlay-label overlay-label-compact"><img src="assets/images/misc/fire_red.png" class="overlay-map-stat-icon" alt="" /></span>
+                            <span class="overlay-value fire-count" id="overlayFireCount" style="color: #FFFFFF;">0</span>
+                        </span>
+                        <span class="overlay-resource-pair overlay-row-tooltip" data-tooltip="Extinguished — fires extinguished during the current wave. Resets when the next wave starts.">
+                            <span class="overlay-label overlay-label-compact"><img src="assets/images/misc/fires_extinguished.png" class="overlay-map-stat-icon" alt="" /></span>
+                            <span class="overlay-value" id="overlayFiresExtinguishedThisWave" style="color: #FFFFFF;">0</span>
+                        </span>
                     </div>
                     </div>
 
@@ -139,7 +147,7 @@
                 <div class="overlay-row overlay-row-right tower-status-header-row">
                     <button type="button" id="towerStatsHeaderBtn" class="tower-stats-header-trigger label label-white" aria-label="Tower Statistics">
                         <span class="label-middle-bg"></span>
-                        <span class="label-text">Towers On Map</span>
+                        <span class="label-text">Map Towers</span>
                     </button>
                 </div>
                 <div class="tower-status-scroll-area">
@@ -476,14 +484,14 @@
                 <!-- Sound Effects -->
                 <div class="setting-item">
                     <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default); margin-bottom: 6px;">
-                        <span style="font-weight: bold;">Enable Sound Effects</span>
+                        <span style="font-weight: bold;">Enable SFX</span>
                         <label class="toggle-switch">
                             <input type="checkbox" id="settingEnableSfx" checked>
                             <span class="toggle-slider"></span>
                         </label>
                     </label>
                     <label for="settingSfxVolume" style="display: block; color: #fff; margin-bottom: 4px; font-weight: normal;">
-                        Sound Effects Volume: <span id="settingSfxVolumeValue">70%</span>
+                        Volume: <span id="settingSfxVolumeValue">70%</span>
                     </label>
                     <input type="range" id="settingSfxVolume" class="setting-slider" min="0" max="100" value="70" step="5">
                 </div>
@@ -498,7 +506,7 @@
                         </label>
                     </label>
                     <label for="settingMusicVolume" style="display: block; color: #fff; margin-bottom: 4px; font-weight: normal;">
-                        Music Volume: <span id="settingMusicVolumeValue">50%</span>
+                        Volume: <span id="settingMusicVolumeValue">50%</span>
                     </label>
                     <input type="range" id="settingMusicVolume" class="setting-slider" min="0" max="100" value="50" step="5">
                 </div>
@@ -506,47 +514,96 @@
                 <!-- Screen Shake -->
                 <div class="setting-item">
                     <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
-                        <span style="font-weight: bold;">Enable Screen Shake</span>
+                        <span style="font-weight: bold;">Screen Shake</span>
                         <label class="toggle-switch">
                             <input type="checkbox" id="settingEnableScreenShake" checked>
                             <span class="toggle-slider"></span>
                         </label>
                     </label>
                 </div>
-                
-                <!-- FPS counter (below top-left HUD) -->
+
+                <!-- Map zoom: 75% / 100% (default) / 125% — also keys - / = / 0 -->
                 <div class="setting-item">
-                    <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
-                        <span style="font-weight: bold;">Show FPS counter</span>
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="settingShowFpsCounter">
-                            <span class="toggle-slider"></span>
-                        </label>
+                    <label for="settingMapZoom" style="display: block; color: #fff; margin-bottom: 8px; font-weight: bold; cursor: var(--cursor-default);">
+                        Map zoom: <span id="settingMapZoomValue" style="font-weight: normal;">100%</span>
                     </label>
+                    <input type="range" id="settingMapZoom" class="setting-slider setting-slider-steps" min="0" max="2" value="1" step="1" aria-valuetext="100%">
+                    <div class="setting-slider-labels" aria-hidden="true">
+                        <span>75%</span>
+                        <span>100%</span>
+                        <span>125%</span>
+                    </div>
                 </div>
-                
-                <!-- Hover tooltips (map, shop, overlay, etc.) -->
+
+                <!-- Master water draw toggle (when off, hide dependent water settings) -->
                 <div class="setting-item">
                     <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
-                        <span style="font-weight: bold;">Disable tooltips</span>
+                        <span style="font-weight: bold;">Show water</span>
                         <label class="toggle-switch">
-                            <input type="checkbox" id="settingDisableGameTooltips">
+                            <input type="checkbox" id="settingDisableWaterEffects" checked>
                             <span class="toggle-slider"></span>
                         </label>
                     </label>
                 </div>
 
-                <!-- Reduced-opacity water streams & particles (performance / clarity) -->
-                <div class="setting-item">
+                <!-- Water opacity preference (visual only — does not thin particles) -->
+                <div class="setting-item" id="settingWaterVisibilityRow">
+                    <label for="settingWaterVisibility" style="display: block; color: #fff; margin-bottom: 4px; font-weight: bold; cursor: var(--cursor-default);">
+                        Water visibility: <span id="settingWaterVisibilityValue" style="font-weight: normal;">max</span>
+                    </label>
+                    <input type="range" id="settingWaterVisibility" class="setting-slider" min="20" max="80" value="80" step="5">
+                </div>
+
+                <!-- Performance: fewer particles / skip mist & bloom -->
+                <div class="setting-item" id="settingSimpleWaterRow">
                     <div style="display: flex; align-items: center; justify-content: space-between; color: #fff;">
-                        <label for="settingSimplifiedWaterVisuals" style="font-weight: bold; cursor: var(--cursor-default);">Reduced water visuals</label>
+                        <label for="settingSimplifiedWaterVisuals" style="font-weight: bold; cursor: var(--cursor-default);">Simple water</label>
                         <label class="toggle-switch">
                             <input type="checkbox" id="settingSimplifiedWaterVisuals">
                             <span class="toggle-slider"></span>
                         </label>
                     </div>
                 </div>
+
+                <!-- Performance: solid fire hexes (skip organic edge warble / hot core) -->
+                <div class="setting-item">
+                    <div style="display: flex; align-items: center; justify-content: space-between; color: #fff;">
+                        <label for="settingSimplifiedFireVisuals" style="font-weight: bold; cursor: var(--cursor-default);">Simple fire</label>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="settingSimplifiedFireVisuals">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
                 
+                <!-- Hover tooltips (map, shop, overlay, etc.) -->
+                <div class="setting-item">
+                    <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
+                        <span style="font-weight: bold;">Tooltips</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="settingDisableGameTooltips" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </label>
+                </div>
+
+                <!-- Tower select mode: hover vs click for rotation arrows -->
+                <div class="setting-item">
+                    <label style="display: block; color: #fff; margin-bottom: 8px; font-weight: bold;">Tower select mode</label>
+                    <div class="scenario-dropdown-container">
+                        <div class="scenario-dropdown" id="settingTowerSelectModeDropdown">
+                            <div class="scenario-dropdown-selected" id="settingTowerSelectModeSelected">
+                                <span id="settingTowerSelectModeText">Click</span>
+                                <span class="scenario-dropdown-arrow">▼</span>
+                            </div>
+                            <div class="scenario-dropdown-menu" id="settingTowerSelectModeMenu">
+                                <div class="scenario-dropdown-option" data-value="hover">Hover</div>
+                                <div class="scenario-dropdown-option" data-value="click">Click</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Endless mode (locked until campaign complete; debug mode bypasses lock) -->
                 <div class="setting-item" id="settingEndlessModeRow">
                     <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
@@ -558,12 +615,12 @@
                     </label>
                 </div>
                 
-                <!-- Disable Notifications -->
+                <!-- Notifications -->
                 <div class="setting-item">
                     <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
-                        <span style="font-weight: bold;">Disable Notifications</span>
+                        <span style="font-weight: bold;">Notifications</span>
                         <label class="toggle-switch">
-                            <input type="checkbox" id="settingDisableNotifications">
+                            <input type="checkbox" id="settingDisableNotifications" checked>
                             <span class="toggle-slider"></span>
                         </label>
                     </label>
@@ -571,8 +628,16 @@
                 
                 </div>
                 <div class="modal-choices modal-choices-settings-footer">
-                    <button class="choice-btn cta-button" id="closeSettingsModalBtn">Done</button>
-                    <button class="choice-btn cta-button cta-purple" id="openAdvancedSettingsBtn">Advanced</button>
+                    <div class="modal-choices-settings-footer-row">
+                        <button type="button" class="choice-btn cta-button cta-purple" id="openTowerStatsFromAdvancedBtn">Tower Stats</button>
+                        <button type="button" class="choice-btn cta-button cta-lime" id="openMetaProgressionBtn">Unlocks</button>
+                        <button type="button" class="choice-btn cta-button cta-yellow" id="openRunHistoryBtn">Run history</button>
+                        <button type="button" class="choice-btn cta-button cta-orange" id="openUpdateLogBtn">Update log</button>
+                    </div>
+                    <div class="modal-choices-settings-footer-row">
+                        <button class="choice-btn cta-button" id="closeSettingsModalBtn">Done</button>
+                        <button class="choice-btn cta-button cta-red" id="openAdvancedSettingsBtn">Advanced</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -595,10 +660,21 @@
                     </label>
                 </div>
 
+                <!-- Click to Scroll (drag map to pan) -->
+                <div class="setting-item">
+                    <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
+                        <span style="font-weight: bold;">Click to Scroll</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="settingEnableClickToScroll" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </label>
+                </div>
+
                 <!-- Enable Edge Scrolling -->
                 <div class="setting-item">
                     <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
-                        <span style="font-weight: bold;">Enable Edge Scrolling</span>
+                        <span style="font-weight: bold;">Edge Scrolling</span>
                         <label class="toggle-switch">
                             <input type="checkbox" id="settingEnableEdgeScrolling">
                             <span class="toggle-slider"></span>
@@ -645,23 +721,26 @@
                     </label>
                     <input type="range" id="settingWheelScrollSpeed" class="setting-slider" min="0.5" max="5" value="1" step="0.5">
                 </div>
+
+                <!-- FPS counter (below top-left HUD) -->
+                <div class="setting-item">
+                    <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
+                        <span style="font-weight: bold;">FPS counter</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="settingShowFpsCounter">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </label>
+                </div>
                 </div>
                 <div class="modal-choices modal-choices-advanced-footer">
-                    <div class="modal-choices-advanced-footer-row">
-                        <button type="button" class="choice-btn cta-button cta-purple" id="openTowerStatsFromAdvancedBtn">Tower Stats</button>
-                        <button type="button" class="choice-btn cta-button cta-lime" id="openMetaProgressionBtn">Unlocks</button>
-                        <button type="button" class="choice-btn cta-button cta-yellow" id="openRunHistoryBtn">Run history</button>
-                        <button type="button" class="choice-btn cta-button cta-orange" id="openUpdateLogBtn">Update log</button>
-                    </div>
-                    <div class="modal-choices-advanced-footer-row modal-choices-advanced-footer-row--done">
-                        <button type="button" class="choice-btn cta-button cta-blue" id="closeAdvancedSettingsBtn">Done</button>
-                    </div>
+                    <button type="button" class="choice-btn cta-button cta-blue" id="closeAdvancedSettingsBtn">Done</button>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Meta progression unlocks (from Advanced Settings) -->
+    <!-- Meta progression unlocks (from Settings) -->
     <div id="metaProgressionModal" class="modal-overlay">
         <div class="modal modal-frame-9patch meta-progression-modal-panel">
             <div class="modal-frame-content">
@@ -675,7 +754,7 @@
         </div>
     </div>
 
-    <!-- Run history (from Advanced Settings) -->
+    <!-- Run history (from Settings) -->
     <div id="runHistoryModal" class="modal-overlay">
         <div class="modal modal-frame-9patch run-history-modal-panel">
             <div class="modal-frame-content">
@@ -703,7 +782,7 @@
     <div id="towerStatsModal" class="modal-overlay tower-stats-overlay" aria-hidden="true">
         <div class="tower-stats-screen">
             <h2 class="map-progression-title">Tower Statistics</h2>
-            <p class="map-progression-intro">Compare all tower types at their highest upgrade levels by power, range, area, and cost.</p>
+            <p class="map-progression-intro">Compare all tower types at their highest upgrade levels by power, range, area, health, and cost.</p>
             <div class="tower-stats-list-wrap">
                 <div id="towerStatsList" class="tower-stats-list" role="list"></div>
             </div>
@@ -748,7 +827,7 @@
         </div>
     </div>
 
-    <!-- Update log modal (opened from Advanced Settings) -->
+    <!-- Update log modal (opened from Settings) -->
     <div id="updateLogModal" class="modal-overlay">
         <div class="modal modal-frame-9patch update-log-modal-panel">
             <div class="modal-frame-content">
@@ -841,8 +920,12 @@
             
             <div class="story-panel" id="storyPanel2" data-panel="2">
                 <div class="story-panel-content">
-                    <div class="story-image">
-                        <img src="assets/images/items/flame_spawner.png" alt="Flame Spawner" class="story-icon">
+                    <div class="story-image story-image-threats">
+                        <img src="assets/images/items/flame_spawner.png" alt="Flame Spawner" class="story-icon story-spawner-icon">
+                        <div class="story-vortex-wrap">
+                            <canvas class="story-vortex-fx" aria-hidden="true"></canvas>
+                            <img src="assets/images/items/vortex_whirlwind.png" alt="Fire Whirlwind" class="story-vortex-icon" style="--vortex-spin-duration: 2.427s;">
+                        </div>
                     </div>
                     <div class="story-text-frame modal modal-frame-9patch">
                         <div class="modal-frame-content">
@@ -850,7 +933,7 @@
                                 <h2 class="story-panel-header">It's a dangerous world out there.</h2>
                                 <p class="story-paragraph">Hexalon has one thing in common with Earth: <span class="text-jitter-fast text-fire-cinder text-uppercase">lightning</span>. It strikes randomly, without warning—setting the ground alight.</p>
                                 <p class="story-paragraph">Even worse: <span class="text-cycle-fire">Fire Spawners</span>. Seemingly wired to Hexalon's core, they're indestructible and spread fire in every direction.</p>
-                                <p class="story-paragraph">You'll start out battling <span class="text-fire-cinder">Cinders</span>, but as you get stronger, so do the fire types—from <span class="text-fire-flame">Flames</span>, to <span class="text-fire-blaze">Blazes</span>, to <span class="text-fire-firestorm">Firestorms</span>, to <span class="text-fire-inferno">Infernos</span>, to the strongest type of fire Hexalon keeps within its depths: <span class="text-fire-cataclysm">Cataclysms</span>.</p>
+                                <p class="story-paragraph">And then there are <span class="text-fire-blaze text-grow-pulse text-pulse-fast">Fire Vortexes</span>—very strong, swirling storms of flame that slowly move along the path towards the grove.</p>
                                 <div class="story-nav-buttons">
                                     <button type="button" class="story-back-btn cta-button"><img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon story-arrow-back" /> Back</button>
                                     <button type="button" class="story-next-btn cta-button">Next <img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon" /></button>

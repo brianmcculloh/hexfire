@@ -61,6 +61,13 @@ export class PathSystem {
     
     // Mark home base as used
     usedHexes.add(hexKey(0, 0));
+
+    // Persist dungeon entrances across wave groups — paths must plan around them.
+    for (const hex of this.gridSystem.getAllHexes()) {
+      if (hex?.hasDungeonEntrance) {
+        usedHexes.add(hexKey(hex.q, hex.r));
+      }
+    }
     
     for (let i = 0; i < pathCount; i++) {
       const path = this.generateSinglePath(usedHexes, usedRingHexes, i);
@@ -182,6 +189,7 @@ export class PathSystem {
         
         const gridHex = this.gridSystem.getHex(hex.q, hex.r);
         if (!gridHex || gridHex.isTown) return false;
+        if (gridHex.hasDungeonEntrance) return false;
         
         // CRITICAL: If we've already used a ring hex, never allow another ring hex
         if (hasUsedRingHex && this.isInHomeBaseRing(hex)) {
@@ -449,20 +457,38 @@ export class PathSystem {
   }
 
   /**
-   * Get the color for a specific path index
+   * Shared path palette (board tint + minimap fill).
+   * Green family only — avoid yellow (fires) and blue (towers). Hue + lightness
+   * are spaced hard so tiny minimap hexes and map tints both read as distinct.
+   * @returns {string[]}
+   */
+  getPathColors() {
+    // Format: hsl(hue, saturation%, lightness%)
+    return [
+      'hsl(145, 100.00%, 50.00%)',
+      'hsl(90, 100.00%, 50.00%)',
+      'hsl(70, 100.00%, 50.00%)', 
+      'hsl(175, 100.00%, 50.00%)'
+    ];
+  }
+
+  /**
+   * Get the board tint color for a specific path index (sprite color-blend).
    * @param {number} pathIndex - Path index (0-3)
    * @returns {string} Color for this path
    */
   getPathColor(pathIndex) {
-    // Path colors in HSL format for easier tweaking
-    // Format: hsl(hue, saturation%, lightness%)
-    const pathColors = [
-      'hsl(130, 80%, 35%)',  // Path 2: Hue 125°, Saturation 13%, Lightness 40% (slightly darker blue-green)
-      'hsl(95, 80%, 25%)',  // Path 1: Hue 124°, Saturation 15%, Lightness 34% (darker blue-green)
-      'hsl(155, 80%, 25%)',  // Path 3: Hue 125°, Saturation 20%, Lightness 52% (slightly brighter yellow-green)
-      'hsl(175, 80%, 25%)'   // Path 4: Hue 126°, Saturation 23%, Lightness 58% (brighter yellow-green)
-    ];
+    const pathColors = this.getPathColors();
     return pathColors[pathIndex % pathColors.length];
+  }
+
+  /**
+   * Get the minimap fill for a path index (same palette as board tints).
+   * @param {number} pathIndex - Path index (0-3)
+   * @returns {string} Minimap color for this path
+   */
+  getMinimapPathColor(pathIndex) {
+    return this.getPathColor(pathIndex);
   }
 
   /**

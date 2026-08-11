@@ -28,6 +28,7 @@ import {
   formatDisplayHundredths,
   getTowerUnlockStatus,
   getPlayerLevel,
+  getTowerBaseHealth,
 } from '../config.js';
 import { getHexLine, getSpreadTowerTargets, getHexesInRadius } from '../utils/hexMath.js';
 import { isMetaItemUnlocked } from './metaProgression.js';
@@ -53,12 +54,13 @@ const STAT_ROWS = [
   { key: 'powerPerHex', label: 'PER HEX', color: '#006EB8' },
   { key: 'range', label: 'RANGE', color: '#00FF00' },
   { key: 'area', label: 'AREA', color: '#F7375C' },
-  { key: 'cost', label: 'BUDGET', color: '#FFC41D' },
+  { key: 'health', label: 'HEALTH', color: '#ff30cf' },
+  { key: 'cost', label: 'AFFORD-\nABILITY', color: '#FFC41D' },
 ];
 
 /** Short role summary shown below stats on the tower comparison modal. */
 const TOWER_USAGE_SUMMARY = {
-  jet: 'Single stream, high impact',
+  jet: 'Short range, high durability',
   spread: 'Directional coverage',
   rain: 'Area coverage',
   pulsing: 'Powerful, focused impact',
@@ -91,6 +93,11 @@ function formatHexCount(n) {
 /** @param {number} n */
 function formatCost(n) {
   return `$${Math.round(n).toLocaleString()}`;
+}
+
+/** @param {number} n */
+function formatHealth(n) {
+  return `${Math.round(n)} HP`;
 }
 
 /**
@@ -400,19 +407,23 @@ function getTowerStatsCardMode(gameState, towerType) {
   return unlocked ? 'visible' : 'mystery';
 }
 
-/** @returns {Array<{ type: string, name: string, cost: number, totalPower: StatDisplay, powerPerHex: StatDisplay, range: StatDisplay, area: StatDisplay, costStat: StatDisplay }>} */
+/** @returns {Array<{ type: string, name: string, cost: number, totalPower: StatDisplay, powerPerHex: StatDisplay, range: StatDisplay, area: StatDisplay, health: StatDisplay, costStat: StatDisplay }>} */
 export function computeTowerComparisonStats() {
-  return TOWER_TYPES_BY_COST.map(({ type, cost }) => ({
-    type,
-    name: type === 'charge' ? 'Charge Tower (Balance Mode)' : getTowerDisplayName(type),
-    usage: TOWER_USAGE_SUMMARY[type] ?? '',
-    cost,
-    totalPower: buildTowerTotalPowerStat(type),
-    powerPerHex: buildTowerPowerPerHexStat(type),
-    range: buildTowerRangeStat(type),
-    area: buildTowerAreaStat(type),
-    costStat: statFromValue(cost, formatCost),
-  }));
+  return TOWER_TYPES_BY_COST.map(({ type, cost }) => {
+    const health = getTowerBaseHealth(type);
+    return {
+      type,
+      name: type === 'charge' ? 'Charge Tower (Balance Mode)' : getTowerDisplayName(type),
+      usage: TOWER_USAGE_SUMMARY[type] ?? '',
+      cost,
+      totalPower: buildTowerTotalPowerStat(type),
+      powerPerHex: buildTowerPowerPerHexStat(type),
+      range: buildTowerRangeStat(type),
+      area: buildTowerAreaStat(type),
+      health: statFromValue(health, formatHealth),
+      costStat: statFromValue(cost, formatCost),
+    };
+  });
 }
 
 /**
@@ -471,21 +482,24 @@ export function renderTowerStatsModal(gameState) {
   if (!list) return;
 
   const gs = gameState || (typeof window !== 'undefined' ? window.gameState : null);
-  const stats = computeTowerComparisonStats()
+  const allStats = computeTowerComparisonStats();
+  const stats = allStats
     .map((tower) => ({
       ...tower,
       cardMode: getTowerStatsCardMode(gs, tower.type),
     }))
     .filter((tower) => tower.cardMode !== 'hidden');
 
-  const visibleStats = stats.filter((tower) => tower.cardMode === 'visible');
-  const minCost = Math.min(...visibleStats.map((s) => s.cost), Infinity);
-  const maxCost = Math.max(...visibleStats.map((s) => s.cost), 0);
+  // Always scale bars against every tower in the game (including meta-/level-locked),
+  // so unlocked towers leave headroom for discovery.
+  const minCost = Math.min(...allStats.map((s) => s.cost));
+  const maxCost = Math.max(...allStats.map((s) => s.cost));
   const maxima = {
-    totalPower: Math.max(...visibleStats.map((s) => s.totalPower.compare), 1),
-    powerPerHex: Math.max(...visibleStats.map((s) => s.powerPerHex.compare), 1),
-    range: Math.max(...visibleStats.map((s) => s.range.compare), 1),
-    area: Math.max(...visibleStats.map((s) => s.area.compare), 1),
+    totalPower: Math.max(...allStats.map((s) => s.totalPower.compare), 1),
+    powerPerHex: Math.max(...allStats.map((s) => s.powerPerHex.compare), 1),
+    range: Math.max(...allStats.map((s) => s.range.compare), 1),
+    area: Math.max(...allStats.map((s) => s.area.compare), 1),
+    health: Math.max(...allStats.map((s) => s.health.compare), 1),
   };
 
   list.replaceChildren();
@@ -549,7 +563,8 @@ export function renderTowerStatsModal(gameState) {
 
       const fill = document.createElement('span');
       fill.className = 'tower-stats-metric-fill';
-      fill.style.width = `${pct.toFixed(2)}%`;
+      fill.dataset.targetWidth = pct.toFixed(2);
+      fill.style.width = '0%';
       fill.style.background = color;
 
       track.appendChild(fill);
@@ -611,6 +626,94 @@ function wireShopStyleTowerTooltip(el, towerType, cost, gameState) {
 }
 
 /**
+ * Animate all stat bars from 0 → target width (ease-out). Call after the modal is shown.
+ * @param {ParentNode | null | undefined} [root]
+ */
+function animateTowerStatBars(root) {
+  const list = root || document.getElementById('towerStatsList');
+  if (!list) return;
+  const fills = list.querySelectorAll('.tower-stats-metric-fill');
+  fills.forEach((fill) => {
+    const target = fill.dataset.targetWidth;
+    if (target == null) return;
+    fill.style.width = `${target}%`;
+  });
+}
+
+/**
+ * Top-left details control on shop/inventory tower cards (visible on card hover).
+ * Opens the tower statistics comparison modal.
+ * @param {HTMLElement} cardEl
+ * @param {import('../main.js').GameState} gameState
+ */
+export function attachTowerDetailsButton(cardEl, gameState) {
+  if (!cardEl) return;
+
+  cardEl.querySelector('.tower-details-btn')?.remove();
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'tower-details-btn';
+  btn.setAttribute('aria-label', 'View tower statistics');
+  btn.innerHTML = '<img src="assets/images/ui/icon-details.png" alt="" draggable="false" />';
+
+  const tooltipSystem = gameState?.inputHandler?.tooltipSystem;
+  const detailsTooltipHtml =
+    '<div style="color: #FFFFFF; font-size: 13px; line-height: 1.4;">Click to view tower statistics</div>';
+
+  const showDetailsTooltip = (clientX, clientY) => {
+    tooltipSystem?.show?.(detailsTooltipHtml, clientX, clientY - 12);
+  };
+
+  const restoreCardTooltipIfNeeded = (relatedTarget) => {
+    if (!tooltipSystem || !relatedTarget || !cardEl.contains(relatedTarget) || btn.contains(relatedTarget)) {
+      return;
+    }
+    const rect = cardEl.getBoundingClientRect();
+    cardEl.dispatchEvent(
+      new MouseEvent('mouseenter', {
+        bubbles: false,
+        clientX: rect.left + rect.width / 2,
+        clientY: rect.top,
+      })
+    );
+  };
+
+  btn.addEventListener('mouseenter', (e) => {
+    e.stopPropagation();
+    showDetailsTooltip(e.clientX, e.clientY);
+  });
+  btn.addEventListener('mouseleave', (e) => {
+    tooltipSystem?.hide?.();
+    restoreCardTooltipIfNeeded(e.relatedTarget);
+  });
+  btn.addEventListener('mousemove', (e) => {
+    e.stopPropagation();
+    showDetailsTooltip(e.clientX, e.clientY);
+  });
+
+  // Inventory tower pick/drag uses mousedown — don't start placement from this control.
+  btn.addEventListener('mousedown', (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+  });
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const gs = gameState || window.gameState;
+    if (!gs || gs.scenarioMode) return;
+    if (typeof window !== 'undefined' && window.AudioManager) {
+      window.AudioManager.playSFX('button1');
+    }
+    tooltipSystem?.hide?.();
+    openTowerStatsModal(gs);
+  });
+
+  cardEl.appendChild(btn);
+}
+
+/**
  * @param {import('../main.js').GameState | null | undefined} gameState
  */
 export function openTowerStatsModal(gameState) {
@@ -623,6 +726,10 @@ export function openTowerStatsModal(gameState) {
   playModalEnterAnimation(modal);
   modal.style.pointerEvents = 'auto';
   modal.setAttribute('aria-hidden', 'false');
+  // Double rAF so the browser paints width:0 before transitioning to the target.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => animateTowerStatBars(modal));
+  });
 }
 
 export function closeTowerStatsModal(onDone) {

@@ -58,7 +58,7 @@ export class DigSiteSystem {
 
         if (hex.hasArtifactItem) continue;
 
-        if (hex.hasBurningVault) continue;
+        if (hex.hasBurningVault || hex.hasDungeonEntrance) continue;
         
         // Can't spawn on existing currency items
         if (hex.hasCurrencyItem) continue;
@@ -158,7 +158,7 @@ export class DigSiteSystem {
     // Double-check validity
     if (hex.isTown || hex.isPath || hex.hasTower || hex.isBurning || 
         hex.hasWaterTank || hex.hasSuppressionBomb || hex.hasDigSite || hex.hasFireSpawner ||
-        hex.hasTempPowerUpItem || hex.hasMysteryItem || hex.hasCurrencyItem || hex.hasBurningVault ||
+        hex.hasTempPowerUpItem || hex.hasMysteryItem || hex.hasCurrencyItem || hex.hasBurningVault || hex.hasDungeonEntrance ||
         hex.hasArtifactItem) {
       return null;
     }
@@ -197,67 +197,70 @@ export class DigSiteSystem {
   }
 
   /**
-   * Update all dig sites (called each game tick)
-   * Handles water vs fire damage calculation
-   * @param {number} deltaTime - Time elapsed in seconds
+   * Per-frame water-vs-fire HP. Towers accumulate water HP this frame via
+   * {@link addWaterPower}; fire is applied as DPS × dt. Same units as the old
+   * 1 Hz tick (where water was summed over ~1s and compared to DPS × 1).
+   * @param {number} deltaTime - Frame delta in seconds
    */
-  update(deltaTime) {
+  updateHealth(deltaTime) {
+    const dt = Math.max(0, Number(deltaTime) || 0);
+    if (dt <= 0) return;
+
     const sitesToRemove = [];
-    
-    // Process each dig site
+
     this.digSites.forEach(site => {
       if (!site.isActive) return;
-      
+
       const hex = this.gridSystem.getHex(site.q, site.r);
       if (!hex) return;
-      
-      // Get cumulative water power hitting this site
-      const waterPower = this.waterPowerOnSites.get(site.id) || 0;
-      
-      // Get fire damage if hex is burning
+
+      // Accumulated water HP this frame (jet/rain pass power×dt; pulses/bombs pass burst HP)
+      const waterHp = this.waterPowerOnSites.get(site.id) || 0;
+
       let fireDamagePerSecond = 0;
+      const powerUps = this.gameState?.player?.powerUps || {};
+      const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+      const fireDamageMult = getPowerUpMultiplier('fireDamage', powerUps, tempPowerUps, this.gameState)
+        * getHeroPowerFireDamageResistanceMultiplier(this.gameState);
       if (hex.isBurning) {
         const fireConfig = getFireTypeConfig(hex.fireType);
-        const powerUps = this.gameState?.player?.powerUps || {};
-        const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
-        const fireDamageMult = getPowerUpMultiplier('fireDamage', powerUps, tempPowerUps, this.gameState)
-          * getHeroPowerFireDamageResistanceMultiplier(this.gameState);
         const baseDps = fireConfig ? fireConfig.damagePerSecond : 0;
-        fireDamagePerSecond = baseDps * fireDamageMult;
+        fireDamagePerSecond += baseDps * fireDamageMult;
       }
-      
-      // Calculate net damage: fire damage - water power
-      // Only take damage if fire is stronger than water
-      const netDamagePerSecond = Math.max(0, fireDamagePerSecond - waterPower);
-      
-      if (netDamagePerSecond > 0) {
-        // Fire is stronger - take damage
-        const damageThisTick = deltaTime * netDamagePerSecond;
-        this.gameState.runStats?.addDigSiteDamage?.(site.id, site.type, damageThisTick);
-        site.health -= damageThisTick;
-        site.health = Math.max(0, site.health);
-        
-        // Site destroyed
+      if (hex.hasVortex) {
+        fireDamagePerSecond +=
+          (this.gameState.vortexSystem?.getDamagePerSecondAt?.(site.q, site.r) || 0) * fireDamageMult;
+      }
+
+      const fireHp = fireDamagePerSecond * dt;
+      // Water protects; only net fire above water damages the site.
+      const damageThisFrame = Math.max(0, fireHp - waterHp);
+
+      if (damageThisFrame > 0) {
+        this.gameState.runStats?.addDigSiteDamage?.(site.id, site.type, damageThisFrame);
+        site.health = Math.max(0, site.health - damageThisFrame);
+
         if (site.health <= 0) {
-          // Play destroyed dig site sound effect
           if (window.AudioManager) {
             window.AudioManager.playSFX('destroyed_dig_site');
           }
           sitesToRemove.push(site.id);
         }
       }
-      // If water >= fire, no damage is taken (site is protected)
+
+      this.waterPowerOnSites.set(site.id, 0);
     });
-    
-    // Remove destroyed sites
+
     sitesToRemove.forEach(siteId => {
       this.destroyDigSite(siteId);
     });
-    
-    // Reset water power tracking for next frame (will be recalculated by tower system)
-    this.waterPowerOnSites.forEach((power, siteId) => {
-      this.waterPowerOnSites.set(siteId, 0);
-    });
+  }
+
+  /**
+   * 1 Hz tick — reserved for spawn/timers (HP is applied in {@link updateHealth}).
+   */
+  update(_deltaTime) {
+    // no-op: health runs per-frame
   }
 
   /**

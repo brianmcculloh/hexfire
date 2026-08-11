@@ -202,11 +202,16 @@ body {
 
 #gameCanvas.screen-shake {
     animation: screen-shake 0.4s ease-out;
+    /* Drop soft shadow while transforming — shadow+transform thrash is expensive on a large canvas */
+    box-shadow: none;
+    will-change: transform;
 }
 
-/* Sustained screen shake (loops until removed, for surround ability) */
+/* Sustained screen shake (loops until removed, for surround / provoked-burn / long casts) */
 #gameCanvas.screen-shake-sustained {
     animation: screen-shake 0.15s ease-in-out infinite;
+    box-shadow: none;
+    will-change: transform;
 }
 
 /* Side Panel Toggle Button */
@@ -3380,6 +3385,98 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     min-width: 140px;
 }
 
+/* Shop purchase confirm — item icon × quantity stepper */
+#confirmModal .modal-purchase-item-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    margin: 8px auto 16px;
+    flex-wrap: wrap;
+}
+
+#confirmModal .modal-purchase-item-row .modal-item-icon,
+#confirmModal .modal-item-icon {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin: 8px 0 16px;
+}
+
+#confirmModal .modal-purchase-item-row .modal-item-icon,
+#confirmModal .modal-item-icon.modal-item-icon--with-qty {
+    margin: 0;
+}
+
+#confirmModal .modal-quantity-times {
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 42px;
+    font-weight: 800;
+    line-height: 1;
+    text-shadow: 0 2px 0 rgba(0, 0, 0, 0.45);
+    user-select: none;
+}
+
+#confirmModal .modal-quantity-selector {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    margin: 0;
+    user-select: none;
+    flex-shrink: 0;
+}
+
+#confirmModal .modal-quantity-value {
+    min-width: 48px;
+    text-align: center;
+    color: #FFFFFF;
+    font-size: 34px;
+    font-weight: 800;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 2px 0 rgba(0, 0, 0, 0.45);
+}
+
+#confirmModal .modal-quantity-btn {
+    width: 44px;
+    height: 28px;
+    padding: 0;
+    border: 2px solid rgba(0, 220, 255, 0.75);
+    border-radius: 4px;
+    background: linear-gradient(180deg, rgba(40, 90, 140, 0.95) 0%, rgba(18, 48, 88, 0.98) 100%);
+    color: #7FE9FF;
+    font-size: 14px;
+    line-height: 1;
+    cursor: var(--cursor-pointer, pointer);
+    box-shadow: 0 0 10px rgba(0, 200, 255, 0.25);
+    transition: background 0.12s ease, opacity 0.12s ease, border-color 0.12s ease;
+}
+
+#confirmModal .modal-quantity-btn:hover:not(:disabled):not(.is-disabled) {
+    background: linear-gradient(180deg, rgba(56, 120, 180, 0.98) 0%, rgba(28, 70, 120, 1) 100%);
+    border-color: rgba(120, 240, 255, 0.95);
+    color: #FFFFFF;
+}
+
+#confirmModal .modal-quantity-btn:active:not(:disabled):not(.is-disabled) {
+    transform: translateY(1px);
+}
+
+#confirmModal .modal-quantity-btn:disabled,
+#confirmModal .modal-quantity-btn.is-disabled {
+    opacity: 0.35;
+    cursor: var(--cursor-default, default);
+    box-shadow: none;
+}
+
+#confirmModal .modal-cost-amount {
+    text-align: center;
+    max-width: 100%;
+    line-height: 1.15;
+}
+
 /* Leaderboard: Reset + Close on one row */
 #leaderboardModal .modal-choices.leaderboard-modal-choices {
     flex-wrap: nowrap;
@@ -3433,9 +3530,11 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 .bottom-edge-power-ups .power-up-indicator[data-index="8"] img { animation-delay: 2.4s; }
 .bottom-edge-power-ups .power-up-indicator[data-index="9"] img { animation-delay: 2.7s; }
 
+/* Animate transform (compositor-only) instead of `top`, which forced a layout +
+   paint pass every animation frame for each visible power-up indicator. */
 @keyframes powerUpFloat {
-    0%, 100% { top: 0px; } /* Image at default position - shows less */
-    50% { top: -6px; } /* Image moves up - shows more of it */
+    0%, 100% { transform: translateX(-50%) translateY(0); }
+    50% { transform: translateX(-50%) translateY(-6px); }
 }
 
 .bottom-edge-power-ups .power-up-indicator img {
@@ -4064,10 +4163,14 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     display: flex;
     align-items: center;
     justify-content: center;
+    box-sizing: border-box;
     border: 2px solid transparent;
     border-radius: 6px;
     padding: 6px 8px;
-    min-height: 48px;
+    height: 52px;
+    min-height: 52px;
+    max-height: 52px;
+    overflow: hidden;
     cursor: var(--cursor-default);
     transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
 }
@@ -4076,10 +4179,20 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     display: block;
     width: auto;
     height: 34px;
+    max-height: 34px;
     max-width: 43px;
     object-fit: contain;
     image-rendering: pixelated;
     pointer-events: none;
+}
+
+.sentinel-mode-btn-icon--vortex {
+    animation: sentinel-mode-vortex-spin 2.8s linear infinite;
+}
+
+@keyframes sentinel-mode-vortex-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
 }
 
 .sentinel-mode-btn--active {
@@ -4419,6 +4532,210 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     color: rgba(255, 255, 255, 0.35);
 }
 
+/* Dungeon Entrance — flooded reward picker (mid-wave; matches artifact trader mask/header) */
+.dungeon-reward-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 26000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.85); /* same as #waveCompleteModal / artifact trader */
+    pointer-events: auto;
+    cursor: var(--cursor-default);
+}
+
+.dungeon-reward-overlay,
+.dungeon-reward-overlay * {
+    cursor: var(--cursor-default) !important;
+}
+
+.dungeon-reward-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+    max-width: min(980px, 96vw);
+    padding: 12px 16px;
+    background: none;
+    border: none;
+    box-shadow: none;
+    overflow: visible;
+}
+
+.dungeon-reward-header-banner {
+    position: relative;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    margin-bottom: 5px;
+}
+
+.dungeon-reward-header-banner-img {
+    width: min(800px, 100%);
+    height: auto;
+    image-rendering: crisp-edges;
+    position: relative;
+    z-index: 1;
+    pointer-events: none;
+}
+
+.dungeon-reward-header-banner-text-wrap {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    pointer-events: none;
+}
+
+.dungeon-reward-header-banner-text {
+    color: #FFFFFF;
+    font-size: 32px;
+    font-weight: bold;
+    font-family: "Exo 2", sans-serif;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+    white-space: nowrap;
+}
+
+.dungeon-reward-blurb {
+    color: #E2E8F0;
+    font-size: 15px;
+    line-height: 1.45;
+    margin: 6px auto 16px;
+    max-width: 720px;
+    text-align: center;
+    font-family: "Exo 2", sans-serif;
+}
+
+/*
+ * Horizontal 3-patch green frame (same pattern as .cta-button):
+ * left/right endcaps + horizontally repeating middle strip.
+ * Native art: 42×246 caps, 1×246 middle.
+ */
+.frame-green {
+    position: relative;
+    z-index: 0;
+    box-sizing: border-box;
+    height: 246px;
+    padding-left: 42px;
+    padding-right: 42px;
+    border: none;
+    border-radius: 0;
+    /* No solid fill — a content-box color made the middle disagree with the endcap PNGs */
+    background-color: transparent;
+    background-image: url('assets/images/ui/frame_green_middle.png');
+    background-size: 1px 246px;
+    background-repeat: repeat-x;
+    background-origin: content-box;
+    background-clip: content-box;
+    background-position: 0 center;
+}
+
+.frame-green::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 42px;
+    height: 100%;
+    background-image: url('assets/images/ui/frame_green_left.png');
+    background-position: left center;
+    background-size: 42px 246px;
+    background-repeat: no-repeat;
+    pointer-events: none;
+    z-index: 1;
+}
+
+.frame-green::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 42px;
+    height: 100%;
+    background-image: url('assets/images/ui/frame_green_right.png');
+    background-position: right center;
+    background-size: 42px 246px;
+    background-repeat: no-repeat;
+    pointer-events: none;
+    z-index: 1;
+}
+
+.dungeon-reward-choices {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 18px;
+    justify-content: center;
+    align-items: stretch;
+    overflow: visible;
+}
+
+.dungeon-reward-choice-frame {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    width: auto;
+    min-width: 240px;
+    height: 246px;
+    padding-left: 42px;
+    padding-right: 42px;
+    box-sizing: border-box;
+    color: #fff;
+    flex-shrink: 0;
+    transition: transform 0.15s ease;
+    cursor: var(--cursor-default);
+}
+
+.dungeon-reward-choice-frame .dungeon-reward-claim-btn {
+    pointer-events: none; /* clicks go to the frame */
+}
+
+/* Frame art only — icons / Claim stay full color */
+.dungeon-reward-choice-frame__chrome.frame-green {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 0;
+    pointer-events: none;
+    filter: brightness(0.38) saturate(0.18);
+    transition: filter 0.15s ease;
+}
+
+.dungeon-reward-choice-frame > :not(.dungeon-reward-choice-frame__chrome) {
+    position: relative;
+    z-index: 2;
+}
+
+.dungeon-reward-choice-frame:hover {
+    z-index: 3;
+    transform: translateY(-8px);
+}
+
+.dungeon-reward-choice-frame:hover > .dungeon-reward-choice-frame__chrome {
+    filter: none;
+}
+
+.dungeon-reward-stack-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 48px;
+}
+
+.dungeon-reward-claim-btn.choice-btn.cta-button {
+    width: auto;
+    min-width: 110px;
+    margin: 0;
+}
+
 /* Token Voucher — movement token sellback picker (inventory) */
 .token-voucher-sellback-overlay {
     position: fixed;
@@ -4487,6 +4804,70 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     cursor: var(--cursor-x) !important;
 }
 
+/* Auto-shields picker — magenta to match shield UI (#ff30cf) */
+.auto-shields-option-btn {
+    border-color: rgba(255, 48, 207, 0.55);
+    background: rgba(255, 48, 207, 0.12);
+}
+
+.auto-shields-option-btn:hover {
+    background: rgba(255, 48, 207, 0.22);
+    border-color: #ff30cf;
+}
+
+.auto-shields-confirm-exchange {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.auto-shields-confirm-target {
+    width: 56px;
+    height: auto;
+    image-rendering: pixelated;
+    object-fit: contain;
+}
+
+.auto-shields-confirm-arrow {
+    width: 30px;
+    height: auto;
+    image-rendering: pixelated;
+    object-fit: contain;
+    flex-shrink: 0;
+}
+
+.auto-shields-confirm-stacks {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.auto-shields-confirm-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+}
+
+.auto-shields-confirm-shield-icon {
+    width: 52px;
+    height: 52px;
+    image-rendering: pixelated;
+    object-fit: contain;
+}
+
+.auto-shields-confirm-count {
+    color: #ff30cf;
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1;
+    text-align: center;
+}
+
 .token-voucher-bundle-part {
     display: inline-flex;
     align-items: center;
@@ -4494,7 +4875,9 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 }
 
 /* Movement token inventory — sellback corner button (Token Voucher purchased) */
-.movement-token-sellback-btn {
+.movement-token-sellback-btn,
+.auto-shields-btn,
+.tower-details-btn {
     position: absolute;
     top: 14px;
     left: 12px;
@@ -4511,12 +4894,27 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     transition: transform 0.15s ease, opacity 0.15s ease;
 }
 
-.movement-token-sellback-btn:hover {
+/* Tower details: only visible while hovering the card */
+.tower-details-btn {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.inventory-item.tower:hover .tower-details-btn {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.movement-token-sellback-btn:hover,
+.auto-shields-btn:hover,
+.inventory-item.tower:hover .tower-details-btn:hover {
     opacity: 0.7;
     transform: translateY(-3px);
 }
 
-.movement-token-sellback-btn img {
+.movement-token-sellback-btn img,
+.auto-shields-btn img,
+.tower-details-btn img {
     width: 100%;
     height: auto;
     display: block;
@@ -5253,15 +5651,8 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     z-index: 1;
 }
 
-/* Settings + Advanced settings: pair of footer buttons on one row */
+/* Settings: two footer rows (utility links, then Done / Advanced) */
 #settingsModalInner .modal-choices-settings-footer {
-    flex-wrap: nowrap;
-    width: 100%;
-    max-width: 100%;
-    box-sizing: border-box;
-}
-
-#advancedSettingsModal .modal-choices-advanced-footer {
     flex-direction: column;
     flex-wrap: nowrap;
     width: 100%;
@@ -5270,7 +5661,7 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     gap: 8px;
 }
 
-#advancedSettingsModal .modal-choices-advanced-footer-row {
+#settingsModalInner .modal-choices-settings-footer-row {
     display: flex;
     flex-wrap: nowrap;
     width: 100%;
@@ -5279,15 +5670,23 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     gap: 8px;
 }
 
-#settingsModalInner .modal-choices-settings-footer .choice-btn,
-#advancedSettingsModal .modal-choices-advanced-footer-row .choice-btn {
+#settingsModalInner .modal-choices-settings-footer-row .choice-btn {
     flex: 1 1 0;
     min-width: 0;
 }
 
-#advancedSettingsModal .modal-choices-advanced-footer-row--done .choice-btn {
+/* Advanced settings: full-width Done only */
+#advancedSettingsModal .modal-choices-advanced-footer {
+    flex-wrap: nowrap;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+}
+
+#advancedSettingsModal .modal-choices-advanced-footer .choice-btn {
     flex: 1 1 100%;
     width: 100%;
+    min-width: 0;
 }
 
 /* Settings Panel Styles */
@@ -5303,6 +5702,17 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 8px;
+}
+
+/* Label left + toggle right: keep ≥10px gap so the knob never crowds the text */
+.setting-item label:has(> .toggle-switch),
+.setting-item > div:has(> .toggle-switch) {
+    gap: 10px;
+}
+
+.setting-item .toggle-switch {
+    flex-shrink: 0;
+    margin-left: 10px;
 }
 
 .setting-slider {
@@ -5344,6 +5754,18 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 .setting-slider::-moz-range-thumb:hover {
     background: #66BB6A;
     transform: scale(1.1);
+}
+
+/* Discrete 3-stop slider (map zoom): labels under track ends + center */
+.setting-slider-labels {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 6px;
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    user-select: none;
 }
 
 /* Toggle Switch */
@@ -5512,6 +5934,17 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     padding-right: 40px; /* More padding on right */
 }
 
+/* Two-column game over (stats + unlocks): room for stats + readable unlock cards */
+#gameOverModal .modal:has(.game-over-columns--has-unlocks) {
+    max-width: min(980px, calc(100vw - 40px));
+    width: min(980px, calc(100vw - 40px));
+}
+
+#gameOverModal .game-over-stats:has(.game-over-columns--has-unlocks) {
+    min-width: 0;
+    width: 100%;
+}
+
 #gameOverModal .game-over-title {
     display: flex;
     align-items: center;
@@ -5536,6 +5969,10 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     display: flex;
     gap: 18px;
     align-items: flex-start;
+}
+
+#gameOverModal .game-over-columns--has-unlocks {
+    gap: 28px;
 }
 
 #gameOverModal .game-over-column {
@@ -5566,17 +6003,50 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     font-weight: bold;
 }
 
+/* Same button layout for one- and two-column game over: VIEW MAP | RUN HISTORY, then MAIN MENU full width */
 #gameOverModal .game-over-stats-actions {
+    display: flex;
+    flex-direction: column;
     flex-wrap: nowrap;
+    align-items: stretch;
+    gap: 10px;
     width: 100%;
     box-sizing: border-box;
     margin: 0;
 }
 
-#gameOverModal .game-over-stats-actions .choice-btn {
+#gameOverModal .game-over-stats-actions-row {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    gap: 10px;
+    width: 100%;
+}
+
+#gameOverModal .game-over-stats-actions-row .choice-btn {
     flex: 1 1 0;
     min-width: 0;
     width: auto !important;
+    white-space: nowrap;
+}
+
+#gameOverModal .game-over-stats-actions > .game-over-main-menu-btn {
+    flex: 0 0 auto;
+    width: 100% !important;
+    white-space: nowrap;
+}
+
+/* With unlock cards beside stats, keep a stable stats column; unlock column is intentionally narrower */
+#gameOverModal .game-over-columns--has-unlocks .game-over-column-stats {
+    flex: 0 0 530px;
+    width: 530px;
+    max-width: 530px;
+}
+
+#gameOverModal .game-over-columns--has-unlocks .game-over-column-unlock {
+    flex: 1 1 0;
+    min-width: 260px;
+    max-width: 360px;
 }
 
 #gameOverModal .game-over-column-unlock .meta-progression-unlocks {
@@ -6189,7 +6659,7 @@ body.left-overlays-collapsed .tower-status-panel {
 .overlay-left-toggle {
     position: absolute;
     left: 150px;
-    top: 362px;
+    top: 346px;
     width: 46px;
     height: 52px;
     padding: 0;
@@ -6404,14 +6874,13 @@ body.game-not-started .overlay-top-stats {
     content: '';
     position: absolute;
     inset: 0;
-    background: rgba(13, 18, 26, 0.55);
-    -webkit-backdrop-filter: blur(10px) saturate(150%);
-    backdrop-filter: blur(10px) saturate(150%);
+    /* PERF: was backdrop-filter: blur(10px) saturate(150%) — with N cards over the
+       animated canvas that meant N GPU blur passes re-run every frame. A slightly
+       more opaque tint reads nearly identically and costs nothing per frame. */
+    background: rgba(13, 18, 26, 0.82);
     border-radius: 8px;
     z-index: 0;
     pointer-events: none;
-    transform: translateZ(0);
-    will-change: backdrop-filter;
 }
 
 .tower-status-card::after {
@@ -6536,7 +7005,6 @@ body.game-not-started .overlay-top-stats {
     height: 100%;
     width: 0%;
     border-radius: 2px;
-    transition: width 0.1s linear, background 0.1s linear;
 }
 
 .tower-status-bar-fill--shield {
@@ -6549,6 +7017,14 @@ body.game-not-started .overlay-top-stats {
     min-width: 160px;
     max-width: 160px;
     z-index: 101; /* Ensure it's above other panels */
+    transition: left 0.3s ease, top 0.3s ease;
+}
+
+/* When left overlays are hidden, slide debug into the vacated left space and
+   drop it below the floating compact top stats so it doesn't cover currency. */
+body.left-overlays-collapsed .overlay-debug-selector {
+    left: 0;
+    top: 43px; /* 3px + ~40px */
 }
 .overlay-panel.overlay-debug-selector .overlay-content {
     padding-left: 22px;
@@ -6717,21 +7193,62 @@ body.game-not-started .overlay-top-stats {
     color: #fff !important;
 }
 
-/* Map Fires / Map Towers / Map Items / Extinguished: compact column in top-left HUD */
+/* Map Fires / Towers / Items / Vortexes / Extinguished: compact icon+value rows in top-left HUD */
 .overlay-map-stats {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 2px;
     padding-right: 30px;
 }
+/* Content-sized pairs packed left; higher specificity than .overlay-row { display: flex }. */
+.overlay-map-stats .overlay-map-stats-row {
+    display: flex;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    align-items: center;
+    gap: 7px;
+}
+.overlay-map-stats .overlay-resource-pair {
+    display: inline-flex;
+    align-items: center;
+    gap: 1px;
+    width: auto;
+    flex: 0 0 auto;
+}
 .overlay-map-stats .overlay-label {
-    font-size: 11px;
-    min-width: 95px; /* Fixed width so values align in a column */
+    font-size: 14px;
+    min-width: 0;
+    width: auto;
+    height: auto;
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
 }
 .overlay-map-stats .overlay-value {
-    font-size: 11px;
-    min-width: 28px;
+    font-size: 13px;
+    min-width: 0;
     text-align: left;
+    line-height: 1;
+}
+.overlay-map-stat-icon {
+    width: 20px;
+    height: 20px;
+    object-fit: contain;
+    /* Prefer nearest-neighbor so downscaled sprites stay sharp (not soft/blurry). */
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+    image-rendering: pixelated;
+    -ms-interpolation-mode: nearest-neighbor;
+    vertical-align: middle;
+    margin-right: 0;
+    flex-shrink: 0;
+}
+/* Face right like shop; slightly larger than other HUD icons. */
+.overlay-map-stat-icon-tower {
+    width: 24px;
+    height: 24px;
+    transform: rotate(90deg) translateY(-4px);
+    transform-origin: center center;
 }
 .overlay-row-values-column {
     justify-content: flex-start;
@@ -6954,7 +7471,6 @@ body.game-not-started .overlay-top-stats {
     top: 0;
     height: 100%;
     width: 0%;
-    transition: width 0.3s ease;
     z-index: 1;
     /* Outer track (.overlay-progress-bar) stays rounded; fill has a straight vertical right edge */
     border-radius: 4px 0 0 4px;
@@ -7247,7 +7763,7 @@ body.left-overlays-collapsed .toast-notification-container {
     height: 200px;
     display: block;
     background: transparent;
-    opacity: 0.8;
+    opacity: 1;
     clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
     z-index: 51;
     pointer-events: none;
@@ -7263,11 +7779,12 @@ body.left-overlays-collapsed .toast-notification-container {
     height: 148px;
     z-index: 50;
     pointer-events: none;
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
-    backdrop-filter: blur(20px) saturate(180%);
+    /* PERF: was backdrop-filter: blur(20px) saturate(180%) — the blur re-ran on the
+       GPU every time the canvas behind it repainted (i.e. every frame). A dark
+       translucent tint keeps the minimap legible at a fixed one-time cost. */
+    background: rgba(13, 18, 26, 0.72);
     clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
     overflow: hidden;
-    isolation: isolate;
 }
 
 /* Tooltip Styles - match modal pattern exactly */
@@ -7368,7 +7885,8 @@ body.left-overlays-collapsed .toast-notification-container {
 .tooltip-health-row__bar-group {
     grid-column: 2;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) calc(13ch - 30px);
+    /* Bar flexes; count column always sizes to the full "current / max" string */
+    grid-template-columns: minmax(0, 1fr) max-content;
     column-gap: 6px;
     align-items: center;
     min-width: 0;
@@ -7397,7 +7915,7 @@ body.left-overlays-collapsed .toast-notification-container {
     font-weight: 600;
     font-variant-numeric: tabular-nums;
     text-align: left;
-    min-width: 0;
+    flex-shrink: 0;
 }
 
 .tooltip-hp-stack {
@@ -7909,6 +8427,71 @@ body.left-overlays-collapsed .toast-notification-container {
     filter: drop-shadow(0 0 30px rgba(255, 107, 53, 0.6));
     animation: storyIconPulse 2s ease-in-out infinite;
     image-rendering: crisp-edges;
+}
+
+/* Story panel 2: spawner (top-right) + level-2 vortex (bottom-left), overlapping diagonally */
+#storyPanel2 .story-image-threats {
+    position: relative;
+    display: block;
+    overflow: visible;
+}
+
+#storyPanel2 .story-spawner-icon {
+    position: absolute;
+    top: 20%;
+    right: 18%;
+    width: 9.1125rem; /* 10.125rem − 10% */
+    max-width: 36%;
+    z-index: 1;
+    margin: 0;
+}
+
+#storyPanel2 .story-vortex-wrap {
+    position: absolute;
+    bottom: 18%;
+    left: 16%;
+    width: 9.1125rem; /* 10.125rem − 10% */
+    max-width: 36%;
+    aspect-ratio: 1;
+    z-index: 2;
+    transform-origin: center center;
+    /* Scale-only pulse so canvas FX keeps additive blending (filter would flatten it) */
+    animation: storyVortexWrapPulse 2s ease-in-out infinite;
+}
+
+@keyframes storyVortexWrapPulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.05); }
+}
+
+#storyPanel2 .story-vortex-fx {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 280%;
+    height: 280%;
+    pointer-events: none;
+    z-index: 2;
+}
+
+#storyPanel2 .story-vortex-icon {
+    position: relative;
+    display: block;
+    width: 100%;
+    height: auto;
+    z-index: 1;
+    image-rendering: crisp-edges;
+    transform-origin: center center;
+    filter: drop-shadow(0 0 30px rgba(255, 107, 53, 0.6));
+    /* Level 2 Fire Whirlwind: 0.412 rev/s → ~2.427s per revolution */
+    animation: placementVortexSpin var(--vortex-spin-duration, 2.427s) linear infinite,
+               storyVortexIconGlow 2s ease-in-out infinite;
+}
+
+@keyframes storyVortexIconGlow {
+    0%, 100% { filter: drop-shadow(0 0 30px rgba(255, 107, 53, 0.6)); }
+    50% { filter: drop-shadow(0 0 50px rgba(255, 107, 53, 0.8)); }
 }
 
 /* Story panel 3: five tower icons in two columns (3 left, 2 right) with overlap */
@@ -8675,6 +9258,10 @@ body.left-overlays-collapsed .toast-notification-container {
     gap: 30px;
 }
 
+.placement-center-column:has(.placement-new-fire-type-row) {
+    max-width: min(720px, 96vw);
+}
+
 /* Boss Section */
 .placement-boss-section {
     display: flex;
@@ -8901,6 +9488,202 @@ body.left-overlays-collapsed .toast-notification-container {
 }
 
 /*
+ * Gift of the Grove — slow golden shimmer aura (CSS).
+ * Inspired by conic-gradient glow / rotating light-border techniques (CodePen / DoCode style):
+ * a blurred spinning gold conic behind the sprite + a softer pulsing outer bloom.
+ */
+@property --gift-shimmer-angle {
+    syntax: '<angle>';
+    inherits: false;
+    initial-value: 0deg;
+}
+
+.gift-grove-shimmer {
+    --gift-shimmer-angle: 0deg;
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    isolation: isolate;
+    flex-shrink: 0;
+    z-index: 0;
+}
+
+.gift-grove-shimmer > img {
+    position: relative;
+    z-index: 1;
+    display: block;
+}
+
+/* Soft outer gold bloom (pulses slowly) — +15% reach; +25% brighter */
+.gift-grove-shimmer::before {
+    content: '';
+    position: absolute;
+    inset: -33.35%;
+    z-index: -1;
+    border-radius: 50%;
+    background: radial-gradient(
+        ellipse at center,
+        rgba(255, 241, 176, 1) 0%,
+        rgba(255, 214, 116, 0.78) 36%,
+        rgba(255, 191, 94, 0.38) 58%,
+        rgba(255, 169, 79, 0) 78%
+    );
+    filter: blur(7px);
+    animation: giftGroveBloomPulse 3.8s ease-in-out infinite;
+    pointer-events: none;
+}
+
+/* Spinning bright-gold shimmer rays behind the graphic (−25% spin speed; +25% brighter) */
+.gift-grove-shimmer::after {
+    content: '';
+    position: absolute;
+    inset: -28.75%;
+    z-index: -1;
+    border-radius: 50%;
+    background: conic-gradient(
+        from var(--gift-shimmer-angle),
+        transparent 0deg,
+        rgba(255, 248, 199, 0.15) 18deg,
+        rgba(255, 236, 154, 1) 38deg,
+        rgba(255, 214, 105, 0.69) 68deg,
+        transparent 115deg,
+        transparent 175deg,
+        rgba(255, 244, 184, 1) 205deg,
+        rgba(255, 221, 116, 0.5) 245deg,
+        transparent 295deg,
+        transparent 360deg
+    );
+    filter: blur(9px);
+    opacity: 1;
+    animation:
+        giftGroveShimmerSpin 24s linear infinite,
+        giftGroveShimmerBreathe 4.2s ease-in-out infinite;
+    pointer-events: none;
+}
+
+.gift-grove-shimmer--tooltip {
+    width: 48px;
+    height: 48px;
+}
+
+.gift-grove-shimmer--tooltip::before {
+    inset: -39.1%;
+    filter: blur(5px);
+}
+
+.gift-grove-shimmer--tooltip::after {
+    inset: -33.35%;
+    filter: blur(7px);
+}
+
+@keyframes giftGroveShimmerSpin {
+    from { --gift-shimmer-angle: 0deg; }
+    to { --gift-shimmer-angle: 360deg; }
+}
+
+@keyframes giftGroveBloomPulse {
+    0%, 100% { opacity: 0.85; transform: scale(0.96); }
+    50% { opacity: 1; transform: scale(1.14); }
+}
+
+@keyframes giftGroveShimmerBreathe {
+    0%, 100% { opacity: 0.9; transform: scale(0.98); }
+    50% { opacity: 1; transform: scale(1.12); }
+}
+
+/* Fallback when @property / animated angle isn't supported: rotate the whole layer */
+@supports not (background: conic-gradient(from var(--gift-shimmer-angle), red, blue)) {
+    .gift-grove-shimmer::after {
+        background: conic-gradient(
+            from 0deg,
+            transparent 0deg,
+            rgba(255, 248, 199, 0.15) 18deg,
+            rgba(255, 236, 154, 1) 38deg,
+            rgba(255, 214, 105, 0.69) 68deg,
+            transparent 115deg,
+            transparent 175deg,
+            rgba(255, 244, 184, 1) 205deg,
+            rgba(255, 221, 116, 0.5) 245deg,
+            transparent 295deg,
+            transparent 360deg
+        );
+        animation: giftGroveShimmerSpinFallback 24s linear infinite, giftGroveShimmerBreathe 4.2s ease-in-out infinite;
+    }
+}
+
+@keyframes giftGroveShimmerSpinFallback {
+    from { transform: rotate(0deg) scale(0.98); }
+    to { transform: rotate(360deg) scale(0.98); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .gift-grove-shimmer::before,
+    .gift-grove-shimmer::after {
+        animation: none;
+        opacity: 0.85;
+    }
+    .gift-grove-shimmer::after {
+        --gift-shimmer-angle: 40deg;
+    }
+}
+
+/* Artifacts — same shimmer motion as gifts, electric fuchsia, +20% reach */
+.artifact-shimmer::before {
+    inset: -35%;
+    background: radial-gradient(
+        ellipse at center,
+        rgba(255, 190, 255, 0.95) 0%,
+        rgba(255, 60, 220, 0.7) 36%,
+        rgba(255, 20, 180, 0.35) 58%,
+        rgba(200, 0, 160, 0) 78%
+    );
+}
+
+.artifact-shimmer::after {
+    inset: -30%;
+    background: conic-gradient(
+        from var(--gift-shimmer-angle),
+        transparent 0deg,
+        rgba(255, 210, 255, 0.15) 18deg,
+        rgba(255, 80, 240, 1) 38deg,
+        rgba(255, 0, 200, 0.6) 68deg,
+        transparent 115deg,
+        transparent 175deg,
+        rgba(255, 160, 255, 0.85) 205deg,
+        rgba(255, 40, 210, 0.45) 245deg,
+        transparent 295deg,
+        transparent 360deg
+    );
+}
+
+.artifact-shimmer.gift-grove-shimmer--tooltip::before {
+    inset: -41%;
+}
+
+.artifact-shimmer.gift-grove-shimmer--tooltip::after {
+    inset: -35%;
+}
+
+@supports not (background: conic-gradient(from var(--gift-shimmer-angle), red, blue)) {
+    .artifact-shimmer::after {
+        background: conic-gradient(
+            from 0deg,
+            transparent 0deg,
+            rgba(255, 210, 255, 0.15) 18deg,
+            rgba(255, 80, 240, 1) 38deg,
+            rgba(255, 0, 200, 0.6) 68deg,
+            transparent 115deg,
+            transparent 175deg,
+            rgba(255, 160, 255, 0.85) 205deg,
+            rgba(255, 40, 210, 0.45) 245deg,
+            transparent 295deg,
+            transparent 360deg
+        );
+    }
+}
+
+/*
  * Collectible sprites (shop items, power-ups, artifacts): smooth downscale in UI.
  * Matches map canvas (imageSmoothingEnabled). !important overrides inline pixelated/crisp-edges.
  */
@@ -8935,6 +9718,10 @@ body.left-overlays-collapsed .toast-notification-container {
 
 .placement-new-item-icon-dig-site {
     width: 88px;
+}
+
+.placement-new-item-icon-dungeon {
+    width: 72px;
 }
 
 .placement-new-item-content {
@@ -8989,6 +9776,23 @@ body.left-overlays-collapsed .toast-notification-container {
 }
 
 /* New Fire Type Section */
+.placement-new-fire-type-row {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    justify-content: center;
+    align-items: flex-start;
+    gap: 12px;
+    width: max-content;
+    max-width: 100%;
+    margin: 0 auto 12px auto;
+}
+
+.placement-new-fire-type-row .placement-new-fire-type {
+    margin-bottom: 0;
+    flex: 0 0 auto;
+}
+
 .placement-new-fire-type {
     display: flex;
     flex-direction: column;
@@ -9039,6 +9843,7 @@ body.left-overlays-collapsed .toast-notification-container {
     align-items: center;
     flex: 1;
     justify-content: center;
+    gap:8px;
 }
 
 .placement-new-fire-type-left {
@@ -9046,7 +9851,7 @@ body.left-overlays-collapsed .toast-notification-container {
     display: flex;
     align-items: center;
     justify-content: center;
-    margin-top: -10px;
+    margin-top: -20px;
 }
 
 .placement-new-fire-type-hex-wrapper {
@@ -9100,7 +9905,7 @@ body.left-overlays-collapsed .toast-notification-container {
     flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 5px;
+    gap: 0;
     min-width: 0;
 }
 
@@ -9114,9 +9919,44 @@ body.left-overlays-collapsed .toast-notification-container {
 }
 
 .placement-new-fire-type-stat img {
-    width: 34px;
-    height: 34px;
+    width: 28px;
+    height: 28px;
     image-rendering: crisp-edges;
+}
+
+@keyframes placementVortexSpin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.placement-new-vortex-sprite {
+    width: 76px;
+    height: auto;
+    image-rendering: crisp-edges;
+    flex-shrink: 0;
+    transform-origin: center center;
+    animation: placementVortexSpin var(--vortex-spin-duration, 3.571s) linear infinite;
+}
+
+.placement-new-vortex-left {
+    flex-direction: column;
+    gap: 0;
+    margin-top: -4px;
+}
+
+.placement-new-vortex-name {
+    font-size: 13px;
+    font-weight: bold;
+    line-height: 1.15;
+    text-align: center;
+    max-width: 110px;
+    text-shadow:
+        -1px -1px 0 #000,
+         1px -1px 0 #000,
+        -1px  1px 0 #000,
+         1px  1px 0 #000,
+         0 0 4px #000,
+         0 0 8px rgba(0, 0, 0, 0.85);
 }
 
 /* Fire Types Section */
@@ -10486,6 +11326,7 @@ button.tower-stats-header-trigger.label {
     line-height: 1.15;
     width: 54px;
     flex-shrink: 0;
+    white-space: pre-line;
 }
 
 .tower-stats-metric-bar-wrap {
@@ -10534,7 +11375,8 @@ button.tower-stats-header-trigger.label {
     height: 100%;
     border-radius: 5px;
     min-width: 0;
-    transition: width 0.35s ease;
+    width: 0%;
+    transition: width 0.75s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .tower-stats-footer {

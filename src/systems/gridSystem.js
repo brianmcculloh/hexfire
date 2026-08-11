@@ -34,6 +34,11 @@ export class GridSystem {
     this.grid = new Map(); // Map<hexKey, HexData>
     this.townCenterCoords = { q: 0, r: 0 }; // Center of grid
     this.townDamageThisWave = 0;
+    /** Grove HP lost this wave from spread fires only (excludes lightning/random spawns). */
+    this.townSpreadDamageThisWave = 0;
+    /** Per-frame water HP/s totals by hex (tooltip display; committed each tower update). */
+    this.waterHitRateFrame = new Map();
+    this.waterHitRateDisplay = new Map();
     // Cached hex lists for performance
     this.allHexesCache = [];
     this.allHexesIndexByKey = new Map();
@@ -134,6 +139,10 @@ export class GridSystem {
             currencyItemId: null,
             hasBurningVault: false,
             burningVaultId: null,
+            hasDungeonEntrance: false,
+            dungeonEntranceId: null,
+            hasVortex: false,
+            vortexId: null,
             hasArtifactItem: false,
             artifactItemId: null,
             hasDigSite: false,
@@ -315,7 +324,7 @@ export class GridSystem {
    *     isPath, pathColor, isTown, hasTower, hasWaterTank
    *   - isBurning (controls burningHexCache membership)
    *   - any "has*" item flag (hasTempPowerUpItem, hasMysteryItem,
-   *     hasCurrencyItem, hasBurningVault, hasArtifactItem, hasSuppressionBomb,
+   *     hasCurrencyItem, hasBurningVault, hasDungeonEntrance, hasArtifactItem, hasSuppressionBomb,
    *     hasFireSpawner, hasDigSite) — these no longer bump structureVersion,
    *     but downstream draw passes still expect setHex's spread-copy semantics
    *     for the new hex reference.
@@ -396,6 +405,7 @@ export class GridSystem {
       !hex.hasMysteryItem &&
       !hex.hasCurrencyItem &&
       !hex.hasBurningVault &&
+      !hex.hasDungeonEntrance &&
       !hex.hasArtifactItem
     );
   }
@@ -438,6 +448,7 @@ export class GridSystem {
       !hex.hasMysteryItem &&
       !hex.hasCurrencyItem &&
       !hex.hasBurningVault &&
+      !hex.hasDungeonEntrance &&
       !hex.hasArtifactItem &&
       !hex.hasSuppressionBomb
     );
@@ -569,6 +580,28 @@ export class GridSystem {
   }
 
   /**
+   * @param {string} dungeonId - Dungeon entrance instance id
+   */
+  placeDungeonEntrance(q, r, dungeonId) {
+    this.setHex(q, r, { hasDungeonEntrance: true, dungeonEntranceId: dungeonId });
+  }
+
+  removeDungeonEntrance(q, r) {
+    this.setHex(q, r, { hasDungeonEntrance: false, dungeonEntranceId: null });
+  }
+
+  /**
+   * @param {string} vortexId - Vortex instance id
+   */
+  placeVortex(q, r, vortexId) {
+    this.setHex(q, r, { hasVortex: true, vortexId });
+  }
+
+  removeVortex(q, r) {
+    this.setHex(q, r, { hasVortex: false, vortexId: null });
+  }
+
+  /**
    * @param {string} itemId - Spawned artifact instance id (not config artifact id)
    */
   placeArtifact(q, r, itemId) {
@@ -591,11 +624,11 @@ export class GridSystem {
       }
     });
     
-    // Set new path hexes with colors
+    // Set new path hexes with colors (never paint over a dungeon entrance hex)
     paths.forEach(path => {
       path.forEach(({ q, r, pathColor }) => {
         const hex = this.getHex(q, r);
-        if (hex && !hex.isTown) {
+        if (hex && !hex.isTown && !hex.hasDungeonEntrance) {
           this.setHex(q, r, { isPath: true, pathColor: pathColor || '#1a1a1a' });
         }
       });
@@ -613,6 +646,7 @@ export class GridSystem {
         burnDuration: 0,
         extinguishProgress: 0,
         maxExtinguishTime: 0,
+        fireIgnitedBySpawn: false,
       });
     });
   }
@@ -643,16 +677,38 @@ export class GridSystem {
   }
 
   /**
-   * Fast check whether ANY town hex (7-hex grove cluster) is currently burning.
-   * Iterates the small townHexesCache (≤7 entries) instead of the burningHexCache,
-   * which can grow to several hundred hexes during late waves. Used per-frame
-   * in the render loop and for grove-burning toasts/alarms.
+   * Fast check whether ANY town hex (7-hex grove cluster) is currently under fire
+   * threat — either a normal burning fire or a live active vortex. Iterates the small
+   * townHexesCache (≤7 entries) instead of the burningHexCache, which can grow to
+   * several hundred hexes during late waves. Used per-frame in the render loop and
+   * for grove-burning toasts/alarms (vortexes deal the same grove damage + FX).
+   *
+   * Pass {@link vortexSystem} whenever available so stale `hasVortex` flags (hex still
+   * marked after the vortex is gone) are cleared instead of leaving the grove stuck in
+   * damage-mode visuals with no DPS.
+   *
+   * @param {{ getItem?: Function, getItemAt?: Function }|null} [vortexSystem]
    * @returns {boolean}
    */
-  isAnyTownHexBurning() {
+  isAnyTownHexBurning(vortexSystem = null) {
     const townHexes = this.townHexesCache;
     for (let i = 0; i < townHexes.length; i++) {
-      if (townHexes[i].isBurning) return true;
+      const hex = townHexes[i];
+      if (hex.isBurning) return true;
+      if (!hex.hasVortex) continue;
+
+      if (!vortexSystem) {
+        // No system to validate against — keep legacy flag behavior
+        return true;
+      }
+
+      const item =
+        (hex.vortexId != null ? vortexSystem.getItem?.(hex.vortexId) : null) ||
+        vortexSystem.getItemAt?.(hex.q, hex.r);
+      if (item?.isActive) return true;
+
+      // Stale flag: vortex gone but hex still marked — clear so borders/alarms recover
+      this.removeVortex(hex.q, hex.r);
     }
     return false;
   }
@@ -721,41 +777,64 @@ export class GridSystem {
     // Get all town hexes
     const townHexes = this.getAllTownHexes();
     
-    // Collect unique burning town hexes with their fire types (don't double-count the same fire)
-    const burningTownHexes = new Map(); // Map<hexKey, fireType>
-    
+    // Collect unique burning town hexes (don't double-count the same fire)
+    const burningTownHexes = new Map(); // Map<hexKey, { fireType, fromSpawn }>
+    /** @type {Map<string, number>} vortex DPS contributions on town hexes */
+    const vortexTownDpsByKey = new Map();
+
     townHexes.forEach(townHex => {
       const liveHex = this.getHex(townHex.q, townHex.r);
-      if (liveHex?.isBurning) {
-        const key = hexKey(townHex.q, townHex.r);
-        if (!burningTownHexes.has(key)) {
-          burningTownHexes.set(key, liveHex.fireType);
+      if (!liveHex) return;
+      const key = hexKey(townHex.q, townHex.r);
+      if (liveHex.isBurning && !burningTownHexes.has(key)) {
+        burningTownHexes.set(key, {
+          fireType: liveHex.fireType,
+          fromSpawn: !!liveHex.fireIgnitedBySpawn,
+        });
+      }
+      if (liveHex.hasVortex && gameState?.vortexSystem) {
+        const vortex = gameState.vortexSystem.getItemAt(townHex.q, townHex.r);
+        if (vortex?.isActive) {
+          const vdps = Math.max(0, Number(vortex.damagePerSecond) || 0) * fireDamageMultiplier;
+          if (vdps > 0) vortexTownDpsByKey.set(key, vdps);
         }
       }
     });
-    
-    // Calculate total damage per second from all burning town hexes
+
+    // Calculate total DPS and spread-only DPS (lightning/random spawns excluded from spread total)
     let totalDamagePerSecond = 0;
-    burningTownHexes.forEach(fireType => {
+    let spreadDamagePerSecond = 0;
+    burningTownHexes.forEach(({ fireType, fromSpawn }) => {
       const fireConfig = getFireTypeConfig(fireType);
-      const dps = fireConfig ? fireConfig.damagePerSecond : 1;
-      totalDamagePerSecond += dps * fireDamageMultiplier;
+      const dps = (fireConfig ? fireConfig.damagePerSecond : 1) * fireDamageMultiplier;
+      totalDamagePerSecond += dps;
+      if (!fromSpawn) spreadDamagePerSecond += dps;
     });
-    
+    vortexTownDpsByKey.forEach((vdps) => {
+      totalDamagePerSecond += vdps;
+    });
+
     const center = this.getTownCenter();
     if (!center) return;
 
     if (totalDamagePerSecond > 0) {
-      // Take damage based on total DPS from all burning town hexes
+      // Take damage based on total DPS from all burning town hexes + vortexes
       const newHealth = Math.max(0, (center.townHealth ?? maxHealth) - deltaTime * totalDamagePerSecond);
       const damageThisTick = (center.townHealth ?? maxHealth) - newHealth;
       if (damageThisTick > 0) {
         // Cumulative HP lost while burning (regen does not reduce this); used for grove protection bonus + wave score
         this.townDamageThisWave += damageThisTick;
+        // Only adjacent-spread fires count against the grove "no damage" / no-spread bonus
+        if (spreadDamagePerSecond > 0) {
+          this.townSpreadDamageThisWave += damageThisTick * (spreadDamagePerSecond / totalDamagePerSecond);
+        }
       }
       this.syncTownHealthFields(newHealth, maxHealth);
-    } else if (!this.isAnyTownHexBurning()) {
-      // Regenerate only when no town hexes are burning
+    } else if (
+      !this.isAnyTownHexBurning(gameState?.vortexSystem) &&
+      vortexTownDpsByKey.size === 0
+    ) {
+      // Regenerate only when no town hexes are burning / hosting a live vortex
       const regrowRate = getEffectiveHealthRegrowRate(gameState);
       const newHealth = Math.min(maxHealth, (center.townHealth ?? 0) + deltaTime * regrowRate);
       this.syncTownHealthFields(newHealth, maxHealth);
@@ -780,10 +859,76 @@ export class GridSystem {
   }
 
   /**
+   * Grove HP lost this wave from fires that spread onto the grove (excludes lightning/random spawns).
+   * Used for the wave-complete "no damage" / no-spread bonus.
+   * @returns {number}
+   */
+  getTownSpreadDamageThisWave() {
+    return this.townSpreadDamageThisWave || 0;
+  }
+
+  /**
    * Reset the town damage tracker for a new wave
    */
   resetTownDamageThisWave() {
     this.townDamageThisWave = 0;
+    this.townSpreadDamageThisWave = 0;
+  }
+
+  /** Start a new frame of water-hit rate accumulation (call at start of tower update). */
+  beginWaterHitRateFrame() {
+    this.waterHitRateFrame.clear();
+  }
+
+  /**
+   * Accumulate water power (HP/second) currently hitting a hex this frame.
+   * @param {number} q
+   * @param {number} r
+   * @param {number} ratePerSecond
+   */
+  addWaterHitRate(q, r, ratePerSecond) {
+    const rate = Number(ratePerSecond);
+    if (!Number.isFinite(rate) || rate <= 0) return;
+    const key = hexKey(q, r);
+    this.waterHitRateFrame.set(key, (this.waterHitRateFrame.get(key) || 0) + rate);
+  }
+
+  /**
+   * Publish rate for tooltips immediately (tick-time bursts outside the tower frame loop).
+   * Overwritten on the next {@link endWaterHitRateFrame}.
+   */
+  publishWaterHitRate(q, r, ratePerSecond) {
+    const rate = Number(ratePerSecond);
+    if (!Number.isFinite(rate) || rate <= 0) return;
+    const key = hexKey(q, r);
+    this.waterHitRateDisplay.set(key, (this.waterHitRateDisplay.get(key) || 0) + rate);
+  }
+
+  /** Publish this frame's rates for tooltips and clear the accumulator. */
+  endWaterHitRateFrame() {
+    // Double-buffer: swap the two Maps instead of allocating a fresh Map at 60 Hz
+    // (per-frame Map churn showed up as GC pressure in profiles).
+    const published = this.waterHitRateFrame;
+    const recycled = this.waterHitRateDisplay;
+    recycled.clear();
+    this.waterHitRateDisplay = published;
+    this.waterHitRateFrame = recycled;
+  }
+
+  /** Clear displayed rates (e.g. when paused so tooltips don't show stale spray). */
+  clearWaterHitRateDisplay() {
+    this.waterHitRateDisplay.clear();
+    this.waterHitRateFrame.clear();
+  }
+
+  /**
+   * Current water power hitting a hex (HP/second), from the last committed frame.
+   * @param {number} q
+   * @param {number} r
+   * @returns {number}
+   */
+  getWaterHitRate(q, r) {
+    return this.waterHitRateDisplay.get(hexKey(q, r)) || 0;
   }
 
   /**
@@ -824,6 +969,7 @@ export class GridSystem {
           fireType: null,
           extinguishProgress: 0,
           maxExtinguishTime: 0,
+          fireIgnitedBySpawn: false,
           isBeingSprayed: false
         });
       }
@@ -840,12 +986,19 @@ export class GridSystem {
    * @returns {Object} Stats about the grid
    */
   getStats() {
-    const hexes = this.getAllHexes();
+    // Called from updateUI every frame — must not scan the whole grid. Burning and
+    // path counts come from the incremental caches; tower count is the only field
+    // still requiring a walk, and it iterates (no array allocations / filter passes).
+    const hexes = this.allHexesCache;
+    let towersPlaced = 0;
+    for (let i = 0; i < hexes.length; i++) {
+      if (hexes[i].hasTower) towersPlaced++;
+    }
     return {
       totalHexes: hexes.length,
-      burningHexes: hexes.filter(h => h.isBurning).length,
-      pathHexes: hexes.filter(h => h.isPath).length,
-      towersPlaced: hexes.filter(h => h.hasTower).length,
+      burningHexes: this.burningHexCache.length,
+      pathHexes: this.pathHexCache.length,
+      towersPlaced,
     };
   }
 }

@@ -79,6 +79,60 @@ export class ProgressionSystem {
     this.inLevelUpFlow = false; // True while level up modal/upgrade flow is active
     this.unlocksCheckedDuringLevelUp = false; // Track if unlocks were already checked during level up
     this.lastLevelShownInModal = 0; // Track the last level that was shown in a level up modal to prevent duplicates
+    /** Upgrade plans awarded in the most recent level-up (for modal quantity display). */
+    this.lastUpgradePlansGained = 1;
+    /** Unlock modals deferred while wave-complete / placement overlay is on top. */
+    this._deferredUnlockModals = [];
+  }
+
+  /**
+   * Stable key for a discoverable unlock (e.g. suppression_bomb_3, bomber).
+   * @param {string} towerType
+   * @param {number|null|undefined} level
+   * @returns {string}
+   */
+  _discoveryKey(towerType, level = null) {
+    if (level != null && (towerType === 'suppression_bomb' || towerType === 'shield')) {
+      return `${towerType}_${level}`;
+    }
+    return String(towerType || '');
+  }
+
+  /**
+   * Whether this unlock's discovery UI was already shown this run (level-up card or missed-unlock modal).
+   * @param {string} key
+   * @returns {boolean}
+   */
+  hasAnnouncedUnlock(key) {
+    if (!key) return true;
+    const set = this.gameState?.player?.announcedUnlocks;
+    return !!(set && set.has(key));
+  }
+
+  /**
+   * Remember that a discovery was announced so wave-end / upgrade-close fallbacks cannot re-show it.
+   * @param {string} key
+   */
+  markUnlockAnnounced(key) {
+    if (!key || !this.gameState?.player) return;
+    if (!this.gameState.player.announcedUnlocks) {
+      this.gameState.player.announcedUnlocks = new Set();
+    }
+    this.gameState.player.announcedUnlocks.add(key);
+  }
+
+  /**
+   * Strip leftover upgrade / level-up chrome from #modalOverlay so the next panel
+   * cannot frankenstein tower from→to art with unrelated discovery content.
+   * @param {HTMLElement|null|undefined} modal
+   */
+  clearUpgradeModalChrome(modal) {
+    if (!modal) return;
+    this.removeLevelUpPulseGraphic(modal);
+    const frame = modal.querySelector('.modal-frame-content') || modal;
+    frame.querySelectorAll('.confirm-upgrade-title-container').forEach((el) => el.remove());
+    // Stale h2 titles from upgrade / level-up flows (including ones left outside the title container).
+    frame.querySelectorAll('h2').forEach((el) => el.remove());
   }
 
   /**
@@ -192,15 +246,9 @@ export class ProgressionSystem {
     const choicesDiv = document.getElementById('modalChoices');
     if (!modal || !choicesDiv) return;
 
-    // Clear any tower graphics from previous modals
+    // Clear any tower graphics / titles from previous modals
     const modalFrameContent = modal.querySelector('.modal-frame-content');
-    this.removeLevelUpPulseGraphic(modal);
-    if (modalFrameContent) {
-      const existingTitleContainer = modalFrameContent.querySelector('.confirm-upgrade-title-container');
-      if (existingTitleContainer) {
-        existingTitleContainer.remove();
-      }
-    }
+    this.clearUpgradeModalChrome(modal);
 
     openModalOverlay(modal, { extraAdd: ['upgrade-token-mask'] });
     modal.classList.remove('skip-upgrade-mask');
@@ -340,6 +388,7 @@ export class ProgressionSystem {
       this.gameState.player.upgradePlans = 0;
     }
     this.gameState.player.upgradePlans += levelsGained;
+    this.lastUpgradePlansGained = levelsGained;
 
     const specialtyPlansGained = awardSpecialtyPlansForLevels(currentLevel, newLevel);
     if (specialtyPlansGained > 0) {
@@ -440,7 +489,11 @@ export class ProgressionSystem {
 
       // For suppression_bomb and shield, check each level individually
       if (towerType === 'suppression_bomb' || towerType === 'shield') {
-        for (let level = 1; level <= 4; level++) {
+        const maxLevel = towerType === 'suppression_bomb'
+          ? (CONFIG.SUPPRESSION_BOMB_MAX_LEVEL || 5)
+          : 4;
+        for (let level = 1; level <= maxLevel; level++) {
+          if (!isMetaItemUnlocked(this.gameState, `${towerType}_${level}`)) continue;
           const currentStatus = getTowerUnlockStatus(towerType, newLevel, level, false);
           const previousStatus = getTowerUnlockStatus(towerType, previousLevel, level, false);
           const slotKey = `${towerType}_${level}`;
@@ -453,10 +506,14 @@ export class ProgressionSystem {
             this.gameState.player.seenShopItems.delete(slotKey);
             this.gameState.player.seenShopItems.delete(towerType);
             this.gameState.player.newlyUnlockedItems.add(slotKey);
-            newlyUnlocked.push({ towerType, unlockLevel: currentStatus.unlockLevel, level });
-            const itemName = this.getItemDisplayName(towerType, level);
-            if (this.gameState.notificationSystem) {
-              this.gameState.notificationSystem.showToast(`${itemName} unlocked in the shop!`, 3000, 'positive');
+            // Announce once per run — level-up discoveries + missed-unlock modals share this gate.
+            if (!this.hasAnnouncedUnlock(slotKey)) {
+              this.markUnlockAnnounced(slotKey);
+              newlyUnlocked.push({ towerType, unlockLevel: currentStatus.unlockLevel, level });
+              const itemName = this.getItemDisplayName(towerType, level);
+              if (this.gameState.notificationSystem) {
+                this.gameState.notificationSystem.showToast(`${itemName} unlocked in the shop!`, 3000, 'positive');
+              }
             }
           } else if (wasMissed) {
             this.gameState.player.seenShopItems.delete(slotKey);
@@ -478,10 +535,13 @@ export class ProgressionSystem {
           if (justUnlocked) {
             this.gameState.player.seenShopItems.delete(towerType);
             this.gameState.player.newlyUnlockedItems.add(towerType);
-            newlyUnlocked.push({ towerType, unlockLevel: currentStatus.unlockLevel });
-            const itemName = this.getItemDisplayName(towerType);
-            if (this.gameState.notificationSystem) {
-              this.gameState.notificationSystem.showToast(`${itemName} unlocked in the shop!`, 3000, 'positive');
+            if (!this.hasAnnouncedUnlock(towerType)) {
+              this.markUnlockAnnounced(towerType);
+              newlyUnlocked.push({ towerType, unlockLevel: currentStatus.unlockLevel });
+              const itemName = this.getItemDisplayName(towerType);
+              if (this.gameState.notificationSystem) {
+                this.gameState.notificationSystem.showToast(`${itemName} unlocked in the shop!`, 3000, 'positive');
+              }
             }
           } else if (wasMissed) {
             this.gameState.player.seenShopItems.delete(towerType);
@@ -516,8 +576,8 @@ export class ProgressionSystem {
     switch (towerType) {
       case 'jet':
         name = 'Jet Tower';
-        description = 'Single direction jet tower';
-        stats = `Range: 3 hexes | Power: 1.0`;
+        description = 'Short-range jet with high durability';
+        stats = `Range: ${getTowerRange(1)} hex | Health: ${CONFIG.TOWER_HEALTH_BY_TYPE?.jet ?? CONFIG.TOWER_HEALTH}`;
         break;
       case 'spread':
         name = 'Spread Tower';
@@ -527,12 +587,12 @@ export class ProgressionSystem {
       case 'pulsing':
         name = 'Pulsing Tower';
         description = 'Periodic AOE to adjacent hexes';
-        stats = `Range: Adjacent | Power: 4/sec`;
+        stats = `Range: Adjacent | Power: 4/s`;
         break;
       case 'rain':
         name = 'Rain Tower';
         description = 'Constant AOE with range upgrades';
-        stats = `Range: 1 hex ring | Power: 0.5/sec`;
+        stats = `Range: 1 hex ring | Power: 0.5/s`;
         break;
       case 'bomber':
         name = 'Bomber Tower';
@@ -556,7 +616,7 @@ export class ProgressionSystem {
           const uses = CONFIG[`SUPPRESSION_BOMB_USES_LEVEL_${level}`] || 1;
           stats = `Level ${level} unlocked: 3 rings (37 hexes), ${uses} use${uses > 1 ? 's' : ''}`;
         } else {
-          stats = 'Level 1-4 available (3 rings, 1/2/4/8 uses)';
+          stats = 'Level 1-5 available (3 rings; uses scale by level)';
         }
         break;
       case 'shield':
@@ -784,14 +844,9 @@ export class ProgressionSystem {
     const choicesDiv = document.getElementById('modalChoices');
     
     if (modal && choicesDiv) {
-      // Clear any tower graphics from previous modals
+      // Clear any tower graphics / titles from previous modals
       const modalFrameContent = modal.querySelector('.modal-frame-content');
-      if (modalFrameContent) {
-        const existingTitleContainer = modalFrameContent.querySelector('.confirm-upgrade-title-container');
-        if (existingTitleContainer) {
-          existingTitleContainer.remove();
-        }
-      }
+      this.clearUpgradeModalChrome(modal);
       
       openModalOverlay(modal, { extraAdd: ['upgrade-token-mask'] });
       modal.classList.remove('skip-upgrade-mask');
@@ -903,9 +958,10 @@ export class ProgressionSystem {
       tokenImg.style.cssText = 'width: 72px; height: auto; object-fit: contain; image-rendering: crisp-edges;';
       tokenContainer.appendChild(tokenImg);
       
-      // Token quantity (always x1) - bold
+      // Token quantity — one plan per level gained (multi-level jumps show the full amount)
+      const plansGained = Math.max(1, Math.floor(Number(this.lastUpgradePlansGained) || 1));
       const tokenQuantity = document.createElement('div');
-      tokenQuantity.textContent = 'x1';
+      tokenQuantity.textContent = `x${plansGained}`;
       tokenQuantity.style.cssText = 'color: #ff67e7; font-size: 28px; font-weight: bold; margin-top: 0; line-height: 26px;';
       tokenContainer.appendChild(tokenQuantity);
       
@@ -1092,7 +1148,9 @@ export class ProgressionSystem {
       // Use a small delay to ensure DOM is fully rendered and positioned
       setTimeout(() => {
         if (tokenContainer && tokenContainer.offsetParent !== null) {
-          createModalFloatingText(tokenContainer, '+1', '#ff67e7', 48, 1.6875, 40, -45);
+          const plansGained = Math.max(1, Math.floor(Number(this.lastUpgradePlansGained) || 1));
+          const planFloatText = plansGained === 1 ? '+1' : `+${plansGained}`;
+          createModalFloatingText(tokenContainer, planFloatText, '#ff67e7', 48, 1.6875, 40, -45);
         }
         if (specialtyContainer && specialtyContainer.offsetParent !== null) {
           const specialtyFloatText = specialtyPlansGained === 1 ? 'x1' : `x${specialtyPlansGained}`;
@@ -1421,6 +1479,12 @@ export class ProgressionSystem {
     // Set a flag to indicate we're in upgrade selection mode
     this.gameState.isUpgradeSelectionMode = true;
     document.body.classList.add('upgrade-selection-mode');
+    // Click-select mode: don't carry over a prior hover selection into upgrade targeting.
+    if (CONFIG.TOWER_SELECT_MODE === 'click') {
+      this.gameState.selectedTowerId = null;
+      this.gameState.inputHandler?.clearTowerPierceDwell?.();
+      this.gameState.renderer?.arrowHoverState?.clear?.();
+    }
     
     // Refresh inventory to show pulse animations on upgradeable towers
     if (window.updateInventory) {
@@ -1590,7 +1654,7 @@ export class ProgressionSystem {
       return {
         currentValue: `${formatWaterDamageRate(currentPower)}`,
         upgradedValue: `${formatWaterDamageRate(upgradedPower)}`,
-        suffix: ' HP/second',
+        suffix: ' HP/s',
       };
     }
 
@@ -2863,8 +2927,10 @@ export class ProgressionSystem {
   closeUpgradeModal() {
     const modal = document.getElementById('modalOverlay');
     if (modal) {
+      // Clear before close so a later discovery modal can't inherit tower from→to art.
+      this.clearUpgradeModalChrome(modal);
       closeModalOverlay(modal, {
-        onDone: () => this.removeLevelUpPulseGraphic(modal),
+        onDone: () => this.clearUpgradeModalChrome(modal),
       });
     }
     
@@ -2939,6 +3005,10 @@ export class ProgressionSystem {
   disableTowerSelectionMode() {
     this.gameState.isUpgradeSelectionMode = false;
     document.body.classList.remove('upgrade-selection-mode');
+    // Hide rotation arrows when the upgrade action finishes.
+    this.gameState.selectedTowerId = null;
+    this.gameState.inputHandler?.clearTowerPierceDwell?.();
+    this.gameState.renderer?.arrowHoverState?.clear?.();
   }
 
   /**
@@ -3021,7 +3091,11 @@ export class ProgressionSystem {
 
       // For suppression_bomb and shield, check each level individually
       if (towerType === 'suppression_bomb' || towerType === 'shield') {
-        for (let level = 1; level <= 4; level++) {
+        const maxLevel = towerType === 'suppression_bomb'
+          ? (CONFIG.SUPPRESSION_BOMB_MAX_LEVEL || 5)
+          : 4;
+        for (let level = 1; level <= maxLevel; level++) {
+          if (!isMetaItemUnlocked(this.gameState, `${towerType}_${level}`)) continue;
           // Check if this level should be unlocked at the current level
           // Unlocks are checked when wave is not active (between waves or after wave ends)
           const currentStatus = getTowerUnlockStatus(towerType, newLevel, level, false);
@@ -3046,10 +3120,14 @@ export class ProgressionSystem {
               this.gameState.player.seenShopItems.delete(slotKey);
               this.gameState.player.seenShopItems.delete(towerType);
               this.gameState.player.newlyUnlockedItems.add(slotKey);
-              newlyUnlocked.push({ towerType, unlockLevel: currentStatus.unlockLevel, level });
-              const itemName = this.getItemDisplayName(towerType, level);
-              if (this.gameState.notificationSystem) {
-                this.gameState.notificationSystem.showToast(`${itemName} unlocked in the shop!`, 3000, 'positive');
+              // Do not mark announced here — showUnlockModal marks when it actually presents
+              // (or defers under wave-complete). Skip if level-up discoveries already announced it.
+              if (!this.hasAnnouncedUnlock(slotKey)) {
+                newlyUnlocked.push({ towerType, unlockLevel: currentStatus.unlockLevel, level });
+                const itemName = this.getItemDisplayName(towerType, level);
+                if (this.gameState.notificationSystem) {
+                  this.gameState.notificationSystem.showToast(`${itemName} unlocked in the shop!`, 3000, 'positive');
+                }
               }
             } else if (wasMissed) {
               this.gameState.player.seenShopItems.delete(slotKey);
@@ -3084,12 +3162,12 @@ export class ProgressionSystem {
           if (justUnlocked) {
             this.gameState.player.seenShopItems.delete(towerType);
             this.gameState.player.newlyUnlockedItems.add(towerType);
-            // Collect for showing modals
-            newlyUnlocked.push({ towerType, unlockLevel: currentStatus.unlockLevel });
-            // Show toast notification
-            const itemName = this.getItemDisplayName(towerType);
-            if (this.gameState.notificationSystem) {
-              this.gameState.notificationSystem.showToast(`${itemName} unlocked in the shop!`, 3000, 'positive');
+            if (!this.hasAnnouncedUnlock(towerType)) {
+              newlyUnlocked.push({ towerType, unlockLevel: currentStatus.unlockLevel });
+              const itemName = this.getItemDisplayName(towerType);
+              if (this.gameState.notificationSystem) {
+                this.gameState.notificationSystem.showToast(`${itemName} unlocked in the shop!`, 3000, 'positive');
+              }
             }
           } else if (wasMissed) {
             // Item was missed (e.g., player jumped multiple levels) - mark as unseen for shop highlighting
@@ -3139,7 +3217,66 @@ export class ProgressionSystem {
    * @param {number} unlockLevel
    * @param {number} [level] - Optional sub-level for suppression_bomb / shield
    */
+  /**
+   * Queue an unlock modal while wave-complete / placement is covering the screen.
+   * @param {{ towerType: string, unlockLevel: number, level?: number|null }} unlock
+   */
+  _queueDeferredUnlockModal(unlock) {
+    if (!unlock?.towerType) return;
+    if (!this._deferredUnlockModals) this._deferredUnlockModals = [];
+    const key = this._discoveryKey(unlock.towerType, unlock.level);
+    if (this._deferredUnlockModals.some((u) => this._discoveryKey(u.towerType, u.level) === key)) {
+      return;
+    }
+    this._deferredUnlockModals.push({
+      towerType: unlock.towerType,
+      unlockLevel: unlock.unlockLevel,
+      level: unlock.level ?? null,
+    });
+  }
+
+  /**
+   * Show any unlock modals that were deferred under wave-complete / placement overlays.
+   * Call after those overlays close (e.g. entering placement mode on the map).
+   */
+  flushDeferredUnlockModals() {
+    if (!this._deferredUnlockModals?.length) return;
+    const queue = this._deferredUnlockModals.splice(0, this._deferredUnlockModals.length);
+    // Drop anything already announced (e.g. shown earlier in a level-up discoveries card).
+    const remaining = queue.filter((u) => !this.hasAnnouncedUnlock(this._discoveryKey(u.towerType, u.level)));
+    if (remaining.length === 0) return;
+
+    const [first, ...rest] = remaining;
+    const existing = Array.isArray(this.gameState.player.pendingUnlocks)
+      ? this.gameState.player.pendingUnlocks
+      : [];
+    this.gameState.player.pendingUnlocks = [...rest, ...existing];
+    this.showUnlockModal(first.towerType, first.unlockLevel, first.level);
+  }
+
   showUnlockModal(towerType, unlockLevel, level = null) {
+    const discoveryKey = this._discoveryKey(towerType, level);
+    // Hard gate: never re-show a discovery the run already announced.
+    if (this.hasAnnouncedUnlock(discoveryKey)) {
+      const queue = this.gameState.player.pendingUnlocks;
+      if (Array.isArray(queue) && queue.length > 0) {
+        const next = queue.shift();
+        this.showUnlockModal(next.towerType, next.unlockLevel, next.level);
+      }
+      return;
+    }
+
+    // Wave-complete / placement use a separate overlay stacked above #modalOverlay. Opening
+    // discoveries underneath looks like they were "queued" and only appear after Continue —
+    // and can frankenstein with leftover upgrade-confirm chrome. Defer until that overlay closes.
+    const waveModal = document.getElementById('waveCompleteModal');
+    if (waveModal?.classList.contains('active')) {
+      this._queueDeferredUnlockModal({ towerType, unlockLevel, level });
+      return;
+    }
+
+    this.markUnlockAnnounced(discoveryKey);
+
     if (window.pauseGameWithAudio) {
       window.pauseGameWithAudio();
     }
@@ -3149,9 +3286,8 @@ export class ProgressionSystem {
     const choicesDiv = document.getElementById('modalChoices');
     if (!modal || !choicesDiv) return;
 
-    // Strip any leftover level-up badge graphic so the missed-unlock modal isn't showing a
-    // stale "LEVEL N" crest from a previous showLevelUpModal call.
-    this.removeLevelUpPulseGraphic(modal);
+    // Strip leftover upgrade-confirm tower from→to art / level-up crest / stale h2 titles.
+    this.clearUpgradeModalChrome(modal);
 
     // Reuse the upgrade-token modal styling (no 9-patch frame, dark mask) so this modal matches
     // the rest of the modern progression UI rather than the legacy emoji popup.
@@ -3166,10 +3302,7 @@ export class ProgressionSystem {
       modalInner.classList.remove('skip-upgrade-modal');
     }
 
-    // Replace any existing h2 title (defensively — leftover modals can leave one behind).
     const modalFrameContent = modal.querySelector('.modal-frame-content');
-    const existingTitle = modal.querySelector('h2');
-    if (existingTitle) existingTitle.remove();
 
     const unlock = { towerType, unlockLevel, level };
     const card = this._buildDiscoveryCard(unlock);
@@ -3217,13 +3350,13 @@ export class ProgressionSystem {
     continueBtn.style.width = 'auto';
     continueBtn.style.marginTop = '8px';
     continueBtn.onclick = () => {
-      closeModalOverlay(modal, {
+          closeModalOverlay(modal, {
         extraRemove: ['upgrade-token-mask'],
         onDone: () => {
           if (modalInner) {
             modalInner.classList.remove('modal-upgrade-token', 'modal-no-frame');
           }
-          this.removeLevelUpPulseGraphic(modal);
+          this.clearUpgradeModalChrome(modal);
           if (window.updateInventory) {
             window.updateInventory();
           }

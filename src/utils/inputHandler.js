@@ -1,7 +1,7 @@
 // Input Handler - Manages mouse/touch input and drag-and-drop
 
 import { pixelToAxial, axialToPixel, getDirectionAngle, getDirectionAngle12 } from './hexMath.js';
-import { CONFIG, isTowerMovementAllowed, getBossPatternForWaveGroup, getHeroPatternForWaveGroup, getActiveHeroPowerPattern, getPlacementBossAbilityDescription, applyCurrencyGainBonuses } from '../config.js';
+import { CONFIG, isTowerMovementAllowed, getBossPatternForWaveGroup, getHeroPatternForWaveGroup, getActiveHeroPowerPattern, getResolvedHeroPowers, getPlacementBossAbilityDescription, applyCurrencyGainBonuses } from '../config.js';
 import { MapScrollSystem } from '../systems/mapScrollSystem.js';
 import { TooltipSystem } from './tooltip.js';
 import { showConfirmModal } from './modal.js';
@@ -139,6 +139,46 @@ export class InputHandler {
     this.setupShopEvents();
 
     this._setupSuppressionBombPlacementCancelClicks();
+
+    // Map zoom shortcuts: `-` / `=`/`+` / `0`
+    this._onMapZoomKeyDown = (e) => this.handleMapZoomKeyDown(e);
+    document.addEventListener('keydown', this._onMapZoomKeyDown);
+  }
+
+  /**
+   * Keyboard: `-` zoom out, `=`/`+` zoom in, `0` reset to 100%.
+   * Persists via {@link window.applyMapZoomSetting} when available.
+   * @param {KeyboardEvent} e
+   */
+  handleMapZoomKeyDown(e) {
+    if (!this.renderer?.cycleMapZoom) return;
+    const active = document.activeElement;
+    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) {
+      return;
+    }
+    if (document.querySelector('.modal-overlay.active')) return;
+
+    const apply = (typeof window !== 'undefined' && typeof window.applyMapZoomSetting === 'function')
+      ? window.applyMapZoomSetting
+      : null;
+
+    if (e.key === '-' || e.key === '_') {
+      if (apply) apply({ direction: -1 });
+      else this.renderer.cycleMapZoom(-1);
+      e.preventDefault();
+      return;
+    }
+    if (e.key === '=' || e.key === '+') {
+      if (apply) apply({ direction: 1 });
+      else this.renderer.cycleMapZoom(1);
+      e.preventDefault();
+      return;
+    }
+    if (e.key === '0') {
+      if (apply) apply({ zoom: CONFIG.MAP_ZOOM_DEFAULT ?? 1 });
+      else this.renderer.setMapZoom(CONFIG.MAP_ZOOM_DEFAULT ?? 1);
+      e.preventDefault();
+    }
   }
 
   /** @returns {boolean} */
@@ -793,6 +833,11 @@ export class InputHandler {
     if (this.gameState.gameOver) return;
     const tower = this.gameState.towerSystem?.getTower(towerId);
     if (!tower) return;
+
+    // Click-select mode: hide rotation arrows while dragging (click-hold to move).
+    if (this.isTowerSelectClickMode()) {
+      this.clearTowerRotationSelection();
+    }
     
     this.isDragging = true;
     this._dragStartClientX = this._lastMouseClientX ?? 0;
@@ -969,6 +1014,7 @@ export class InputHandler {
           hex.hasCurrencyItem ||
           hex.hasDigSite ||
           hex.hasBurningVault ||
+          hex.hasDungeonEntrance ||
           hex.hasArtifactItem
         );
         setBodyCursor(hasInvalidTarget ? CURSOR_X : CURSOR_DRAG);
@@ -989,6 +1035,7 @@ export class InputHandler {
           hex.hasCurrencyItem ||
           hex.hasDigSite ||
           hex.hasBurningVault ||
+          hex.hasDungeonEntrance ||
           hex.hasArtifactItem
         );
         setBodyCursor(hasInvalidTarget ? CURSOR_X : CURSOR_DRAG);
@@ -1010,6 +1057,7 @@ export class InputHandler {
           hex.hasCurrencyItem ||
           hex.hasDigSite ||
           hex.hasBurningVault ||
+          hex.hasDungeonEntrance ||
           hex.hasArtifactItem
         );
         setBodyCursor(hasInvalidTarget ? CURSOR_X : CURSOR_DRAG);
@@ -1157,6 +1205,23 @@ export class InputHandler {
   }
 
   /**
+   * Start click-drag map pan when the click did not begin an object drag.
+   * @param {MouseEvent} e
+   * @returns {boolean}
+   */
+  tryStartMapPan(e) {
+    if (!CONFIG.ENABLE_CLICK_TO_SCROLL) return false;
+    if (this.gameState.tutorialMode) return false;
+    if (this.gameState.gameOver) return false;
+    if (e.button !== 0) return false;
+    // Object drag / inventory placement already owns this gesture
+    if (this.isDragging || this.mapScrollSystem.isPanning) return false;
+    if (this.selectedTowerForPlacement) return false;
+    if (this.isPlacingSuppressionBombFromInventory()) return false;
+    return this.mapScrollSystem.startPan(e.clientX, e.clientY);
+  }
+
+  /**
    * Handle mouse down on canvas
    * @param {MouseEvent} e - Mouse event
    */
@@ -1188,7 +1253,7 @@ export class InputHandler {
     if (this.gameState.isMovementTokenMode) {
       const targetId = this.gameState.movementTokenTargetTowerId;
       if (!this.hoveredHex) {
-        if (targetId) this.gameState.showMovementTokenResumeToast?.();
+        this.tryStartMapPan(e);
         return;
       }
       const { q, r } = this.hoveredHex;
@@ -1199,19 +1264,26 @@ export class InputHandler {
       if (!targetId) {
         if (tower) {
           this.gameState.designateMovementTokenTarget?.(tower.id);
+          // Designate + drag: arrows stay hidden during the drag; click-release / force-select restores them.
           this.startDraggingExistingTower(tower.id);
+          return;
         }
+        this.tryStartMapPan(e);
         return;
       }
       if (tower?.id === targetId) {
         this.startDraggingExistingTower(tower.id);
         return;
       }
-      this.gameState.showMovementTokenResumeToast?.();
+      // Empty hex / non-target tower: pan the map (don't steal tower-drag gestures)
+      this.tryStartMapPan(e);
       return;
     }
     
-    if (!this.hoveredHex) return;
+    if (!this.hoveredHex) {
+      this.tryStartMapPan(e);
+      return;
+    }
 
     // Suppression bomb from inventory: only place via mouseup on a valid hex (see handleMouseUp)
     if (this.isPlacingSuppressionBombFromInventory()) {
@@ -1238,6 +1310,9 @@ export class InputHandler {
         !isTowerMovementAllowed(this.gameState) &&
         !isSentinelModePickerBlocked(this.gameState, this)
       ) {
+        if (this.isTowerSelectClickMode()) {
+          this.selectTowerForRotationArrows(tower, { playSound: false });
+        }
         if (typeof window !== 'undefined' && window.showSentinelModeModal) {
           window.showSentinelModeModal(tower, e.clientX, e.clientY);
         }
@@ -1250,6 +1325,9 @@ export class InputHandler {
         !isTowerMovementAllowed(this.gameState) &&
         !isPerimeterModePickerBlocked(this.gameState, this)
       ) {
+        if (this.isTowerSelectClickMode()) {
+          this.selectTowerForRotationArrows(tower, { playSound: false });
+        }
         if (typeof window !== 'undefined' && window.showPerimeterModeModal) {
           window.showPerimeterModeModal(tower, e.clientX, e.clientY);
         }
@@ -1262,6 +1340,9 @@ export class InputHandler {
         !isTowerMovementAllowed(this.gameState) &&
         !isChargeModePickerBlocked(this.gameState, this)
       ) {
+        if (this.isTowerSelectClickMode()) {
+          this.selectTowerForRotationArrows(tower, { playSound: false });
+        }
         if (typeof window !== 'undefined' && window.showChargeModeModal) {
           window.showChargeModeModal(tower, e.clientX, e.clientY);
         }
@@ -1272,14 +1353,21 @@ export class InputHandler {
         return;
       }
       
-      // Allow dragging based on movement rules
+      // Placement phase / movement-token / mid-wave move: dragging the tower owns the gesture
       if (isTowerMovementAllowed(this.gameState)) {
         if (this.gameState.isMovementTokenMode) {
           return;
         }
         this.startDraggingExistingTower(tower.id);
+        return;
       }
-      // Don't clear selection here - let hover handle it
+      // Click-select mode during waves: left-click shows rotation arrows (encouraged path).
+      if (this.isTowerSelectClickMode()) {
+        this.selectTowerForRotationArrows(tower);
+        return;
+      }
+      // Tower is not draggable this phase — allow click-drag map pan
+      this.tryStartMapPan(e);
       return;
     }
     
@@ -1289,7 +1377,9 @@ export class InputHandler {
       // Movement token mode: towers only. Otherwise allow dragging based on movement rules.
       if (isTowerMovementAllowed(this.gameState) && !this.gameState.isMovementTokenMode) {
         this.startDraggingExistingSuppressionBomb(suppressionBomb.id);
+        return;
       }
+      this.tryStartMapPan(e);
       return;
     }
     
@@ -1300,7 +1390,9 @@ export class InputHandler {
         // Movement token mode: towers only. Otherwise allow dragging in debug mode.
         if (isTowerMovementAllowed(this.gameState) && !this.gameState.isMovementTokenMode) {
           this.startDraggingExistingWaterTank(waterTank.id);
+          return;
         }
+        this.tryStartMapPan(e);
         return;
       }
     }
@@ -1340,6 +1432,8 @@ export class InputHandler {
       if (this.gameState.tutorialShieldApplyOnlyPathTower) return; // No cancel - must apply to path tower
       this.clearShieldSelection();
     }
+
+    this.tryStartMapPan(e);
   }
 
   /**
@@ -1356,9 +1450,6 @@ export class InputHandler {
     
     // Tutorial step 24: block right-click when shield selected (no cancel)
     if (this.gameState.tutorialShieldApplyOnlyPathTower && this.selectedShieldForPlacement) return;
-    
-    // Only allow right-click to inventory when movement is allowed
-    if (!isTowerMovementAllowed(this.gameState)) return;
     
     // Get canvas position within the container to fix coordinate offset
     const canvasContainer = document.querySelector('.canvas-container');
@@ -1382,32 +1473,43 @@ export class InputHandler {
     // Find tower at this location
     const tower = this.gameState.towerSystem?.getTowerAt(hexCoords.q, hexCoords.r);
     if (tower) {
-      const success = this.gameState.towerSystem?.storeTowerInInventory(tower.id);
-      if (success) {
-        if (this.gameState.isMovementTokenMode) {
-          if (this.gameState.movementTokenTargetTowerId === tower.id) {
-            this.gameState.movementTokenTargetTowerId = null;
+      // Placement / movement-token: store in inventory. During waves: instant select.
+      if (isTowerMovementAllowed(this.gameState)) {
+        const success = this.gameState.towerSystem?.storeTowerInInventory(tower.id);
+        if (success) {
+          if (this.gameState.isMovementTokenMode) {
+            if (this.gameState.movementTokenTargetTowerId === tower.id) {
+              this.gameState.movementTokenTargetTowerId = null;
+            }
+            if (!this.gameState.movementTokenCommitted) {
+              this.gameState.commitMovementTokenViaInventoryStore?.();
+            }
+            if (
+              this.isDragging &&
+              this.dragType === 'tower-existing' &&
+              this.dragData?.towerId === tower.id
+            ) {
+              this.stopDragging();
+            }
           }
-          if (!this.gameState.movementTokenCommitted) {
-            this.gameState.commitMovementTokenViaInventoryStore?.();
-          }
-          if (
-            this.isDragging &&
-            this.dragType === 'tower-existing' &&
-            this.dragData?.towerId === tower.id
-          ) {
-            this.stopDragging();
-          }
+          if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_cancel');
+          if (window.updateInventory) window.updateInventory();
+          if (window.updateUI) window.updateUI();
+          if (this.gameState.waveSystem) this.gameState.waveSystem.updateClearAllButtonVisibility();
         }
-        if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_cancel');
-        if (window.updateInventory) window.updateInventory();
-        if (window.updateUI) window.updateUI();
-        if (this.gameState.waveSystem) this.gameState.waveSystem.updateClearAllButtonVisibility();
+      } else if (this.gameState.selectedTowerId !== tower.id) {
+        this.clearTowerPierceDwell();
+        this.gameState.selectedTowerId = tower.id;
+        this.updateArrowHoverForTower(tower, mouseX, mouseY, hexCoords);
+        if (typeof window !== 'undefined' && window.AudioManager) {
+          window.AudioManager.playSFX('tower_select');
+        }
       }
       return;
     }
     
-    // Find suppression bomb at this location
+    // Find suppression bomb at this location (inventory store only when movement is allowed)
+    if (!isTowerMovementAllowed(this.gameState)) return;
     const suppressionBomb = this.gameState.suppressionBombSystem?.getSuppressionBombAt(hexCoords.q, hexCoords.r);
     if (suppressionBomb) {
       if (this.gameState.isMovementTokenMode) return;
@@ -1597,6 +1699,9 @@ export class InputHandler {
         !isSentinelModePickerBlocked(this.gameState, this) &&
         typeof window.showSentinelModeModal === 'function'
       ) {
+        if (this.isTowerSelectClickMode()) {
+          this.selectTowerForRotationArrows(sentinelTower, { playSound: false });
+        }
         window.showSentinelModeModal(sentinelTower, e.clientX, e.clientY);
         this.stopDragging();
         return;
@@ -1609,6 +1714,9 @@ export class InputHandler {
         !isPerimeterModePickerBlocked(this.gameState, this) &&
         typeof window.showPerimeterModeModal === 'function'
       ) {
+        if (this.isTowerSelectClickMode()) {
+          this.selectTowerForRotationArrows(perimeterTower, { playSound: false });
+        }
         window.showPerimeterModeModal(perimeterTower, e.clientX, e.clientY);
         this.stopDragging();
         return;
@@ -1621,7 +1729,23 @@ export class InputHandler {
         !isChargeModePickerBlocked(this.gameState, this) &&
         typeof window.showChargeModeModal === 'function'
       ) {
+        if (this.isTowerSelectClickMode()) {
+          this.selectTowerForRotationArrows(chargeTower, { playSound: false });
+        }
         window.showChargeModeModal(chargeTower, e.clientX, e.clientY);
+        this.stopDragging();
+        return;
+      }
+
+      // Click-select mode: click-and-release (no drag) shows rotation arrows.
+      // Click-and-hold drag already cleared selection in startDraggingExistingTower.
+      if (
+        this.isTowerSelectClickMode() &&
+        onSameHex &&
+        minimalMove &&
+        sentinelTower
+      ) {
+        this.selectTowerForRotationArrows(sentinelTower, { playSound: false });
         this.stopDragging();
         return;
       }
@@ -1644,29 +1768,22 @@ export class InputHandler {
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
     
-    
-    // Convert to hex coordinates (account for canvas offset)
-    const offsetX = this.gameState.renderer?.offsetX || 0;
-    const offsetY = this.gameState.renderer?.offsetY || 0;
-    const adjustedX = mouseX - offsetX;
-    const adjustedY = mouseY - offsetY;
-    
-    const hexCoords = pixelToAxial(adjustedX, adjustedY);
+    // use screenToWorld so zoomed clicks land on the right hex
+    const worldPos = this.renderer?.screenToWorld
+      ? this.renderer.screenToWorld(mouseX, mouseY)
+      : { x: mouseX - (this.gameState.renderer?.offsetX || 0), y: mouseY - (this.gameState.renderer?.offsetY || 0) };
+    const hexCoords = pixelToAxial(worldPos.x, worldPos.y);
     
     if (!hexCoords) {
       return;
     }
     
-    // Check if there's a tower at this location
-    const hex = this.gameState.gridSystem?.getHex(hexCoords.q, hexCoords.r);
-    
-    // Debug: Show all towers and their coordinates
-    const allTowers = Array.from(this.gameState.towerSystem?.towers?.values() || []);
-    
     const tower = this.gameState.towerSystem?.getTowerAt(hexCoords.q, hexCoords.r);
     
     if (tower) {
-      
+      // Show rotation arrows while the upgrade action is in progress.
+      this.selectTowerForRotationArrows(tower, { playSound: false });
+
       // Check if tower has upgrade slots available
       if (tower.rangeLevel < 4 || tower.powerLevel < 4) {
         // Play button2 sound when clicking tower for upgrade
@@ -1677,9 +1794,9 @@ export class InputHandler {
         if (this.gameState.progressionSystem) {
           this.gameState.progressionSystem.selectTowerForUpgrade(tower.id);
         }
-      } else {
       }
-    } else {
+    } else if (this.isTowerSelectClickMode()) {
+      this.clearTowerRotationSelection();
     }
   }
 
@@ -1698,8 +1815,7 @@ export class InputHandler {
   enterTowerSellbackMode() {
     this.gameState.isTowerSellbackMode = true;
     document.body.classList.add('tower-sellback-selection-mode');
-    this.gameState.selectedTowerId = null;
-    this.renderer.arrowHoverState?.clear?.();
+    this.clearTowerRotationSelection();
 
     if (window.toggleSidebar) {
       window.toggleSidebar(true);
@@ -1715,6 +1831,7 @@ export class InputHandler {
   exitTowerSellbackMode({ resumeWave = true } = {}) {
     this.gameState.isTowerSellbackMode = false;
     document.body.classList.remove('tower-sellback-selection-mode');
+    this.clearTowerRotationSelection();
     this.hideTowerSellbackInstructions();
     setBodyCursor(CURSOR_DEFAULT);
 
@@ -1733,8 +1850,13 @@ export class InputHandler {
     }
 
     if (resumeWave && window.gameLoop?.isPaused) {
-      if (window.resumeGameSilently) window.resumeGameSilently();
-      else if (window.resumeGameWithAudio) window.resumeGameWithAudio();
+      if (window.resumeUnlessPausedByPlayer) {
+        window.resumeUnlessPausedByPlayer({ withAudio: false });
+      } else if (window.resumeGameSilently) {
+        window.resumeGameSilently();
+      } else if (window.resumeGameWithAudio) {
+        window.resumeGameWithAudio();
+      }
     }
   }
 
@@ -1799,13 +1921,18 @@ export class InputHandler {
     const rect = canvas.getBoundingClientRect();
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
-    const offsetX = this.gameState.renderer?.offsetX || 0;
-    const offsetY = this.gameState.renderer?.offsetY || 0;
-    const hexCoords = pixelToAxial(mouseX - offsetX, mouseY - offsetY);
+    // use screenToWorld so zoomed clicks land on the right hex
+    const worldPos = this.renderer?.screenToWorld
+      ? this.renderer.screenToWorld(mouseX, mouseY)
+      : { x: mouseX - (this.gameState.renderer?.offsetX || 0), y: mouseY - (this.gameState.renderer?.offsetY || 0) };
+    const hexCoords = pixelToAxial(worldPos.x, worldPos.y);
     if (!hexCoords) return;
 
     const tower = this.gameState.towerSystem?.getTowerAt(hexCoords.q, hexCoords.r);
     if (!tower) return;
+
+    // Show rotation arrows while sellback is pending on this tower.
+    this.selectTowerForRotationArrows(tower, { playSound: false });
 
     const refundPlans = this.getUpgradePlansSpentOnTower(tower);
     const towerIconHtml = window.createTowerIconHTML
@@ -1845,7 +1972,7 @@ export class InputHandler {
     this.renderer.upgradeRings?.delete?.(tower.id);
     this.gameState.player.towerSellbacks = Math.max(0, (this.gameState.player.towerSellbacks || 0) - 1);
     this.gameState.player.upgradePlans = (this.gameState.player.upgradePlans || 0) + refundPlans;
-    this.gameState.selectedTowerId = null;
+    this.clearTowerRotationSelection();
 
     if (this.gameState.notificationSystem) {
       const refundText = refundPlans > 0 ? ` Refunded ${refundPlans} upgrade plan${refundPlans === 1 ? '' : 's'}.` : '';
@@ -2176,6 +2303,20 @@ export class InputHandler {
         tooltipContents.push(this.tooltipSystem.getBurningVaultTooltipContent(vaultItem));
       }
     }
+
+    if (hex.hasDungeonEntrance) {
+      const dungeonItem = this.gameState.dungeonEntranceSystem?.getItemAt(hexCoords.q, hexCoords.r);
+      if (dungeonItem) {
+        tooltipContents.push(this.tooltipSystem.getDungeonEntranceTooltipContent(dungeonItem));
+      }
+    }
+
+    if (hex.hasVortex) {
+      const vortexItem = this.gameState.vortexSystem?.getItemAt(hexCoords.q, hexCoords.r);
+      if (vortexItem) {
+        tooltipContents.push(this.tooltipSystem.getVortexTooltipContent(vortexItem));
+      }
+    }
     
     // Show all collected tooltips or hide if none
     if (tooltipContents.length > 0) {
@@ -2334,7 +2475,7 @@ export class InputHandler {
 
   generateHeroPowerPlateTooltipContent(heroPattern) {
     if (!heroPattern) return '';
-    const power = heroPattern.powers?.[0];
+    const power = getResolvedHeroPowers(heroPattern, this.gameState)[0];
     if (!power) return this.generateHeroPowerTooltipContent(heroPattern);
     return `${this._formatTooltipPowerLine(power.name || power.type)}${this._formatTooltipDescription(power.description)}`;
   }
@@ -2349,7 +2490,7 @@ export class InputHandler {
 
     const heroName = heroPattern.name || 'Hero';
     const heroTitle = heroPattern.title || '';
-    const powers = heroPattern.powers || [];
+    const powers = getResolvedHeroPowers(heroPattern, this.gameState);
     const powersHtml = powers.map((p, i) => {
       const marginTop = i === 0 ? '' : ' style="margin-top: 10px;"';
       return `<div${marginTop}>${this._formatTooltipPowerLine(p.name || p.type)}${this._formatTooltipDescription(p.description)}</div>`;
@@ -2430,6 +2571,10 @@ export class InputHandler {
    * @param {MouseEvent} e - Mouse event
    */
   handleGlobalMouseMove(e) {
+    // Click-drag map pan (continues even if pointer leaves the canvas)
+    if (this.mapScrollSystem.isPanning) {
+      this.mapScrollSystem.updatePan(e.clientX, e.clientY);
+    }
     // When upgrade modal is open, use default cursor (skip when tutorial mode - cursor handled by main.js)
     if (!this.gameState.tutorialMode && this.gameState.isUpgradeSelectionMode && this.isUpgradeModalVisible()) {
       setBodyCursor(CURSOR_DEFAULT);
@@ -2602,6 +2747,10 @@ export class InputHandler {
    * @param {MouseEvent} e - Mouse event
    */
   handleGlobalMouseUp(e) {
+    if (this.mapScrollSystem.isPanning) {
+      this.mapScrollSystem.endPan();
+    }
+
     // Restore cursor when mouse is released (for click feedback)
     this.refreshCursorAfterMouseUp(e);
 
@@ -2858,6 +3007,42 @@ export class InputHandler {
     this.renderer?.clearTowerPierceHint?.();
   }
 
+  /** @returns {boolean} True when rotation arrows require click (not hover) to appear. */
+  isTowerSelectClickMode() {
+    return CONFIG.TOWER_SELECT_MODE === 'click';
+  }
+
+  /**
+   * Select a tower for rotation-arrow UI (and sticky/pierce hover while selected).
+   * @param {Object} tower
+   * @param {{ playSound?: boolean }} [options]
+   */
+  selectTowerForRotationArrows(tower, options = {}) {
+    if (!tower) return;
+    const playSound = options.playSound !== false;
+    this.clearTowerPierceDwell();
+    this.gameState.selectedTowerId = tower.id;
+    const tip = this._lastCanvasTooltipState;
+    if (tip) {
+      this.updateArrowHoverForTower(
+        tower,
+        tip.canvasMouseX,
+        tip.canvasMouseY,
+        this.hoveredHex || tip.hexCoords
+      );
+    }
+    if (playSound && typeof window !== 'undefined' && window.AudioManager) {
+      window.AudioManager.playSFX('tower_select');
+    }
+  }
+
+  /** Clear rotation-arrow selection / pierce / arrow hover. */
+  clearTowerRotationSelection() {
+    this.clearTowerPierceDwell();
+    this.gameState.selectedTowerId = null;
+    this.renderer?.arrowHoverState?.clear?.();
+  }
+
   /**
    * Restart pierce dwell from zero (e.g. after rotating on a contested rotation hex).
    * @param {Object} selectedTower
@@ -3065,6 +3250,11 @@ export class InputHandler {
    * Game-loop tick: advance pierce dwell while the pointer is still (no mousemove events).
    */
   tickTowerPierceDwell() {
+    // Click-select mode never auto-switches via contested-hex pierce dwell.
+    if (this.isTowerSelectClickMode()) {
+      if (this._towerPierceDwell) this.clearTowerPierceDwell();
+      return;
+    }
     if (
       !this._towerPierceDwell ||
       !this.hoveredHex ||
@@ -3145,16 +3335,21 @@ export class InputHandler {
     if (activeTower) {
       this.updateArrowHoverForTower(activeTower, canvasMouseX, canvasMouseY, hexCoords);
 
-      const pierce = this.resolveContestedPierceTarget(activeTower, hexCoords);
-      if (pierce) {
-        this.ensureTowerPierceDwell(activeTower, pierce.target, pierce.dwellHex);
-        const pierced = this.advanceTowerPierceDwell(activeTower, pierce.target);
-        if (pierced) {
-          activeTower = pierce.target;
-          this.updateArrowHoverForTower(activeTower, canvasMouseX, canvasMouseY, hexCoords);
-        }
-        if (!this.isDragging) {
-          return;
+      // Contested-hex pierce dwell is hover-select only — never auto-switch in click mode.
+      if (!this.isTowerSelectClickMode()) {
+        const pierce = this.resolveContestedPierceTarget(activeTower, hexCoords);
+        if (pierce) {
+          this.ensureTowerPierceDwell(activeTower, pierce.target, pierce.dwellHex);
+          const pierced = this.advanceTowerPierceDwell(activeTower, pierce.target);
+          if (pierced) {
+            activeTower = pierce.target;
+            this.updateArrowHoverForTower(activeTower, canvasMouseX, canvasMouseY, hexCoords);
+          }
+          if (!this.isDragging) {
+            return;
+          }
+        } else {
+          this.clearTowerPierceDwell();
         }
       } else {
         this.clearTowerPierceDwell();
@@ -3179,6 +3374,17 @@ export class InputHandler {
         this.renderer.arrowHoverState.clear();
         activeTower = null;
       }
+    }
+
+    // Click-select mode: hover never auto-selects. Sticky selection / movement
+    // target above still apply once a tower was selected by click (or right-click).
+    if (this.isTowerSelectClickMode()) {
+      if (!activeTower) {
+        this.gameState.selectedTowerId = null;
+        this.clearTowerPierceDwell();
+        this.renderer.arrowHoverState.clear();
+      }
+      return;
     }
 
     const towerAtHex = this.gameState.towerSystem?.getTowerAt(hexCoords.q, hexCoords.r);

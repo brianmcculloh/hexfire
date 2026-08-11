@@ -3,6 +3,8 @@
  * BOSS_PATTERNS: boss waves (5th wave of each group)
  * HERO_PATTERNS: wave complete modal heroes
  * Endless (wave group > final campaign): use row (campaignEnd + 1) for mechanics/speech when present (e.g. 23); boss portraits stay on the final campaign art.
+ *
+ * Per-ability screenShake: true|false (default true). Gated by the Screen Shake setting.
  */
 
 // TEXT EFFECTS
@@ -49,12 +51,13 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'scatter-strike',
+          screenShake: true,
           name: 'Scatter Strike',
-          description: 'Ignites 20 random hexes across the map every 15 seconds',
+          description: 'Ignites 30 random hexes across the map every 15s',
           interval: 15,
           soundMode: 'once',
           params: {
-            hexCount: 20,
+            hexCount: 30,
             staggerRange: { min: 50, max: 200 }
           }
         }
@@ -71,8 +74,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'holy-fire',
+          screenShake: true,
           name: 'Blasphemous Fire',
-          description: 'Ignites a cross-shaped hex pattern across the map every 15 seconds',
+          description: 'Ignites a cross-shaped hex pattern across the map every 15s',
           interval: 15,
           soundMode: 'once',
           params: {
@@ -92,8 +96,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'fireball',
+          screenShake: true,
           name: 'Fireball',
-          description: 'Ignites two hex clusters somewhere on the map every 15 seconds',
+          description: 'Ignites two hex clusters somewhere on the map every 15s',
           interval: 15,
           soundMode: 'once',
           params: {
@@ -113,8 +118,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'distraction',
+          screenShake: true,
           name: 'Distraction',
-          description: 'Ignites random edge hexes and then targets a path every 15 seconds',
+          description: 'Ignites random edge hexes and then targets a path every 15s',
           interval: 15,
           soundMode: 'once',
           params: {
@@ -137,8 +143,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'cursefire',
+          screenShake: true,
           name: 'Cursefire',
-          description: 'Targets all spawned items on the map and a random tower every 10 seconds',
+          description: 'Targets all spawned items on the map and a random tower every 10s',
           interval: 10,
           soundMode: 'once',
           params: {
@@ -158,8 +165,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'surround',
+          screenShake: true,
           name: 'Surround',
-          description: 'Ignites a random ring of hexes centered around the Ancient Grove every 20 seconds',
+          description: 'Ignites a random ring of hexes centered around the Ancient Grove every 20s',
           interval: 20,
           soundMode: 'loop',
           params: {
@@ -181,8 +189,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'napalm',
+          screenShake: true,
           name: 'Napalm',
-          description: 'Ignites two adjacent rows of hexes across the map every 15 seconds',
+          description: 'Ignites two adjacent rows of hexes across the map every 15s',
           interval: 15,
           soundMode: 'once',
           params: {
@@ -202,6 +211,7 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'provoked-burn',
+          screenShake: true,
           name: 'Provoked Burn',
           description: 'Ignites a straight line through the Ancient Grove whenever you collect a map item or destroy a water tank with water.',
           trigger: 'map item collected',
@@ -209,7 +219,7 @@ export const BOSS_PATTERNS = {
           params: {
             delayMs: 800,
             staggerPerHex: 50,
-            strikeGapMs: 0
+            strikeGapMs: 150 // Small gap between chained firings (and their screen shakes)
           }
         },
       ]
@@ -226,8 +236,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'heat-seek',
+          screenShake: true,
           name: 'Heat Seek',
-          description: 'Ignites all paths every 20 seconds',
+          description: 'Ignites all paths every 20s',
           interval: 20,
           soundMode: 'multiple',
           params: {
@@ -247,8 +258,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'mark-of-flame',
+          screenShake: true,
           name: 'Mark of Flame',
-          description: 'Ignites an X pattern from the map edges through the Ancient Grove every 15 seconds',
+          description: 'Ignites an X pattern from the map edges through the Ancient Grove every 15s',
           interval: 15,
           soundMode: 'once',
           params: {
@@ -268,8 +280,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'piercing-flame',
+          screenShake: true,
           name: 'Piercing Flame',
-          description: 'Ignites all player-placed items on the map every 20 seconds',
+          description: 'Ignites all player-placed items on the map every 20s',
           interval: 20,
           soundMode: 'multiple',
           params: {
@@ -289,8 +302,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'hell-stoke',
+          screenShake: true,
           name: 'Hell Stoke',
-          description: 'Strengthens all fires actively burning on the map every 15 seconds',
+          description: 'Strengthens all fires actively burning on the map every 15s',
           interval: 15,
           soundMode: 'once',
           params: {
@@ -310,8 +324,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'serpentine-char',
+          screenShake: true,
           name: 'Serpentine Char',
-          description: 'Ignites a random serpentine path across the map every 15 seconds of increasing length',
+          description: 'Ignites a random serpentine path across the map every 15s of increasing length',
           interval: 15,
           soundMode: 'once',
           params: {
@@ -333,8 +348,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'collapsing-fire',
+          screenShake: true,
           name: 'Collapsing Fire',
-          description: 'Ignites a ring of hexes every 15 seconds progressing inward throughout the wave',
+          description: 'Ignites a ring of hexes every 15s progressing inward throughout the wave',
           interval: 15,
           soundMode: 'once',
           params: {
@@ -354,8 +370,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'barrage-of-flames',
+          screenShake: true,
           name: 'Barrage of Flames',
-          description: 'Bursts of random fire every 10 seconds of increasing strength and duration',
+          description: 'Bursts of random fire every 10s of increasing strength and duration',
           interval: 10,
           soundMode: 'multiple',
           params: {
@@ -379,8 +396,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'meteor-strike',
+          screenShake: true,
           name: 'Meteor Strike',
-          description: 'Ignites four large clusters of hexes every 10 seconds',
+          description: 'Ignites four large clusters of hexes every 10s',
           interval: 10,
           soundMode: 'once',
           params: {
@@ -401,8 +419,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'array-of-flames',
+          screenShake: true,
           name: 'Array of Flames',
-          description: 'Ignites every third hex on the map every 15 seconds',
+          description: 'Ignites every third hex on the map every 15s',
           interval: 15,
           soundMode: 'once',
           params: {
@@ -423,8 +442,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'doomfire',
+          screenShake: true,
           name: 'Doomfire',
-          description: 'Increases area of the strongest burning fire type (or ignites 10 hexes with that fire type) every 10 seconds, with a 3-strike pattern every 3rd activation',
+          description: 'Increases area of the strongest burning fire type (or ignites 10 hexes with that fire type) every 10s, with a 3-strike pattern every 3rd activation',
           interval: 10,
           soundMode: 'once',
           params: {
@@ -446,6 +466,7 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'firelash',
+          screenShake: true,
           name: 'Firelash',
           description: 'Ignites a 3-wide slash across the map, increasing in frequency over time',
           interval: 20, // First fire at 25s; then 20, 15, 10, 8, 6, 5, 4, 3, 2, 1...
@@ -468,8 +489,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'legion',
+          screenShake: true,
           name: 'Legion',
-          description: 'Casts two random powers every 10 seconds',
+          description: 'Casts two random powers every 10s',
           interval: 10,
           soundMode: 'once',
           params: {
@@ -507,8 +529,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'fire-breathe',
+          screenShake: true,
           name: 'Fire Breathe',
-          description: 'Progressively blankets the map with fire every 10 seconds',
+          description: 'Progressively blankets the map with fire every 10s',
           interval: 10,
           soundMode: 'once',
           params: {
@@ -529,8 +552,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'purify',
+          screenShake: true,
           name: 'Purify',
-          description: 'Ignites 100 random hexes every 15 seconds, with a 3-strike pattern every 3rd activation',
+          description: 'Ignites 100 random hexes every 15s, with a 3-strike pattern every 3rd activation',
           interval: 15,
           soundMode: 'once',
           params: {
@@ -552,8 +576,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'purify',
+          screenShake: true,
           name: 'Purify',
-          description: 'Ignites 100 random hexes every 5 seconds, with a 3-strike pattern every 3rd activation',
+          description: 'Ignites 100 random hexes every 5s, with a 3-strike pattern every 3rd activation',
           interval: 15,
           triggerAt: 3,
           soundMode: 'once',
@@ -565,6 +590,7 @@ export const BOSS_PATTERNS = {
         },
         {
           type: 'summon-boss',
+          screenShake: true,
           name: 'Summon',
           description: 'Summons a past fire lord to the fight',
           triggerAt: 7, // seconds into the wave (fires once)
@@ -587,8 +613,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'purify',
+          screenShake: true,
           name: 'Purify',
-          description: 'Ignites 100 random hexes every 5 seconds, with a 3-strike pattern every 3rd activation',
+          description: 'Ignites 100 random hexes every 5s, with a 3-strike pattern every 3rd activation',
           interval: 15,
           triggerAt: 3,
           soundMode: 'once',
@@ -600,6 +627,7 @@ export const BOSS_PATTERNS = {
         },
         {
           type: 'summon-boss',
+          screenShake: true,
           name: 'Summon',
           description: 'Summons a past fire lord to the fight',
           triggerAt: 7, // seconds into the wave (fires once)
@@ -622,8 +650,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'purify',
+          screenShake: true,
           name: 'Purify',
-          description: 'Ignites 100 random hexes every 5 seconds, with a 3-strike pattern every 3rd activation',
+          description: 'Ignites 100 random hexes every 5s, with a 3-strike pattern every 3rd activation',
           interval: 15,
           triggerAt: 3,
           soundMode: 'once',
@@ -635,6 +664,7 @@ export const BOSS_PATTERNS = {
         },
         {
           type: 'summon-boss',
+          screenShake: true,
           name: 'Summon',
           description: 'Summons a past fire lord to the fight',
           triggerAt: 7, // seconds into the wave (fires once)
@@ -657,8 +687,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'purify',
+          screenShake: true,
           name: 'Purify',
-          description: 'Ignites 100 random hexes every 5 seconds, with a 3-strike pattern every 3rd activation',
+          description: 'Ignites 100 random hexes every 5s, with a 3-strike pattern every 3rd activation',
           interval: 15,
           triggerAt: 3,
           soundMode: 'once',
@@ -670,6 +701,7 @@ export const BOSS_PATTERNS = {
         },
         {
           type: 'summon-boss',
+          screenShake: true,
           name: 'Summon',
           description: 'Summons a past fire lord to the fight',
           triggerAt: 7, // seconds into the wave (fires once)
@@ -692,8 +724,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'purify',
+          screenShake: true,
           name: 'Purify',
-          description: 'Ignites 100 random hexes every 5 seconds, with a 3-strike pattern every 3rd activation',
+          description: 'Ignites 100 random hexes every 5s, with a 3-strike pattern every 3rd activation',
           interval: 15,
           triggerAt: 3,
           soundMode: 'once',
@@ -705,6 +738,7 @@ export const BOSS_PATTERNS = {
         },
         {
           type: 'summon-boss',
+          screenShake: true,
           name: 'Summon',
           description: 'Summons a past fire lord to the fight',
           triggerAt: 7, // seconds into the wave (fires once)
@@ -727,8 +761,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'purify',
+          screenShake: true,
           name: 'Purify',
-          description: 'Ignites 100 random hexes every 5 seconds, with a 3-strike pattern every 3rd activation',
+          description: 'Ignites 100 random hexes every 5s, with a 3-strike pattern every 3rd activation',
           interval: 15,
           triggerAt: 3,
           soundMode: 'once',
@@ -740,6 +775,7 @@ export const BOSS_PATTERNS = {
         },
         {
           type: 'summon-boss',
+          screenShake: true,
           name: 'Summon',
           description: 'Summons a past fire lord to the fight',
           triggerAt: 7, // seconds into the wave (fires once)
@@ -762,8 +798,9 @@ export const BOSS_PATTERNS = {
       abilities: [
         {
           type: 'purify',
+          screenShake: true,
           name: 'Purify',
-          description: 'Ignites 100 random hexes every 5 seconds, with a 3-strike pattern every 3rd activation',
+          description: 'Ignites 100 random hexes every 5s, with a 3-strike pattern every 3rd activation',
           interval: 15,
           triggerAt: 3,
           soundMode: 'once',
@@ -775,6 +812,7 @@ export const BOSS_PATTERNS = {
         },
         {
           type: 'summon-boss',
+          screenShake: true,
           name: 'Summon',
           description: 'Summons a past fire lord to the fight',
           triggerAt: 7, // seconds into the wave (fires once)
@@ -792,10 +830,12 @@ export const BOSS_PATTERNS = {
 // Displayed in wave complete modal with name/title pill overlay
 // speechBubbles: placement/complete text supports HTML for styling
 // powers: active on boss wave (5th wave of each group); bossWaveSpeech shown when that wave begins
+// Optional requiresMetaUnlock + whenMetaLocked: use secondary params/description/speech while that meta item is locked (power name stays the same)
 
 /** Default hero power — override per hero in HERO_PATTERNS when customizing. */
 export const DEFAULT_HERO_POWER = {
   type: 'knights-blessing',
+          screenShake: true,
   name: "The Knight's Blessing",
   description: 'Increases the strength of all jet towers by 25%.',
   params: {
@@ -810,13 +850,14 @@ export const DEFAULT_HERO_BOSS_WAVE_SPEECH =
 /** Grove Incarnate boss-wave power (groups 22–29). */
 export const GROVE_INCARNATE_ANCIENT_BLESSING_POWER = {
   type: 'ancient-blessing',
+          screenShake: true,
   name: 'The Ancient Blessing',
   description: 'Fire regrow rates are reduced by 50%.',
   params: { fireRegrowMultiplier: 0.5 },
 };
 
 export const GROVE_INCARNATE_ANCIENT_BLESSING_SPEECH =
-  'The <span class="text-gradient-grove text-glow">Ancient Blessing</span> slows the flames\' return — hold them down!';
+  'The <span class="text-gradient-grove text-glow">Ancient Blessing</span> slows the flames\' regrowth!';
 
 export const HERO_PATTERNS = {
     1: { name: 'Sir Wickworthy', title: 'Knight of the Grove', speechBubbles: [
@@ -927,7 +968,7 @@ export const HERO_PATTERNS = {
       description: 'Fire spread rates along paths decrease by 25%.',
       params: { pathFireSpreadMultiplier: 0.75 },
     }],
-    bossWaveSpeech: '<span class="text-grove text-glow">Mirth</span> causes the flames to spread more slowly along the paths!',
+    bossWaveSpeech: '<span class="text-grove text-glow">Mirth</span> helps protect your paths!',
     speechBubbles: [
       { 
         placement: '\'Tis a beautiful day to be alive! Except for the endless <span class="text-fire text-jitter text-glow">burning rocks</span>, of course... but I will keep my spirits high!', 
@@ -957,7 +998,7 @@ export const HERO_PATTERNS = {
       description: 'The Ancient Grove takes 25% less fire damage.',
       params: { townFireDamageMultiplier: 0.75 },
     }],
-    bossWaveSpeech: 'My <span class="text-grove text-glow">Seed Sower</span> blessing shields the Grove — it will take less harm from the flames!',
+    bossWaveSpeech: 'My <span class="text-grove text-glow">Seed Sower</span> blessing helps protect the Grove!',
     speechBubbles: [
       { 
         placement: 'Welcome to the <span class="text-glow-pulse">Silver City</span>, I\'m Starseed, the Sower. And you\'re just in time. <span class="text-fire-blaze text-glow-pulse">Blazes</span> have been spotted, in addition to <span class="text-fire-flame text-glow-pulse">flames</span> and <span class="text-fire-cinder text-glow-pulse">cinders</span>. Help!', 
@@ -987,7 +1028,7 @@ export const HERO_PATTERNS = {
       description: 'Rain towers do 25% more damage.',
       params: { rainTowerPowerMultiplier: 1.25 },
     }],
-    bossWaveSpeech: 'With <span class="text-cycle-rainbow">Twirling</span> favor, your rain towers strike harder!',
+    bossWaveSpeech: 'With <span class="text-cycle-rainbow">Twirling</span> favor, your rain towers have more stopping power!',
     speechBubbles: [
       { 
         placement: 'The High Desert is a dangerous place. The heat of the sun can play <span class="text-gradient-rainbow">tricks</span> on the eyes. Best to hide them.', 
@@ -1017,7 +1058,7 @@ export const HERO_PATTERNS = {
       description: 'Bomber towers do 25% more damage.',
       params: { bomberDamageMultiplier: 1.25 },
     }],
-    bossWaveSpeech: 'Take <span class="text-shimmer text-water">Flight</span> with me — your bomber towers hit harder from the skies!',
+    bossWaveSpeech: 'Take <span class="text-shimmer text-water">Flight</span> with me — your bomber towers have more stopping power!',
     speechBubbles: [
       { 
         placement: 'This is the high fortress of <span class="text-shimmer text-water">Cloudband!</span> This is no place for explorers. Get to helping or be gone with you!', 
@@ -1047,7 +1088,7 @@ export const HERO_PATTERNS = {
       description: 'Suppression bombs do double damage.',
       params: { suppressionBombDamageMultiplier: 2 },
     }],
-    bossWaveSpeech: 'My <span class="text-water text-glow">Suppression</span> art doubles your bombs\' power — use them well!',
+    bossWaveSpeech: 'My <span class="text-water text-glow">Suppression</span> blessing doubles your suppression bombs\' power!',
     speechBubbles: [
       { 
         placement: 'I\'ve been looking for you! I\'ve heard tell of your <span class="text-gradient-grove">bravery and skill</span>. I need your help.', 
@@ -1076,8 +1117,14 @@ export const HERO_PATTERNS = {
       name: 'Singing',
       description: 'Spread resistance increased by 25%.',
       params: { fireSpreadResistanceMultiplier: 0.75 },
+      requiresMetaUnlock: 'spread_resistance',
+      whenMetaLocked: {
+        description: 'Vortexes move 25% slower (including fast vortexes).',
+        params: { vortexMoveSpeedMultiplier: 0.75 },
+        bossWaveSpeech: 'My <span class="text-cycle-rainbow">Singing</span> slows down vortexes!',
+      },
     }],
-    bossWaveSpeech: 'My <span class="text-cycle-rainbow">Singing</span> slows the spread of flames across the land!',
+    bossWaveSpeech: 'My <span class="text-cycle-rainbow">Singing</span> slows the spread of flames!',
     speechBubbles: [
       { 
         placement: 'Hail, strange one! You have evidently passed the Gates of Mytherios. <span class="text-grove text-jitter text-glow">Tanglevale</span> is no better a place than any you have visited. The fire here is... <span class="text-jitter text-fire-firestorm text-glow">haunted.</span>', 
@@ -1106,8 +1153,14 @@ export const HERO_PATTERNS = {
       name: 'Safety',
       description: 'Fire resistance increased by 25%.',
       params: { fireDamageResistanceMultiplier: 0.75 },
+      requiresMetaUnlock: 'fire_resistance',
+      whenMetaLocked: {
+        description: 'Vortexes have a 25% reduced chance of spawning (including fast vortexes).',
+        params: { vortexSpawnChanceMultiplier: 0.75 },
+        bossWaveSpeech: '<span class="text-gradient-rainbow">Safety</span> stops vortexes from forming as often!',
+      },
     }],
-    bossWaveSpeech: 'My alchemical <span class="text-gradient-rainbow">Safety</span> wards reduce the harm of fire!',
+    bossWaveSpeech: '<span class="text-gradient-rainbow">Safety</span> reduces the harm of fire!',
     speechBubbles: [
       { 
         placement: 'Hello, I\'m <span class="text-gradient-rainbow">Gaelwynn</span> of the Valley. A valley that is now suffering great <span class="text-fire-cinder text-glow-pulse">blight</span>.', 
@@ -1137,7 +1190,7 @@ export const HERO_PATTERNS = {
       description: 'Gifts of the Grove spawn 25% more often.',
       params: { mysteryItemSpawnMultiplier: 1.25 },
     }],
-    bossWaveSpeech: 'By the Truth\'s grace, <span class="text-grove text-glow">Windfall</span> brings more Gifts of the Grove!',
+    bossWaveSpeech: '<span class="text-grove text-glow">Windfall</span> brings more Gifts of the Grove!',
     speechBubbles: [
       { 
         placement: 'From the Valley, are you? You\'ll wish you stayed there soon enough. Nothing but <span class="text-fire-blaze">doom</span> and <span class="text-fire-cinder">sabatoge</span> \'round these parts. Here, we battle mighty <span class="text-cycle text-fire-inferno text-breathe text-glow">Infernos!</span>', 
@@ -1167,7 +1220,7 @@ export const HERO_PATTERNS = {
       description: 'Pulsing towers do 25% more damage.',
       params: { pulsingTowerPowerMultiplier: 1.25 },
     }],
-    bossWaveSpeech: 'I remember... <span class="text-glow-pulse">Muster</span> your pulsing towers — strike with golden flame!',
+    bossWaveSpeech: '<span class="text-glow-pulse">Muster</span> strengthens your pulsing towers!',
     speechBubbles: [
       { 
         placement: 'Is someone there? Who.... who are you? What... day is it? What... <span class="text-glow-pulse">YEAR</span> is it?', 
@@ -1227,7 +1280,7 @@ export const HERO_PATTERNS = {
       description: 'Rare spawns are 50% more likely.',
       params: { rareSpawnMultiplier: 1.5 },
     }],
-    bossWaveSpeech: 'Bearish <span class="text-grove text-glow">Luck</span> is with you — rare treasures await!',
+    bossWaveSpeech: 'My <span class="text-grove text-glow">Luck</span> is with you, spawning more rare items!',
     speechBubbles: [
       { 
         placement: '<span class="text-glow-pulse">The Pass of Cinders</span>. It is where I\'ve lived my whole life. The <span class="text-cycle text-fire-inferno text-glow text-uppercase">Infernos</span> are spreading. You must be here to stop them.', 
@@ -1256,8 +1309,14 @@ export const HERO_PATTERNS = {
       name: 'Bolster',
       description: 'Perimeter towers do 25% more damage.',
       params: { perimeterTowerPowerMultiplier: 1.25 },
+      requiresMetaUnlock: 'perimeter_tower',
+      whenMetaLocked: {
+        description: 'Pulsing towers activate 25% faster.',
+        params: { pulsingAttackIntervalScale: 0.75 },
+        bossWaveSpeech: '<span class="text-water text-wave">Bolster</span> increases the speed of your pulsing towers!',
+      },
     }],
-    bossWaveSpeech: 'My song will <span class="text-water text-wave">Bolster</span> your perimeter towers — let them sweep stronger!',
+    bossWaveSpeech: '<span class="text-water text-wave">Bolster</span> strengthens your perimeter towers!',
     speechBubbles: [
       { 
         placement: 'I haven\'t seen anyone for ages! I have almost forgotten how to talk. Only my songs keep me company in these <span class="text-gradient-upgrade test-wave">winding halls</span>.', 
@@ -1286,8 +1345,14 @@ export const HERO_PATTERNS = {
       name: 'Punch',
       description: 'Charge towers do 25% more damage.',
       params: { chargeTowerPowerMultiplier: 1.25 },
+      requiresMetaUnlock: 'charge_tower',
+      whenMetaLocked: {
+        description: 'Bomber towers activate 25% faster.',
+        params: { bomberAttackIntervalScale: 0.75 },
+        bossWaveSpeech: '<span class="text-gradient-upgrade">Punch!</span> Sprigget makes bomber towers faster!',
+      },
     }],
-    bossWaveSpeech: '<span class="text-gradient-upgrade">Punch</span> punch! Sprigget makes charge towers hit harder!',
+    bossWaveSpeech: '<span class="text-gradient-upgrade">Punch!</span> Sprigget makes charge towers stronger!',
     speechBubbles: [
       { 
         placement: '<span class="text-gradient-upgrade">Sprigget</span> runs fast! <span class="text-gradient-upgrade">Sprigget</span> climbs high! <span class="text-gradient-upgrade">Sprigget</span> digs deep!', 
@@ -1317,7 +1382,7 @@ export const HERO_PATTERNS = {
       description: 'Temporary power-up spawns increase by 25%.',
       params: { tempPowerUpSpawnMultiplier: 1.25 },
     }],
-    bossWaveSpeech: 'The abyss grants you its <span class="text-water text-wave">Favor</span> — more power-ups will appear!',
+    bossWaveSpeech: '<span class="text-water text-wave">Favor</span> increases the chance of temporary power-ups to spawn!',
     speechBubbles: [
       { 
         placement: 'Be gone with you! I\'m busy looking for <span class="text-cycle-water">water</span>, scarce as it may be, to fight the flames of the <span class="text-fire-cinder text-glow-pulse">Blind Abyss!</span>', 
@@ -1346,8 +1411,14 @@ export const HERO_PATTERNS = {
       name: 'Sentry',
       description: 'Sentinel towers attack 25% faster.',
       params: { sentinelAttackIntervalScale: 0.8 },
+      requiresMetaUnlock: 'sentinel_tower',
+      whenMetaLocked: {
+        description: 'All applied shield amounts are doubled.',
+        params: { shieldHealthMultiplier: 2 },
+        bossWaveSpeech: '<span class="text-grove text-glow">Sentry</span> doubles the strength of shields when you apply them!',
+      },
     }],
-    bossWaveSpeech: 'My <span class="text-grove text-glow">Sentry</span> keeps your sentinels vigilant — they strike faster!',
+    bossWaveSpeech: '<span class="text-grove text-glow">Sentry</span> increases the speed of your sentinel towers!',
     speechBubbles: [
       { 
         placement: 'Behold, the <span class="text-gradient-fire text-grow-pulse">Infernal Forge</span>. You must calm yourself in the face of the almighty <span class="text-fire-cataclysm text-glow-pulse">Cataclysm</span>.', 
@@ -1377,7 +1448,7 @@ export const HERO_PATTERNS = {
       description: 'All XP collected is doubled.',
       params: { xpGainMultiplier: 2 },
     }],
-    bossWaveSpeech: 'Ancient <span class="text-water text-wave">Wisdom</span> doubles every experience you earn!',
+    bossWaveSpeech: '<span class="text-water text-wave">Wisdom</span> doubles earned XP points!',
     speechBubbles: [
       { 
         placement: 'I serve the <span class="text-water text-wave text-glow">queen of the sea</span>, though I know not where she is. I must find her. If you are willing to help me, we could work together...', 
@@ -1404,10 +1475,10 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'longevity',
       name: 'Longevity',
-      description: 'All temporary power-ups last 10 seconds longer.',
+      description: 'All temporary power-ups last 10s longer.',
       params: { tempPowerUpBonusDurationSec: 10 },
     }],
-    bossWaveSpeech: 'By royal decree, <span class="text-water text-glow">Longevity</span> extends your temporary power-ups!',
+    bossWaveSpeech: '<span class="text-water text-glow">Longevity</span> extends your temporary power-ups!',
     speechBubbles: [
       { 
         placement: 'You have come to the world beyond the <span class="text-fire-blaze text-shimmer text-uppercase">Hellgate</span>. Did Mareveth send you? Our <span class="text-gradient-grove">Grove</span> is all but lost.', 
@@ -1437,7 +1508,7 @@ export const HERO_PATTERNS = {
       description: 'All money collected on the map is doubled.',
       params: { mapCurrencyMultiplier: 2 },
     }],
-    bossWaveSpeech: 'Dragon <span class="text-cycle-water text-shimmer">Fortune</span> doubles every coin you gather from the map!',
+    bossWaveSpeech: '<span class="text-cycle-water text-shimmer">Fortune</span> doubles all money collected on the map!',
     speechBubbles: [
       { 
         placement: 'You shouldn\'t be here. The <span class="text-fire-cataclysm text-shimmer text-uppercase">Altar of Cataclysm</span> is not meant for mortals.', 
@@ -1662,26 +1733,26 @@ for (const key of Object.keys(HERO_PATTERNS)) {
 
 /** Short victory-line placeholders (tone matches each hero’s in-game voice). */
 export const VICTORY_SPEECH_PLACEHOLDERS = {
-  1: 'Placeholder: Splendid work, champion! The Ancient Grove sings of your valor—well met indeed!',
-  2: 'Placeholder: You did it you did it!! I… I can barely look, but—thank you, thank you!',
-  3: 'Placeholder: Impressive. Methodical. I shall note this in my journal—perhaps you are trustworthy after all.',
-  4: 'Placeholder: A triumph worthy of verse! The chorus practically writes itself—bravo, bravo!',
-  5: 'Placeholder: The seeds of hope take root! The Silver City may yet bloom again because of you.',
-  6: 'Placeholder: A dance of victory! The dunes themselves whirl in celebration—what a performance!',
-  7: 'Placeholder: Cloudband stands a little taller today. You have proven your worth in the thin air.',
-  8: 'Placeholder: The wilds are safer tonight. My bow and I salute you, ranger of the flame.',
-  9: 'Placeholder: *strums* That’ll be a ballad for the ages—encore when you’re ready, hero!',
-  10: 'Placeholder: Fascinating! Your results exceed every hypothesis—pure alchemy of the battlefield!',
+  1: 'Placeholder: Splendid work, champion! The Ancient Grove sings of your valor!',
+  2: 'Placeholder: You did it you did it!! Thank you thank you!',
+  3: 'Placeholder: Impressive. Methodical. Your deeds have been noted.',
+  4: 'Placeholder: A triumph worthy of verse! The chorus practically writes itself!',
+  5: 'Placeholder: The seeds of hope take root. The Silver City may yet bloom again.',
+  6: 'Placeholder: A dance of victory! The dunes themselves whirl in celebration!',
+  7: 'Placeholder: Cloudband stands taller yet today.',
+  8: 'Placeholder: The wilds are safer tonight. My bow and I salute you, ranger of water.',
+  9: 'Placeholder: *strums* A ballad for the ages! Encore, encore!!',
+  10: 'Placeholder: Fascinating! Pure alchemy of the battlefield!',
   11: 'Placeholder: Order is restored. The upright path was hard, but you walked it with honor.',
   12: 'Placeholder: …Thank you. Maybe the path home is a little clearer now. Maybe.',
-  13: 'Placeholder: The elfkind owe you a debt—spoken softly, but deeply, among the leaves.',
-  14: 'Placeholder: Grr-ateful! The forest feels cozy again. Hugs? …Maybe just a small one.',
-  15: 'Placeholder: Another thread re-spun. The Lost find hope when you hold the line.',
-  16: 'Placeholder: The gems shine brighter tonight! Sparkle on, defender of the caverns!',
-  17: 'Placeholder: Royal words fail—so let this suffice: you have earned the court’s eternal thanks.',
-  18: 'Placeholder: Unshakable you were, and unbroken we stand. The forge still burns—for peace.',
+  13: 'Placeholder: The elfkind owe you a debt. Name it, and it\'s yours.',
+  14: 'Placeholder: Grr-ateful! Time for some celebratory salmon and honey!',
+  15: 'Placeholder: Who will tell the tale of your numerous victories? Shall I...!?',
+  16: 'Placeholder: The gems shine brighter tonight! Favor upon you!',
+  17: 'Placeholder: You have earned the court’s eternal thanks and cemented yourself as a legend among our people',
+  18: 'Placeholder: Unshakable you were, and unbroken we stand.',
   19: 'Placeholder: Highborn or low, today we bow to you. The realm remembers its champion.',
-  20: 'Placeholder: The throne’s fires cool at last. Rule yourself wisely—you’ve earned that much.',
-  21: 'Placeholder: Even frost thaws before such resolve. Fly well, hero—the cold remembers kindness.',
+  20: 'Placeholder: The throne’s fires cool at last. Ahh..... sweet relief.',
+  21: 'Placeholder: Not many alive today can boast of the dragons\'s favor. You are one of the few.',
   22: 'Placeholder: The Spirit of the Grove whispers: you did what gods could not—Hexalon lives on.',
 };

@@ -1,11 +1,12 @@
 import { getDirectionAngle, getDirectionAngle12, getHexesInRing } from './utils/hexMath.js';
 import { BOSS_PATTERNS, HERO_PATTERNS } from './patterns.js';
+import { isMetaItemUnlocked } from './utils/metaProgression.js';
 
 export const CONFIG = {
   /** Semantic version string (shown in main menu and update log). */
   GAME_VERSION: '0.1.0',
   /** Bump when replacing images/audio so browsers fetch fresh assets (`?v=` on asset URLs). */
-  ASSET_CACHE_BUST: '2',
+  ASSET_CACHE_BUST: '3',
 
   /**
    * Web3Forms access key for player feedback / bug reports (https://web3forms.com).
@@ -16,15 +17,40 @@ export const CONFIG = {
 
   MAP_SIZE: 21,
   HEX_RADIUS: 40,
+
+  /**
+   * Main-map camera zoom (user setting). Discrete levels only:
+   * 0.75 (zoom out), 1 (default / 100%), 1.25 (zoom in).
+   * Persisted in localStorage settings + save-state meta. Keys: `-` / `=` / `0`.
+   */
+  MAP_ZOOM: 1,
+  MAP_ZOOM_LEVELS: [0.75, 1, 1.25],
+  MAP_ZOOM_DEFAULT: 1,
+
+  /**
+   * Map-only tower sprite scale (bases + turrets). Inventory/UI icons are unchanged.
+   * Trial: 0.8 = 20% smaller. Revert by setting to 1.
+   */
+  MAP_TOWER_SPRITE_SCALE: 0.8,
+  /**
+   * Map-only vortex icon scale (spinning sprite on the hex). Hex fill/border unchanged.
+   * Trial: 0.8 = 20% smaller. Revert by setting to 1.
+   */
+  MAP_VORTEX_SPRITE_SCALE: 0.8,
   
   GAME_TICK_RATE: 1000,
   RENDER_FPS: 60,
 
   /**
-   * Contiguous fire combo: hexes extinguished within this window (ms) are evaluated
-   * together; adjacency is checked only among hexes in the batch (empty hexes break chains).
+   * Contiguous fire combo: hexes extinguished in the same batch are evaluated together;
+   * adjacency is checked only among hexes in the batch (empty hexes break chains).
+   * Flush runs after COMBO_BATCH_WINDOW_MS with no new extinguish (idle gap), OR when the
+   * batch has spanned COMBO_BATCH_MAX_SPAN_MS (prevents slow clears of huge blobs from 
+   * debouncing into one giant combo).
    */
-  COMBO_BATCH_WINDOW_MS: 200,
+  COMBO_BATCH_WINDOW_MS: 150,
+  /** Max wall-clock time one combo batch can accumulate before it is split and evaluated. */
+  COMBO_BATCH_MAX_SPAN_MS: 300,
   /** Floating combo text duration (seconds). */
   COMBO_FLOAT_DURATION_SEC: 5.5,
   /**
@@ -46,10 +72,10 @@ export const CONFIG = {
    * xp is baseline per wave group (actual award = xp × current wave group; see getComboXpForWaveGroup).
    */
   COMBO_TIERS: [
-    { id: 'god', minHexes: 169, text: 'god combo!', color: '#39FF14', sfxKey: 'combo_god', xp: 10000 },
-    { id: 'ludicrous', minHexes: 127, text: 'ludicrous combo!', color: '#00FF66', sfxKey: 'combo_ludicrous', xp: 5000 },
-    { id: 'monster', minHexes: 91, text: 'monster combo!', color: '#00FFB8', sfxKey: 'combo_monster', xp: 2000 },
-    { id: 'giant', minHexes: 61, text: 'giant combo!', color: '#00F0FF', sfxKey: 'combo_giant', xp: 1000 },
+    { id: 'god', minHexes: 169, text: 'god combo!', color: '#39FF14', sfxKey: 'combo_god', xp: 5000 },
+    { id: 'ludicrous', minHexes: 127, text: 'ludicrous combo!', color: '#00FF66', sfxKey: 'combo_ludicrous', xp: 2500 },
+    { id: 'monster', minHexes: 91, text: 'monster combo!', color: '#00FFB8', sfxKey: 'combo_monster', xp: 1000 },
+    { id: 'giant', minHexes: 61, text: 'giant combo!', color: '#00F0FF', sfxKey: 'combo_giant', xp: 500 },
   ],
   
   USE_WATER_PARTICLES: true,
@@ -59,6 +85,23 @@ export const CONFIG = {
   PARTICLE_CULL_MARGIN: 50, // Pixels outside viewport to still render (for smooth entry/exit)
   PARTICLE_GLOW_MIN_SIZE: 2.5, // Only render glow for particles larger than this size
   WATER_PARTICLE_LIFE_DECAY_MULTIPLIER: 2, // Compensate for single-update per frame
+  /**
+   * Global live water-particle budget. Frame cost is dominated by total particle-pixels blended
+   * (overdraw), so this caps how many live water particles can exist. Above WATER_PARTICLE_SOFT_CAP
+   * new spawns are linearly thinned; at/above MAX_WATER_PARTICLES burst/splash spawns are suppressed
+   * entirely (existing ones finish their lifetime). Continuous jet/spread/rain emitters keep a
+   * floor via {@link WATER_PARTICLE_STREAM_MIN_BUDGET_SCALE} so they don't pulse on/off ("heartbeat").
+   * Purely visual — never affects damage/targeting.
+   * Set MAX_WATER_PARTICLES to 0 to disable the budget (legacy: unlimited particles).
+   */
+  MAX_WATER_PARTICLES: 6400, // increase to improve visuals, decrease to improve performance
+  WATER_PARTICLE_SOFT_CAP: 6000, // Start thinning new spawns once live count exceeds this
+  /**
+   * Minimum spawn-rate multiplier for continuous jet/spread/rain emitters when the global
+   * particle budget is saturated. 0 = hard-stop (causes heartbeat gaps); ~0.28–0.5 keeps streams
+   * visibly spraying under heavy load. Burst/splash effects still use a hard 0 floor.
+   */
+  WATER_PARTICLE_STREAM_MIN_BUDGET_SCALE: 0.5, // increase to improve visuals, decrease to improve performance
   DEBUG_MODE: false,
   DEBUG_ALL_HEXES_ON_FIRE: false,
   DEBUG_ALL_FIRE_TYPES: false,
@@ -73,10 +116,16 @@ export const CONFIG = {
   TOWER_PIERCE_HINT_MS: 400,
   /** White hex overlay flash duration (ms); keep ≤ pierce dwell minus hint time. */
   TOWER_PIERCE_FLASH_MS: 260,
+
+  /**
+   * How towers are selected for rotation arrows.
+   * 'hover' — hover shows arrows (pierce-dwell / right-click select unchanged).
+   * 'click' — hover still shows tooltips, but arrows appear only after left-click (right-click still works).
+   */
+  TOWER_SELECT_MODE: 'click', 
   
   DEBUG_STARTING_TOWERS: [
-
-    { type: 'jet', rangeLevel: 1, powerLevel: 1, count: 1 },
+    
 
     /*
     { type: 'jet', rangeLevel: 4, powerLevel: 4, count: 1 },
@@ -123,11 +172,11 @@ export const CONFIG = {
    * Final survival wave (30-1): seconds between each virtual wave-in-group step for spread
    * scaling ({@link DIFFICULTY_FIRE_SPREAD_INCREMENT_PER_WAVE}) and survival random-ignition steps.
    */
-  FINAL_SURVIVAL_FIRE_SPREAD_RAMP_INTERVAL_SEC: 120,
+  FINAL_SURVIVAL_FIRE_SPREAD_RAMP_INTERVAL_SEC: 30, // decreased from 120 to 30 after last run
   /** Final survival wave (30-1): random ignition chance at 0:00 (then +{@link FINAL_SURVIVAL_IGNITION_CHANCE_INCREMENT_PER_STEP} each step). */
-  FINAL_SURVIVAL_IGNITION_CHANCE_START: 0.002,
+  FINAL_SURVIVAL_IGNITION_CHANCE_START: 0.003, // increased from .002 to .003 after last run
   /** Final survival wave (30-1): added to random ignition chance every {@link FINAL_SURVIVAL_FIRE_SPREAD_RAMP_INTERVAL_SEC}. */
-  FINAL_SURVIVAL_IGNITION_CHANCE_INCREMENT_PER_STEP: 0.001,
+  FINAL_SURVIVAL_IGNITION_CHANCE_INCREMENT_PER_STEP: 0.002, // increased from .001 to .002 after last run
   WAVE_GROUP_BONUS_REWARD: 1000,
 
   // Wave group names: index 0 = group 1, …, last entry = {@link FINAL_SURVIVAL_WAVE_GROUP}.
@@ -445,7 +494,7 @@ export const CONFIG = {
       name: 'Water Bucket',
       sprite: 'water_bucket.png',
       health: 16,
-      explosionDamage: 32,
+      explosionDamage: 128,
       explosionRings: 3,
       spawnChance: 0.003,
       minWaveGroup: 1,
@@ -456,7 +505,7 @@ export const CONFIG = {
       name: 'Water Tank',
       sprite: 'water_tank.png',
       health: 24,
-      explosionDamage: 32,
+      explosionDamage: 256,
       explosionRings: 4,
       spawnChance: 0.001,
       minWaveGroup: 3,
@@ -467,7 +516,7 @@ export const CONFIG = {
       name: 'Water Vat',
       sprite: 'water_vat.png',
       health: 32,
-      explosionDamage: 32,
+      explosionDamage: 512,
       explosionRings: 5,
       spawnChance: 0.00035,
       minWaveGroup: 7,
@@ -483,8 +532,8 @@ export const CONFIG = {
   FIRE_EXTINGUISH_TIME_BLAZE: 10, // +3
   FIRE_EXTINGUISH_TIME_FIRESTORM: 15, // +5
   FIRE_EXTINGUISH_TIME_INFERNO: 22, // +7
-  FIRE_EXTINGUISH_TIME_CATACLYSM: 32, // +10
-  FIRE_EXTINGUISH_TIME_BLACKFYRE: 320, // x10
+  FIRE_EXTINGUISH_TIME_CATACLYSM: 42, // +20
+  FIRE_EXTINGUISH_TIME_BLACKFYRE: 420, // x10
   
   FIRE_REGROW_RATE: 0.5,
   
@@ -493,8 +542,8 @@ export const CONFIG = {
   FIRE_DAMAGE_PER_SECOND_BLAZE: 7, // +3
   FIRE_DAMAGE_PER_SECOND_FIRESTORM: 12, // +5
   FIRE_DAMAGE_PER_SECOND_INFERNO: 19, // +7
-  FIRE_DAMAGE_PER_SECOND_CATACLYSM: 29, // +10
-  FIRE_DAMAGE_PER_SECOND_BLACKFYRE: 42, // +13
+  FIRE_DAMAGE_PER_SECOND_CATACLYSM: 39, // +20
+  FIRE_DAMAGE_PER_SECOND_BLACKFYRE: 64, // +25
 
   XP_CINDER: 2, // reset to 2
   XP_FLAME: 4,
@@ -512,7 +561,7 @@ export const CONFIG = {
   SCORE_RATE_MULTIPLIER: 0.5,
 
   STARTING_TOWERS: 1,
-  STARTING_CURRENCY: 6000,
+  STARTING_CURRENCY: 10000,
   STARTING_UPGRADE_PLANS: 0, // RESET TO 0
   STARTING_SPECIALTY_PLANS: 0,
 
@@ -550,9 +599,9 @@ export const CONFIG = {
       levels: [
         { level: 1, roman: 'I', bonus: 10 },
         { level: 2, roman: 'II', bonus: 20 },
-        { level: 3, roman: 'III', bonus: 40 },
-        { level: 4, roman: 'IV', bonus: 70 },
-        { level: 5, roman: 'V', bonus: 110 },
+        { level: 3, roman: 'III', bonus: 30 },
+        { level: 4, roman: 'IV', bonus: 40 },
+        { level: 5, roman: 'V', bonus: 50 },
       ],
     },
     health: {
@@ -560,11 +609,11 @@ export const CONFIG = {
       name: 'Health',
       summary: 'Towers and the grove regenerate health faster when not burning.',
       levels: [
-        { level: 1, roman: 'I', bonus: 20 },
-        { level: 2, roman: 'II', bonus: 40 },
-        { level: 3, roman: 'III', bonus: 70 },
-        { level: 4, roman: 'IV', bonus: 110 },
-        { level: 5, roman: 'V', bonus: 160 },
+        { level: 1, roman: 'I', bonus: 10 },
+        { level: 2, roman: 'II', bonus: 20 },
+        { level: 3, roman: 'III', bonus: 40 },
+        { level: 4, roman: 'IV', bonus: 50 },
+        { level: 5, roman: 'V', bonus: 110 },
       ],
     },
   },
@@ -596,12 +645,12 @@ export const CONFIG = {
   TOWER_COST_PERIMETER: 15000, // ring-targeted water bombs; one hex per shot around selected ring
   TOWER_COST_BOMBER: 18000, // long-range AoE bombs; per-hit DPS low, utility high
   TOWER_COST_CHARGE: 30000, // directional unlimited-range charge shots; fixed 7-hex impact cluster
-  TOWER_COST_SENTINEL: 35000, // multi-target bombs; map-wide support
+  TOWER_COST_SENTINEL: 50000, // multi-target bombs; map-wide support
   
-  TOWER_RANGE_LEVEL_1: 3,
-  TOWER_RANGE_LEVEL_2: 5,
-  TOWER_RANGE_LEVEL_3: 7,
-  TOWER_RANGE_LEVEL_4: 9,
+  TOWER_RANGE_LEVEL_1: 1,
+  TOWER_RANGE_LEVEL_2: 2,
+  TOWER_RANGE_LEVEL_3: 3,
+  TOWER_RANGE_LEVEL_4: 4,
   
   SPREAD_TOWER_RANGE_LEVEL_1: 2,
   SPREAD_TOWER_RANGE_LEVEL_2: 3,
@@ -609,10 +658,10 @@ export const CONFIG = {
   SPREAD_TOWER_RANGE_LEVEL_4: 5,
   
   // Jet tower (single-line spray) power per second
-  TOWER_POWER_LEVEL_1: 6.0,
-  TOWER_POWER_LEVEL_2: 8.0,
-  TOWER_POWER_LEVEL_3: 10.0,
-  TOWER_POWER_LEVEL_4: 12.0,
+  TOWER_POWER_LEVEL_1: 10.0,
+  TOWER_POWER_LEVEL_2: 14.0,
+  TOWER_POWER_LEVEL_3: 19.0,
+  TOWER_POWER_LEVEL_4: 25.0,
   // Spread tower (multi-hex fan) keeps its own lower baseline
   SPREAD_TOWER_POWER_LEVEL_1: 5.0,
   SPREAD_TOWER_POWER_LEVEL_2: 6.5,
@@ -649,8 +698,9 @@ export const CONFIG = {
   BOMBER_TRAVEL_SPEED: 2,
   /** Multiplier on bomber/sentinel water-bomb explosion particle + center hex flash opacity (0–1). */
   BOMBER_WATER_EXPLOSION_ALPHA_SCALE: 0.5,
-  /** Multiplier on pulsing tower burst water particle opacity (0–1). */
-  PULSING_WATER_BURST_ALPHA_SCALE: 0.5,
+  /** Multiplier on pulsing tower blast FX opacity (0–1+; >1 allowed for punch). */
+  /** Global alpha for pulsing-tower water-burst FX (kept moderate so map shows between pulses). */
+  PULSING_WATER_BURST_ALPHA_SCALE: 0.95,
 
   SENTINEL_ATTACK_INTERVAL_LEVEL_1: 4,
   SENTINEL_ATTACK_INTERVAL_LEVEL_2: 3,
@@ -715,6 +765,7 @@ export const CONFIG = {
   SENTINEL_MODE_SPAWNERS: 'spawners',
   SENTINEL_MODE_GROVE: 'grove',
   SENTINEL_MODE_DIG_SITES: 'dig_sites',
+  SENTINEL_MODE_VORTEX: 'vortex',
   SENTINEL_MODE_TOWERS: 'towers',
   SENTINEL_MODE_POWER_UPS: 'power_ups',
   SENTINEL_MODE_RANDOM: 'random',
@@ -726,22 +777,42 @@ export const CONFIG = {
     { id: 'towers', label: 'Towers', buttonLabel: 'Towers', icon: 'assets/images/towers/jet_range_1.png', iconRotateDeg: 90, iconScale: 1.21, tooltip: 'Shoots one water bomb at every other tower on the map.' },
     { id: 'spawners', label: 'Spawners', buttonLabel: 'Spawners', icon: 'assets/images/items/flame_spawner.png', tooltip: 'Shoots water bombs at every fire spawner on the map.' },
     { id: 'dig_sites', label: 'Dig Sites', buttonLabel: 'Dig Sites', icon: 'assets/images/items/dig_site_1.png', tooltip: 'Shoots water bombs at every Dig Site on the map.' },
+    { id: 'vortex', label: 'Vortexes', buttonLabel: 'Vortexes', icon: 'assets/images/items/vortex_squall.png', tooltip: 'Shoots water bombs at every Vortex on the map.' },
     { id: 'gifts', label: 'Items', buttonLabel: 'Items', icon: 'assets/images/items/mystery_common.png', tooltip: 'Shoots water bombs at all Gifts of the Grove (and their contents), Artifacts, and water buckets/tanks/vats on the map.' },
     { id: 'burning_vaults', label: 'Burning Vaults', buttonLabel: 'Vaults', icon: 'assets/images/items/burning_vault.png', tooltip: 'Shoots water bombs at every Burning Vault on the map.' },
     { id: 'power_ups', label: 'Power Ups', buttonLabel: 'Power Ups', icon: 'assets/images/power_ups/water_pressure.png', tooltip: 'Shoots water bombs at every temporary power-up on the map.' },
     { id: 'random', label: 'Random', buttonLabel: 'Random', icon: 'assets/images/artifacts/die_white.png', tooltip: 'Chooses a random mode each time it shoots.' },
   ],
   
+  /** Default tower HP when a type has no entry in {@link TOWER_HEALTH_BY_TYPE}. */
   TOWER_HEALTH: 30,
+  /**
+   * Per-tower-type base HP (before Tower Durability / towerHealth power-ups).
+   * Types omitted here fall back to {@link TOWER_HEALTH}.
+   */
+  TOWER_HEALTH_BY_TYPE: {
+    jet: 200,
+    spread: 20,
+    rain: 20,
+    pulsing: 80,
+    bomber: 100,
+    sentinel: 30,
+    perimeter: 60,
+    charge: 20,
+  },
   /** HP per second restored when a tower or the grove is not burning. */
   HEALTH_REGROW_RATE: 0.5,
   
   TOWN_HEALTH_BASE: 150, // reset to 150
   TOWN_HEALTH_PER_UPGRADE: 50,
   TOWN_PROTECTION_BONUS_FULL: 300, // Full reward when the grove takes no damage during the wave; reduced by (cumulative HP lost / max grove HP) × this amount
+  /** Extra $ when the grove took 0 adjacent-spread fire damage this wave (lightning/random spawns on the grove do not disqualify). Starts at {@link CONFIG.TOWN_PROTECTION_BONUS_FULL}; +this amount per wave group after 1 (WG1=$300, WG2=$400, …). */
+  TOWN_NO_FIRE_SPREAD_BONUS_PER_WAVE_GROUP: 100,
   TOWN_UPGRADE_COST: 2000,
   UPGRADE_PLAN_COST: 3000,
   MOVEMENT_TOKEN_COST: 150,
+  /** Extra $ added to the shop price after each movement token purchase this run. */
+  MOVEMENT_TOKEN_COST_INCREASE_PER_PURCHASE: 25,
   TOWER_SELLBACK_COST: 2000,
   /** Shop: unlocks selling movement tokens back to the shop from inventory. */
   TOKEN_VOUCHER_COST: 2000,
@@ -777,7 +848,8 @@ export const CONFIG = {
     { type: 'suppression_bomb', level: 2, unlockLevel: 16 },
     { type: 'suppression_bomb', level: 3, unlockLevel: 27 },
     { type: 'suppression_bomb', level: 4, unlockLevel: 33 },
-    { type: 'suppression_bundle', unlockLevel: 33 },
+    { type: 'suppression_bomb', level: 5, unlockLevel: 50 },
+    { type: 'suppression_bundle', unlockLevel: 34 },
     { type: 'spread', unlockLevel: 0 },
     { type: 'pulsing', unlockLevel: 15 },
     { type: 'bomber', unlockLevel: 20 },
@@ -790,8 +862,8 @@ export const CONFIG = {
     { type: 'shield', level: 4, unlockLevel: 38 },
     { type: 'shield_bundle', unlockLevel: 38 },
     { type: 'town_health', unlockLevel: 24 },
-    { type: 'tower_sellback', unlockLevel: 35 },
-    { type: 'parts_voucher', unlockLevel: 35 },
+    { type: 'tower_sellback', unlockLevel: 37 },
+    { type: 'parts_voucher', unlockLevel: 36 },
     { type: 'token_voucher', unlockLevel: 45 },
     { type: 'upgrade_plan', unlockLevel: 40 },
     { type: 'water_pressure', unlockLevel: 12 },
@@ -800,11 +872,14 @@ export const CONFIG = {
     { type: 'tower_speed', unlockLevel: 31 },
     { type: 'spread_resistance', unlockLevel: 32 },
     { type: 'fire_resistance', unlockLevel: 33 },
-    { type: 'increased_rares', unlockLevel: 34 },
+    { type: 'increased_rares', unlockLevel: 35 },
   ],
 
   // Persistent account/run-history layer. A player must finish a run with at least
   // `requiredCompletedWaveGroup` completed before these items or mechanics exist in future runs.
+  // At most {@link META_PROGRESSION_MAX_UNLOCKS_PER_RUN} eligible unlocks are granted per run end
+  // (lowest thresholds first), so a deep first run doesn't dump every unlock at once.
+  META_PROGRESSION_MAX_UNLOCKS_PER_RUN: 2,
   META_PROGRESSION_UNLOCKS: {
     range_extender: {
       name: 'Range Extender',
@@ -832,6 +907,13 @@ export const CONFIG = {
       requiredCompletedWaveGroup: 12,
       iconCategory: 'items',
       iconSprite: 'suppression_bundle.png',
+    },
+    suppression_bomb_5: {
+      name: 'Suppression Bomb Level 5',
+      description: 'Suppression Bomb Level 5 can now appear in the shop available for purchase.',
+      requiredCompletedWaveGroup: 24,
+      iconCategory: 'items',
+      iconSprite: 'suppression_5.png',
     },
     shield_bundle: {
       name: 'Shield Bundle',
@@ -867,13 +949,6 @@ export const CONFIG = {
       requiredCompletedWaveGroup: 15,
       iconCategory: 'items',
       iconSprite: 'burning_vault.png',
-    },
-    bomber_tower: {
-      name: 'Bomber Tower',
-      description: 'The Bomber Tower is now part of the shop once your run level unlocks it.',
-      requiredCompletedWaveGroup: 13,
-      iconType: 'tower',
-      towerType: 'bomber',
     },
     sentinel_tower: {
       name: 'Sentinel Tower',
@@ -934,7 +1009,10 @@ export const CONFIG = {
   SUPPRESSION_BOMB_COST_LEVEL_2: 100,
   SUPPRESSION_BOMB_COST_LEVEL_3: 150,
   SUPPRESSION_BOMB_COST_LEVEL_4: 200,
-  /** Shop: bundle of 10 random-level suppression bombs (equal odds per level). */
+  SUPPRESSION_BOMB_COST_LEVEL_5: 200,
+  /** Highest suppression bomb level (shop, inventory, clamps). */
+  SUPPRESSION_BOMB_MAX_LEVEL: 5,
+  /** Shop: bundle of 10 random-level suppression bombs (equal odds among unlocked levels). */
   SUPPRESSION_BUNDLE_COST: 900,
   /** Shop: bundle of 10 random-level shields (equal odds per level). */
   SHIELD_BUNDLE_COST: 1800,
@@ -942,13 +1020,20 @@ export const CONFIG = {
   SUPPRESSION_BOMB_RADIUS_LEVEL_2: 3,
   SUPPRESSION_BOMB_RADIUS_LEVEL_3: 3,
   SUPPRESSION_BOMB_RADIUS_LEVEL_4: 3,
+  SUPPRESSION_BOMB_RADIUS_LEVEL_5: 3,
   SUPPRESSION_BOMB_FIXED_RADIUS: 3,
   SUPPRESSION_BOMB_USES_LEVEL_1: 1,
   SUPPRESSION_BOMB_USES_LEVEL_2: 3,
   SUPPRESSION_BOMB_USES_LEVEL_3: 6,
   SUPPRESSION_BOMB_USES_LEVEL_4: 10,
+  SUPPRESSION_BOMB_USES_LEVEL_5: 1,
   SUPPRESSION_BOMB_EXPLOSION_DELAY: 4, // Countdown: 3, 2, 1... (was 2, now 4)
-  SUPPRESSION_BOMB_POWER: 32,
+  /** Extinguish power applied per hex in the impact zone (not affected by Water Pressure). */
+  SUPPRESSION_BOMB_POWER_LEVEL_1: 64,
+  SUPPRESSION_BOMB_POWER_LEVEL_2: 64,
+  SUPPRESSION_BOMB_POWER_LEVEL_3: 64,
+  SUPPRESSION_BOMB_POWER_LEVEL_4: 64,
+  SUPPRESSION_BOMB_POWER_LEVEL_5: 640,
   
   SHIELD_COST_LEVEL_1: 100,
   SHIELD_COST_LEVEL_2: 200,
@@ -960,14 +1045,16 @@ export const CONFIG = {
   SHIELD_HEALTH_LEVEL_4: 180, // +60
   
   ENABLE_EDGE_SCROLLING: false,
+  /** Click-and-drag on the map to pan the camera (persisted in user settings). */
+  ENABLE_CLICK_TO_SCROLL: true,
   SCROLL_ZONE_SIZE: 60,
   SCROLL_MAX_SPEED: 32,
   SCROLL_ACCELERATION: 0.15,
   SCROLL_SMOOTHING: 0.85,
-  
+
   WHEEL_SCROLL_SPEED: 1,
   
-  // Screen shake for boss abilities (persisted in user settings)
+  // Screen shake for boss abilities (persisted in user settings). Per-ability `screenShake` lives in patterns.js.
   SCREEN_SHAKE_ENABLED: true,
   /** Show FPS readout under the top-left HUD (independent of debug mode). */
   SHOW_FPS_COUNTER: false,
@@ -975,23 +1062,57 @@ export const CONFIG = {
   DISABLE_GAME_TOOLTIPS: false,
   /** When true, toast notifications are never shown (persisted in user settings). */
   DISABLE_NOTIFICATIONS: false,
-  /** When true, tower water beams/streams and water particles draw at reduced opacity (persisted in user settings). */
+  /**
+   * When true, "Simple water" performance mode: fewer particles, skip mist/bloom extras.
+   * Purely a performance knob — opacity is controlled separately by {@link WATER_VISIBILITY}.
+   * Persisted in user settings.
+   */
   SIMPLIFIED_WATER_VISUALS: false,
   /**
-   * Global multiplier for all tower water streams/beams/bombs/particles vs legacy full opacity when simplified water is off.
+   * When true, "Simple fire" — burning hexes use the cheap solid-hex fill (no edge warble / hot core).
+   * Persisted in user settings — use when many fires tank FPS.
+   */
+  SIMPLIFIED_FIRE_VISUALS: false,
+  /**
+   * "Water visibility" slider (0–1, persisted). 1 = default water opacity (top of slider);
+   * 0 = most see-through (same alpha as the old "Reduced water visuals" opacity floor).
+   * Visual preference only — does not thin particles or skip effects.
+   */
+  WATER_VISIBILITY: 1,
+  /**
+   * Global base multiplier for tower water streams/beams/bombs/particles.
    * 0.5625 = 75% of the prior 0.75 default (one-time dimming of normal water).
+   * Effective alpha lerps between base×{@link SIMPLIFIED_WATER_VISUALS_ALPHA_SCALE} (slider min)
+   * and base×{@link WATER_VISUAL_FULL_OPACITY_BOOST} (slider max) via {@link WATER_VISIBILITY}.
    */
   WATER_VISUAL_BASE_ALPHA_SCALE: 0.5625,
   /**
-   * When {@link SIMPLIFIED_WATER_VISUALS} is false, multiply effective water alpha by this for jets/particles/streams (25% less transparency).
-   * Does not apply when simplified water is on — that path is unchanged.
+   * Multiplier for water alpha at the top of the Water visibility slider (default look).
+   * 1.25 → 25% less transparency than base alone.
    */
   WATER_VISUAL_FULL_OPACITY_BOOST: 1.25,
   /**
-   * When {@link SIMPLIFIED_WATER_VISUALS} is true, multiply effective water alpha again by this (on top of {@link WATER_VISUAL_BASE_ALPHA_SCALE}).
-   * 0.25 → quarter of the base-scaled opacity (50% of the prior 0.5 simplified tier).
+   * Multiplier for water alpha at the bottom of the Water visibility slider (most see-through).
+   * 0.25 → quarter of the base-scaled opacity (legacy "Reduced water visuals" opacity floor).
    */
   SIMPLIFIED_WATER_VISUALS_ALPHA_SCALE: 0.25,
+  /**
+   * When {@link SIMPLIFIED_WATER_VISUALS} ("Simple water") is true, scale the NUMBER of spawned
+   * water particles (explosion splashes, pulsing bursts, spray/rain droplets) by this factor.
+   * Purely cosmetic — damage/extinguish is applied separately in towerSystem.
+   * Cuts per-frame particle update/draw cost. 1.0 = unchanged; 0.7 = ~30% fewer.
+   * Does not affect opacity ({@link WATER_VISIBILITY} owns that).
+   */
+  SIMPLIFIED_WATER_VISUALS_PARTICLE_SCALE: 0.7,
+  /**
+   * Diagnostic master kill-switch (Advanced settings). When true, ALL tower water streams/beams,
+   * bomb projectiles, explosion splashes, and water particles are neither generated nor drawn.
+   * Purely visual — extinguishing/damage/targeting still run in towerSystem, so gameplay is
+   * unaffected. Use it to A/B test whether frame drops are visual (particles/streams) or
+   * compute/tick (targeting, fire spread, bomb math): if FPS recovers with this on, the cost is
+   * visual; if it still dips, the cost is game-tick compute. Persisted in user settings.
+   */
+  DISABLE_ALL_WATER_EFFECTS: false,
 
   // Audio (volumes 0–1, enabled flags; persisted in user settings)
   AUDIO_SFX_ENABLED: true,
@@ -1063,6 +1184,20 @@ export const CONFIG = {
     repair2: 'assets/sounds/sfx/repair2.wav',
     burning_vault_appears: 'assets/sounds/sfx/burning-vault-spawns.wav',
     burning_vault_collected: 'assets/sounds/sfx/burning-vault-collected.wav',
+    dungeon_spawns: 'assets/sounds/sfx/dungeon-spawns.wav',
+    dungeon_flooded: 'assets/sounds/sfx/dungeon-flooded.wav',
+    vortex_spawns_start_1: 'assets/sounds/sfx/vortex_spawns_start_1.wav',
+    vortex_spawns_start_2: 'assets/sounds/sfx/vortex_spawns_start_2.wav',
+    vortex_spawns_1: 'assets/sounds/sfx/vortex_spawns_1.wav',
+    vortex_spawns_2: 'assets/sounds/sfx/vortex_spawns_2.wav',
+    vortex_spawns_3: 'assets/sounds/sfx/vortex_spawns_3.wav',
+    vortex_spawns_4: 'assets/sounds/sfx/vortex_spawns_4.wav',
+    vortex_spawns_5: 'assets/sounds/sfx/vortex_spawns_5.wav',
+    vortex_spawns_fast: 'assets/sounds/sfx/vortex_spawns_fast.wav',
+    vortex_moves_1: 'assets/sounds/sfx/vortex_moves_1.wav',
+    vortex_moves_2: 'assets/sounds/sfx/vortex_moves_2.wav',
+    vortex_extinguished: 'assets/sounds/sfx/vortex_extinguished.wav',
+    alarm_vortex: 'assets/sounds/sfx/alarm-vortex.wav',
     collect: 'assets/sounds/sfx/collect.wav',
     power_up_active: 'assets/sounds/sfx/power-up-active.wav',
     power_up_expires: 'assets/sounds/sfx/power-up-expires.wav',
@@ -1221,8 +1356,11 @@ export const CONFIG = {
   /** Drag preview center hex border for rain/pulsing (fill matches AOE ring tint) */
   COLOR_VALID_PLACEMENT_AOE_CENTER_STROKE: 'rgba(255, 255, 255, 0.85)',
   /** Placement-phase & drag-preview AOE rings for rain (teal) / pulsing (orange) */
-  AOE_HEX_OVERLAY_RAIN: 'rgba(0, 191, 191, 0.32)',
-  AOE_HEX_OVERLAY_PULSING: 'rgba(255, 95, 25, 0.36)',
+  AOE_HEX_OVERLAY_RAIN: 'rgba(0, 191, 191, 0.16)',
+  AOE_HEX_OVERLAY_PULSING: 'rgba(255, 95, 25, 0.18)',
+  /** Placement-phase hover: 4× opacity of the base AOE tint, drawn above other towers' AOE fills */
+  AOE_HEX_OVERLAY_RAIN_HOVER: 'rgba(0, 191, 191, 0.64)',
+  AOE_HEX_OVERLAY_PULSING_HOVER: 'rgba(255, 95, 25, 0.72)',
   /** Deep royal blue — perimeter tower target ring (placement + hover). */
   AOE_HEX_OVERLAY_PERIMETER: 'rgba(32, 58, 168, 0.38)',
   AOE_HEX_OVERLAY_CHARGE_IMPACT: 'rgba(85, 255, 95, 0.34)',
@@ -1245,6 +1383,27 @@ export const CONFIG = {
   COLOR_WATER_TANK: '#00BCD4',
   COLOR_WATER_TANK_BORDER: '#0077DD',
   COLOR_WATER_TANK_EXPLOSION: 'rgba(100, 180, 255, 0.6)',
+
+  /**
+   * Minimap hex / marker palette (tweaked here — used by {@link Renderer.drawMinimap}).
+   * Path colors still come from PathSystem.getMinimapPathColor; town uses {@link COLOR_TOWN}.
+   */
+  MINIMAP: {
+    /** All burning hexes (any fire type). */
+    FIRE: 'hsl(29, 89.20%, 56.50%)',
+    /** Vortex marker only — hex fill is not overridden; black center dot. */
+    VORTEX_DOT: 'hsl(0, 0%, 0%)',
+    /** All fire spawners (cataclysm-purple look). */
+    SPAWNER: 'hsl(0, 100.00%, 50.00%)',
+    /** Pickup items: water tanks, power-ups, artifacts, mystery, currency (same blue as COLOR_TOWER). */
+    ITEM: 'hsl(224, 100%, 60.6%)',
+    /** Dig sites, burning vaults, dungeon entrances. */
+    SITE: 'hsl(303, 100%, 64.1%)',    
+    /** Tower marker only — hex fill is not overridden; white center dot. */
+    TOWER_DOT: 'hsl(0, 0%, 100%)',
+    /** Radius (CSS px) for tower / vortex center dots on the 200px minimap. */
+    MARKER_DOT_RADIUS: 2.25,
+  },
   
   FIRE_TYPE_NONE: 'none',
   FIRE_TYPE_CINDER: 'cinder',
@@ -1260,7 +1419,7 @@ export const CONFIG = {
       id: 'water_pressure',
       name: 'Water Pressure',
       description: 'Increases water tower power by 5% per stack (stacks additively)',
-      cost: 1000, // Cost in currency to purchase this permanent power-up
+      cost: 2000, // Cost in currency to purchase this permanent power-up
       effect: 'waterTowerPower', // Effect type (used by getPowerUpMultiplier to determine which stat to modify)
       value: .05, // +5% per stack (additive on multiplier) — see getPermanentPowerUpDescription()
       unlockLevel: 10, // Player level required to unlock this power-up in the shop
@@ -1269,7 +1428,7 @@ export const CONFIG = {
       id: 'xp_boost',
       name: 'XP Boost',
       description: 'Increases XP gained by 5% per stack (stacks additively)',
-      cost: 1000, // Cost in currency to purchase this permanent power-up
+      cost: 2000, // Cost in currency to purchase this permanent power-up
       effect: 'xpGain', // Effect type (used by getPowerUpMultiplier to determine which stat to modify)
       value: 0.05, // +5% per stack (additive)
       unlockLevel: 15, // Player level required to unlock this power-up in the shop
@@ -1278,7 +1437,7 @@ export const CONFIG = {
       id: 'tower_speed',
       name: 'Tower Speed',
       description: 'Towers that activate on an interval activate 5% faster per stack (compounding)',
-      cost: 2000,
+      cost: 4000,
       effect: 'towerAttackInterval',
       // Each owned stack multiplies attack interval by this factor (same rule as temp Tower Speed).
       intervalScalePerStack: 0.95, // ×0.95 per stack = 5% faster per stack
@@ -1288,7 +1447,7 @@ export const CONFIG = {
       id: 'spread_resistance',
       name: 'Spread Resistance',
       description: 'Reduces fire spread rate by 5% per stack (compounding)',
-      cost: 2000, // Cost in currency to purchase this permanent power-up
+      cost: 4000, // Cost in currency to purchase this permanent power-up
       effect: 'fireSpread', // Effect type (used by getPowerUpMultiplier to determine which stat to modify)
       // Negative value v: each stack multiplies spread by (1+v), e.g. v=-0.05 → ×0.95 per stack.
       value: -0.05,
@@ -1298,7 +1457,7 @@ export const CONFIG = {
       id: 'fire_resistance',
       name: 'Fire Resistance',
       description: 'Reduces fire damage per second by 5% per stack (compounding)',
-      cost: 2000,
+      cost: 4000,
       effect: 'fireDamage',
       // Same stacking as spread: each stack multiplies fire DPS by (1+v).
       value: -0.05,
@@ -1308,7 +1467,7 @@ export const CONFIG = {
       id: 'tower_health',
       name: 'Tower Durability',
       description: 'Increases tower health by 25% per stack (stacks additively)',
-      cost: 1500, // Cost in currency to purchase this permanent power-up
+      cost: 3000, // Cost in currency to purchase this permanent power-up
       effect: 'towerHealth', // Effect type (used by getPowerUpMultiplier to determine which stat to modify)
       value: 0.25, // +25% per stack (additive)
       unlockLevel: 34, // Player level required to unlock this power-up in the shop
@@ -1317,7 +1476,7 @@ export const CONFIG = {
       id: 'temp_power_up_spawn_boost',
       name: 'Power-Up Magnet',
       description: 'Increases temporary power-up spawn chance by 25% per stack (stacks additively)',
-      cost: 2000, // Cost in currency to purchase this permanent power-up
+      cost: 4000, // Cost in currency to purchase this permanent power-up
       effect: 'tempPowerUpSpawnChance', // Effect type (used by getPowerUpMultiplier; same additive rule as Water Pressure)
       // Each stack adds this to the spawn-chance multiplier (base 1): 1 stack → ×1.5, 2 stacks → ×2.0, not ×1.5².
       value: 0.25,
@@ -1327,7 +1486,7 @@ export const CONFIG = {
       id: 'increased_rares',
       name: 'Increased Rares',
       description: 'Increases rare item spawn chances by 20% per stack (stacks additively).',
-      cost: 2000,
+      cost: 4000,
       effect: 'rareChanceBonus',
       value: 0.2,
       unlockLevel: 40,
@@ -1457,7 +1616,7 @@ export const CONFIG = {
       rarity: 'uncommon',
       health: 16, // Amount of water damage needed to collect this item
       availableAtWaveGroup: 7, // Wave group when this item becomes available
-      randomSpawnChance: 0.0035, // 0.35% chance per tick to spawn during wave // reset to 0.0035
+      randomSpawnChance: 0.0025, // 0.25% chance per tick to spawn during wave // reset to 0.0025
       maxItems: 4, // Maximum number of items that can drop
       dropPool: [
         { type: 'currency', weight: 120, minValue: 60, maxValue: 100 },
@@ -1480,7 +1639,7 @@ export const CONFIG = {
       rarity: 'rare',
       health: 22, // Amount of water damage needed to collect this item
       availableAtWaveGroup: 11, // Wave group when this item becomes available
-      randomSpawnChance: 0.002, // 0.2% chance per tick to spawn during wave // reset to 0.002
+      randomSpawnChance: 0.001, // 0.1% chance per tick to spawn during wave // reset to 0.001
       maxItems: 7, // Maximum number of items that can drop
       dropPool: [
         { type: 'currency', weight: 120, minValue: 100, maxValue: 150 },
@@ -1523,16 +1682,18 @@ export const CONFIG = {
    * matching a key in {@link CONFIG.POWER_UPS} for a permanent shop-style pickup on the map.
    */
   BURNING_VAULT_REWARD_POOL: [
-    { type: 'tree_juice', weight: 10 },
-    { type: 'upgrade_plans', weight: 10 },
-    { type: 'permanent_power_up', powerUpId: 'water_pressure', weight: 5 },
+    // Total weight 300 → specialty ~1%, any permanent ~10%, tree juice:upgrade plans still 2:1
+    { type: 'tree_juice', weight: 178 },
+    { type: 'upgrade_plans', weight: 89 },
+    { type: 'specialty_plans', weight: 3 },
+    { type: 'permanent_power_up', powerUpId: 'water_pressure', weight: 6 },
     { type: 'permanent_power_up', powerUpId: 'xp_boost', weight: 5 },
-    { type: 'permanent_power_up', powerUpId: 'tower_speed', weight: 5 },
-    { type: 'permanent_power_up', powerUpId: 'spread_resistance', weight: 5 },
-    { type: 'permanent_power_up', powerUpId: 'fire_resistance', weight: 5 },
-    { type: 'permanent_power_up', powerUpId: 'tower_health', weight: 5 },
-    { type: 'permanent_power_up', powerUpId: 'temp_power_up_spawn_boost', weight: 5 },
-    { type: 'permanent_power_up', powerUpId: 'increased_rares', weight: 5 },
+    { type: 'permanent_power_up', powerUpId: 'tower_speed', weight: 3 },
+    { type: 'permanent_power_up', powerUpId: 'spread_resistance', weight: 2 },
+    { type: 'permanent_power_up', powerUpId: 'fire_resistance', weight: 4 },
+    { type: 'permanent_power_up', powerUpId: 'tower_health', weight: 3 },
+    { type: 'permanent_power_up', powerUpId: 'temp_power_up_spawn_boost', weight: 4 },
+    { type: 'permanent_power_up', powerUpId: 'increased_rares', weight: 3 },
   ],
 
   /** Seconds a map artifact remains if not collected */
@@ -1965,6 +2126,363 @@ export const CONFIG = {
       { weight: 10, rewards: [{ type: 'tree_juice', count: 4 }, { type: 'upgrade_plans', count: 4 }] },
       { weight: 15, rewards: [{ type: 'upgrade_plans', count: 7 }] },
     ],
+  },
+
+  /**
+   * Dungeon Entrance — one map object at a time; stays on its hex across waves until flooded.
+   * Water floods it (drains HP); fire does not affect it. At 0 HP the player picks 1 of 3 reward bundles.
+   * Level bands use wave groups (changeable via waveGroupMin / waveGroupMax per level).
+   */
+  DUNGEON_ENTRANCE: {
+    id: 'dungeon_entrance',
+    name: 'Dungeon Entrance',
+    /** How many reward bundles are offered when a dungeon is flooded (sampled from that level’s pool). */
+    choicesOffered: 3,
+    levels: {
+      1: {
+        level: 1,
+        name: 'Dungeon Entrance I',
+        sprite: 'dungeon_1.png',
+        maxHealth: 10000,
+        waveGroupMin: 1,
+        waveGroupMax: 6,
+        lore: 'A freshly unearthed stairwell yawned open in the ash. Flood it with water to flush forgotten spoils up from the deep.',
+      },
+      2: {
+        level: 2,
+        name: 'Dungeon Entrance II',
+        sprite: 'dungeon_2.png',
+        maxHealth: 25000,
+        waveGroupMin: 7,
+        waveGroupMax: 12,
+        lore: 'Deeper stone, wetter secrets. Flood this mouth before another opens elsewhere.',
+      },
+      3: {
+        level: 3,
+        name: 'Dungeon Entrance III',
+        sprite: 'dungeon_3.png',
+        maxHealth: 50000,
+        waveGroupMin: 13,
+        waveGroupMax: 18,
+        lore: 'Old wards crack under pressure. A full flood can drive richer caches up from chambers that never wanted guests.',
+      },
+      4: {
+        level: 4,
+        name: 'Dungeon Entrance IV',
+        sprite: 'dungeon_4.png',
+        maxHealth: 100000,
+        waveGroupMin: 19,
+        waveGroupMax: 24,
+        lore: 'The descent grows greedy. Whatever waits below only surfaces when the whole shaft is drowned.',
+      },
+      5: {
+        level: 5,
+        name: 'Dungeon Entrance V',
+        sprite: 'dungeon_5.png',
+        maxHealth: 250000,
+        waveGroupMin: 25,
+        waveGroupMax: 9999,
+        lore: 'The oldest mouth on the map. Flood it completely and the deep will cough up prizes fit for a legend.',
+      },
+    },
+  },
+
+  /**
+   * Per dungeon level: 6 weighted reward bundles; 3 are rolled when flooded.
+   * Each row is { weight, rewards } (same bundle shape as artifact trader rewards).
+   */
+  DUNGEON_ENTRANCE_REWARD_POOLS: {
+    1: [
+      { weight: 20, rewards: [{ type: 'currency', amount: 2000 }] },
+      { weight: 16, rewards: [{ type: 'currency', amount: 1000 }, { type: 'shield', level: 2, count: 2 }] },
+      { weight: 16, rewards: [{ type: 'suppression_bomb', level: 2, count: 3 }] },
+      { weight: 14, rewards: [{ type: 'currency', amount: 1500 }, { type: 'suppression_bomb', level: 3, count: 1 }] },
+      { weight: 14, rewards: [{ type: 'upgrade_plans', count: 2 }] },
+      { weight: 12, rewards: [{ type: 'tree_juice', count: 1 }] },
+    ],
+    2: [
+      { weight: 20, rewards: [{ type: 'currency', amount: 5000 }] },
+      { weight: 16, rewards: [{ type: 'currency', amount: 3000 }, { type: 'shield', level: 3, count: 2 }] },
+      { weight: 16, rewards: [{ type: 'suppression_bomb', level: 3, count: 3 }, { type: 'shield', level: 3, count: 1 }] },
+      { weight: 14, rewards: [{ type: 'currency', amount: 4000 }, { type: 'upgrade_plans', count: 2 }] },
+      { weight: 14, rewards: [{ type: 'tree_juice', count: 1 }, { type: 'currency', amount: 2000 }] },
+      { weight: 12, rewards: [{ type: 'upgrade_plans', count: 3 }] },
+    ],
+    3: [
+      { weight: 20, rewards: [{ type: 'currency', amount: 10000 }] },
+      { weight: 16, rewards: [{ type: 'currency', amount: 6000 }, { type: 'shield', level: 4, count: 3 }] },
+      { weight: 16, rewards: [{ type: 'suppression_bomb', level: 4, count: 4 }] },
+      { weight: 14, rewards: [{ type: 'currency', amount: 5000 }, { type: 'tree_juice', count: 2 }] },
+      { weight: 14, rewards: [{ type: 'upgrade_plans', count: 4 }] },
+      { weight: 12, rewards: [{ type: 'currency', amount: 8000 }, { type: 'suppression_bomb', level: 4, count: 2 }, { type: 'shield', level: 4, count: 1 }] },
+    ],
+    4: [
+      { weight: 18, rewards: [{ type: 'currency', amount: 20000 }] },
+      { weight: 16, rewards: [{ type: 'currency', amount: 12000 }, { type: 'shield', level: 4, count: 3 }, { type: 'suppression_bomb', level: 4, count: 3 }] },
+      { weight: 14, rewards: [{ type: 'tree_juice', count: 3 }] },
+      { weight: 14, rewards: [{ type: 'upgrade_plans', count: 6 }] },
+      { weight: 14, rewards: [{ type: 'currency', amount: 15000 }, { type: 'tree_juice', count: 2 }] },
+      { weight: 12, rewards: [{ type: 'currency', amount: 10000 }, { type: 'permanent_power_up', powerUpId: 'water_pressure', count: 1 }] },
+    ],
+    5: [
+      { weight: 18, rewards: [{ type: 'currency', amount: 40000 }] },
+      { weight: 16, rewards: [{ type: 'currency', amount: 25000 }, { type: 'suppression_bomb', level: 4, count: 5 }, { type: 'shield', level: 4, count: 3 }] },
+      { weight: 14, rewards: [{ type: 'tree_juice', count: 5 }] },
+      { weight: 14, rewards: [{ type: 'upgrade_plans', count: 10 }] },
+      { weight: 14, rewards: [{ type: 'currency', amount: 30000 }, { type: 'tree_juice', count: 3 }, { type: 'upgrade_plans', count: 4 }] },
+      { weight: 12, rewards: [{ type: 'currency', amount: 20000 }, { type: 'permanent_power_up', powerUpId: 'increased_rares', count: 1 }, { type: 'shield', level: 4, count: 2 }] },
+    ],
+  },
+
+  /**
+   * Full-canvas background FX while a boss power is casting (behind map hexes / GUI).
+   * Sustained for the full entering → active → exiting portrait enlarge window.
+   * Bright deep magenta wash + dense Super-Saiyan aura (streaks, sparks, large flourishes).
+   */
+  BOSS_POWER_SCREEN_FX: {
+    fadeInMs: 120,
+    fadeOutMs: 420,
+    washAlpha: 0.25,
+    // Kept modest — this FX is sustained for the whole boss cast (not a short flash).
+    // Renderer draws via cached sprites; high counts still hurt via lighter overdraw.
+    streakCount: 72,
+    whiteStreakChance: 0.55,
+    sparkCount: 36,
+    flourishCount: 8,
+    /** Bright deep magenta / purple */
+    color: '#C010A8',
+  },
+
+  /**
+   * Vortexes — high-HP / high-DPS path threats. Spawn at farthest path ends,
+   * leave wave-weighted fire on vacated hexes, and step toward the grove on a per-level timer.
+   * Level bands match dungeon entrances.
+   * Health uses the same water units as fires; regenerates at {@link CONFIG.FIRE_REGROW_RATE} when not sprayed.
+   *
+   * Spawn rate: one **map-wide** roll per 1s game tick (not per path).
+   * {@link CONFIG.VORTEX.spawnChancePerSecondByWaveGroup} is P(spawn) each second;
+   * expected wait ≈ 1/p seconds (geometric). Fast vortexes roll separately at
+   * {@link CONFIG.VORTEX.fastSpawnChanceMultiplier} × that chance.
+   * Table index = wave group (1…N); groups beyond the last defined entry reuse that final value.
+   */
+  VORTEX: {
+    id: 'vortex',
+    name: 'Vortex',
+    /**
+     * Full-canvas background FX when a vortex spawns (behind map hexes / GUI).
+     * Visual hold is {@link holdMs}; fadeIn/fadeOut are additive transitions.
+     */
+    spawnScreenFx: {
+      fadeInMs: 120,
+      holdMs: 500,
+      fadeOutMs: 380,
+      streakCount: 105,
+      /** Soft accretion-disk arc ribbons. */
+      ringCount: 16,
+      /** Full concentric swirl circles. */
+      circleCount: 10,
+      /** Background wash opacity (higher = less transparent / more Super-Saiyan punch). */
+      washAlpha: 0.36,
+    },
+    /**
+     * Map-wide P(regular vortex spawns) each 1s game tick, by wave group
+     * (index 0 unused; group 1 = index 1). Comments show the target average wait (1/p).
+     * Defined through wave group 30; groups beyond that reuse the last entry.
+     */
+    spawnChancePerSecondByWaveGroup: [
+      null, // 0 unused
+      0.011111, // 1 — ~90s avg
+      0.011494, // 2 — ~87s avg
+      0.011905, // 3 — ~84s avg
+      0.012346, // 4 — ~81s avg
+      0.012821, // 5 — ~78s avg
+      0.013333, // 6 — ~75s avg
+      0.013889, // 7 — ~72s avg
+      0.014493, // 8 — ~69s avg
+      0.015152, // 9 — ~66s avg
+      0.015873, // 10 — ~63s avg
+      0.016949, // 11 — ~59s avg
+      0.018182, // 12 — ~55s avg
+      0.019608, // 13 — ~51s avg
+      0.021277, // 14 — ~47s avg
+      0.023256, // 15 — ~43s avg
+      0.025641, // 16 — ~39s avg
+      0.028571, // 17 — ~35s avg
+      0.032258, // 18 — ~31s avg
+      0.037037, // 19 — ~27s avg
+      0.043478, // 20 — ~23s avg
+      0.052632, // 21 — ~19s avg
+      0.066667, // 22 — ~15s avg
+      0.076923, // 23 — ~13s avg
+      0.083333, // 24 — ~12s avg
+      0.090909, // 25 — ~11s avg
+      0.100000, // 26 — ~10s avg
+      0.111111, // 27 — ~9s avg
+      0.125000, // 28 — ~8s avg
+      0.142857, // 29 — ~7s avg
+      0.166667, // 30 — ~6s avg
+    ],
+    levels: {
+      1: {
+        level: 1,
+        name: 'Fire Squall',
+        sprite: 'vortex_squall.png',
+        maxHealth: 300,
+        damagePerSecond: 15,
+        moveIntervalSeconds: 10,
+        /** Icon spin rate (full revolutions per second). Squall = slowest. */
+        spinRevolutionsPerSecond: 0.28, // was 0.35 (−20%)
+        xp: 300,
+        /** Matches COLOR_FIRE_CINDER */
+        color: 'hsl(46, 100%, 60%)',
+        waveGroupMin: 1,
+        waveGroupMax: 6,
+        lore: 'A level I swirling vortex of fire slowly advancing towards the grove.',
+      },
+      2: {
+        level: 2,
+        name: 'Fire Whirlwind',
+        sprite: 'vortex_whirlwind.png',
+        maxHealth: 600,
+        damagePerSecond: 25,
+        moveIntervalSeconds: 10,
+        spinRevolutionsPerSecond: 0.412, // was 0.515 (−20%)
+        xp: 1200,
+        /** Matches COLOR_FIRE_BLAZE */
+        color: 'hsl(16, 100%, 55%)',
+        waveGroupMin: 7,
+        waveGroupMax: 12,
+        lore: 'A level II swirling vortex of fire slowly advancing towards the grove.',
+      },
+      3: {
+        level: 3,
+        name: 'Fire Twister',
+        sprite: 'vortex_twister.png',
+        maxHealth: 1200,
+        damagePerSecond: 36,
+        moveIntervalSeconds: 10,
+        spinRevolutionsPerSecond: 0.593, // was 0.741 (−20%)
+        xp: 3300,
+        /** Matches COLOR_FIRE_FIRESTORM */
+        color: 'hsl(350, 100%, 55%)',
+        waveGroupMin: 13,
+        waveGroupMax: 18,
+        lore: 'A level III swirling vortex of fire slowly advancing towards the grove.',
+      },
+      4: {
+        level: 4,
+        name: 'Fire Cyclone',
+        sprite: 'vortex_cyclone.png',
+        maxHealth: 2400,
+        damagePerSecond: 48,
+        moveIntervalSeconds: 10,
+        spinRevolutionsPerSecond: 0.705, // was 0.881 (−20%)
+        xp: 9000,
+        /** Matches COLOR_FIRE_INFERNO */
+        color: 'hsl(310, 100%, 60%)',
+        waveGroupMin: 19,
+        waveGroupMax: 24,
+        lore: 'A level IV swirling vortex of fire slowly advancing towards the grove.',
+      },
+      5: {
+        level: 5,
+        name: 'Fire Tornado',
+        sprite: 'vortex_tornado.png',
+        maxHealth: 4800,
+        damagePerSecond: 64,
+        moveIntervalSeconds: 10,
+        spinRevolutionsPerSecond: 0.826, // was 1.033 (−20%)
+        xp: 36300,
+        /** Matches COLOR_FIRE_CATACLYSM */
+        color: 'hsl(275, 100%, 60%)',
+        waveGroupMin: 25,
+        waveGroupMax: 9999,
+        lore: 'A level V swirling vortex of fire slowly advancing towards the grove.',
+      },
+    },
+    /**
+     * Rare fast variants — same sprites/colors as {@link levels}, but leaner HP, higher DPS,
+     * shorter move interval, and faster spin. Spawn chance ≈ {@link fastSpawnChanceMultiplier} × regular.
+     * Fast vortexes can leap over a standard vortex on the path (two steps toward the grove).
+     */
+    fastSpawnChanceMultiplier: 0.1,
+    fastLevels: {
+      1: {
+        level: 1,
+        isFast: true,
+        name: 'Fast Fire Squall',
+        sprite: 'vortex_squall.png',
+        maxHealth: 150,
+        damagePerSecond: 10,
+        moveIntervalSeconds: 5,
+        spinRevolutionsPerSecond: 0.7, // was 1 (−20%)
+        xp: 200,
+        color: 'hsl(46, 100%, 60%)',
+        waveGroupMin: 2,
+        waveGroupMax: 8,
+        lore: 'A level I swirling vortex of fire rapidly advancing towards the grove.',
+      },
+      2: {
+        level: 2,
+        isFast: true,
+        name: 'Fast Fire Whirlwind',
+        sprite: 'vortex_whirlwind.png',
+        maxHealth: 300,
+        damagePerSecond: 20,
+        moveIntervalSeconds: 5,
+        spinRevolutionsPerSecond: 1, // was 1.5 (−20%)
+        xp: 900,
+        color: 'hsl(16, 100%, 55%)',
+        waveGroupMin: 8,
+        waveGroupMax: 13,
+        lore: 'A level II swirling vortex of fire rapidly advancing towards the grove.',
+      },
+      3: {
+        level: 3,
+        isFast: true,
+        name: 'Fast Fire Twister',
+        sprite: 'vortex_twister.png',
+        maxHealth: 600,
+        damagePerSecond: 30,
+        moveIntervalSeconds: 5,
+        spinRevolutionsPerSecond: 1.4, // was 2 (−20%)
+        xp: 2400,
+        color: 'hsl(350, 100%, 55%)',
+        waveGroupMin: 14,
+        waveGroupMax: 19,
+        lore: 'A level III swirling vortex of fire rapidly advancing towards the grove.',
+      },
+      4: {
+        level: 4,
+        isFast: true,
+        name: 'Fast Fire Cyclone',
+        sprite: 'vortex_cyclone.png',
+        maxHealth: 1200,
+        damagePerSecond: 40,
+        moveIntervalSeconds: 5,
+        spinRevolutionsPerSecond: 1.7, // was 2.5 (−20%)
+        xp: 6300,
+        color: 'hsl(310, 100%, 60%)',
+        waveGroupMin: 20,
+        waveGroupMax: 25,
+        lore: 'A level IV swirling vortex of fire rapidly advancing towards the grove.',
+      },
+      5: {
+        level: 5,
+        isFast: true,
+        name: 'Fast Fire Tornado',
+        sprite: 'vortex_tornado.png',
+        maxHealth: 4800,
+        damagePerSecond: 64,
+        moveIntervalSeconds: 5,
+        spinRevolutionsPerSecond: 2, // was 3 (−20%)
+        xp: 17400,
+        color: 'hsl(275, 100%, 60%)',
+        waveGroupMin: 26,
+        waveGroupMax: 9999,
+        lore: 'A level V swirling vortex of fire rapidly advancing towards the grove.',
+      },
+    },
   },
   
   // Dig site configuration
@@ -2799,6 +3317,7 @@ export function getSuppressionBombTotalUses(level) {
     case 2: return CONFIG.SUPPRESSION_BOMB_USES_LEVEL_2;
     case 3: return CONFIG.SUPPRESSION_BOMB_USES_LEVEL_3;
     case 4: return CONFIG.SUPPRESSION_BOMB_USES_LEVEL_4;
+    case 5: return CONFIG.SUPPRESSION_BOMB_USES_LEVEL_5;
     default: return CONFIG.SUPPRESSION_BOMB_USES_LEVEL_1;
   }
 }
@@ -2809,12 +3328,32 @@ export function getSuppressionBombCost(level) {
     case 2: return CONFIG.SUPPRESSION_BOMB_COST_LEVEL_2;
     case 3: return CONFIG.SUPPRESSION_BOMB_COST_LEVEL_3;
     case 4: return CONFIG.SUPPRESSION_BOMB_COST_LEVEL_4;
+    case 5: return CONFIG.SUPPRESSION_BOMB_COST_LEVEL_5;
     default: return CONFIG.SUPPRESSION_BOMB_COST_LEVEL_1;
   }
 }
 
 export function getSuppressionBombPower(level) {
-  return CONFIG.SUPPRESSION_BOMB_POWER;
+  switch (level) {
+    case 1: return CONFIG.SUPPRESSION_BOMB_POWER_LEVEL_1;
+    case 2: return CONFIG.SUPPRESSION_BOMB_POWER_LEVEL_2;
+    case 3: return CONFIG.SUPPRESSION_BOMB_POWER_LEVEL_3;
+    case 4: return CONFIG.SUPPRESSION_BOMB_POWER_LEVEL_4;
+    case 5: return CONFIG.SUPPRESSION_BOMB_POWER_LEVEL_5;
+    default: return CONFIG.SUPPRESSION_BOMB_POWER_LEVEL_1;
+  }
+}
+
+/** @returns {number} Highest configured suppression bomb level (default 5). */
+export function getSuppressionBombMaxLevel() {
+  const max = Math.floor(Number(CONFIG.SUPPRESSION_BOMB_MAX_LEVEL));
+  return max >= 1 ? max : 5;
+}
+
+/** Clamp a suppression bomb level into the valid 1…max range. */
+export function clampSuppressionBombLevel(level) {
+  const max = getSuppressionBombMaxLevel();
+  return Math.min(max, Math.max(1, Math.round(Number(level)) || 1));
 }
 
 export function getSuppressionBombHexCount(level) {
@@ -3185,6 +3724,53 @@ export function getActiveHeroPowerPattern(gameState) {
   return getHeroPatternForWaveGroup(ws.currentWaveGroup || 1);
 }
 
+/**
+ * Resolve a hero power definition against meta progression.
+ * When `requiresMetaUnlock` is locked, swaps in `whenMetaLocked` params/description/speech (name stays).
+ * @param {object|null|undefined} power
+ * @param {import('./main.js').GameState | null | undefined} gameState
+ * @returns {object|null}
+ */
+export function resolveHeroPower(power, gameState) {
+  if (!power) return null;
+  const unlockId = power.requiresMetaUnlock;
+  const useLocked = !!(unlockId && power.whenMetaLocked && !isMetaItemUnlocked(gameState, unlockId));
+  const locked = useLocked ? power.whenMetaLocked : null;
+  return {
+    type: power.type,
+    name: power.name,
+    description: locked?.description || power.description,
+    params: locked?.params || power.params || {},
+    screenShake: locked?.screenShake ?? power.screenShake,
+    metaLocked: useLocked,
+    bossWaveSpeech: locked?.bossWaveSpeech,
+    requiresMetaUnlock: unlockId || null,
+  };
+}
+
+/**
+ * @param {object|null|undefined} heroPattern
+ * @param {import('./main.js').GameState | null | undefined} gameState
+ * @returns {object[]}
+ */
+export function getResolvedHeroPowers(heroPattern, gameState) {
+  return (heroPattern?.powers || [])
+    .map((power) => resolveHeroPower(power, gameState))
+    .filter(Boolean);
+}
+
+/**
+ * Boss-wave intro line for the hero, preferring the meta-locked secondary speech when active.
+ * @param {object|null|undefined} heroPattern
+ * @param {import('./main.js').GameState | null | undefined} gameState
+ * @returns {string}
+ */
+export function getHeroBossWaveSpeech(heroPattern, gameState) {
+  const resolved = getResolvedHeroPowers(heroPattern, gameState)[0];
+  if (resolved?.metaLocked && resolved.bossWaveSpeech) return resolved.bossWaveSpeech;
+  return heroPattern?.bossWaveSpeech || '';
+}
+
 /** True when hero powers are mechanically active (boss wave or survival rotation, not placement). */
 export function isHeroPowerMechanicallyActive(gameState) {
   const wave = gameState?.wave;
@@ -3332,6 +3918,26 @@ export function getHeroPowerTempPowerUpBonusDurationSec(gameState) {
   return getHeroPowerParamBonus(gameState, 'tempPowerUpBonusDurationSec', 0);
 }
 
+/** Vortex move-speed multiplier from the active hero power (1 when inactive; 0.75 = 25% slower). */
+export function getHeroPowerVortexMoveSpeedMultiplier(gameState) {
+  return getHeroPowerParamMultiplier(gameState, 'vortexMoveSpeedMultiplier');
+}
+
+/** Vortex spawn-chance multiplier from the active hero power (1 when inactive; 0.75 = 25% fewer). */
+export function getHeroPowerVortexSpawnChanceMultiplier(gameState) {
+  return getHeroPowerParamMultiplier(gameState, 'vortexSpawnChanceMultiplier');
+}
+
+/** Applied shield HP multiplier from the active hero power (1 when inactive). */
+export function getHeroPowerShieldHealthMultiplier(gameState) {
+  return getHeroPowerParamMultiplier(gameState, 'shieldHealthMultiplier');
+}
+
+/** Shield HP for a level after the active hero power multiplier. */
+export function getEffectiveShieldHealth(level, gameState) {
+  return getShieldHealth(level) * getHeroPowerShieldHealthMultiplier(gameState);
+}
+
 /** Research-tree specialty definitions (levels I–V per path). Values are balance-tweakable. */
 export const SPECIALTY_ROMAN = ['I', 'II', 'III', 'IV', 'V'];
 
@@ -3446,8 +4052,7 @@ export function getSpecialtyLevelEffectDescription(specialtyId, levelIndex) {
   if (!def || !spec) return '';
   const total = def.bonus;
   if (specialtyId === 'time') {
-    const totalSec = total === 1 ? '1 second' : `${total} seconds`;
-    return `Raises temporary power-up duration bonus to +${totalSec}.`;
+    return `Raises temporary power-up duration bonus to +${total}s.`;
   }
   if (specialtyId === 'power') {
     return `Raises permanent power-up effectiveness to +${total}%.`;
@@ -3468,8 +4073,7 @@ export function getSpecialtyLevelEffectDescription(specialtyId, levelIndex) {
  */
 function getHeroPowerParamBonus(gameState, paramKey, defaultValue = 0) {
   if (!isHeroPowerMechanicallyActive(gameState)) return defaultValue;
-  const heroPattern = getActiveHeroPowerPattern(gameState);
-  const powers = heroPattern?.powers || [];
+  const powers = getResolvedHeroPowers(getActiveHeroPowerPattern(gameState), gameState);
   let bonus = defaultValue;
   for (const power of powers) {
     const val = power?.params?.[paramKey];
@@ -3487,8 +4091,7 @@ function getHeroPowerParamBonus(gameState, paramKey, defaultValue = 0) {
  */
 function getHeroPowerParamMultiplier(gameState, paramKey, defaultValue = 1) {
   if (!isHeroPowerMechanicallyActive(gameState)) return defaultValue;
-  const heroPattern = getActiveHeroPowerPattern(gameState);
-  const powers = heroPattern?.powers || [];
+  const powers = getResolvedHeroPowers(getActiveHeroPowerPattern(gameState), gameState);
   let multiplier = defaultValue;
   for (const power of powers) {
     const val = power?.params?.[paramKey];
@@ -3968,6 +4571,19 @@ export function getPermanentPowerUpShopPurchaseCost(powerUpId, ownedCount = 0) {
   return base * (n + 1);
 }
 
+/**
+ * Shop currency cost for the next movement token purchase this run.
+ * Base {@link CONFIG.MOVEMENT_TOKEN_COST} + purchasedCount × {@link CONFIG.MOVEMENT_TOKEN_COST_INCREASE_PER_PURCHASE}.
+ * @param {number} [purchasedCount] - Movement tokens already bought from the shop this run
+ * @returns {number}
+ */
+export function getMovementTokenShopCost(purchasedCount = 0) {
+  const base = Math.max(0, Math.floor(Number(CONFIG.MOVEMENT_TOKEN_COST) || 0));
+  const step = Math.max(0, Math.floor(Number(CONFIG.MOVEMENT_TOKEN_COST_INCREASE_PER_PURCHASE) || 0));
+  const n = Math.max(0, Math.floor(Number(purchasedCount) || 0));
+  return base + n * step;
+}
+
 function isConfigMetaProgressionUnlocked(itemId) {
   const aliases = {
     bomber: 'bomber_tower',
@@ -3990,9 +4606,8 @@ function isConfigMetaProgressionUnlocked(itemId) {
   if (!def) return true;
   const progression = typeof window !== 'undefined' ? window.gameState?.meta?.progression : null;
   if (!progression || typeof progression !== 'object') return false;
-  if (Array.isArray(progression.unlockedIds) && progression.unlockedIds.includes(unlockId)) return true;
-  const best = Math.max(0, Math.floor(Number(progression.bestCompletedWaveGroup) || 0));
-  return best >= (def.requiredCompletedWaveGroup || 0);
+  // Only explicit unlocks count — do not infer from bestCompletedWaveGroup (gradual release).
+  return Array.isArray(progression.unlockedIds) && progression.unlockedIds.includes(unlockId);
 }
 
 /**
@@ -4038,20 +4653,19 @@ export function isDisplaySingular(value) {
   return Math.round(Number(value) * 100) / 100 === 1;
 }
 
-/** "second", "seconds", or abbreviated "sec" for a duration/interval shown with {@link formatDisplayHundredths}. */
-export function formatIntervalTimeUnit(seconds, { abbrev = false } = {}) {
-  if (abbrev) return 'sec';
-  return isDisplaySingular(seconds) ? 'second' : 'seconds';
+/** Unit suffix for a duration/interval shown with {@link formatDisplayHundredths} (always "s"). */
+export function formatIntervalTimeUnit(_seconds, { abbrev: _abbrev = false } = {}) {
+  return 's';
 }
 
-/** "every 2 seconds" / "every 1 second" / "every 0.25 sec" when abbreviated */
-export function formatEveryInterval(seconds, { abbrev = false } = {}) {
-  return `every ${formatDisplayHundredths(seconds)} ${formatIntervalTimeUnit(seconds, { abbrev })}`;
+/** "every 2s" / "every 0.25s" */
+export function formatEveryInterval(seconds, { abbrev: _abbrev = false } = {}) {
+  return `every ${formatDisplayHundredths(seconds)}s`;
 }
 
-/** "20 seconds" / "1 second" */
+/** "20s" / "1s" */
 export function formatDurationSeconds(seconds) {
-  return `${formatDisplayHundredths(seconds)} ${formatIntervalTimeUnit(seconds)}`;
+  return `${formatDisplayHundredths(seconds)}s`;
 }
 
 /**
@@ -4228,13 +4842,30 @@ export function getPowerUpMultiplier(effectType, powerUps = {}, tempPowerUps = [
 }
 
 /**
+ * Base HP for a tower type before Tower Durability / towerHealth multipliers.
+ * @param {string} [towerType]
+ * @returns {number}
+ */
+export function getTowerBaseHealth(towerType) {
+  const byType = CONFIG.TOWER_HEALTH_BY_TYPE;
+  if (towerType != null && byType && byType[towerType] != null) {
+    return byType[towerType];
+  }
+  return CONFIG.TOWER_HEALTH;
+}
+
+/**
  * Effective max HP for towers after Tower Durability (and any future towerHealth effects).
  * @param {Object} powerUps - Permanent power-up counts
  * @param {Array} tempPowerUps - Active temporary power-ups
- * @param {number} [baseHealth] - Base tower HP before multipliers
+ * @param {number|string} [baseHealthOrType] - Base tower HP, or a tower type string to resolve via {@link getTowerBaseHealth}
  * @returns {number}
  */
-export function getTowerMaxHealth(powerUps = {}, tempPowerUps = [], baseHealth = CONFIG.TOWER_HEALTH) {
+export function getTowerMaxHealth(powerUps = {}, tempPowerUps = [], baseHealthOrType = CONFIG.TOWER_HEALTH) {
+  const baseHealth =
+    typeof baseHealthOrType === 'string'
+      ? getTowerBaseHealth(baseHealthOrType)
+      : (baseHealthOrType ?? CONFIG.TOWER_HEALTH);
   const multiplier = getPowerUpMultiplier('towerHealth', powerUps, tempPowerUps);
   return Math.max(1, Math.round(baseHealth * multiplier));
 }
@@ -4426,6 +5057,108 @@ export function getArtifactById(id) {
 }
 
 /**
+ * Resolve dungeon entrance level (1–5) for a wave group from {@link CONFIG.DUNGEON_ENTRANCE.levels}.
+ * @param {number} waveGroup
+ * @returns {number}
+ */
+export function getDungeonLevelForWaveGroup(waveGroup) {
+  const wg = Math.max(1, Math.floor(Number(waveGroup) || 1));
+  const levels = CONFIG.DUNGEON_ENTRANCE?.levels || {};
+  let best = 1;
+  for (const key of Object.keys(levels)) {
+    const cfg = levels[key];
+    if (!cfg) continue;
+    const level = Math.max(1, Math.floor(Number(cfg.level ?? key) || 1));
+    const min = Math.max(1, Math.floor(Number(cfg.waveGroupMin) || 1));
+    const max = Math.max(min, Math.floor(Number(cfg.waveGroupMax) || min));
+    if (wg >= min && wg <= max) return level;
+    if (wg >= min) best = level;
+  }
+  return best;
+}
+
+/**
+ * @param {number} level
+ * @returns {object|null}
+ */
+export function getDungeonLevelConfig(level) {
+  const levels = CONFIG.DUNGEON_ENTRANCE?.levels || {};
+  const key = String(Math.max(1, Math.floor(Number(level) || 1)));
+  return levels[key] || levels[1] || null;
+}
+
+/**
+ * Resolve vortex level (1–5) for a wave group from {@link CONFIG.VORTEX.levels}.
+ * Uses the same wave-group bands as dungeon entrances.
+ * @param {number} waveGroup
+ * @returns {number}
+ */
+export function getVortexLevelForWaveGroup(waveGroup) {
+  const wg = Math.max(1, Math.floor(Number(waveGroup) || 1));
+  const levels = CONFIG.VORTEX?.levels || {};
+  let best = 1;
+  for (const key of Object.keys(levels)) {
+    const cfg = levels[key];
+    if (!cfg) continue;
+    const level = Math.max(1, Math.floor(Number(cfg.level ?? key) || 1));
+    const min = Math.max(1, Math.floor(Number(cfg.waveGroupMin) || 1));
+    const max = Math.max(min, Math.floor(Number(cfg.waveGroupMax) || min));
+    if (wg >= min && wg <= max) return level;
+    if (wg >= min) best = level;
+  }
+  return best;
+}
+
+/**
+ * @param {number} level
+ * @param {{ isFast?: boolean, fast?: boolean }} [options]
+ * @returns {object|null}
+ */
+export function getVortexLevelConfig(level, options = {}) {
+  const isFast = options?.isFast === true || options?.fast === true;
+  const levels = isFast
+    ? (CONFIG.VORTEX?.fastLevels || CONFIG.VORTEX?.levels || {})
+    : (CONFIG.VORTEX?.levels || {});
+  const key = String(Math.max(1, Math.floor(Number(level) || 1)));
+  return levels[key] || levels[1] || null;
+}
+
+/**
+ * Map-wide per-second spawn probability for a regular vortex (1s game tick).
+ * Reads {@link CONFIG.VORTEX.spawnChancePerSecondByWaveGroup} (index = wave group).
+ * Groups beyond the last defined entry reuse that final positive value.
+ * @param {number} waveGroup
+ * @returns {number}
+ */
+export function getVortexSpawnChancePerTick(waveGroup) {
+  const table = CONFIG.VORTEX?.spawnChancePerSecondByWaveGroup || [];
+  const wg = Math.max(1, Math.floor(Number(waveGroup) || 1));
+
+  if (wg < table.length) {
+    const exact = Number(table[wg]);
+    if (Number.isFinite(exact) && exact > 0) return exact;
+  }
+
+  let last = null;
+  for (let i = 1; i < table.length; i++) {
+    const v = Number(table[i]);
+    if (Number.isFinite(v) && v > 0) last = v;
+  }
+  return last != null ? last : 1 / 60;
+}
+
+/**
+ * Target average seconds between regular vortex spawns for a wave group (1 / chance).
+ * @param {number} waveGroup
+ * @returns {number}
+ */
+export function getVortexAverageSpawnIntervalSeconds(waveGroup) {
+  const chance = getVortexSpawnChancePerTick(waveGroup);
+  if (!(chance > 0)) return 60;
+  return 1 / chance;
+}
+
+/**
  * Repair Supplies shop item: unlocked after completing wave group 9 (available from wave group 10 onward).
  * Not tied to meta progression or player level.
  * @param {object|null} gameState
@@ -4587,6 +5320,21 @@ export function getWaterTankExplosionHexes(q, r, explosionRings) {
 export function getExpectedTownMaxHealth(townLevel = 1) {
   const level = Math.max(1, Math.floor(Number(townLevel) || 1));
   return CONFIG.TOWN_HEALTH_BASE + (level - 1) * CONFIG.TOWN_HEALTH_PER_UPGRADE;
+}
+
+/**
+ * Flat bonus when the ancient grove takes 0 adjacent-spread fire damage in a wave
+ * (damage from lightning/random spawns on the grove is ignored for this check).
+ * WG1 = {@link CONFIG.TOWN_PROTECTION_BONUS_FULL}; each later wave group adds
+ * {@link CONFIG.TOWN_NO_FIRE_SPREAD_BONUS_PER_WAVE_GROUP}.
+ * @param {number} [waveGroup]
+ * @returns {number}
+ */
+export function getTownNoFireSpreadBonusCurrency(waveGroup = 1) {
+  const base = CONFIG.TOWN_PROTECTION_BONUS_FULL ?? 300;
+  const step = CONFIG.TOWN_NO_FIRE_SPREAD_BONUS_PER_WAVE_GROUP ?? 100;
+  const wg = Math.max(1, Math.floor(Number(waveGroup) || 1));
+  return Math.max(0, Math.round(base + (wg - 1) * step));
 }
 
 /** Add score to the player, scaled by CONFIG.SCORE_RATE_MULTIPLIER. */

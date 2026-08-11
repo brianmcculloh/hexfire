@@ -1,13 +1,16 @@
 // Wave System - Manages wave timing and progression
 
-import { CONFIG, getPulsingPower, getPulsingAttackInterval, getPathCountForWave, getFireSpawnProbabilities, getFireTypeConfig, getPowerUpMultiplier, getEffectiveDurationTowerAttackInterval, getPowerUpGraphicFilename, formatDisplayHundredths, getSuppressionBombTotalUses, getBossPatternForWaveGroup, getBossPatternForSpeech, getHeroPatternForWaveGroup, getSpeechBubblePatternGroup, getCampaignEndWaveGroup, getWaveGroupName, formatActiveWaveTimerText, isFinalSurvivalBossWaveGroup, getWaterTankTypeConfig, getWaterTankModalIconWidthPx, normalizeWaveGroupIndex, getHeroPortraitSpriteGroup, getPlacementBossAbilityDescription, getEffectiveIgnitionChance, applyCurrencyGainBonuses } from '../config.js';
+import { CONFIG, getPulsingPower, getPulsingAttackInterval, getPathCountForWave, getFireSpawnProbabilities, getFireTypeConfig, getPowerUpMultiplier, getEffectiveDurationTowerAttackInterval, getPowerUpGraphicFilename, formatDisplayHundredths, formatWaterDamageRate, getSuppressionBombTotalUses, clampSuppressionBombLevel, getBossPatternForWaveGroup, getBossPatternForSpeech, getHeroPatternForWaveGroup, getHeroBossWaveSpeech, getSpeechBubblePatternGroup, getCampaignEndWaveGroup, getWaveGroupName, formatActiveWaveTimerText, isFinalSurvivalBossWaveGroup, getWaterTankTypeConfig, getWaterTankModalIconWidthPx, normalizeWaveGroupIndex, getHeroPortraitSpriteGroup, getPlacementBossAbilityDescription, getEffectiveIgnitionChance, applyCurrencyGainBonuses, getDungeonLevelConfig, getVortexLevelConfig, getTownNoFireSpreadBonusCurrency } from '../config.js';
 import { assetUrl } from '../utils/assetUrl.js';
 import { VICTORY_SPEECH_PLACEHOLDERS } from '../patterns.js';
 import { getScenarioByName } from '../scenarios.js';
 import {
-  appendFiresExtinguishedPersonalBestLine,
+  appendCurrencyAmountWithOptionalNoDamageBonus,
+  appendExtinguishedPersonalBestLine,
   buildWaveGroupCompleteStatsContainer,
+  createVortexesExtinguishedStatItem,
   normalizeMaxFiresExtinguishedByWave,
+  normalizeMaxVortexesExtinguishedByWave,
 } from './waveGroupStatsBuilder.js';
 import { addScoreToLeaderboard } from '../utils/leaderboard.js';
 import {
@@ -192,6 +195,15 @@ export class WaveSystem {
     /** Placement modal: one-shot keys e.g. 'artifacts', 'burning_vault' for map pickup categories */
     this.introducedPlacementModalMapCategories = new Set();
 
+    /** Placement modal: dungeon entrance levels already introduced (1–5) */
+    this.introducedDungeonLevels = new Set();
+
+    /** Placement modal: vortex levels already introduced (1–5) */
+    this.introducedVortexLevels = new Set();
+
+    /** Placement modal: fast vortex levels already introduced (1–5) */
+    this.introducedFastVortexLevels = new Set();
+
     /** Placement modal: water_bucket, water_tank, water_vat when each minWaveGroup unlocks */
     this.introducedWaterTankTypes = new Set();
 
@@ -226,6 +238,7 @@ export class WaveSystem {
    * Start placement phase (before wave begins)
    * @param {Object} [options]
    * @param {boolean} [options.skipDigSiteGeneration] - If true, do not roll new dig sites (used after loadGame: sites already restored or generated in applyLoadedState)
+   * @param {boolean} [options.skipDungeonGeneration] - If true, do not spawn dungeon entrances (restored from save)
    * @param {boolean} [options.deferPlacementUI] - If true, skip opening map progression / placement modals (caller opens via openPlacementPhaseUI)
    */
   startPlacementPhase(options = {}) {
@@ -253,9 +266,18 @@ export class WaveSystem {
       });
     }
     
-    // Generate dig sites for this wave (they persist through the wave group)
-    // Each wave has a chance to spawn new dig sites based on spawnChance (skip during tutorial)
-    // After loading a save, skip: dig sites are restored from file (or legacy-generated once in applyLoadedState)
+    // Dungeon first: an active entrance forever owns its hex until flooded. Spawn only if missing.
+    // Dig sites / other ambient rolls must yield to that hex — never steal or relocate it.
+    // Skip when restoring a save (dungeon restored from file) or during tutorial.
+    if (
+      this.gameState.dungeonEntranceSystem &&
+      !this.gameState.tutorialMode &&
+      !options.skipDungeonGeneration
+    ) {
+      this.gameState.dungeonEntranceSystem.ensureDungeonForWave(this.currentWaveGroup);
+    }
+
+    // Dig sites for this wave (persist through the wave group). Skip during tutorial / after save restore.
     if (this.gameState.digSiteSystem && !this.gameState.tutorialMode && !skipDigSiteGeneration) {
       this.gameState.digSiteSystem.generateDigSites(this.currentWaveGroup);
     }
@@ -403,18 +425,16 @@ export class WaveSystem {
   }
 
   /**
-   * Update the visibility of the clear all items button
-   * Shows button if there are items on map and we're in placement phase (or mid-wave movement is allowed)
+   * Update the visibility of the clear all items button.
+   * Only during placement phase when towers/bombs are on the map — never mid-wave.
    */
   updateClearAllButtonVisibility() {
     const hasItems = this.hasItemsOnMap();
-    const isPlacementPhase = this.gameState.wave.isPlacementPhase;
-    const allowMidWave = CONFIG.ALLOW_TOWER_MOVEMENT_MID_WAVE;
-    
-    // Show button only if:
-    // - There are items on the map
-    // - AND we're in placement phase OR mid-wave movement is allowed
-    const shouldShow = hasItems && (isPlacementPhase || allowMidWave);
+    const isPlacementPhase = !!this.gameState.wave.isPlacementPhase;
+    const waveActive = !!this.gameState.wave.isActive;
+
+    // Placement only. Mid-wave (including mid-wave load / movement debug) must never show Clear All.
+    const shouldShow = hasItems && isPlacementPhase && !waveActive;
     
     const clearAllBtn = document.getElementById('clearAllItemsBtn');
     
@@ -497,7 +517,7 @@ export class WaveSystem {
 
     if (!isFinalSurvivalBossWaveGroup(this.gameState)) {
       const heroPattern = getHeroPatternForWaveGroup(this.currentWaveGroup);
-      const heroSpeech = heroPattern?.bossWaveSpeech || '';
+      const heroSpeech = getHeroBossWaveSpeech(heroPattern, this.gameState);
       if (heroSpeech) {
         this.showHeroSpeechBubbleForWave(heroSpeech);
       }
@@ -636,8 +656,9 @@ export class WaveSystem {
     // Track player level at wave start (for unlock checking at wave end)
     this.gameState.wave.levelAtStart = this.gameState.player.level;
     
-    // Reset fire extinguishing tracking for this wave
+    // Reset fire / vortex extinguishing tracking for this wave
     this.gameState.fireSystem?.resetWaveTracking();
+    this.gameState.vortexSystem?.resetWaveTracking?.();
 
     // Reset cumulative grove damage tracking and initialize protection bonus placeholder
     if (this.gameState.gridSystem?.resetTownDamageThisWave) {
@@ -648,6 +669,7 @@ export class WaveSystem {
     // townBonusStart kept for compatibility; award is now percentage-based (see wave complete)
     this.gameState.wave.townBonusStart = townCenter ? Math.round(townCenter.maxTownHealth || CONFIG.TOWN_HEALTH_BASE) : CONFIG.TOWN_HEALTH_BASE;
     this.gameState.wave.townBonusAward = CONFIG.TOWN_PROTECTION_BONUS_FULL ?? 300; // Placeholder until wave ends
+    this.gameState.wave.townNoSpreadBonusAward = 0;
     this.gameState.wave.baseWaveReward = 0; // No base wave reward - only grove protection bonus
 
     // Set dynamic ignition chance based on wave-in-group scaling (survival ramps every 2 min via fireSystem)
@@ -760,7 +782,9 @@ export class WaveSystem {
           );
           const waterM = getPowerUpMultiplier('waterTowerPower', powerUps, tempPowerUps);
           const attackPower = powerPerSecond * attackInterval * waterM;
-          tower.flashTime = 0.3;
+          tower.flashTime = 0.45;
+          tower.pulseBurstId = (tower.pulseBurstId || 0) + 1;
+          tower.pendingPulseBurst = true;
           
           // Attack all adjacent hexes immediately
           tower.affectedHexes.forEach(hexCoord => {
@@ -1048,6 +1072,7 @@ export class WaveSystem {
         if (!isBecomingAvailable) return;
 
         const blastHexCount = 1 + 3 * typeConfig.explosionRings * (typeConfig.explosionRings + 1);
+        const power = formatWaterDamageRate(typeConfig.explosionDamage);
         const spriteUrl = assetUrl(`assets/images/items/${typeConfig.sprite}`);
         const waterIconWidth = getWaterTankModalIconWidthPx();
         hasNewItem = true;
@@ -1059,7 +1084,7 @@ export class WaveSystem {
               <img src="${spriteUrl}" alt="${typeConfig.name}" class="placement-new-item-icon placement-new-item-icon-water" style="width: ${waterIconWidth}px;" />
               <div class="placement-new-item-content">
                 <div class="placement-new-item-name">${typeConfig.name.toUpperCase()}</div>
-                <div class="placement-new-item-description">Can spawn on the map during waves. Hit with water to trigger a ${typeConfig.explosionRings}-ring blast (~${blastHexCount} hexes) that extinguishes nearby fires.</div>
+                <div class="placement-new-item-description">Can spawn on the map during waves. Hit with water to trigger a ${typeConfig.explosionRings}-ring blast (~${blastHexCount} hexes) that extinguishes nearby fires with ${power} HP.</div>
               </div>
             </div>
           `,
@@ -1203,11 +1228,48 @@ export class WaveSystem {
           `,
         });
       }
+
+      // Dungeon Entrances: one card per level when that level's wave-group band begins
+      const isFirstWaveOfGroupDungeon = this.waveInGroup === 1 || (waveNumber % this.wavesPerGroup === 1 || waveNumber === 1);
+      Object.keys(CONFIG.DUNGEON_ENTRANCE?.levels || {}).forEach((levelKey) => {
+        const level = Math.max(1, Math.floor(Number(levelKey) || 1));
+        const levelCfg = getDungeonLevelConfig(level);
+        if (!levelCfg) return;
+        if (this.introducedDungeonLevels.has(level)) return;
+
+        const minGroup = Math.max(1, Math.floor(Number(levelCfg.waveGroupMin) || 1));
+        const wave1Check = waveWeArePlacingFor === 1 && minGroup === 1;
+        const groupCheck = this.currentWaveGroup === minGroup && isFirstWaveOfGroupDungeon;
+        if (!wave1Check && !groupCheck) return;
+
+        const dungeonSprite = levelCfg.sprite || `dungeon_${level}.png`;
+        const dungeonName = levelCfg.name || `Dungeon Entrance ${level}`;
+        hasNewItem = true;
+        newItems.push({
+          type: 'dungeon_entrance_map',
+          dungeonLevel: level,
+          html: `
+            <div class="placement-new-item-frame">
+              <img src="assets/images/items/${dungeonSprite}" alt="${dungeonName}" class="placement-new-item-icon placement-new-item-icon-dungeon" style="width: 72px;" />
+              <div class="placement-new-item-content">
+                <div class="placement-new-item-name">${dungeonName.toUpperCase()}</div>
+                <div class="placement-new-item-description">A dungeon entrance appears. Flood the dungeon with water to unlock its rewards.</div>
+              </div>
+            </div>
+          `,
+        });
+      });
       
       // Build the new items HTML with header and container
       if (hasNewItem && newItems.length > 0) {
         const itemsHtml = newItems.map(item => item.html).join('');
-        const labelText = newItems.length > 1 ? 'NEW MAP ITEMS!' : 'NEW MAP ITEM!';
+        const isVeryFirstWave = waveWeArePlacingFor === 1;
+        let labelText;
+        if (isVeryFirstWave) {
+          labelText = newItems.length > 1 ? 'MAP ITEMS!' : 'MAP ITEM!';
+        } else {
+          labelText = newItems.length > 1 ? 'NEW MAP ITEMS!' : 'NEW MAP ITEM!';
+        }
         newItemHtml = `
           <div class="placement-new-item">
             <div class="placement-new-item-header">
@@ -1264,6 +1326,38 @@ export class WaveSystem {
         bossRewardHtml += '</div>';
       }
       
+      // Vortex intros go in the FIRE TYPES row (red frames), not MAP ITEMS
+      const newVortexIntros = [];
+      if (!isScenario) {
+        const isFirstWaveOfGroupVortex =
+          this.waveInGroup === 1 || waveNumber % this.wavesPerGroup === 1 || waveNumber === 1;
+
+        const maybeIntroduceVortexLevel = (levelKey, isFast) => {
+          const level = Math.max(1, Math.floor(Number(levelKey) || 1));
+          const levelCfg = getVortexLevelConfig(level, { isFast });
+          if (!levelCfg) return;
+          const introducedSet = isFast
+            ? this.introducedFastVortexLevels
+            : this.introducedVortexLevels;
+          if (introducedSet.has(level)) return;
+
+          const minGroup = Math.max(1, Math.floor(Number(levelCfg.waveGroupMin) || 1));
+          const wave1Check = waveWeArePlacingFor === 1 && minGroup === 1;
+          const groupCheck = this.currentWaveGroup === minGroup && isFirstWaveOfGroupVortex;
+          if (!wave1Check && !groupCheck) return;
+
+          newVortexIntros.push({ level, isFast });
+          introducedSet.add(level);
+        };
+
+        Object.keys(CONFIG.VORTEX?.levels || {}).forEach((levelKey) => {
+          maybeIntroduceVortexLevel(levelKey, false);
+        });
+        Object.keys(CONFIG.VORTEX?.fastLevels || {}).forEach((levelKey) => {
+          maybeIntroduceVortexLevel(levelKey, true);
+        });
+      }
+
       // Build fire types section
       let fireTypesHtml = '';
       const fireTypeStrength = {
@@ -1286,7 +1380,7 @@ export class WaveSystem {
         }))
         .sort((a, b) => a.strength - b.strength);
       
-      if (fireTypes.length > 0) {
+      if (fireTypes.length > 0 || newVortexIntros.length > 0) {
         // Calculate rounded percentages
         const percentages = fireTypes.map(({ type, name, prob, strength }) => ({
           type,
@@ -1301,7 +1395,7 @@ export class WaveSystem {
         let totalRounded = percentages.reduce((sum, p) => sum + p.percentRounded, 0);
         const difference = 100 - totalRounded;
         
-        if (difference > 0) {
+        if (difference > 0 && percentages.length > 0) {
           percentages.sort((a, b) => b.remainder - a.remainder);
           for (let i = 0; i < difference && i < percentages.length; i++) {
             percentages[i].percentRounded += 1;
@@ -1338,11 +1432,12 @@ export class WaveSystem {
             }
             
             const newTypeRowClass = fireType === CONFIG.FIRE_TYPE_BLACKFYRE ? ' placement-new-fire-type--dark-fire' : '';
+            const fireTypeHeaderLabel = this.currentWaveGroup === 1 ? 'FIRE TYPE' : 'NEW FIRE TYPE';
             newFireTypeHtml += `<div class="placement-new-fire-type${newTypeRowClass}">`;
             newFireTypeHtml += '<div class="placement-new-fire-type-frame">';
             newFireTypeHtml += '<div class="placement-new-fire-type-header">';
             newFireTypeHtml += '<img src="assets/images/ui/icon-fire-type.png" alt="Fire" class="placement-new-fire-type-icon" />';
-            newFireTypeHtml += '<div class="placement-new-fire-type-label">NEW FIRE TYPE</div>';
+            newFireTypeHtml += `<div class="placement-new-fire-type-label">${fireTypeHeaderLabel}</div>`;
             newFireTypeHtml += '</div>';
             newFireTypeHtml += '<div class="placement-new-fire-type-content">';
             newFireTypeHtml += '<div class="placement-new-fire-type-left">';
@@ -1363,13 +1458,59 @@ export class WaveSystem {
             newFireTypeHtml += '</div>';
             newFireTypeHtml += '<div class="placement-new-fire-type-right">';
             newFireTypeHtml += `<div class="placement-new-fire-type-stat"><img src="assets/images/misc/health.png" alt="HP" /> ${formatDisplayHundredths(extinguishTime)}HP</div>`;
-            newFireTypeHtml += `<div class="placement-new-fire-type-stat"><img src="assets/images/misc/damage.png" alt="Damage" /> ${formatDisplayHundredths(damagePerSecond)}HP/sec</div>`;
+            newFireTypeHtml += `<div class="placement-new-fire-type-stat"><img src="assets/images/misc/damage.png" alt="Damage" /> ${formatDisplayHundredths(damagePerSecond)}HP/s</div>`;
             newFireTypeHtml += '</div>';
             newFireTypeHtml += '</div>';
             newFireTypeHtml += '</div>';
             newFireTypeHtml += '</div>';
           });
         }
+
+        // New vortex cards — same red frame as new fire types, shown in the same row
+        let newVortexHtml = '';
+        newVortexIntros.forEach(({ level, isFast }) => {
+          const levelCfg = getVortexLevelConfig(level, { isFast }) || {};
+          const vortexName = levelCfg.name || (isFast ? `Fast Fire Vortex ${level}` : `Fire Vortex ${level}`);
+          const vortexSprite = levelCfg.sprite || 'vortex_squall.png';
+          const vortexColor = levelCfg.color || '#FF8C00';
+          const maxHealth = Math.max(1, Number(levelCfg.maxHealth) || 1);
+          const dps = Math.max(0, Number(levelCfg.damagePerSecond) || 0);
+          const moveSecs = Math.max(0.5, Number(levelCfg.moveIntervalSeconds) || (isFast ? 5 : 10));
+          const spinRps = Math.max(0.05, Number(levelCfg.spinRevolutionsPerSecond) || 0.35);
+          const spinDurationSec = (1 / spinRps).toFixed(3);
+          const vortexHeaderLabel = isFast
+            ? (this.currentWaveGroup === 1 ? 'FAST VORTEX TYPE' : 'NEW FAST VORTEX TYPE')
+            : (this.currentWaveGroup === 1 ? 'VORTEX TYPE' : 'NEW VORTEX TYPE');
+          // Split "Fire Squall" / "Fast Fire Squall" → multi-line under the icon
+          const nameParts = String(vortexName).trim().split(/\s+/);
+          let displayVortexName;
+          if (isFast && nameParts.length >= 3 && nameParts[0].toLowerCase() === 'fast') {
+            displayVortexName = `FAST ${nameParts[1].toUpperCase()}<br>${nameParts.slice(2).join(' ').toUpperCase()}`;
+          } else if (nameParts.length >= 2) {
+            displayVortexName = `${nameParts[0].toUpperCase()}<br>${nameParts.slice(1).join(' ').toUpperCase()}`;
+          } else {
+            displayVortexName = vortexName.toUpperCase();
+          }
+
+          newVortexHtml += '<div class="placement-new-fire-type placement-new-vortex">';
+          newVortexHtml += '<div class="placement-new-fire-type-frame">';
+          newVortexHtml += '<div class="placement-new-fire-type-header">';
+          newVortexHtml += `<div class="placement-new-fire-type-label">${vortexHeaderLabel}</div>`;
+          newVortexHtml += '</div>';
+          newVortexHtml += '<div class="placement-new-fire-type-content">';
+          newVortexHtml += '<div class="placement-new-fire-type-left placement-new-vortex-left">';
+          newVortexHtml += `<img src="${assetUrl(`assets/images/items/${vortexSprite}`)}" alt="${vortexName}" class="placement-new-vortex-sprite" style="--vortex-spin-duration: ${spinDurationSec}s;" />`;
+          newVortexHtml += `<div class="placement-new-vortex-name" style="color: ${vortexColor};">${displayVortexName}</div>`;
+          newVortexHtml += '</div>';
+          newVortexHtml += '<div class="placement-new-fire-type-right">';
+          newVortexHtml += `<div class="placement-new-fire-type-stat"><img src="assets/images/misc/health.png" alt="HP" /> ${formatDisplayHundredths(maxHealth)}HP</div>`;
+          newVortexHtml += `<div class="placement-new-fire-type-stat"><img src="assets/images/misc/damage.png" alt="Damage" /> ${formatDisplayHundredths(dps)}HP/s</div>`;
+          newVortexHtml += `<div class="placement-new-fire-type-stat"><img src="assets/images/misc/clock.png" alt="Move" /> Moves every ${formatDisplayHundredths(moveSecs)}s</div>`;
+          newVortexHtml += '</div>';
+          newVortexHtml += '</div>';
+          newVortexHtml += '</div>';
+          newVortexHtml += '</div>';
+        });
         
         fireTypesHtml = '<div class="placement-fire-types">';
         fireTypesHtml += '<div class="placement-fire-types-header">';
@@ -1378,7 +1519,9 @@ export class WaveSystem {
         fireTypesHtml += '<span class="label-text">FIRE TYPES THIS WAVE</span>';
         fireTypesHtml += '</label>';
         fireTypesHtml += '</div>';
-        fireTypesHtml += newFireTypeHtml;
+        if (newFireTypeHtml || newVortexHtml) {
+          fireTypesHtml += `<div class="placement-new-fire-type-row">${newFireTypeHtml}${newVortexHtml}</div>`;
+        }
         fireTypesHtml += '<div class="placement-fire-types-frame">';
         
         percentages.forEach(({ type, name, percentFloat, prob }) => {
@@ -1407,7 +1550,7 @@ export class WaveSystem {
           fireTypesHtml += hexCell;
           fireTypesHtml += `<span class="${nameClass}"${nameStyle}>${name}</span>`;
           fireTypesHtml += `<span class="placement-fire-type-stat placement-fire-type-stat-hp"><img src="assets/images/misc/health.png" alt="" /> ${formatDisplayHundredths(extinguishTime)}HP</span>`;
-          fireTypesHtml += `<span class="placement-fire-type-stat placement-fire-type-stat-dps"><img src="assets/images/misc/damage.png" alt="" /> ${formatDisplayHundredths(damagePerSecond)}HP/sec</span>`;
+          fireTypesHtml += `<span class="placement-fire-type-stat placement-fire-type-stat-dps"><img src="assets/images/misc/damage.png" alt="" /> ${formatDisplayHundredths(damagePerSecond)}HP/s</span>`;
           fireTypesHtml += `<span class="placement-fire-type-percent">(${percentDisplay})</span>`;
           fireTypesHtml += `</div>`;
         });
@@ -1602,6 +1745,8 @@ export class WaveSystem {
             this.introducedPlacementModalMapCategories.add('artifacts');
           } else if (item.type === 'burning_vault_map') {
             this.introducedPlacementModalMapCategories.add('burning_vault');
+          } else if (item.type === 'dungeon_entrance_map' && item.dungeonLevel) {
+            this.introducedDungeonLevels.add(item.dungeonLevel);
           } else if (item.type === 'water_tank_type' && item.waterTankTypeId) {
             this.introducedWaterTankTypes.add(item.waterTankTypeId);
           }
@@ -1690,6 +1835,9 @@ export class WaveSystem {
    * Enter actual placement mode (after modal)
    */
   enterPlacementMode() {
+    // Discoveries deferred under wave-complete / placement overlays can present now.
+    this.gameState.progressionSystem?.flushDeferredUnlockModals?.();
+
     if (this.waveInGroup === 1) {
       this.gameState.renderer?.startMapReveal?.();
     } else {
@@ -1957,6 +2105,38 @@ export class WaveSystem {
   }
 
   /**
+   * Persist per-wave best vortexes extinguished (same shape as fires personal bests).
+   * @param {number} completedWave - 1-based wave index that just ended (before wave.number++)
+   * @param {number} count - vortexes extinguished this wave
+   */
+  recordVortexesExtinguishedHighScore(completedWave, count) {
+    const waveKey = String(Math.max(1, completedWave));
+    const safeCount = Math.max(0, Math.round(Number(count)) || 0);
+    this.gameState.meta = this.gameState.meta || {};
+    const map = normalizeMaxVortexesExtinguishedByWave(this.gameState.meta.maxVortexesExtinguishedByWave);
+    const prevBest = map[waveKey];
+    const hadPrior = typeof prevBest === 'number' && !Number.isNaN(prevBest);
+    const isStrictNewHigh = hadPrior && safeCount > prevBest;
+    const equaledBest = hadPrior && safeCount === prevBest;
+    const firstRecord = !hadPrior;
+    map[waveKey] = hadPrior ? Math.max(prevBest, safeCount) : safeCount;
+    this.gameState.meta.maxVortexesExtinguishedByWave = map;
+    const personalBestAfter = map[waveKey];
+    if (this.gameState.wave) {
+      this.gameState.wave.vortexesExtinguishedHighScoreBanner = !!isStrictNewHigh;
+      this.gameState.wave.vortexesExtinguishedSubtext = {
+        isNewHigh: !!isStrictNewHigh,
+        equaledBest: !!equaledBest,
+        firstRecord: !!firstRecord,
+        hadPrior,
+        previousBest: hadPrior ? prevBest : null,
+        personalBestAfter,
+        thisRunCount: safeCount,
+      };
+    }
+  }
+
+  /**
    * Complete the current wave
    */
   completeWave() {
@@ -1965,7 +2145,30 @@ export class WaveSystem {
     const completedWaveInGroup = this.waveInGroup;
     const groveDamage = this.gameState.gridSystem?.getTownDamageThisWave?.() ?? 0;
     const firesExtinguished = this.gameState.fireSystem?.getTotalFiresExtinguishedThisWave?.() || 0;
-    const townBonusCurrency = Math.max(0, Math.round(this.gameState.wave.townBonusAward || 0));
+    if (this.gameState.wave) {
+      // Wave group used for vortex icon/color on complete modals (before group may increment).
+      this.gameState.wave.statsWaveGroup = completedWaveGroup;
+    }
+
+    // Ancient grove protection bonus: full reward minus share lost to cumulative damage this wave
+    // (total HP lost while burning / max grove HP), not end-of-wave HP or lowest-HP snapshot
+    const townCenter = this.gameState.gridSystem?.getTownCenter?.();
+    const maxHealth = townCenter?.maxTownHealth ? Math.round(townCenter.maxTownHealth) : 1;
+    const damageTaken = groveDamage;
+    const damageFraction = maxHealth > 0 ? Math.min(1, Math.max(0, damageTaken / maxHealth)) : 0;
+    const fullBonus = CONFIG.TOWN_PROTECTION_BONUS_FULL ?? 300;
+    const protectionBonus = Math.round((1 - damageFraction) * fullBonus);
+    // Extra flat bonus when no adjacent-spread fire damaged the grove (lightning/random spawns OK)
+    const noSpreadEps = 1e-4;
+    const spreadDamageTaken = this.gameState.gridSystem?.getTownSpreadDamageThisWave?.() ?? 0;
+    const noSpreadBonus = spreadDamageTaken <= noSpreadEps
+      ? getTownNoFireSpreadBonusCurrency(completedWaveGroup)
+      : 0;
+    this.gameState.wave.townBonusAward = protectionBonus;
+    this.gameState.wave.townNoSpreadBonusAward = noSpreadBonus;
+    // Currency + earn SFX applied when player taps Collect on the wave / group / victory modal
+
+    const townBonusCurrency = protectionBonus + noSpreadBonus;
     this.gameState.runStats?.flushWaveSegment?.(
       completedWave,
       completedWaveGroup,
@@ -2000,10 +2203,22 @@ export class WaveSystem {
       });
     }
     
+    // Snapshot extinguish totals before map cleanup (fires keep their counter until next wave
+    // start; vortex clearAllItems must not wipe the count — see vortexSystem.clearAllItems).
+    const totalExtinguishedThisWave = this.gameState.fireSystem?.getTotalFiresExtinguishedThisWave() || 0;
+    const totalVortexesThisWave =
+      this.gameState.vortexSystem?.getTotalVortexesExtinguishedThisWave?.() || 0;
+    if (this.gameState.wave) {
+      this.gameState.wave.vortexesExtinguishedCount = totalVortexesThisWave;
+    }
+
     // Clear all fires at the end of the wave
     if (this.gameState.gridSystem) {
       this.gameState.gridSystem.clearAllFires();
     }
+
+    // Vortexes are wave-only — never persist into placement / the next wave
+    this.gameState.vortexSystem?.clearAllItems();
     
     // Clear all water bombs at the end of the wave
     if (this.gameState.towerSystem) {
@@ -2024,17 +2239,6 @@ export class WaveSystem {
     
     // No base wave reward - only ancient grove protection bonus is awarded
     this.gameState.wave.baseWaveReward = 0;
-
-    // Ancient grove protection bonus: full reward minus share lost to cumulative damage this wave
-    // (total HP lost while burning / max grove HP), not end-of-wave HP or lowest-HP snapshot
-    const townCenter = this.gameState.gridSystem?.getTownCenter?.();
-    const maxHealth = townCenter?.maxTownHealth ? Math.round(townCenter.maxTownHealth) : 1;
-    const damageTaken = this.gameState.gridSystem?.getTownDamageThisWave?.() ?? 0;
-    const damageFraction = maxHealth > 0 ? Math.min(1, Math.max(0, damageTaken / maxHealth)) : 0;
-    const fullBonus = CONFIG.TOWN_PROTECTION_BONUS_FULL ?? 300;
-    const protectionBonus = Math.round((1 - damageFraction) * fullBonus);
-    this.gameState.wave.townBonusAward = protectionBonus;
-    // Currency + earn SFX applied when player taps Collect on the wave / group / victory modal
     
     // Check for unlocks now that wave has ended
     // NOTE: If player leveled up during the wave, unlocks were already checked and queued
@@ -2044,10 +2248,12 @@ export class WaveSystem {
         !this.gameState.progressionSystem.pendingUnlockCheck &&
         !this.gameState.progressionSystem.unlocksCheckedDuringLevelUp) {
       const currentLevel = this.gameState.player.level;
-      // Use the level that was tracked at wave start (or current level if not tracked)
-      const previousLevel = this.gameState.wave.levelAtStart !== undefined 
-        ? this.gameState.wave.levelAtStart 
-        : Math.max(1, currentLevel - 1);
+      // Only trust an explicit wave-start level. The old fallback (currentLevel - 1) invented a
+      // fake level-up after mid-wave loads / missing levelAtStart and re-fired discovery modals
+      // for items the player had already unlocked (e.g. Suppression Bombs L3 at level 27).
+      const previousLevel = Number.isFinite(this.gameState.wave.levelAtStart)
+        ? this.gameState.wave.levelAtStart
+        : currentLevel;
       // Only check unlocks if there's no pending unlock check from level up
       // and unlocks weren't already checked during level up
       // This prevents duplicate unlock modals
@@ -2066,8 +2272,8 @@ export class WaveSystem {
       window.updateUI();
     }
 
-    const totalExtinguishedThisWave = this.gameState.fireSystem?.getTotalFiresExtinguishedThisWave() || 0;
     this.recordFiresExtinguishedHighScore(completedWave, totalExtinguishedThisWave);
+    this.recordVortexesExtinguishedHighScore(completedWave, totalVortexesThisWave);
 
     // Refill grove HP before autosave / placement (damage stats already recorded above)
     this.gameState.gridSystem?.restoreTownHealth?.(this.gameState.townLevel);
@@ -2155,11 +2361,12 @@ export class WaveSystem {
       if (!this.gameState.player.inventory.purchasedSuppressionBombs) {
         this.gameState.player.inventory.purchasedSuppressionBombs = [];
       }
+      const level = clampSuppressionBombLevel(reward.level);
       for (let i = 0; i < count; i++) {
-        const totalUses = getSuppressionBombTotalUses(reward.level);
+        const totalUses = getSuppressionBombTotalUses(level);
         this.gameState.player.inventory.purchasedSuppressionBombs.push({
           type: 'suppression_bomb',
-          level: reward.level,
+          level,
           totalUses,
           usesRemaining: totalUses,
         });
@@ -2196,16 +2403,20 @@ export class WaveSystem {
   }
 
   /**
-   * Apply ancient grove protection bonus from the completed wave (currency + SFX). Clears townBonusAward.
+   * Apply ancient grove protection + no-fire-spread bonuses from the completed wave (currency + SFX).
+   * Clears townBonusAward / townNoSpreadBonusAward.
    */
   applyPendingTownBonus() {
     const bonus = Math.max(0, Math.round(this.gameState.wave.townBonusAward || 0));
-    if (bonus > 0) {
-      const adjusted = applyCurrencyGainBonuses(bonus, this.gameState);
+    const noSpread = Math.max(0, Math.round(this.gameState.wave.townNoSpreadBonusAward || 0));
+    const total = bonus + noSpread;
+    if (total > 0) {
+      const adjusted = applyCurrencyGainBonuses(total, this.gameState);
       this.gameState.player.currency = (this.gameState.player.currency || 0) + adjusted;
       if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('earn');
     }
     this.gameState.wave.townBonusAward = 0;
+    this.gameState.wave.townNoSpreadBonusAward = 0;
   }
 
   /**
@@ -2358,8 +2569,9 @@ export class WaveSystem {
 
   /**
    * Remove ambient map spawns from the prior wave group: water tanks, temp power-ups, mystery items,
-   * currency pickups, artifacts, dig sites, and burning vaults. Player towers and suppression bombs
-   * are handled separately (returned to inventory in {@link #completeWaveGroup} before this runs).
+   * currency pickups, artifacts, dig sites, burning vaults, and vortexes. Player towers and
+   * suppression bombs are handled separately (returned to inventory in {@link #completeWaveGroup}
+   * before this runs). Dungeon entrances are intentionally kept — they own their hex until flooded.
    */
   clearAmbientWaveSpawnsForGroupBoundary() {
     this.gameState.waterTankSystem?.clearAllWaterTanks();
@@ -2369,6 +2581,7 @@ export class WaveSystem {
     this.gameState.artifactSystem?.clearAllItems();
     this.gameState.digSiteSystem?.clearAllDigSites();
     this.gameState.burningVaultSystem?.clearAllItems();
+    this.gameState.vortexSystem?.clearAllItems();
   }
 
   /**
@@ -2383,6 +2596,11 @@ export class WaveSystem {
     const waveNumber = Math.max(1, Math.floor(Number(pending.waveNumber) || this.gameState.wave?.number || 1));
 
     this.clearAmbientWaveSpawnsForGroupBoundary();
+
+    // Preserve / place dungeon before paths & spawners so they plan around its hex.
+    if (this.gameState.dungeonEntranceSystem && !this.gameState.tutorialMode) {
+      this.gameState.dungeonEntranceSystem.ensureDungeonForWave(waveGroup);
+    }
 
     this.gameState.pathSystem?.generatePaths(waveNumber);
     this.gameState.fireSpawnerSystem?.generateSpawners(waveGroup);
@@ -4036,7 +4254,13 @@ export class WaveSystem {
         stopTracking();
         return;
       }
-      positionBubble();
+      // Only do the layout read/write while the host modal is actually visible.
+      // Hero bubbles stay attached to the DOM across gameplay, and an unconditional
+      // getBoundingClientRect + style write here forced a layout pass every rAF
+      // during active waves (profiled at ~2% of frame time at wave 25).
+      if (modal.classList.contains('active')) {
+        positionBubble();
+      }
       rafId = requestAnimationFrame(updateLoop);
       bubble._speechBubbleRaf = rafId;
     };
@@ -4578,8 +4802,12 @@ export class WaveSystem {
         Math.max(0, Math.round(this.gameState.wave.townBonusAward || 0)),
         this.gameState,
       );
+      const townNoSpreadBonus = applyCurrencyGainBonuses(
+        Math.max(0, Math.round(this.gameState.wave.townNoSpreadBonusAward || 0)),
+        this.gameState,
+      );
       const totalExtinguished = this.gameState.fireSystem?.getTotalFiresExtinguishedThisWave() || 0;
-      const totalEarned = townBonus;
+      const totalEarned = townBonus + townNoSpreadBonus;
       
       // Create stats container
       const statsContainer = document.createElement('div');
@@ -4632,7 +4860,7 @@ export class WaveSystem {
       firesLabel.style.cssText = 'color: #FFFFFF; font-size: 14px; font-weight: normal; font-family: "Exo 2", sans-serif; text-transform: uppercase; line-height: 1.2;';
       firesTextContainer.appendChild(firesLabel);
 
-      appendFiresExtinguishedPersonalBestLine(
+      appendExtinguishedPersonalBestLine(
         firesTextContainer,
         this.gameState.wave?.firesExtinguishedSubtext,
         showFiresHighScore
@@ -4641,8 +4869,15 @@ export class WaveSystem {
       firesStatItem.appendChild(firesTextContainer);
       
       statItemsContainer.appendChild(firesStatItem);
+
+      statItemsContainer.appendChild(
+        createVortexesExtinguishedStatItem(this.gameState, {
+          itemCss:
+            'display: flex; flex-direction: row; align-items: center; gap: 16px; width: 100%; max-width: 270px;',
+        })
+      );
       
-      // Second stat item: Ancient grove protection bonus
+      // Next: Ancient grove protection bonus
       const townStatItem = document.createElement('div');
       townStatItem.style.cssText = 'display: flex; flex-direction: row; align-items: center; gap: 16px; width: 100%; max-width: 270px;';
       
@@ -4659,12 +4894,13 @@ export class WaveSystem {
       // Text content container
       const townTextContainer = document.createElement('div');
       townTextContainer.style.cssText = 'display: flex; flex-direction: column; gap: 2px; flex: 1;';
-      
-      // Amount in bright green
-      const townAmount = document.createElement('div');
-      townAmount.textContent = `$${townBonus}`;
-      townAmount.style.cssText = 'color: #00FF88; font-size: 26px; font-weight: bold; font-family: "Exo 2", sans-serif; line-height: 1; margin-bottom: 5px;';
-      townTextContainer.appendChild(townAmount);
+
+      appendCurrencyAmountWithOptionalNoDamageBonus(
+        townTextContainer,
+        townBonus,
+        townNoSpreadBonus,
+        'No fire spread bonus!',
+      );
       
       // Label in white (wrapped to two lines)
       const townLabel = document.createElement('div');
@@ -4739,6 +4975,8 @@ export class WaveSystem {
           if (this.gameState.wave) {
             delete this.gameState.wave.firesExtinguishedHighScoreBanner;
             delete this.gameState.wave.firesExtinguishedSubtext;
+            delete this.gameState.wave.vortexesExtinguishedHighScoreBanner;
+            delete this.gameState.wave.vortexesExtinguishedSubtext;
           }
           this.applyPendingTownBonus();
           if (window.updateUI) window.updateUI();
@@ -4772,6 +5010,8 @@ export class WaveSystem {
           if (this.gameState.wave) {
             delete this.gameState.wave.firesExtinguishedHighScoreBanner;
             delete this.gameState.wave.firesExtinguishedSubtext;
+            delete this.gameState.wave.vortexesExtinguishedHighScoreBanner;
+            delete this.gameState.wave.vortexesExtinguishedSubtext;
           }
           this.applyPendingTownBonus();
           if (window.updateUI) window.updateUI();
@@ -4819,7 +5059,8 @@ export class WaveSystem {
         modalTitle.textContent = 'Scenario Complete!';
       }
       
-      const townBonusBase = Math.max(0, Math.round(this.gameState.wave.townBonusAward || 0));
+      const townBonusBase = Math.max(0, Math.round(this.gameState.wave.townBonusAward || 0))
+        + Math.max(0, Math.round(this.gameState.wave.townNoSpreadBonusAward || 0));
       const totalCurrencyEarned = applyCurrencyGainBonuses(townBonusBase, this.gameState);
       const firesExtinguished = this.gameState.fireSystem?.getFiresExtinguishedThisWave() || {};
       const totalExtinguished = this.gameState.fireSystem?.getTotalFiresExtinguishedThisWave() || 0;

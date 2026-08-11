@@ -11,6 +11,7 @@ import {
   applyBossWeakSpawnProbZeroAfterFinalGroup,
 } from '../config.js';
 import { getHexesInRing, getHexInDirection, isInBounds, getNeighbors, hexKey } from '../utils/hexMath.js';
+import { triggerBossAbilityFx, cancelPendingScreenShakes } from '../utils/bossAbilityFx.js';
 
 /** Per-boss ability counters swapped when a summoned boss casts (keeps main + summoned state isolated). */
 const BOSS_ACTIVATION_COUNTER_KEYS = [
@@ -60,6 +61,7 @@ export class BossSystem {
     this._savedMainActivationCounters = null;
     /** Provoked burn: delay offset so multiple map pickups in one tick chain separate grove strikes */
     this.provokedBurnChainOffsetMs = 0;
+    this._provokedBurnNextShakeAt = 0;
     /** Scheduled provoked-burn SFX timeouts (cancelled on wave end). */
     this._provokedBurnSfxTimeoutIds = [];
   }
@@ -80,9 +82,11 @@ export class BossSystem {
    */
   onWaveCompleteCleanup() {
     this.cancelProvokedBurnSfx();
+    cancelPendingScreenShakes();
     this.pendingIgnitions = [];
     this.pendingStokes = [];
     this.provokedBurnChainOffsetMs = 0;
+    this._provokedBurnNextShakeAt = 0;
     this.resetBossCastingVisualState();
     this.resetSummonedCastingVisualState();
   }
@@ -120,6 +124,7 @@ export class BossSystem {
       this.pendingIgnitions = [];
       this.pendingStokes = [];
       this.provokedBurnChainOffsetMs = 0;
+      this._provokedBurnNextShakeAt = 0;
     } else if (!isBoss && this.isBossWave) {
       // No longer a boss wave - reset
       this.isBossWave = false;
@@ -129,6 +134,7 @@ export class BossSystem {
       this.pendingIgnitions = [];
       this.pendingStokes = [];
       this.provokedBurnChainOffsetMs = 0;
+      this._provokedBurnNextShakeAt = 0;
       this.resetBossCastingVisualState();
       this.clearSummonedBoss();
       this.firedSummonTriggers = new Set();
@@ -146,6 +152,7 @@ export class BossSystem {
       this.pendingIgnitions = [];
       this.pendingStokes = [];
       this.provokedBurnChainOffsetMs = 0;
+      this._provokedBurnNextShakeAt = 0;
     } else if (isBoss && waveChanged) {
       // Same boss wave but wave number changed (wave restarted or new wave started)
       this.resetActivationCounters();
@@ -157,6 +164,7 @@ export class BossSystem {
       this.pendingIgnitions = [];
       this.pendingStokes = [];
       this.provokedBurnChainOffsetMs = 0;
+      this._provokedBurnNextShakeAt = 0;
     }
     
     return isBoss;
@@ -196,7 +204,8 @@ export class BossSystem {
    * @param {number} deltaTime - Time elapsed in seconds
    */
   update(deltaTime) {
-    // Reset provoked-burn chain offset each frame (tower/item collects run before boss.update in gameLoop)
+    // Reset provoked-burn chain offset each frame (tower/item collects run before boss.update in gameLoop).
+    // Keep _provokedBurnNextShakeAt across frames so rapid pickups still get gapped shakes.
     this.provokedBurnChainOffsetMs = 0;
 
     // Always process pending ignitions and stokes (triggered abilities may add these outside boss wave)
@@ -348,12 +357,14 @@ export class BossSystem {
    */
   resetBossWaveForLoadOrRetry() {
     this.cancelProvokedBurnSfx();
+    cancelPendingScreenShakes();
     this.resetActivationCounters();
     this.isBossWave = false;
     this.lastWaveNumber = 0;
     this.pendingIgnitions = [];
     this.pendingStokes = [];
     this.provokedBurnChainOffsetMs = 0;
+    this._provokedBurnNextShakeAt = 0;
     this.resetBossCastingVisualState();
     this.clearSummonedBoss();
     this.firedSummonTriggers = new Set();
@@ -686,7 +697,9 @@ export class BossSystem {
           pending.onIgnite();
         }
         const fireType = pending.fireType || this.getAvailableFireTypesRanked()[0];
-        this.fireSystem.igniteHex(pending.q, pending.r, fireType, true, true);
+        // spawnLightning defaults to true (boss strike bolt). Set pending.spawnLightning=false to skip.
+        const spawnLightning = pending.spawnLightning !== false;
+        this.fireSystem.igniteHex(pending.q, pending.r, fireType, true, true, { spawnLightning });
         // Swap-and-pop: replace this slot with the tail entry and shrink length by 1.
         const lastIndex = list.length - 1;
         if (i !== lastIndex) list[i] = list[lastIndex];
@@ -736,10 +749,11 @@ export class BossSystem {
     if (ability.type === 'summon-boss') {
       if (isSummoned) return;
       this.castSummonBoss(ability);
+      triggerBossAbilityFx(ability, { shake: 'sustained', shakeDurationMs: 600 });
       return;
     }
 
-    // Legion delegates to two random sub-abilities (no Legion-level SFX/text)
+    // Legion delegates to two random sub-abilities (each sub-ability fires its own shake)
     if (ability.type === 'legion') {
       this.castLegion(ability.params, ability, options);
       return;
@@ -763,32 +777,12 @@ export class BossSystem {
       }
 
       // Animation should already be in progress (started 1 second earlier)
-      // Trigger ability text animation using ability name
-      if (this.gameState?.renderer) {
+      // Trigger ability text animation using ability name.
+      // Provoked-burn may fire many times per frame (item chains); text is shown once per chain in castProvokedBurn.
+      if (ability.type !== 'provoked-burn' && this.gameState?.renderer) {
         this.gameState.renderer.triggerBossAbilityText(ability.name || ability.type, {
           layer: isSummoned ? 'summoned' : 'main',
         });
-      }
-
-      // Screen shake effect (heat-seek: per-path shakes; surround/hell-stoke: sustained shake for full duration)
-      // Purify / Doomfire: single shake here; triple-strike casts do three shakes inside their cast methods.
-      if (
-        CONFIG.SCREEN_SHAKE_ENABLED !== false &&
-        ability.type !== 'heat-seek' &&
-        ability.type !== 'surround' &&
-        ability.type !== 'hell-stoke' &&
-        ability.type !== 'stoke' &&
-        ability.type !== 'barrage-of-flames' &&
-        ability.type !== 'purify' &&
-        ability.type !== 'doomfire' &&
-        typeof document !== 'undefined'
-      ) {
-        const canvas = document.getElementById('gameCanvas');
-        if (canvas) {
-          canvas.classList.remove('screen-shake');
-          void canvas.offsetWidth;
-          canvas.classList.add('screen-shake');
-        }
       }
 
       // Cast the ability
@@ -828,7 +822,7 @@ export class BossSystem {
         break;
       case 'hell-stoke':
       case 'stoke': // Legacy alias
-        this.castStoke(ability.params);
+        this.castStoke(ability.params, ability);
         break;
       case 'serpentine-char':
         this.castSerpentineChar(ability.params);
@@ -846,7 +840,7 @@ export class BossSystem {
         this.castArrayOfFlames(ability.params);
         break;
       case 'doomfire':
-        this.castDoomfire(ability.params);
+        this.castDoomfire(ability.params, ability);
         break;
       case 'firelash':
         this.castFirelash(ability.params, ability);
@@ -855,10 +849,17 @@ export class BossSystem {
         this.castFireBreathe(ability.params);
         break;
       case 'purify':
-        this.castPurify(ability.params);
+        this.castPurify(ability.params, ability);
         break;
       default:
         console.warn(`Unknown boss ability: ${ability.type}`);
+      }
+
+      // Sustained shake for the full ability duration.
+      // Provoked-burn schedules per-firing shakes (with gaps) inside castProvokedBurn.
+      if (ability.type !== 'provoked-burn') {
+        const durationMs = Math.max(400, (this.castingDuration > 0 ? this.castingDuration : 0.5) * 1000);
+        triggerBossAbilityFx(ability, { shake: 'sustained', shakeDurationMs: durationMs });
       }
     } finally {
       if (isSummoned && this.summonedBoss) {
@@ -940,8 +941,10 @@ export class BossSystem {
     }
 
     // Schedule ignitions with random stagger
+    let maxDelay = 0;
     selectedHexes.forEach(hex => {
       const delay = baseDelayMs + Math.random() * (staggerMax - staggerMin) + staggerMin; // Random delay in milliseconds
+      maxDelay = Math.max(maxDelay, delay);
       this.pendingIgnitions.push({
         q: hex.q,
         r: hex.r,
@@ -950,26 +953,19 @@ export class BossSystem {
       });
     });
 
-    // Boss ability notification is now shown 1 second earlier when animation starts
-    // (removed from here to avoid duplicate notifications)
+    if (selectedHexes.length > 0) {
+      this.castingDuration = Math.max(this.castingDuration || 0, maxDelay / 1000 + 0.3);
+    }
   }
 
   /**
    * Cast purify - like scatter-strike with 100 hexes. Every 3rd activation fires 3 times in a row with stagger between them.
    * @param {Object} params - Ability parameters {hexCount, staggerRange, tripleStaggerMs}
+   * @param {Object} [ability] - Full ability object (for per-ability FX flags)
    */
-  castPurify(params) {
+  castPurify(params, ability = {}) {
     this.purifyActivationCount++;
     const tripleStaggerMs = params.tripleStaggerMs ?? 800;
-
-    const triggerPurifyScreenShake = () => {
-      if (CONFIG.SCREEN_SHAKE_ENABLED === false || typeof document === 'undefined') return;
-      const canvas = document.getElementById('gameCanvas');
-      if (!canvas) return;
-      canvas.classList.remove('screen-shake');
-      void canvas.offsetWidth;
-      canvas.classList.add('screen-shake');
-    };
 
     const purifySounds = ['purify-a', 'purify-b', 'purify-c', 'purify-d', 'purify-e'];
     const playRandomPurifySound = () => {
@@ -981,12 +977,9 @@ export class BossSystem {
 
     if (this.purifyActivationCount % 3 === 0) {
       playRandomPurifySound();
-      triggerPurifyScreenShake();
       if (typeof window !== 'undefined') {
         setTimeout(() => playRandomPurifySound(), tripleStaggerMs);
-        setTimeout(() => triggerPurifyScreenShake(), tripleStaggerMs);
         setTimeout(() => playRandomPurifySound(), tripleStaggerMs * 2);
-        setTimeout(() => triggerPurifyScreenShake(), tripleStaggerMs * 2);
       }
       this.castScatterStrike(params, 0);
       this.castScatterStrike(params, tripleStaggerMs);
@@ -994,7 +987,6 @@ export class BossSystem {
       this.castingDuration = (tripleStaggerMs * 2) / 1000 + 0.5; // Cover all 3 strikes
     } else {
       playRandomPurifySound();
-      triggerPurifyScreenShake();
       this.castScatterStrike(params, 0);
     }
   }
@@ -1040,8 +1032,10 @@ export class BossSystem {
 
     const holyFireType = this.getAvailableFireTypesRanked()[0];
     // Schedule ignitions with stagger radiating outward from center
+    let maxDelay = 0;
     hexesToIgnite.forEach(hex => {
       const delay = hex.dist * staggerPerHex;
+      maxDelay = Math.max(maxDelay, delay);
       this.pendingIgnitions.push({
         q: hex.q,
         r: hex.r,
@@ -1049,6 +1043,9 @@ export class BossSystem {
         fireType: holyFireType,
       });
     });
+    if (hexesToIgnite.length > 0) {
+      this.castingDuration = maxDelay / 1000 + 0.3;
+    }
   }
 
   /**
@@ -1134,6 +1131,8 @@ export class BossSystem {
         fireType: ring2Type
       });
     });
+
+    this.castingDuration = Math.max(this.castingDuration || 0, (staggerPerRing * 2) / 1000 + 0.3);
   }
 
   /**
@@ -1179,6 +1178,21 @@ export class BossSystem {
       return [CONFIG.FIRE_TYPE_CATACLYSM];
     }
     return postCampaignBossTiers ? [CONFIG.FIRE_TYPE_CATACLYSM] : [CONFIG.FIRE_TYPE_CINDER];
+  }
+
+  /**
+   * Strongest fire type Hell Stoke may escalate to on the current wave.
+   * Unlike {@link getAvailableFireTypesRanked}, this includes Blackfyre when the spawn
+   * table allows it (e.g. post-campaign waves) so stoking can promote Cataclysm → Blackfyre.
+   * @returns {string}
+   */
+  getHellStokeMaxFireType() {
+    const waveNumber = this.gameState?.wave?.number || 1;
+    const probs = getFireSpawnProbabilities(waveNumber);
+    if ((probs.blackfyre || 0) > 0) {
+      return CONFIG.FIRE_TYPE_BLACKFYRE;
+    }
+    return this.getAvailableFireTypesRanked()[0] || CONFIG.FIRE_TYPE_CATACLYSM;
   }
 
   /**
@@ -1237,19 +1251,11 @@ export class BossSystem {
       const edgeTotalTime = (countToSelect - 1) * edgeStagger; // Time for last edge hex
       const pathStartDelay = edgeTotalTime + pathDelay;
 
-      // Play ability SFX and screen shake when path strikes start
+      // Play ability SFX when path strikes start
       const soundKey = ability.type || 'distraction';
       setTimeout(() => {
         if (typeof window !== 'undefined' && window.AudioManager) {
           window.AudioManager.playSFX(soundKey);
-        }
-        if (CONFIG.SCREEN_SHAKE_ENABLED !== false) {
-          const canvas = typeof document !== 'undefined' ? document.getElementById('gameCanvas') : null;
-          if (canvas) {
-            canvas.classList.remove('screen-shake');
-            void canvas.offsetWidth;
-            canvas.classList.add('screen-shake');
-          }
         }
       }, pathStartDelay);
 
@@ -1320,16 +1326,6 @@ export class BossSystem {
         }
       }
 
-      // Sustained screen shake for entire spell duration
-      if (CONFIG.SCREEN_SHAKE_ENABLED !== false) {
-        const canvas = typeof document !== 'undefined' ? document.getElementById('gameCanvas') : null;
-        if (canvas) {
-          canvas.classList.add('screen-shake-sustained');
-          setTimeout(() => {
-            canvas.classList.remove('screen-shake-sustained');
-          }, totalDurationMs);
-        }
-      }
     }
   }
 
@@ -1342,13 +1338,14 @@ export class BossSystem {
     const staggerPerHex = params.staggerPerHex || 80;
     const halfSize = Math.floor(CONFIG.MAP_SIZE / 2);
 
-    // Helper: get valid ignitable hexes in a row (constant r)
+    // Helper: get valid ignitable hexes in a row (constant r).
+    // Grove/town hexes are included so the napalm line can burn through the grove.
     const getHexesInRow = (r) => {
       const hexes = [];
       for (let q = -halfSize; q <= halfSize; q++) {
         if (!isInBounds(q, r)) continue;
         const hex = this.gridSystem.getHex(q, r);
-        if (!hex || hex.isTown || hex.hasFireSpawner) continue;
+        if (!hex || hex.hasFireSpawner) continue;
         hexes.push(hex);
       }
       return hexes;
@@ -1396,10 +1393,22 @@ export class BossSystem {
   castProvokedBurn(params, ability = {}) {
     const delayMs = params.delayMs ?? 1000;
     const staggerPerHex = params.staggerPerHex ?? 50;
-    const strikeGapMs = params.strikeGapMs ?? 450;
+    // Small gap between chained firings so each shake is distinct
+    const strikeGapMs = params.strikeGapMs ?? 150;
     const strongestFire = this.getAvailableFireTypesRanked()[0];
 
     const chainBase = this.provokedBurnChainOffsetMs;
+
+    // One ability-name banner per chain / ~1s (water-tank blasts and rapid pickups spam otherwise)
+    if (chainBase === 0 && this.gameState?.renderer) {
+      const now = Date.now();
+      if (!this._provokedBurnLastTextAt || now - this._provokedBurnLastTextAt > 900) {
+        this._provokedBurnLastTextAt = now;
+        this.gameState.renderer.triggerBossAbilityText(ability.name || ability.type, {
+          layer: 'main',
+        });
+      }
+    }
 
     const soundMode = ability.soundMode ?? 'once';
     if (soundMode === 'once' && typeof window !== 'undefined' && window.AudioManager) {
@@ -1439,8 +1448,26 @@ export class BossSystem {
         r: hex.r,
         delay: chainBase + relativeDelay,
         fireType: strongestFire,
+        // Per-hex lightning bolts (default true via processPendingIgnitions)
       });
     });
+
+    // Shake only while this firing's line is igniting (aligned with first hex / SFX).
+    // Wall-clock next-available time keeps a small gap when multiple firings land in quick succession
+    // across frames (chain offset resets each frame, but shakes must not blend together).
+    if (maxRelativeDelayMs > 0) {
+      const now = Date.now();
+      const naturalStart = now + chainBase + delayMs;
+      const shakeStart = Math.max(naturalStart, this._provokedBurnNextShakeAt || 0);
+      const shakeDurationMs = Math.max(250, (maxRelativeDelayMs - delayMs) + 200);
+      const shakeGapMs = 120;
+      this._provokedBurnNextShakeAt = shakeStart + shakeDurationMs + shakeGapMs;
+      triggerBossAbilityFx(ability, {
+        shake: 'sustained',
+        shakeDurationMs,
+        shakeDelayMs: Math.max(0, shakeStart - now),
+      });
+    }
 
     const lineSpanMs = maxRelativeDelayMs;
     this.provokedBurnChainOffsetMs += lineSpanMs + strikeGapMs;
@@ -1515,18 +1542,10 @@ export class BossSystem {
         });
       });
 
-      // Play ability SFX and screen shake when this path is struck (soundMode 'multiple')
+      // Play ability SFX when this path is struck (soundMode 'multiple')
       setTimeout(() => {
         if (typeof window !== 'undefined' && window.AudioManager) {
           window.AudioManager.playSFX(soundKey);
-        }
-        if (CONFIG.SCREEN_SHAKE_ENABLED !== false) {
-          const canvas = typeof document !== 'undefined' ? document.getElementById('gameCanvas') : null;
-          if (canvas) {
-            canvas.classList.remove('screen-shake');
-            void canvas.offsetWidth;
-            canvas.classList.add('screen-shake');
-          }
         }
       }, pathDelay);
     });
@@ -1591,14 +1610,6 @@ export class BossSystem {
             const soundKey = piercingFlameSounds[Math.floor(Math.random() * piercingFlameSounds.length)];
             window.AudioManager.playSFX(soundKey);
           }
-          if (CONFIG.SCREEN_SHAKE_ENABLED !== false && typeof document !== 'undefined') {
-            const canvas = document.getElementById('gameCanvas');
-            if (canvas) {
-              canvas.classList.remove('screen-shake');
-              void canvas.offsetWidth;
-              canvas.classList.add('screen-shake');
-            }
-          }
         };
       }
       this.pendingIgnitions.push(ignition);
@@ -1631,7 +1642,7 @@ export class BossSystem {
       if (hex.hasSuppressionBomb) return;
 
       const hasTargetableItem = hex.hasWaterTank || hex.hasMysteryItem ||
-        hex.hasTempPowerUpItem || hex.hasCurrencyItem || hex.hasDigSite || hex.hasBurningVault || hex.hasArtifactItem;
+        hex.hasTempPowerUpItem || hex.hasCurrencyItem || hex.hasDigSite || hex.hasBurningVault || hex.hasDungeonEntrance || hex.hasArtifactItem;
       if (hasTargetableItem) {
         targetHexes.push(hex);
       }
@@ -1679,13 +1690,16 @@ export class BossSystem {
 
   /**
    * Cast hell stoke ability - strikes all actively burning hexes, upgrades each by one fire level
-   * (flame→blaze, blaze→firestorm, etc.; capped at wave max), and restores full health.
+   * (flame→blaze, blaze→firestorm, …, cataclysm→blackfyre when the wave allows Blackfyre),
+   * and restores full health. Cap uses {@link getHellStokeMaxFireType} so post-campaign waves
+   * can escalate to Blackfyre (other boss abilities still cap at Cataclysm via getAvailableFireTypesRanked).
    * @param {Object} params - Ability parameters {staggerPerHex}
+   * @param {Object} [ability] - Full ability object (for per-ability FX flags)
    */
-  castStoke(params) {
+  castStoke(params, ability = {}) {
     const staggerPerHex = params.staggerPerHex || 50;
     const burningHexes = this.gridSystem.getBurningHexes();
-    const maxFireType = this.getAvailableFireTypesRanked()[0];
+    const maxFireType = this.getHellStokeMaxFireType();
 
     burningHexes.forEach((hex, index) => {
       this.pendingStokes.push({
@@ -1699,18 +1713,6 @@ export class BossSystem {
     if (burningHexes.length > 0) {
       const totalDuration = ((burningHexes.length - 1) * staggerPerHex) / 1000;
       this.castingDuration = totalDuration + 0.3;
-      const totalDurationMs = (burningHexes.length - 1) * staggerPerHex + 300;
-
-      // Sustained screen shake for entire stoke duration
-      if (CONFIG.SCREEN_SHAKE_ENABLED !== false) {
-        const canvas = typeof document !== 'undefined' ? document.getElementById('gameCanvas') : null;
-        if (canvas) {
-          canvas.classList.add('screen-shake-sustained');
-          setTimeout(() => {
-            canvas.classList.remove('screen-shake-sustained');
-          }, totalDurationMs);
-        }
-      }
     }
   }
 
@@ -1836,14 +1838,6 @@ export class BossSystem {
     }
 
     this.castingDuration = duration + 0.3;
-
-    if (duration > 0 && CONFIG.SCREEN_SHAKE_ENABLED !== false && typeof document !== 'undefined') {
-      const canvas = document.getElementById('gameCanvas');
-      if (canvas) {
-        canvas.classList.add('screen-shake-sustained');
-        setTimeout(() => canvas.classList.remove('screen-shake-sustained'), duration * 1000 + 300);
-      }
-    }
   }
 
   /**
@@ -2221,19 +2215,11 @@ export class BossSystem {
    * Cast doomfire - targets every hex of the strongest fire type on the map.
    * Every 3rd activation fires 3 times in quick succession (like King of Flame's Purify).
    * @param {Object} params - Ability parameters {staggerPerHex, fallbackHexCount, tripleStaggerMs}
+   * @param {Object} [ability] - Full ability object (for per-ability FX flags)
    */
-  castDoomfire(params) {
+  castDoomfire(params, ability = {}) {
     this.doomfireActivationCount++;
     const tripleStaggerMs = params.tripleStaggerMs ?? 500;
-
-    const triggerDoomfireScreenShake = () => {
-      if (CONFIG.SCREEN_SHAKE_ENABLED === false || typeof document === 'undefined') return;
-      const canvas = document.getElementById('gameCanvas');
-      if (!canvas) return;
-      canvas.classList.remove('screen-shake');
-      void canvas.offsetWidth;
-      canvas.classList.add('screen-shake');
-    };
 
     const playDoomfireSound = () => {
       if (typeof window !== 'undefined' && window.AudioManager) {
@@ -2243,12 +2229,9 @@ export class BossSystem {
 
     if (this.doomfireActivationCount % 3 === 0) {
       playDoomfireSound();
-      triggerDoomfireScreenShake();
       if (typeof window !== 'undefined') {
         setTimeout(() => playDoomfireSound(), tripleStaggerMs);
-        setTimeout(() => triggerDoomfireScreenShake(), tripleStaggerMs);
         setTimeout(() => playDoomfireSound(), tripleStaggerMs * 2);
-        setTimeout(() => triggerDoomfireScreenShake(), tripleStaggerMs * 2);
       }
       const strikeDuration = this._executeDoomfireStrike(params, 0);
       this._executeDoomfireStrike(params, tripleStaggerMs);
@@ -2256,7 +2239,6 @@ export class BossSystem {
       this.castingDuration = (tripleStaggerMs * 2) / 1000 + strikeDuration;
     } else {
       playDoomfireSound();
-      triggerDoomfireScreenShake();
       this.castingDuration = this._executeDoomfireStrike(params, 0);
     }
   }

@@ -45,6 +45,7 @@ export class TempPowerUpItemSystem {
       hex.hasCurrencyItem ||
       hex.hasDigSite ||
       hex.hasBurningVault ||
+      hex.hasDungeonEntrance ||
       hex.hasArtifactItem
     ) {
       return null;
@@ -74,6 +75,7 @@ export class TempPowerUpItemSystem {
       maxHealth,
       isActive: true,
       grantPermanent,
+      spawnedFromMystery: !!options.fromMystery,
       mysteryLandDropAtMs:
         skipSpawnBounce || typeof performance === 'undefined' ? undefined : performance.now(),
     };
@@ -245,7 +247,7 @@ export class TempPowerUpItemSystem {
         // Can't spawn on town, path, fire spawners, towers, water tanks, fires, or existing items
         if (hex.isTown || hex.isPath || hex.hasTower || hex.hasWaterTank || hex.hasFireSpawner ||
             hex.isBurning || hex.hasTempPowerUpItem || hex.hasMysteryItem || hex.hasCurrencyItem ||
-            hex.hasBurningVault || hex.hasArtifactItem ||
+            hex.hasBurningVault || hex.hasDungeonEntrance || hex.hasArtifactItem ||
             this.gridSystem.isTownRingHex(q, r)) {
           continue;
         }
@@ -483,54 +485,59 @@ export class TempPowerUpItemSystem {
   }
 
   /**
-   * Update all temporary power-up items (called each game tick)
-   * @param {number} deltaTime - Time elapsed in seconds
+   * Per-frame fire/vortex damage so map HP bars track smoothly.
+   * @param {number} deltaTime
    */
-  update(deltaTime) {
-    // Check for items destroyed by fire
+  updateHealth(deltaTime) {
+    const dt = Math.max(0, Number(deltaTime) || 0);
+    if (dt <= 0) return;
+
     const itemsToRemove = [];
-    
+
     this.items.forEach(item => {
       if (!item.isActive) return;
-      
-      // Check if item hex is on fire and take damage
+
       const itemHex = this.gridSystem.getHex(item.q, item.r);
-      if (itemHex && itemHex.isBurning) {
-        // Get fire type damage per second
+      const hasVortexThreat = !!(itemHex && itemHex.hasVortex);
+      if (!itemHex || (!itemHex.isBurning && !hasVortexThreat)) return;
+
+      const powerUps = this.gameState?.player?.powerUps || {};
+      const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+      const fireDamageMult = getPowerUpMultiplier('fireDamage', powerUps, tempPowerUps, this.gameState)
+        * getHeroPowerFireDamageResistanceMultiplier(this.gameState);
+      let damagePerSecond = 0;
+      if (itemHex.isBurning) {
         const fireConfig = getFireTypeConfig(itemHex.fireType);
-        const powerUps = this.gameState?.player?.powerUps || {};
-        const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
-        const fireDamageMult = getPowerUpMultiplier('fireDamage', powerUps, tempPowerUps, this.gameState)
-          * getHeroPowerFireDamageResistanceMultiplier(this.gameState);
-        const damagePerSecond = (fireConfig ? fireConfig.damagePerSecond : 1) * fireDamageMult;
-        const damageThisTick = deltaTime * damagePerSecond;
-        
-        // Damage the item
-        item.health -= damageThisTick;
-        item.health = Math.max(0, item.health);
-        
-        // Item destroyed by fire
-        if (item.health <= 0) {
-          try {
-            this.gameState?.renderer?.spawnFireExplosionParticles?.(item.q, item.r, 'tempPowerUp');
-          } catch (e) {
-            // ignore render side errors
-          }
-          // Play destroyed sound effect
-          if (window.AudioManager) {
-            window.AudioManager.playSFX('destroyed');
-          }
-          itemsToRemove.push(item.id);
+        damagePerSecond += (fireConfig ? fireConfig.damagePerSecond : 1) * fireDamageMult;
+      }
+      if (hasVortexThreat) {
+        damagePerSecond +=
+          (this.gameState.vortexSystem?.getDamagePerSecondAt?.(item.q, item.r) || 0) * fireDamageMult;
+      }
+      item.health = Math.max(0, item.health - dt * damagePerSecond);
+
+      if (item.health <= 0) {
+        try {
+          this.gameState?.renderer?.spawnFireExplosionParticles?.(item.q, item.r, 'tempPowerUp');
+        } catch (e) {
+          // ignore render side errors
         }
+        if (window.AudioManager) {
+          window.AudioManager.playSFX('destroyed');
+        }
+        itemsToRemove.push(item.id);
       }
     });
-    
-    // Remove destroyed items
+
     itemsToRemove.forEach(itemId => {
       this.destroyItem(itemId);
     });
-    
-    // Try to spawn new items
+  }
+
+  /**
+   * 1 Hz tick — spawning only (HP is applied in {@link updateHealth}).
+   */
+  update(_deltaTime) {
     this.trySpawnRandomItem();
   }
 

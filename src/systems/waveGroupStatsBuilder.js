@@ -1,9 +1,59 @@
 // Shared DOM for wave group complete + victory modals (reward grid + total earned)
 
-import { CONFIG, applyCurrencyGainBonuses } from '../config.js';
+import { CONFIG, applyCurrencyGainBonuses, getVortexLevelForWaveGroup, getVortexLevelConfig } from '../config.js';
+import { assetUrl } from '../utils/assetUrl.js';
+
+/**
+ * Dig-site / grove style currency line: `$base` alone, or `$base + $bonus` with a yellow tag.
+ * @param {HTMLElement} textContainer
+ * @param {number} baseAmount - Already currency-bonus-adjusted
+ * @param {number} [noDamageBonusAmount] - Already currency-bonus-adjusted; omit/0 for plain amount
+ * @param {string} [bonusLabel='No damage bonus!'] - Yellow tag text when bonus is shown
+ */
+export function appendCurrencyAmountWithOptionalNoDamageBonus(
+  textContainer,
+  baseAmount,
+  noDamageBonusAmount = 0,
+  bonusLabel = 'No damage bonus!',
+) {
+  const bonus = typeof noDamageBonusAmount === 'number' && noDamageBonusAmount > 0
+    ? Math.round(noDamageBonusAmount)
+    : 0;
+  const base = Math.max(0, Math.round(baseAmount || 0));
+
+  if (bonus > 0) {
+    const pairFs = '22px';
+    const pairText = `font-size: ${pairFs}; font-weight: bold; font-family: "Exo 2", sans-serif; color: #00FF88;`;
+    const valueEl = document.createElement('div');
+    valueEl.style.cssText = 'display: flex; flex-wrap: nowrap; align-items: center; gap: 5px; line-height: 1.1; margin-bottom: 4px; white-space: nowrap;';
+    const baseSpan = document.createElement('span');
+    baseSpan.textContent = `$${base}`;
+    baseSpan.style.cssText = pairText;
+    valueEl.appendChild(baseSpan);
+    const plus = document.createElement('span');
+    plus.textContent = '+';
+    plus.style.cssText = `font-size: ${pairFs}; font-weight: 800; font-family: "Exo 2", sans-serif; color: #E2E8F0;`;
+    valueEl.appendChild(plus);
+    const bonusSpan = document.createElement('span');
+    bonusSpan.textContent = `$${bonus}`;
+    bonusSpan.style.cssText = pairText;
+    valueEl.appendChild(bonusSpan);
+    textContainer.appendChild(valueEl);
+    const ndTag = document.createElement('div');
+    ndTag.textContent = bonusLabel;
+    ndTag.style.cssText = 'color: #FFE566; font-size: 11px; font-weight: bold; font-family: "Exo 2", sans-serif; line-height: 1.15; margin-bottom: 4px; text-transform: none;';
+    textContainer.appendChild(ndTag);
+    return;
+  }
+
+  const valueEl = document.createElement('div');
+  valueEl.textContent = `$${base}`;
+  valueEl.style.cssText = 'color: #00FF88; font-size: 26px; font-weight: bold; font-family: "Exo 2", sans-serif; line-height: 1; margin-bottom: 5px;';
+  textContainer.appendChild(valueEl);
+}
 
 /** @param {unknown} raw */
-export function normalizeMaxFiresExtinguishedByWave(raw) {
+export function normalizeMaxCountByWave(raw) {
   if (!raw || typeof raw !== 'object') return {};
   const out = {};
   for (const [key, value] of Object.entries(raw)) {
@@ -11,6 +61,16 @@ export function normalizeMaxFiresExtinguishedByWave(raw) {
     if (Number.isFinite(n) && n >= 0) out[String(key)] = n;
   }
   return out;
+}
+
+/** @param {unknown} raw */
+export function normalizeMaxFiresExtinguishedByWave(raw) {
+  return normalizeMaxCountByWave(raw);
+}
+
+/** @param {unknown} raw */
+export function normalizeMaxVortexesExtinguishedByWave(raw) {
+  return normalizeMaxCountByWave(raw);
 }
 
 const FIRES_PB_GOLD_BASE =
@@ -29,54 +89,137 @@ function setBrLines(el, lines) {
 }
 
 /**
- * Wave-complete fires stat: PB ribbon / compare line (shared by single-wave and group modals).
- * @param {HTMLElement} firesTextContainer
- * @param {object|undefined} fireSub
- * @param {boolean} showFiresHighScore
+ * Wave-complete fires/vortexes stat: PB ribbon / compare line (shared by single-wave and group modals).
+ * @param {HTMLElement} textContainer
+ * @param {object|undefined} sub
+ * @param {boolean} showHighScore
  */
-export function appendFiresExtinguishedPersonalBestLine(firesTextContainer, fireSub, showFiresHighScore) {
-  if (!fireSub || typeof fireSub.personalBestAfter !== 'number' || Number.isNaN(fireSub.personalBestAfter)) {
+export function appendExtinguishedPersonalBestLine(textContainer, sub, showHighScore) {
+  if (!sub || typeof sub.personalBestAfter !== 'number' || Number.isNaN(sub.personalBestAfter)) {
     return;
   }
   // "new high score!" already shows the new total — list the score they beat underneath.
-  if (showFiresHighScore && fireSub.isNewHigh) {
-    const prev = fireSub.previousBest;
+  if (showHighScore && sub.isNewHigh) {
+    const prev = sub.previousBest;
     if (typeof prev === 'number' && !Number.isNaN(prev)) {
       const prevLine = document.createElement('div');
       prevLine.textContent = `Previous best: ${prev}`;
       prevLine.style.cssText = FIRES_PB_GREY_BASE;
-      firesTextContainer.appendChild(prevLine);
+      textContainer.appendChild(prevLine);
     }
     return;
   }
-  const skipPersonalBestRibbon = showFiresHighScore && fireSub.isNewHigh;
-  if (fireSub.isNewHigh && !skipPersonalBestRibbon) {
-    const firesGold = document.createElement('div');
-    firesGold.className = 'wave-complete-stat-celebrate';
-    setBrLines(firesGold, ['new personal', 'best!']);
-    firesGold.style.cssText = `${FIRES_PB_GOLD_BASE} font-size: 12px;`;
-    firesTextContainer.appendChild(firesGold);
+  const skipPersonalBestRibbon = showHighScore && sub.isNewHigh;
+  if (sub.isNewHigh && !skipPersonalBestRibbon) {
+    const gold = document.createElement('div');
+    gold.className = 'wave-complete-stat-celebrate';
+    setBrLines(gold, ['new personal', 'best!']);
+    gold.style.cssText = `${FIRES_PB_GOLD_BASE} font-size: 12px;`;
+    textContainer.appendChild(gold);
     return;
   }
-  if (fireSub.equaledBest) {
-    const firesGold = document.createElement('div');
-    firesGold.className = 'wave-complete-stat-celebrate';
-    setBrLines(firesGold, ['Matched personal', 'best!']);
-    firesGold.style.cssText = `${FIRES_PB_GOLD_BASE} font-size: 11px;`;
-    firesTextContainer.appendChild(firesGold);
+  if (sub.equaledBest) {
+    const gold = document.createElement('div');
+    gold.className = 'wave-complete-stat-celebrate';
+    setBrLines(gold, ['Matched personal', 'best!']);
+    gold.style.cssText = `${FIRES_PB_GOLD_BASE} font-size: 11px;`;
+    textContainer.appendChild(gold);
     return;
   }
-  if (fireSub.firstRecord) {
-    const firesSet = document.createElement('div');
-    firesSet.textContent = 'Personal best set!';
-    firesSet.style.cssText = FIRES_PB_GREY_BASE;
-    firesTextContainer.appendChild(firesSet);
+  if (sub.firstRecord) {
+    const setLine = document.createElement('div');
+    setLine.textContent = 'Personal best set!';
+    setLine.style.cssText = FIRES_PB_GREY_BASE;
+    textContainer.appendChild(setLine);
     return;
   }
-  const firesCompare = document.createElement('div');
-  firesCompare.textContent = `Personal best: ${fireSub.personalBestAfter}`;
-  firesCompare.style.cssText = FIRES_PB_GREY_BASE;
-  firesTextContainer.appendChild(firesCompare);
+  const compare = document.createElement('div');
+  compare.textContent = `Personal best: ${sub.personalBestAfter}`;
+  compare.style.cssText = FIRES_PB_GREY_BASE;
+  textContainer.appendChild(compare);
+}
+
+/** @deprecated Use {@link appendExtinguishedPersonalBestLine} */
+export function appendFiresExtinguishedPersonalBestLine(firesTextContainer, fireSub, showFiresHighScore) {
+  return appendExtinguishedPersonalBestLine(firesTextContainer, fireSub, showFiresHighScore);
+}
+
+/**
+ * Vortexes Extinguished row for wave-complete / group-complete modals.
+ * Number color matches the vortex level for the completed wave group; icon is always vortex_extinguished.
+ * @param {object} gs - gameState
+ * @param {{ itemCss?: string }} [options]
+ * @returns {HTMLElement}
+ */
+export function createVortexesExtinguishedStatItem(gs, options = {}) {
+  const wave = gs?.wave;
+  const waveGroup = Math.max(
+    1,
+    Math.floor(Number(wave?.statsWaveGroup ?? gs?.waveSystem?.currentWaveGroup ?? wave?.currentGroup) || 1)
+  );
+  const level = getVortexLevelForWaveGroup(waveGroup);
+  const levelCfg = getVortexLevelConfig(level) || {};
+  const color = levelCfg.color || '#FF8C00';
+  // Prefer the wave-end snapshot (set in completeWave before map cleanup).
+  const snapRaw = Number(wave?.vortexesExtinguishedCount);
+  const live =
+    gs?.vortexSystem?.getTotalVortexesExtinguishedThisWave?.() ||
+    Math.max(0, Math.floor(Number(gs?.vortexSystem?.vortexesExtinguishedThisWave)) || 0);
+  const total = Number.isFinite(snapRaw) ? Math.max(0, Math.floor(snapRaw)) : live;
+  const showHighScore = !!(wave && wave.vortexesExtinguishedHighScoreBanner);
+
+  const item = document.createElement('div');
+  item.style.cssText =
+    options.itemCss ||
+    'display: flex; flex-direction: row; align-items: center; gap: 16px; width: 270px;';
+
+  const frame = document.createElement('div');
+  frame.style.cssText =
+    'position: relative; width: 120px; height: 120px; flex-shrink: 0; background-image: url(assets/images/ui/frame-round-blue.png); background-size: 100% 100%; background-position: center; background-repeat: no-repeat; display: flex; align-items: center; justify-content: center;';
+
+  const icon = document.createElement('img');
+  icon.src = assetUrl('assets/images/items/vortex_extinguished.png');
+  icon.alt = 'Vortexes Extinguished';
+  icon.style.cssText = 'width: 64px; height: auto; image-rendering: crisp-edges;';
+  frame.appendChild(icon);
+  item.appendChild(frame);
+
+  const textContainer = document.createElement('div');
+  textContainer.style.cssText =
+    'display: flex; flex-direction: column; gap: 2px; flex: 1; position: relative;';
+
+  const numberWrap = document.createElement('div');
+  numberWrap.style.cssText = showHighScore
+    ? 'position: relative; display: inline-block; align-self: flex-start; margin-bottom: 5px; padding-right: 72px; overflow: visible;'
+    : 'position: relative; display: inline-block; align-self: flex-start; margin-bottom: 5px;';
+  const numberEl = document.createElement('div');
+  numberEl.textContent = String(total);
+  numberEl.style.cssText = `color: ${color}; font-size: 26px; font-weight: bold; font-family: "Exo 2", sans-serif; line-height: 1;`;
+  numberWrap.appendChild(numberEl);
+  if (showHighScore) {
+    const hs = document.createElement('div');
+    hs.className = 'wave-complete-stat-celebrate';
+    hs.textContent = 'new high score!';
+    hs.style.cssText =
+      'position: absolute; top: 13px; right: -8px; font-size: 13px; font-weight: bold; color: #FFD700; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5); z-index: 2; pointer-events: none; letter-spacing: 0px; white-space: nowrap; font-family: "Exo 2", sans-serif;';
+    numberWrap.appendChild(hs);
+  }
+  textContainer.appendChild(numberWrap);
+
+  const label = document.createElement('div');
+  setBrLines(label, ['VORTEXES', 'EXTINGUISHED']);
+  label.style.cssText =
+    'color: #FFFFFF; font-size: 14px; font-weight: normal; font-family: "Exo 2", sans-serif; text-transform: uppercase; line-height: 1.2;';
+  textContainer.appendChild(label);
+
+  appendExtinguishedPersonalBestLine(
+    textContainer,
+    wave && wave.vortexesExtinguishedSubtext,
+    showHighScore
+  );
+
+  item.appendChild(textContainer);
+  return item;
 }
 
 /**
@@ -89,6 +232,10 @@ export function buildWaveGroupCompleteStatsContainer(ws, digSiteRewards = []) {
     Math.max(0, Math.round(gs.wave.townBonusAward || 0)),
     gs,
   );
+  const townNoSpreadBonusCurrency = applyCurrencyGainBonuses(
+    Math.max(0, Math.round(gs.wave.townNoSpreadBonusAward || 0)),
+    gs,
+  );
   const groupBonusCurrency = applyCurrencyGainBonuses(CONFIG.WAVE_GROUP_BONUS_REWARD, gs);
   const totalExtinguished = gs.fireSystem?.getTotalFiresExtinguishedThisWave() || 0;
   const digSiteCurrencyTotal = digSiteRewards.reduce((s, e) => {
@@ -98,7 +245,7 @@ export function buildWaveGroupCompleteStatsContainer(ws, digSiteRewards = []) {
     if (typeof nd === 'number' && nd > 0) row += applyCurrencyGainBonuses(nd, gs);
     return s + row;
   }, 0);
-  const totalEarned = groupBonusCurrency + townBonusCurrency + digSiteCurrencyTotal;
+  const totalEarned = groupBonusCurrency + townBonusCurrency + townNoSpreadBonusCurrency + digSiteCurrencyTotal;
 
   const statsContainer = document.createElement('div');
   statsContainer.style.cssText = 'display: flex; flex-direction: column; align-items: center; gap: 0; width: 100%; margin-top: 16px;';
@@ -153,7 +300,7 @@ export function buildWaveGroupCompleteStatsContainer(ws, digSiteRewards = []) {
   firesLabel.style.cssText = 'color: #FFFFFF; font-size: 14px; font-weight: normal; font-family: "Exo 2", sans-serif; text-transform: uppercase; line-height: 1.2;';
   firesTextContainer.appendChild(firesLabel);
 
-  appendFiresExtinguishedPersonalBestLine(
+  appendExtinguishedPersonalBestLine(
     firesTextContainer,
     wave && wave.firesExtinguishedSubtext,
     showFiresHighScore
@@ -162,6 +309,7 @@ export function buildWaveGroupCompleteStatsContainer(ws, digSiteRewards = []) {
 
   firesStatItem.appendChild(firesTextContainer);
   leftColumn.appendChild(firesStatItem);
+  leftColumn.appendChild(createVortexesExtinguishedStatItem(gs));
 
   const townStatItem = document.createElement('div');
   townStatItem.style.cssText = 'display: flex; flex-direction: row; align-items: center; gap: 16px; width: 270px;';
@@ -178,10 +326,12 @@ export function buildWaveGroupCompleteStatsContainer(ws, digSiteRewards = []) {
   const townTextContainer = document.createElement('div');
   townTextContainer.style.cssText = 'display: flex; flex-direction: column; gap: 2px; flex: 1;';
 
-  const townAmount = document.createElement('div');
-  townAmount.textContent = `$${townBonusCurrency}`;
-  townAmount.style.cssText = 'color: #00FF88; font-size: 26px; font-weight: bold; font-family: "Exo 2", sans-serif; line-height: 1; margin-bottom: 5px;';
-  townTextContainer.appendChild(townAmount);
+  appendCurrencyAmountWithOptionalNoDamageBonus(
+    townTextContainer,
+    townBonusCurrency,
+    townNoSpreadBonusCurrency,
+    'No fire spread bonus!',
+  );
 
   const townLabel = document.createElement('div');
   setBrLines(townLabel, ['ANCIENT GROVE', 'PROTECTION BONUS']);

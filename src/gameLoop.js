@@ -260,13 +260,13 @@ export class GameLoop {
       }
       
       // Update wave timer for smooth countdown (only when not paused and not in upgrade mode)
-      const isEffectivelyPaused = this.isPaused || this.gameState.isUpgradeSelectionMode || this.gameState.isRepairSelectionMode || this.gameState.isPartsRecycleMode;
+      const isEffectivelyPaused = this.isPaused || this.gameState.isUpgradeSelectionMode || this.gameState.isDungeonRewardMode || this.gameState.isRepairSelectionMode || this.gameState.isPartsRecycleMode;
 
       // Town / grove: any town hex on fire (used by grove alarm + burn-start toasts).
       // Old code iterated all burning hexes (could be hundreds late wave) calling
       // isTownHex on each. The cheap path checks the 7-hex town cluster directly.
       const isAnyTownHexBurning = this.gameState.gridSystem
-        ? this.gameState.gridSystem.isAnyTownHexBurning()
+        ? this.gameState.gridSystem.isAnyTownHexBurning(this.gameState.vortexSystem)
         : false;
 
       // Player towers and dig sites currently on fire (for alarms + burn-start toasts).
@@ -397,6 +397,8 @@ export class GameLoop {
           isAnyTownHexBurning &&
           !this._burnToastPrevGroveBurning
         ) {
+          // Replace the vortex-near toast if it's still up so entry doesn't stack two alerts.
+          ns.dismissToastsWithMessage?.('A vortex is near The Grove!');
           ns.showToast('The Ancient Grove is burning!', 3000, 'negative');
         }
         for (const tower of burningTowersNow.values()) {
@@ -445,6 +447,9 @@ export class GameLoop {
           this.idleTowerUpdateAccumulator = 0;
           this.gameState.towerSystem.update(frameDelta);
         }
+      } else if (isEffectivelyPaused) {
+        // Don't leave stale water-hit rates in tooltips while paused
+        this.gameState.gridSystem?.clearWaterHitRateDisplay?.();
       }
       
       // Update town health every frame for smooth animation (only when not paused and not in upgrade mode)
@@ -466,11 +471,29 @@ export class GameLoop {
           this.gameState.gridSystem.restoreTownHealth?.(this.gameState.townLevel);
         }
       }
+
+      // Apply map-item HP every frame (after towers add water) so bars don't step on the 1 Hz tick
+      if (this.gameState.wave?.isActive && !isEffectivelyPaused) {
+        this.gameState.waterTankSystem?.updateHealth?.(frameDelta);
+        this.gameState.digSiteSystem?.updateHealth?.(frameDelta);
+        this.gameState.burningVaultSystem?.updateHealth?.(frameDelta);
+        this.gameState.dungeonEntranceSystem?.updateHealth?.(frameDelta);
+        this.gameState.tempPowerUpItemSystem?.updateHealth?.(frameDelta);
+        this.gameState.mysteryItemSystem?.updateHealth?.(frameDelta);
+        this.gameState.artifactSystem?.updateHealth?.(frameDelta);
+        this.gameState.currencyItemSystem?.updateHealth?.(frameDelta);
+      }
       
       // Update fire regrowth every frame for smooth animation (only when wave is active and not paused and not in upgrade mode)
       if (this.gameState.fireSystem && this.gameState.wave.isActive && !isEffectivelyPaused) {
         this.gameState.fireSystem.updateRegrowth(frameDelta);
       }
+
+      if (this.gameState.vortexSystem && this.gameState.wave.isActive && !isEffectivelyPaused) {
+        this.gameState.vortexSystem.updateRegrowth(frameDelta);
+      }
+      // Keep grove-adjacent vortex alarm in sync (also stops on pause / wave end / clear).
+      this.gameState.vortexSystem?.syncGroveAdjacentAlarm?.();
       
       // Update boss system every frame (only when wave is active and not paused and not in upgrade mode)
       if (this.gameState.bossSystem && this.gameState.wave.isActive && !isEffectivelyPaused) {
@@ -495,6 +518,10 @@ export class GameLoop {
 
     // Clear canvas
     this.renderer.clear();
+
+    // Background-only FX (e.g. vortex spawn / boss power) — over wave-group art, under map/GUI
+    this.renderer.syncBossPowerMapBackgroundFx();
+    this.renderer.drawMapBackgroundFx();
     
     // Update renderer with deltaTime for smooth animations
     this.renderer.render(frameDelta);
@@ -504,6 +531,9 @@ export class GameLoop {
       this.renderer.ctx.save();
       this.renderer.ctx.globalAlpha = mapRevealAlpha;
     }
+
+    // scale world-space draws around viewport center (HUD/boss stay outside)
+    this.renderer.beginWorldZoomTransform();
 
     // Draw grid
     if (this.gameState.gridSystem) {
@@ -516,11 +546,13 @@ export class GameLoop {
     }
     
     // Draw towers
+    const isPlacementPhase = !!this.gameState.wave?.isPlacementPhase;
     if (this.gameState.towerSystem) {
       const towers = this.gameState.towerSystem.getAllTowers();
       towers.forEach(tower => {
         const isSelected = tower.id === this.gameState.selectedTowerId;
-        this.renderer.drawTower(tower, isSelected);
+        // Placement: omit bases here so AOE/water overlays can paint under them
+        this.renderer.drawTower(tower, isSelected, { omitBase: isPlacementPhase });
         
         // Draw water spray if tower is active
         if (tower.affectedHexes && tower.affectedHexes.length > 0) {
@@ -529,6 +561,19 @@ export class GameLoop {
           this.renderer.drawTowerSpray(tower, tower.affectedHexes, isSelected, isDragging);
         }
       });
+
+      // Placement: hovered rain/pulsing AOE at 2× opacity, above other towers' AOE fills
+      this.renderer.drawHoveredRainPulsingAoeOverlay(this.gameState.towerSystem);
+
+      if (isPlacementPhase) {
+        // Shaded aim overlays under bases during placement (wave phase keeps late-pass order)
+        this.renderer.drawAllBomberTrajectoryOverlays(this.gameState.towerSystem);
+        this.renderer.drawAllChargeTrajectoryOverlays(this.gameState.towerSystem);
+        this.renderer.drawAllPerimeterRingOverlays(this.gameState.towerSystem);
+        this.renderer.drawAllChargeImpactOverlays(this.gameState.towerSystem);
+        // Bases above water sprays / AOE tints / aim shades
+        this.renderer.drawAllTowerBases(this.gameState.towerSystem);
+      }
       
       // Draw water bombs and explosion particles (always call to allow explosion-only frames)
       const waterBombs = this.gameState.towerSystem.getAllWaterBombs();
@@ -573,6 +618,14 @@ export class GameLoop {
     if (this.gameState.burningVaultSystem) {
       this.renderer.drawBurningVaults(this.gameState.burningVaultSystem);
     }
+
+    if (this.gameState.dungeonEntranceSystem) {
+      this.renderer.drawDungeonEntrances(this.gameState.dungeonEntranceSystem);
+    }
+
+    if (this.gameState.vortexSystem) {
+      this.renderer.drawVortexes(this.gameState.vortexSystem);
+    }
     
     // Draw currency items
     if (this.gameState.currencyItemSystem) {
@@ -604,6 +657,10 @@ export class GameLoop {
     
     // Draw all water particles (after spawners, before notifications so XP text appears on top)
     this.renderer.drawAllWaterParticles();
+    // Soft mist / shear spray peeling off jet & spread streams (full visuals only)
+    this.renderer.drawJetMist();
+    // Pulsing tower radial water blasts (dedicated FX; under turrets so spray reads from the nozzle)
+    this.renderer.drawPulseBursts();
     
     // Draw all tower turrets (after water particles for proper z-index)
     if (this.gameState.towerSystem) {
@@ -613,16 +670,23 @@ export class GameLoop {
     // Draw all fire particles (after water particles, before notifications)
     this.renderer.drawAllFireParticles();
 
-    // Bomber aim trajectory — draw after sprays, water particles, turrets, and fire particles (canvas z = paint order)
-    if (this.gameState.towerSystem) {
+    // Light sparks rising from ordinary burning hexes (under vortex/dungeon drama)
+    this.renderer.drawFireHexSparks();
+    // Vortex sparks / flame wisps (on top of vortex sprites + fire FX)
+    this.renderer.drawVortexEmbers();
+    // Burning vault / dungeon entrance smoulder sparks
+    this.renderer.drawSmoulderSparks();
+    // Soft bubbles rising from water buckets / tanks / vats
+    this.renderer.drawWaterTankBubbles();
+
+    // Bomber/charge/perimeter aim overlays — late pass during waves (above turrets).
+    // Placement already drew these under tower bases above.
+    if (this.gameState.towerSystem && !isPlacementPhase) {
       this.renderer.drawAllBomberTrajectoryOverlays(this.gameState.towerSystem);
       this.renderer.drawAllChargeTrajectoryOverlays(this.gameState.towerSystem);
       this.renderer.drawAllPerimeterRingOverlays(this.gameState.towerSystem);
       this.renderer.drawAllChargeImpactOverlays(this.gameState.towerSystem);
     }
-
-    // Final survival wave: rotating hero allies (group 30)
-    this.renderer.drawSurvivalRotatingHero();
 
     // Map HP bars after water + fire FX so sprays/particles never obscure them
     this.renderer.drawAllWorldHealthBarsAfterParticles(this.gameState);
@@ -642,11 +706,6 @@ export class GameLoop {
     
     // Draw hex flash effects (high z-index)
     this.renderer.updateAndDrawHexFlashes();
-    
-    // Draw power-up border glow effect (on top of everything, but subtle)
-    if (this.renderer) {
-      this.renderer.drawPowerUpBorderGlow();
-    }
     
     // Draw large center-screen power-up notifications (high z-index, on top of most things)
     if (this.renderer) {
@@ -669,6 +728,17 @@ export class GameLoop {
 
     if (this.renderer?.towerPierceHint) {
       this.renderer.drawTowerPierceHint();
+    }
+
+    // end world zoom before screen-fixed canvas layers
+    this.renderer.endWorldZoomTransform();
+
+    // Final survival wave: rotating hero allies (group 30) — screen-fixed, not zoomed
+    this.renderer.drawSurvivalRotatingHero();
+
+    // Draw power-up border glow effect (on top of everything, but subtle) — viewport chrome
+    if (this.renderer) {
+      this.renderer.drawPowerUpBorderGlow();
     }
 
     if (mapRevealAlpha < 1) {

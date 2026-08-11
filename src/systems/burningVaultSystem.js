@@ -1,6 +1,6 @@
 // Burning Vault — high-health map object; fire refills it, water drains it (net = fire DPS − water “strength” per tick)
 
-import { CONFIG, getFireTypeConfig, getPowerUpMultiplier, addPlayerScore, getPowerUpGraphicFilename, getWaterTankTypeConfig, resolveWaterTankTypeIdFromPoolRow, getHeroPowerFireDamageResistanceMultiplier } from '../config.js';
+import { CONFIG, getFireTypeConfig, getPowerUpMultiplier, addPlayerScore, getPowerUpGraphicFilename, getWaterTankTypeConfig, resolveWaterTankTypeIdFromPoolRow, getHeroPowerFireDamageResistanceMultiplier, clampSuppressionBombLevel, getSuppressionBombMaxLevel } from '../config.js';
 import { isMetaItemUnlocked } from '../utils/metaProgression.js';
 import { filterWeightedRewardPool } from '../utils/rewardPoolUnlocks.js';
 
@@ -27,7 +27,7 @@ export class BurningVaultSystem {
 
         if (hex.isTown || hex.isPath || hex.hasTower || hex.hasWaterTank || hex.hasFireSpawner ||
             hex.isBurning || hex.hasTempPowerUpItem || hex.hasMysteryItem || hex.hasCurrencyItem ||
-            hex.hasDigSite || hex.hasBurningVault || hex.hasArtifactItem ||
+            hex.hasDigSite || hex.hasBurningVault || hex.hasDungeonEntrance || hex.hasArtifactItem ||
             this.gridSystem.isTownRingHex(q, r)) {
           continue;
         }
@@ -51,7 +51,7 @@ export class BurningVaultSystem {
 
     if (hex.isTown || hex.isPath || hex.hasTower || hex.hasWaterTank || hex.isBurning || hex.hasFireSpawner ||
         hex.hasTempPowerUpItem || hex.hasMysteryItem || hex.hasCurrencyItem || hex.hasDigSite || hex.hasBurningVault ||
-        hex.hasArtifactItem) {
+        hex.hasDungeonEntrance || hex.hasArtifactItem) {
       return null;
     }
 
@@ -205,14 +205,14 @@ export class BurningVaultSystem {
     if (type === 'suppression_bomb') {
       let level = 1;
       if (selected.level != null && Number.isFinite(Number(selected.level))) {
-        level = Math.min(4, Math.max(1, Math.round(Number(selected.level))));
+        level = clampSuppressionBombLevel(selected.level);
       } else {
-        level = Math.floor(Math.random() * 4) + 1;
+        level = Math.floor(Math.random() * getSuppressionBombMaxLevel()) + 1;
       }
       const id = this.gameState.currencyItemSystem?.spawnCurrencyItem(q, r, 'suppression_bomb', level, true);
       return { ok: !!id, preview: id ? itemPreview(`suppression_${level}.png`) : null };
     }
-    if (type === 'currency' || type === 'money' || type === 'xp' || type === 'movement_token' || type === 'upgrade_plans' || type === 'tree_juice') {
+    if (type === 'currency' || type === 'money' || type === 'xp' || type === 'movement_token' || type === 'upgrade_plans' || type === 'specialty_plans' || type === 'tree_juice') {
       let value = 1;
       if (type === 'currency' || type === 'money' || type === 'xp') {
         const minV = selected.minValue ?? 1;
@@ -223,6 +223,7 @@ export class BurningVaultSystem {
       if (type === 'xp') spriteFilename = 'xp.png';
       else if (type === 'movement_token') spriteFilename = 'movement_token.png';
       else if (type === 'upgrade_plans') spriteFilename = 'upgrade_token.png';
+      else if (type === 'specialty_plans') spriteFilename = 'special.png';
       else if (type === 'tree_juice') spriteFilename = 'town_defense.png';
 
       const normalizedType = type === 'money' ? 'currency' : type;
@@ -259,9 +260,14 @@ export class BurningVaultSystem {
   }
 
   /**
-   * @param {number} deltaTime - Seconds (game tick uses 1)
+   * Per-frame fire refill / water drain. Water accumulator is HP this frame
+   * (towers add power×dt or burst amounts); fire is DPS × dt.
+   * @param {number} deltaTime
    */
-  update(deltaTime) {
+  updateHealth(deltaTime) {
+    const dt = Math.max(0, Number(deltaTime) || 0);
+    if (dt <= 0) return;
+
     const toOpen = [];
 
     this.items.forEach((item) => {
@@ -271,19 +277,21 @@ export class BurningVaultSystem {
       if (!hex) return;
 
       let fireDps = 0;
+      const powerUps = this.gameState?.player?.powerUps || {};
+      const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+      const fireDamageMult = getPowerUpMultiplier('fireDamage', powerUps, tempPowerUps, this.gameState)
+        * getHeroPowerFireDamageResistanceMultiplier(this.gameState);
       if (hex.isBurning) {
         const fireConfig = getFireTypeConfig(hex.fireType);
-        const powerUps = this.gameState?.player?.powerUps || {};
-        const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
-        const fireDamageMult = getPowerUpMultiplier('fireDamage', powerUps, tempPowerUps, this.gameState)
-          * getHeroPowerFireDamageResistanceMultiplier(this.gameState);
-        fireDps = (fireConfig ? fireConfig.damagePerSecond : 0) * fireDamageMult;
+        fireDps += (fireConfig ? fireConfig.damagePerSecond : 0) * fireDamageMult;
+      }
+      if (hex.hasVortex) {
+        fireDps +=
+          (this.gameState.vortexSystem?.getDamagePerSecondAt?.(item.q, item.r) || 0) * fireDamageMult;
       }
 
-      const waterStrength = this.waterPowerOnVaults.get(item.id) || 0;
-      const netPerSecond = fireDps - waterStrength;
-
-      item.health += netPerSecond * deltaTime;
+      const waterHp = this.waterPowerOnVaults.get(item.id) || 0;
+      item.health += fireDps * dt - waterHp;
       item.health = Math.max(0, Math.min(item.maxHealth, item.health));
 
       if (item.health <= 0) {
@@ -294,7 +302,12 @@ export class BurningVaultSystem {
     });
 
     toOpen.forEach((item) => this.openVault(item));
+  }
 
+  /**
+   * 1 Hz tick — spawning only (HP is applied in {@link updateHealth}).
+   */
+  update(_deltaTime) {
     this.trySpawnRandomItem();
   }
 

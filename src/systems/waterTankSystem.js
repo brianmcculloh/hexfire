@@ -106,7 +106,7 @@ export class WaterTankSystem {
 
         if (hex.hasArtifactItem) continue;
 
-        if (hex.hasBurningVault) continue;
+        if (hex.hasBurningVault || hex.hasDungeonEntrance) continue;
         
         // Can't spawn on existing currency items
         if (hex.hasCurrencyItem) continue;
@@ -146,6 +146,7 @@ export class WaterTankSystem {
       hex.hasSuppressionBomb ||
       hex.hasFireSpawner ||
       hex.hasBurningVault ||
+      hex.hasDungeonEntrance ||
       hex.hasArtifactItem
     ) {
       return null;
@@ -165,6 +166,7 @@ export class WaterTankSystem {
       health: typeConfig.health,
       maxHealth: typeConfig.health,
       isActive: true,
+      spawnedFromMystery: !!options.fromMystery,
       mysteryLandDropAtMs:
         options?.skipSpawnBounce || typeof performance === 'undefined'
           ? undefined
@@ -205,52 +207,56 @@ export class WaterTankSystem {
   }
 
   /**
-   * Update all water tanks (called each game tick)
-   * @param {number} deltaTime - Time elapsed in seconds
+   * Per-frame fire/vortex damage so map HP bars track smoothly.
+   * @param {number} deltaTime - Frame delta in seconds
    */
-  update(deltaTime) {
-    // Try to spawn a new water tank (timed basis)
-    this.trySpawnRandomTank();
-    
+  updateHealth(deltaTime) {
+    const dt = Math.max(0, Number(deltaTime) || 0);
+    if (dt <= 0) return;
+
     const tanksToRemove = [];
-    
-    // Process each water tank
+
     this.waterTanks.forEach(tank => {
       if (!tank.isActive) return;
-      
-      // Check if water tank hex is on fire and take damage
+
       const tankHex = this.gridSystem.getHex(tank.q, tank.r);
-      if (tankHex && tankHex.isBurning) {
-        // Get fire type damage per second
+      const hasVortexThreat = !!(tankHex && tankHex.hasVortex);
+      if (!tankHex || (!tankHex.isBurning && !hasVortexThreat)) return;
+
+      const powerUps = this.gameState?.player?.powerUps || {};
+      const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
+      const fireDamageMult = getPowerUpMultiplier('fireDamage', powerUps, tempPowerUps, this.gameState)
+        * getHeroPowerFireDamageResistanceMultiplier(this.gameState);
+      let damagePerSecond = 0;
+      if (tankHex.isBurning) {
         const fireConfig = getFireTypeConfig(tankHex.fireType);
-        const powerUps = this.gameState?.player?.powerUps || {};
-        const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
-        const fireDamageMult = getPowerUpMultiplier('fireDamage', powerUps, tempPowerUps, this.gameState)
-          * getHeroPowerFireDamageResistanceMultiplier(this.gameState);
-        const damagePerSecond = (fireConfig ? fireConfig.damagePerSecond : 1) * fireDamageMult;
-        const damageThisTick = deltaTime * damagePerSecond;
-        
-        // Damage the tank
-        tank.health -= damageThisTick;
-        
-        // Clamp health to prevent going negative
-        tank.health = Math.max(0, tank.health);
-        
-        // Tank destroyed by fire
-        if (tank.health <= 0) {
-          // Play destroyed sound effect
-          if (window.AudioManager) {
-            window.AudioManager.playSFX('destroyed');
-          }
-          tanksToRemove.push(tank.id);
+        damagePerSecond += (fireConfig ? fireConfig.damagePerSecond : 1) * fireDamageMult;
+      }
+      if (hasVortexThreat) {
+        damagePerSecond +=
+          (this.gameState.vortexSystem?.getDamagePerSecondAt?.(tank.q, tank.r) || 0) * fireDamageMult;
+      }
+      tank.health = Math.max(0, tank.health - dt * damagePerSecond);
+
+      if (tank.health <= 0) {
+        if (window.AudioManager) {
+          window.AudioManager.playSFX('destroyed');
         }
+        tanksToRemove.push(tank.id);
       }
     });
-    
-    // Remove destroyed tanks (destroyed by fire, not exploded)
+
     tanksToRemove.forEach(tankId => {
       this.destroyWaterTank(tankId);
     });
+  }
+
+  /**
+   * 1 Hz tick — spawning only (HP is applied in {@link updateHealth}).
+   * @param {number} _deltaTime - Unused; kept for call-site compatibility
+   */
+  update(_deltaTime) {
+    this.trySpawnRandomTank();
   }
 
   /**
@@ -393,33 +399,39 @@ export class WaterTankSystem {
 
       // Map pickups / dig sites (same as suppression bomb / tower water)
       if (!hex) return;
-      if (hex.hasTempPowerUpItem) {
+      const hitsPickup = hex.hasTempPowerUpItem || hex.hasMysteryItem || hex.hasArtifactItem
+        || hex.hasCurrencyItem || hex.hasDigSite || hex.hasBurningVault || hex.hasDungeonEntrance
+        || hex.hasVortex || hex.isBurning;
+      if (hitsPickup) {
         hex.isBeingSprayed = true;
+      }
+      if (hex.hasTempPowerUpItem) {
         this.gameState.tempPowerUpItemSystem?.damageItem(explosionHex.q, explosionHex.r, itemWaterDamage);
         this.gameState.tempPowerUpItemSystem?.checkCollection(explosionHex.q, explosionHex.r);
       }
       if (hex.hasMysteryItem) {
-        hex.isBeingSprayed = true;
         this.gameState.mysteryItemSystem?.damageItem(explosionHex.q, explosionHex.r, itemWaterDamage);
         this.gameState.mysteryItemSystem?.checkCollection(explosionHex.q, explosionHex.r);
       }
       if (hex.hasArtifactItem) {
-        hex.isBeingSprayed = true;
         this.gameState.artifactSystem?.damageItem(explosionHex.q, explosionHex.r, itemWaterDamage);
         this.gameState.artifactSystem?.checkCollection(explosionHex.q, explosionHex.r);
       }
       if (hex.hasCurrencyItem) {
-        hex.isBeingSprayed = true;
         this.gameState.currencyItemSystem?.damageItem(explosionHex.q, explosionHex.r, itemWaterDamage);
         this.gameState.currencyItemSystem?.checkCollection(explosionHex.q, explosionHex.r);
       }
       if (hex.hasDigSite) {
-        hex.isBeingSprayed = true;
         this.gameState.digSiteSystem?.addWaterPower(explosionHex.q, explosionHex.r, itemWaterDamage);
       }
       if (hex.hasBurningVault) {
-        hex.isBeingSprayed = true;
         this.gameState.burningVaultSystem?.addWaterPower(explosionHex.q, explosionHex.r, itemWaterDamage);
+      }
+      if (hex.hasDungeonEntrance) {
+        this.gameState.dungeonEntranceSystem?.addWaterPower(explosionHex.q, explosionHex.r, itemWaterDamage);
+      }
+      if (hex.hasVortex) {
+        this.gameState.vortexSystem?.addWaterPower(explosionHex.q, explosionHex.r, itemWaterDamage);
       }
     });
     

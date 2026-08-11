@@ -105,6 +105,23 @@ export class NotificationSystem {
   }
 
   /**
+   * Immediately remove any active toast whose message matches (no fade).
+   * Used to overwrite a prior alert with a more urgent one.
+   * @param {string} message
+   */
+  dismissToastsWithMessage(message) {
+    if (!message) return;
+    const toasts = [...this.activeToasts];
+    for (const toast of toasts) {
+      if (toast.message !== message) continue;
+      if (toast.element && toast.element.parentNode) {
+        toast.element.parentNode.removeChild(toast.element);
+      }
+      this.activeToasts = this.activeToasts.filter((t) => t.id !== toast.id);
+    }
+  }
+
+  /**
    * Remove a toast notification
    * @param {number} toastId - ID of the toast to remove
    */

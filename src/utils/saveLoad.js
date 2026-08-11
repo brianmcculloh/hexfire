@@ -4,8 +4,11 @@ import { getScenarioByName } from '../scenarios.js';
 import { CONFIG, getExpectedTownMaxHealth, getPlayerLevel, normalizeWaveGroupIndex, clampPerimeterRing, clampChargeTargetDistance, normalizeChargeMode, isFinalSurvivalBossWaveGroup } from '../config.js';
 import { RunStatsTracker, getTotalRunFiresExtinguished } from '../systems/runStatsSystem.js';
 import { normalizeMetaProgression } from './metaProgression.js';
-import { migrateSeenShopItems, syncNewlyUnlockedFromSeen } from './shopSeenItems.js';
-import { normalizeMaxFiresExtinguishedByWave } from '../systems/waveGroupStatsBuilder.js';
+import { migrateSeenShopItems, syncNewlyUnlockedFromSeen, seedAnnouncedUnlocksFromPlayerLevel } from './shopSeenItems.js';
+import {
+  normalizeMaxFiresExtinguishedByWave,
+  normalizeMaxVortexesExtinguishedByWave,
+} from '../systems/waveGroupStatsBuilder.js';
 import { setLocalStorageItemWithRetry } from './localStorageQuota.js';
 import { artifactTraderWantsAreRevealed } from './artifactTrader.js';
 import { ensureSpecialtyMilestoneRewards } from './specialtyRewards.js';
@@ -449,6 +452,10 @@ function serializeGameState(gameState) {
 
     burningVaults: serializeBurningVaults(gameState.burningVaultSystem),
 
+    dungeonEntrances: serializeDungeonEntrances(gameState.dungeonEntranceSystem),
+
+    vortexes: serializeVortexes(gameState.vortexSystem),
+
     artifacts: serializeArtifacts(gameState.artifactSystem),
     
     // Bonus pickups on the map (money, XP orbs, tokens, shields, upgrade plans from mystery clusters, etc.)
@@ -473,6 +480,7 @@ function serializeGameState(gameState) {
         ? [...gameState.player.specialtyTimeMilestonePowerUps]
         : null,
       movementTokens: gameState.player.movementTokens || 0,
+      movementTokensPurchased: gameState.player.movementTokensPurchased || 0,
       towerSellbacks: gameState.player.towerSellbacks || 0,
       towerRepairs: gameState.player.towerRepairs || 0,
       partsVouchers: gameState.player.partsVouchers || 0,
@@ -481,6 +489,7 @@ function serializeGameState(gameState) {
       powerUps: { ...(gameState.player.powerUps || {}) },
       tempPowerUps: playerTempPowerUps,
       seenShopItems: Array.from(gameState.player.seenShopItems || []),
+      announcedUnlocks: Array.from(gameState.player.announcedUnlocks || []),
     },
     // Redundant copy for older readers / migration; always mirrors player.tempPowerUps
     tempPowerUps: playerTempPowerUps,
@@ -497,12 +506,17 @@ function serializeGameState(gameState) {
       survivalElapsed: Math.max(0, Number(gameState.wave.survivalElapsed) || 0),
       isActive: gameState.wave.isActive,
       isPlacementPhase: gameState.wave.isPlacementPhase || false,
+      // Player level when the active wave started (unlock fallback at wave end).
+      levelAtStart: Number.isFinite(gameState.wave.levelAtStart)
+        ? gameState.wave.levelAtStart
+        : null,
       isScenario: gameState.wave.isScenario || false,
       scenarioNumber: gameState.wave.scenarioNumber || null,
       scenarioName: gameState.wave.scenarioName || null,
       scenarioWaveDuration: gameState.wave.scenarioWaveDuration || null,
       tempPowerUpMessageShown: gameState.waveSystem?.tempPowerUpMessageShown || false,
       townBonusAward: gameState.wave.townBonusAward ?? 0,
+      townNoSpreadBonusAward: gameState.wave.townNoSpreadBonusAward ?? 0,
       pendingGroupRewards: gameState.wave.pendingGroupRewards || null,
       // Must persist with logical currentGroup so load restores "waiting for Collect" (paths/spawners still previous group).
       pendingGroupTransition:
@@ -535,8 +549,17 @@ function serializeGameState(gameState) {
         : null,
       useRunStartMetaProgression: gameState.meta?.useRunStartMetaProgression === true,
       showFpsCounter: CONFIG.SHOW_FPS_COUNTER === true,
+      mapZoom: (() => {
+        const levels = CONFIG.MAP_ZOOM_LEVELS || [0.75, 1, 1.25];
+        const z = CONFIG.MAP_ZOOM;
+        if (typeof z === 'number' && levels.includes(z)) return z;
+        return CONFIG.MAP_ZOOM_DEFAULT ?? 1;
+      })(),
       maxFiresExtinguishedByWave: normalizeMaxFiresExtinguishedByWave(
         gameState.meta?.maxFiresExtinguishedByWave
+      ),
+      maxVortexesExtinguishedByWave: normalizeMaxVortexesExtinguishedByWave(
+        gameState.meta?.maxVortexesExtinguishedByWave
       ),
     },
 
@@ -572,6 +595,7 @@ function serializeGrid(gridSystem) {
     burnDuration: hex.burnDuration,
     extinguishProgress: hex.extinguishProgress,
     maxExtinguishTime: hex.maxExtinguishTime,
+    fireIgnitedBySpawn: !!hex.fireIgnitedBySpawn,
   }));
 }
 
@@ -776,6 +800,7 @@ function serializeWaterTanks(waterTankSystem) {
     typeId: tank.typeId,
     health: tank.health,
     maxHealth: tank.maxHealth,
+    spawnedFromMystery: !!tank.spawnedFromMystery,
   }));
 }
 
@@ -813,6 +838,7 @@ function serializeTempPowerUpItems(tempPowerUpItemSystem) {
     health: item.health,
     maxHealth: item.maxHealth,
     grantPermanent: !!item.grantPermanent,
+    spawnedFromMystery: !!item.spawnedFromMystery,
   }));
 }
 
@@ -838,6 +864,33 @@ function serializeBurningVaults(burningVaultSystem) {
     r: item.r,
     health: item.health,
     maxHealth: item.maxHealth,
+  }));
+}
+
+function serializeDungeonEntrances(dungeonEntranceSystem) {
+  if (!dungeonEntranceSystem || !dungeonEntranceSystem.getAllItems) return [];
+  return dungeonEntranceSystem.getAllItems().map((item) => ({
+    q: item.q,
+    r: item.r,
+    level: item.level,
+    health: item.health,
+    maxHealth: item.maxHealth,
+  }));
+}
+
+function serializeVortexes(vortexSystem) {
+  if (!vortexSystem || !vortexSystem.getAllItems) return [];
+  return vortexSystem.getAllItems().map((item) => ({
+    q: item.q,
+    r: item.r,
+    level: item.level,
+    isFast: !!item.isFast,
+    inGrove: !!item.inGrove,
+    health: item.health,
+    maxHealth: item.maxHealth,
+    pathIndex: item.pathIndex,
+    pathPosition: item.pathPosition,
+    moveTimer: item.moveTimer,
   }));
 }
 
@@ -998,6 +1051,10 @@ export function applyLoadedState(gameState, loadedData) {
     : null;
   ensureSpecialtyMilestoneRewards(gameState);
   gameState.player.movementTokens = loadedData.player.movementTokens || 0;
+  gameState.player.movementTokensPurchased = Math.max(
+    0,
+    Math.floor(Number(loadedData.player.movementTokensPurchased) || 0)
+  );
   gameState.player.towerSellbacks = loadedData.player.towerSellbacks || 0;
   gameState.player.towerRepairs = loadedData.player.towerRepairs || 0;
   gameState.player.partsVouchers = loadedData.player.partsVouchers || 0;
@@ -1047,6 +1104,15 @@ export function applyLoadedState(gameState, loadedData) {
   if (!gameState.player.newlyUnlockedItems) {
     gameState.player.newlyUnlockedItems = new Set();
   }
+  // Discovery announcements already shown this run (prevents re-showing unlock modals).
+  if (Array.isArray(loadedData.player.announcedUnlocks)) {
+    gameState.player.announcedUnlocks = new Set(loadedData.player.announcedUnlocks);
+  } else {
+    // Legacy saves: treat everything unlockable at the saved level as already announced
+    // so wave-end fallbacks cannot resurrect old discoveries.
+    gameState.player.announcedUnlocks = new Set();
+    seedAnnouncedUnlocksFromPlayerLevel(gameState);
+  }
   migrateSeenShopItems(gameState);
   syncNewlyUnlockedFromSeen(gameState);
   gameState.isMovementTokenMode = false;
@@ -1078,6 +1144,15 @@ export function applyLoadedState(gameState, loadedData) {
   }
   gameState.wave.isActive = loadedData.wave.isActive;
   gameState.wave.isScenario = loadedData.wave.isScenario || false;
+  // Wave-start player level for unlock checks. Mid-wave loads without this must NOT invent
+  // currentLevel-1 (that re-fired discovery modals for already-unlocked items).
+  if (Number.isFinite(loadedData.wave?.levelAtStart)) {
+    gameState.wave.levelAtStart = loadedData.wave.levelAtStart;
+  } else if (loadedData.wave?.isActive) {
+    gameState.wave.levelAtStart = gameState.player.level;
+  } else {
+    gameState.wave.levelAtStart = undefined;
+  }
   
   // Restore placement phase only if wave is not active (between waves)
   // If wave is active (mid-wave save), placement phase should be false
@@ -1101,6 +1176,7 @@ export function applyLoadedState(gameState, loadedData) {
   restoreLoadedTempPowerUps(gameState, loadedData);
   gameState.wave.scenarioName = loadedData.wave.scenarioName || null;
   gameState.wave.townBonusAward = loadedData.wave.townBonusAward ?? 0;
+  gameState.wave.townNoSpreadBonusAward = loadedData.wave.townNoSpreadBonusAward ?? 0;
   gameState.wave.pendingGroupRewards = loadedData.wave.pendingGroupRewards ?? null;
   // Deferred map transition (group-complete modal open): must match logical wave group or UI/rendering diverges from paths/spawners
   if (gameState.waveSystem) {
@@ -1199,9 +1275,31 @@ export function applyLoadedState(gameState, loadedData) {
     if (typeof loadedData.meta.showFpsCounter === 'boolean') {
       CONFIG.SHOW_FPS_COUNTER = loadedData.meta.showFpsCounter;
     }
+    if (typeof loadedData.meta.mapZoom === 'number' && Number.isFinite(loadedData.meta.mapZoom)) {
+      const levels = CONFIG.MAP_ZOOM_LEVELS || [0.75, 1, 1.25];
+      let bestIdx = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < levels.length; i++) {
+        const d = Math.abs(levels[i] - loadedData.meta.mapZoom);
+        if (d < bestDist) {
+          bestDist = d;
+          bestIdx = i;
+        }
+      }
+      CONFIG.MAP_ZOOM = levels[bestIdx];
+      gameState.renderer?.setMapZoom?.(CONFIG.MAP_ZOOM);
+      if (typeof window !== 'undefined' && typeof window.updateMapZoomSettingsUI === 'function') {
+        window.updateMapZoomSettingsUI();
+      }
+    }
     if (loadedData.meta.maxFiresExtinguishedByWave) {
       gameState.meta.maxFiresExtinguishedByWave = normalizeMaxFiresExtinguishedByWave(
         loadedData.meta.maxFiresExtinguishedByWave
+      );
+    }
+    if (loadedData.meta.maxVortexesExtinguishedByWave) {
+      gameState.meta.maxVortexesExtinguishedByWave = normalizeMaxVortexesExtinguishedByWave(
+        loadedData.meta.maxVortexesExtinguishedByWave
       );
     }
   }
@@ -1239,17 +1337,90 @@ export function applyLoadedState(gameState, loadedData) {
   gameState.gridSystem.reset();
   if (loadedData.grid && Array.isArray(loadedData.grid)) {
     loadedData.grid.forEach(hexData => {
-      gameState.fireSystem.igniteHex(hexData.q, hexData.r, hexData.fireType);
+      // Restore spawn-vs-spread origin so grove no-spread bonus stays accurate after load
+      gameState.fireSystem.igniteHex(
+        hexData.q,
+        hexData.r,
+        hexData.fireType,
+        !!hexData.fireIgnitedBySpawn,
+      );
       // Restore fire progress
       gameState.gridSystem.setHex(hexData.q, hexData.r, {
         burnDuration: hexData.burnDuration,
         extinguishProgress: hexData.extinguishProgress,
         maxExtinguishTime: hexData.maxExtinguishTime,
+        fireIgnitedBySpawn: !!hexData.fireIgnitedBySpawn,
       });
     });
   }
+
+  // Dungeon entrances before paths/spawners/dig sites — they own their hex until flooded.
+  // Vacate leftover ambient flags on the target hex so restore can succeed over a prior in-memory map;
+  // path/spawner/dig restore afterward yields to the entrance.
+  if (gameState.dungeonEntranceSystem) {
+    gameState.dungeonEntranceSystem.clearAllItems();
+    if (Array.isArray(loadedData.dungeonEntrances)) {
+      loadedData.dungeonEntrances.forEach((row) => {
+        if (row == null || row.q == null || row.r == null) return;
+        const hex = gameState.gridSystem.getHex(row.q, row.r);
+        if (hex && !hex.isTown && !hex.hasTower) {
+          gameState.gridSystem.setHex(row.q, row.r, {
+            isPath: false,
+            pathColor: null,
+            hasFireSpawner: false,
+            fireSpawnerType: null,
+            fireSpawnerColor: null,
+            hasDigSite: false,
+            digSiteId: null,
+            hasWaterTank: false,
+            waterTankId: null,
+            hasTempPowerUpItem: false,
+            tempPowerUpItemId: null,
+            hasMysteryItem: false,
+            mysteryItemId: null,
+            hasCurrencyItem: false,
+            currencyItemId: null,
+            hasBurningVault: false,
+            burningVaultId: null,
+            hasArtifactItem: false,
+            artifactItemId: null,
+            isBurning: false,
+          });
+        }
+        const spawnedId = gameState.dungeonEntranceSystem.spawnDungeonEntrance(row.q, row.r, {
+          level: row.level,
+          health: row.health,
+          maxHealth: row.maxHealth,
+          skipSpawnBounce: true,
+        });
+        if (spawnedId && row.health !== undefined) {
+          const item = gameState.dungeonEntranceSystem.getItem(spawnedId);
+          if (item) {
+            item.health = row.health;
+            item.maxHealth = row.maxHealth != null ? row.maxHealth : item.maxHealth;
+            if (row.level != null) item.level = row.level;
+          }
+        }
+      });
+    }
+    // Legacy / empty saves: ensure one entrance exists for the current wave group.
+    if (
+      !gameState.tutorialMode &&
+      !gameState.dungeonEntranceSystem.getActiveItem() &&
+      !loadedData.wave?.isActive
+    ) {
+      const wg =
+        loadedData.wave?.currentGroup ||
+        gameState.waveSystem?.currentWaveGroup ||
+        1;
+      gameState.dungeonEntranceSystem.ensureDungeonForWave(wg, {
+        skipSpawnBounce: true,
+      });
+    }
+  }
   
-  // Restore paths (use saved paths if available, otherwise generate new ones)
+  // Restore paths (use saved paths if available, otherwise generate new ones).
+  // setPathHexes / generatePaths both yield to dungeon entrance hexes.
   if (loadedData.paths && Array.isArray(loadedData.paths) && loadedData.paths.length > 0) {
     // Restore saved paths
     gameState.pathSystem.currentPaths = loadedData.paths;
@@ -1271,20 +1442,23 @@ export function applyLoadedState(gameState, loadedData) {
     }
   }
   
-  // Restore fire spawners (after paths are restored so valid locations are available)
+  // Restore fire spawners (after paths + dungeon so regen yields to entrance hexes)
   if (gameState.fireSpawnerSystem) {
     if (loadedData.fireSpawners && Array.isArray(loadedData.fireSpawners) && loadedData.fireSpawners.length > 0) {
-      // Restore saved spawners exactly as they were
+      // Restore saved spawners exactly as they were (skip hexes owned by a dungeon entrance)
       gameState.fireSpawnerSystem.clearSpawners();
+      const restoredSpawners = [];
       loadedData.fireSpawners.forEach(spawnerData => {
+        const hex = gameState.gridSystem.getHex(spawnerData.q, spawnerData.r);
+        if (hex?.hasDungeonEntrance) return;
         gameState.fireSpawnerSystem.placeSpawner(spawnerData.q, spawnerData.r, spawnerData.spawnerType);
+        restoredSpawners.push({
+          q: spawnerData.q,
+          r: spawnerData.r,
+          spawnerType: spawnerData.spawnerType,
+        });
       });
-      // Update currentSpawners array to match
-      gameState.fireSpawnerSystem.currentSpawners = loadedData.fireSpawners.map(sp => ({
-        q: sp.q,
-        r: sp.r,
-        spawnerType: sp.spawnerType
-      }));
+      gameState.fireSpawnerSystem.currentSpawners = restoredSpawners;
     } else {
       // No saved spawners (old save file) - regenerate based on effective map group
       let waveGroup = loadedData.wave.currentGroup;
@@ -1378,6 +1552,7 @@ export function applyLoadedState(gameState, loadedData) {
       const tankId = gameState.waterTankSystem.spawnWaterTank(tankData.q, tankData.r, {
         skipSpawnBounce: true,
         typeId: tankData.typeId,
+        fromMystery: !!tankData.spawnedFromMystery,
       });
       if (tankId && tankData.health !== undefined) {
         const tank = gameState.waterTankSystem.getWaterTank(tankId);
@@ -1430,6 +1605,7 @@ export function applyLoadedState(gameState, loadedData) {
     loadedData.tempPowerUpItems.forEach(itemData => {
       const itemId = gameState.tempPowerUpItemSystem.spawnTempPowerUpItem(itemData.q, itemData.r, itemData.powerUpId, {
         grantPermanent: !!itemData.grantPermanent,
+        fromMystery: !!itemData.spawnedFromMystery,
         skipSpawnBounce: true,
       });
       if (itemId && itemData.health !== undefined) {
@@ -1475,6 +1651,40 @@ export function applyLoadedState(gameState, loadedData) {
           if (item) {
             item.health = row.health;
             item.maxHealth = row.maxHealth != null ? row.maxHealth : item.maxHealth;
+          }
+        }
+      });
+    }
+  }
+
+  if (gameState.vortexSystem) {
+    gameState.vortexSystem.clearAllItems();
+    // Vortexes are wave-only — never restore into placement / between-wave state
+    if (loadedData.wave?.isActive && Array.isArray(loadedData.vortexes)) {
+      loadedData.vortexes.forEach((row) => {
+        if (row == null || row.q == null || row.r == null) return;
+        const spawnedId = gameState.vortexSystem.spawnVortex(row.q, row.r, {
+          level: row.level,
+          isFast: !!row.isFast,
+          inGrove: !!row.inGrove,
+          health: row.health,
+          maxHealth: row.maxHealth,
+          pathIndex: row.pathIndex,
+          pathPosition: row.pathPosition,
+          moveTimer: row.moveTimer,
+          skipSpawnBounce: true,
+          notifyAppear: false,
+          playSpawnSfx: false,
+        });
+        if (spawnedId && row.health !== undefined) {
+          const item = gameState.vortexSystem.getItem(spawnedId);
+          if (item) {
+            item.health = row.health;
+            item.maxHealth = row.maxHealth != null ? row.maxHealth : item.maxHealth;
+            if (row.level != null) item.level = row.level;
+            item.isFast = !!row.isFast;
+            item.inGrove = !!row.inGrove || !!item.inGrove;
+            if (row.moveTimer != null) item.moveTimer = row.moveTimer;
           }
         }
       });

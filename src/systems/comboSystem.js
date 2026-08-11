@@ -60,6 +60,7 @@ export class ComboSystem {
     /** @type {Array<{ q: number, r: number, time: number }>} */
     this.pending = [];
     this.lastEventTime = 0;
+    this.batchStartTime = 0;
   }
 
   /**
@@ -69,26 +70,78 @@ export class ComboSystem {
    */
   recordExtinguished(q, r) {
     const now = performance.now();
+    if (this.pending.length === 0) {
+      this.batchStartTime = now;
+    }
     this.pending.push({ q, r, time: now });
     this.lastEventTime = now;
   }
 
   /**
-   * Called each render frame; flushes the batch once the window has elapsed.
+   * Called each render frame; flushes the batch once idle or max span is reached.
    * @param {number} _deltaTime - Unused; timing uses performance.now()
    */
   updateFrame(_deltaTime) {
     if (this.pending.length === 0) return;
-    const windowMs = CONFIG.COMBO_BATCH_WINDOW_MS ?? 200;
-    if (performance.now() - this.lastEventTime < windowMs) return;
-    this.flush();
+
+    const idleMs = CONFIG.COMBO_BATCH_WINDOW_MS ?? 150;
+    const maxSpanMs = CONFIG.COMBO_BATCH_MAX_SPAN_MS ?? 300;
+    const now = performance.now();
+
+    const spanExceeded = now - this.batchStartTime >= maxSpanMs;
+    const idleElapsed = now - this.lastEventTime >= idleMs;
+
+    if (spanExceeded) {
+      this.flushUpTo(this.batchStartTime + maxSpanMs);
+      return;
+    }
+    if (idleElapsed) {
+      this.flush();
+    }
+  }
+
+  /**
+   * Process pending events with time <= cutoff; leave newer events for the next batch.
+   * @param {number} cutoffTime - performance.now() upper bound (inclusive)
+   */
+  flushUpTo(cutoffTime) {
+    if (this.pending.length === 0) return;
+
+    const toProcess = [];
+    const remaining = [];
+    for (const evt of this.pending) {
+      if (evt.time <= cutoffTime) toProcess.push(evt);
+      else remaining.push(evt);
+    }
+    this.pending = remaining;
+
+    if (remaining.length > 0) {
+      this.batchStartTime = remaining[0].time;
+      this.lastEventTime = remaining[remaining.length - 1].time;
+    } else {
+      this.batchStartTime = 0;
+      this.lastEventTime = 0;
+    }
+
+    if (toProcess.length > 0) {
+      this.evaluateBatch(toProcess);
+    }
   }
 
   flush() {
     if (this.pending.length === 0) return;
-
     const events = this.pending;
     this.pending = [];
+    this.batchStartTime = 0;
+    this.lastEventTime = 0;
+    this.evaluateBatch(events);
+  }
+
+  /**
+   * @param {Array<{ q: number, r: number, time: number }>} events
+   */
+  evaluateBatch(events) {
+    if (!events.length) return;
 
     const uniqueHexes = [];
     const seen = new Set();
@@ -150,5 +203,6 @@ export class ComboSystem {
   reset() {
     this.pending = [];
     this.lastEventTime = 0;
+    this.batchStartTime = 0;
   }
 }

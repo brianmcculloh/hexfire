@@ -129,6 +129,9 @@ export function showMovementTokenSellbackModal(gameState) {
   }
 
   gameState?.inputHandler?.tooltipSystem?.hide?.();
+  if (typeof window !== 'undefined' && window.hideAutoShieldsPicker) {
+    window.hideAutoShieldsPicker();
+  }
   hideMovementTokenSellbackPicker();
 
   const overlay = document.createElement('div');

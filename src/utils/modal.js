@@ -1,3 +1,54 @@
+const SHOP_QUANTITY_HARD_CAP = 999;
+
+/**
+ * Total cost for `quantity` units at a flat unit price.
+ * @param {number} unitCost
+ * @param {number} quantity
+ */
+function flatPurchaseTotalCost(unitCost, quantity) {
+  const unit = Math.max(0, Number(unitCost) || 0);
+  const qty = Math.max(0, Math.floor(Number(quantity) || 0));
+  return unit * qty;
+}
+
+/**
+ * Max units affordable for the given currency / cost function.
+ * @param {number} currency
+ * @param {(quantity: number) => number} getTotalCost
+ * @param {number} [hardMax]
+ */
+function maxAffordablePurchaseQuantity(currency, getTotalCost, hardMax = SHOP_QUANTITY_HARD_CAP) {
+  const money = Math.max(0, Number(currency) || 0);
+  const cap = Math.max(0, Math.floor(Number(hardMax) || 0));
+  if (cap <= 0 || typeof getTotalCost !== 'function') return 0;
+
+  let maxQty = 0;
+  for (let qty = 1; qty <= cap; qty++) {
+    const total = Number(getTotalCost(qty)) || 0;
+    if (total > money) break;
+    maxQty = qty;
+  }
+  return maxQty;
+}
+
+/**
+ * Format the cost line for quantity purchases.
+ * Flat prices show `$400 × 2 = $800` when qty > 1; escalating totals show `$total` only.
+ * @param {number} unitCost
+ * @param {number} quantity
+ * @param {number} totalCost
+ * @param {boolean} isFlatPricing
+ */
+function formatPurchaseCostLabel(unitCost, quantity, totalCost, isFlatPricing) {
+  const qty = Math.max(0, Math.floor(Number(quantity) || 0));
+  const total = Math.max(0, Math.floor(Number(totalCost) || 0));
+  if (qty > 1 && isFlatPricing) {
+    const unit = Math.max(0, Math.floor(Number(unitCost) || 0));
+    return `$${unit} × ${qty} = $${total}`;
+  }
+  return `$${total}`;
+}
+
 // Simple reusable confirm modal helper
 export function showConfirmModal({
   title = 'Confirm',
@@ -20,6 +71,25 @@ export function showConfirmModal({
   pinDialogRight = false,
   /** When `cost` is set: `'spend'` (default) shows red −$ on confirm; `'gain'` shows green +$ like wave rewards. */
   currencyFloatDirection = 'spend',
+  /**
+   * Shop multi-buy quantity selector.
+   * - `true` / `false` force on/off
+   * - default: on for `confirmText === 'Purchase'` with a spend `cost`
+   */
+  allowQuantity = null,
+  /** Player currency for affordability cap (defaults to `window.gameState.player.currency`). */
+  playerCurrency = null,
+  /** Optional hard max (e.g. 1 for one-time items). */
+  maxQuantity = null,
+  /** Optional `(quantity) => totalCost` for escalating prices. Defaults to `cost * quantity`. */
+  getPurchaseTotalCost = null,
+  /** Initial selected quantity (clamped to affordability). */
+  initialQuantity = 1,
+  /**
+   * When true, quantity stays fixed (e.g. tutorial shield purchase).
+   * Up/down clicks still fire but show the tutorial-blocked notice instead of changing qty.
+   */
+  lockQuantity = false,
 } = {}) {
   return new Promise((resolve) => {
     const overlay = document.getElementById('confirmModal');
@@ -37,32 +107,14 @@ export function showConfirmModal({
 
     // Set content
     titleEl.textContent = title;
-    
-    // Handle item icon - insert before message if provided
-    if (itemIcon) {
-      // Check if there's already an icon container, if not create one
-      let iconContainer = msgEl.previousElementSibling;
-      if (!iconContainer || !iconContainer.classList.contains('modal-item-icon')) {
-        iconContainer = document.createElement('div');
-        iconContainer.className = 'modal-item-icon';
-        iconContainer.style.cssText = 'display: flex; justify-content: center; align-items: center; margin-bottom: 16px; margin-top: 8px;';
-        msgEl.parentNode.insertBefore(iconContainer, msgEl);
-      }
-      iconContainer.innerHTML = itemIcon;
-      iconContainer.style.display = 'flex';
-    } else {
-      // Hide icon container if no icon provided
-      const iconContainer = msgEl.previousElementSibling;
-      if (iconContainer && iconContainer.classList.contains('modal-item-icon')) {
-        iconContainer.style.display = 'none';
-      }
-    }
-    
-    // Handle cost display for purchases/upgrades - show prominently with currency icon
-    // Remove any existing cost container first
-    const existingCostContainer = msgEl.parentNode.querySelector('.modal-cost-display');
-    if (existingCostContainer) {
-      existingCostContainer.remove();
+
+    // Clear prior purchase-item / quantity / cost UI from previous opens
+    msgEl.parentNode.querySelector('.modal-purchase-item-row')?.remove();
+    msgEl.parentNode.querySelector('.modal-quantity-selector')?.remove();
+    msgEl.parentNode.querySelector('.modal-cost-display')?.remove();
+    const priorIcon = msgEl.previousElementSibling;
+    if (priorIcon?.classList?.contains('modal-item-icon')) {
+      priorIcon.remove();
     }
     
     // Show message (description) for all modals
@@ -78,6 +130,178 @@ export function showConfirmModal({
     const isPurchase = confirmText === 'Purchase';
     const isUpgrade = confirmText === 'Upgrade';
     const isCostedAction = cost !== null;
+    const isCurrencyGain = isCostedAction && currencyFloatDirection === 'gain';
+    const resolvedCurrency = Number(
+      playerCurrency ??
+        (typeof window !== 'undefined' ? window.gameState?.player?.currency : 0) ??
+        0
+    ) || 0;
+    const enableQuantity =
+      allowQuantity === true ||
+      (allowQuantity !== false && isPurchase && isCostedAction && !isCurrencyGain);
+
+    // Item icon (standalone, or later wrapped with quantity as: icon × qty)
+    let iconContainer = null;
+    if (itemIcon) {
+      iconContainer = document.createElement('div');
+      iconContainer.className = 'modal-item-icon';
+      iconContainer.innerHTML = itemIcon;
+      msgEl.parentNode.insertBefore(iconContainer, msgEl);
+    }
+
+    const unitCost = isCostedAction ? Math.max(0, Number(cost) || 0) : 0;
+    const isFlatPricing = typeof getPurchaseTotalCost !== 'function';
+    const resolveTotalCost = (quantity) => {
+      if (typeof getPurchaseTotalCost === 'function') {
+        return Math.max(0, Math.floor(Number(getPurchaseTotalCost(quantity)) || 0));
+      }
+      return flatPurchaseTotalCost(unitCost, quantity);
+    };
+
+    const hardMax =
+      maxQuantity != null
+        ? Math.min(SHOP_QUANTITY_HARD_CAP, Math.max(0, Math.floor(Number(maxQuantity) || 0)))
+        : SHOP_QUANTITY_HARD_CAP;
+    const maxAffordable = enableQuantity
+      ? maxAffordablePurchaseQuantity(resolvedCurrency, resolveTotalCost, hardMax)
+      : hardMax;
+
+    let selectedQuantity = enableQuantity
+      ? Math.min(maxAffordable, Math.max(0, Math.floor(Number(initialQuantity) || 0)))
+      : 1;
+    // Prefer starting at 1 when the player can afford at least one
+    if (enableQuantity && selectedQuantity === 0 && maxAffordable >= 1) {
+      selectedQuantity = 1;
+    } else if (enableQuantity && selectedQuantity < 1 && maxAffordable >= 1) {
+      selectedQuantity = Math.min(1, maxAffordable);
+    }
+
+    let amountSpan = null;
+    let qtyValueEl = null;
+    let qtyUpBtn = null;
+    let qtyDownBtn = null;
+    let currentTotalCost = isCostedAction ? resolveTotalCost(enableQuantity ? selectedQuantity : 1) : 0;
+
+    const syncQuantityUi = () => {
+      if (!enableQuantity) return;
+      currentTotalCost = resolveTotalCost(selectedQuantity);
+      if (qtyValueEl) qtyValueEl.textContent = String(selectedQuantity);
+      if (qtyUpBtn) {
+        // Tutorial lock: keep arrows clickable so we can show the blocked notice
+        const canIncrease = lockQuantity
+          ? true
+          : selectedQuantity < maxAffordable &&
+            resolveTotalCost(selectedQuantity + 1) <= resolvedCurrency;
+        qtyUpBtn.disabled = !canIncrease;
+        qtyUpBtn.classList.toggle('is-disabled', !canIncrease && !lockQuantity);
+      }
+      if (qtyDownBtn) {
+        // Minimum purchase quantity is 1 (never allow 0 via the stepper)
+        const canDecrease = lockQuantity ? true : selectedQuantity > 1;
+        qtyDownBtn.disabled = !canDecrease;
+        qtyDownBtn.classList.toggle('is-disabled', !canDecrease && !lockQuantity);
+      }
+      if (amountSpan) {
+        const label = formatPurchaseCostLabel(
+          unitCost,
+          selectedQuantity,
+          currentTotalCost,
+          isFlatPricing
+        );
+        amountSpan.textContent = label;
+        // Slightly smaller when showing "$unit × qty = $total"
+        amountSpan.style.fontSize =
+          selectedQuantity > 1 && isFlatPricing && label.includes('×') ? '28px' : '36px';
+      }
+      const canPurchase = selectedQuantity > 0 && currentTotalCost <= resolvedCurrency;
+      okBtn.disabled = !canPurchase;
+      okBtn.classList.toggle('is-disabled', !canPurchase);
+      okBtn.style.opacity = canPurchase ? '' : '0.45';
+      okBtn.style.pointerEvents = canPurchase ? '' : 'none';
+    };
+
+    if (enableQuantity) {
+      const qtyWrap = document.createElement('div');
+      qtyWrap.className = 'modal-quantity-selector';
+      qtyWrap.setAttribute('role', 'group');
+      qtyWrap.setAttribute('aria-label', 'Purchase quantity');
+
+      qtyUpBtn = document.createElement('button');
+      qtyUpBtn.type = 'button';
+      qtyUpBtn.className = 'modal-quantity-btn modal-quantity-btn-up';
+      qtyUpBtn.setAttribute('aria-label', 'Increase quantity');
+      qtyUpBtn.setAttribute('data-no-click-sfx', '1');
+      qtyUpBtn.innerHTML = '<span aria-hidden="true">▲</span>';
+
+      qtyValueEl = document.createElement('div');
+      qtyValueEl.className = 'modal-quantity-value';
+      qtyValueEl.setAttribute('aria-live', 'polite');
+      qtyValueEl.textContent = String(selectedQuantity);
+
+      qtyDownBtn = document.createElement('button');
+      qtyDownBtn.type = 'button';
+      qtyDownBtn.className = 'modal-quantity-btn modal-quantity-btn-down';
+      qtyDownBtn.setAttribute('aria-label', 'Decrease quantity');
+      qtyDownBtn.setAttribute('data-no-click-sfx', '1');
+      qtyDownBtn.innerHTML = '<span aria-hidden="true">▼</span>';
+
+      qtyWrap.appendChild(qtyUpBtn);
+      qtyWrap.appendChild(qtyValueEl);
+      qtyWrap.appendChild(qtyDownBtn);
+
+      // Layout: [item icon] × [qty stepper] on one row
+      const itemRow = document.createElement('div');
+      itemRow.className = 'modal-purchase-item-row';
+
+      if (iconContainer) {
+        iconContainer.classList.add('modal-item-icon--with-qty');
+        itemRow.appendChild(iconContainer);
+      }
+
+      const timesEl = document.createElement('span');
+      timesEl.className = 'modal-quantity-times';
+      timesEl.setAttribute('aria-hidden', 'true');
+      timesEl.textContent = '×';
+      itemRow.appendChild(timesEl);
+      itemRow.appendChild(qtyWrap);
+      msgEl.parentNode.insertBefore(itemRow, msgEl);
+
+      const notifyQuantityLocked = (e) => {
+        const notify = typeof window !== 'undefined'
+          ? window.gameState?.showTutorialBlockedNotification
+          : null;
+        if (typeof notify === 'function') {
+          notify(e?.clientX ?? 0, e?.clientY ?? 0);
+        }
+      };
+
+      qtyUpBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (lockQuantity) {
+          notifyQuantityLocked(e);
+          return;
+        }
+        if (qtyUpBtn.disabled) return;
+        if (typeof window !== 'undefined' && window.AudioManager) {
+          window.AudioManager.playSFX('button1');
+        }
+        selectedQuantity = Math.min(maxAffordable, selectedQuantity + 1);
+        syncQuantityUi();
+      });
+      qtyDownBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (lockQuantity) {
+          notifyQuantityLocked(e);
+          return;
+        }
+        if (qtyDownBtn.disabled) return;
+        if (typeof window !== 'undefined' && window.AudioManager) {
+          window.AudioManager.playSFX('button1');
+        }
+        selectedQuantity = Math.max(1, selectedQuantity - 1);
+        syncQuantityUi();
+      });
+    }
     
     if (isCostedAction) {
       const costContainer = document.createElement('div');
@@ -96,14 +320,22 @@ export function showConfirmModal({
       currencyIcon.src = 'assets/images/misc/total_earned.png';
       currencyIcon.style.cssText = 'width: 40px; height: auto; image-rendering: crisp-edges;';
 
-      const amountSpan = document.createElement('span');
-      amountSpan.textContent = `$${cost}`;
+      amountSpan = document.createElement('span');
+      amountSpan.className = 'modal-cost-amount';
+      amountSpan.textContent = enableQuantity
+        ? formatPurchaseCostLabel(unitCost, selectedQuantity, currentTotalCost, isFlatPricing)
+        : `$${cost}`;
       amountSpan.style.cssText = 'color: #00FF88; font-size: 36px; font-weight: bold;';
 
       costContainer.appendChild(currencyIcon);
       costContainer.appendChild(amountSpan);
 
+      // Keep order: item row (icon × qty) → message → cost
       msgEl.parentNode.insertBefore(costContainer, msgEl.nextSibling);
+    }
+
+    if (enableQuantity) {
+      syncQuantityUi();
     }
     
     // If confirmText is "Purchase", add the total_earned.png image to the left
@@ -145,6 +377,15 @@ export function showConfirmModal({
     
     // Update confirm button class
     okBtn.className = `choice-btn cta-button ${confirmButtonClass}`;
+    if (enableQuantity) {
+      // Re-apply disabled styling after class reset
+      syncQuantityUi();
+    } else {
+      okBtn.disabled = false;
+      okBtn.classList.remove('is-disabled');
+      okBtn.style.opacity = '';
+      okBtn.style.pointerEvents = '';
+    }
     
     // Set dark overlay background and pointer events like other modals
     overlay.style.background = 'rgba(0, 0, 0, 0.85)';
@@ -188,6 +429,12 @@ export function showConfirmModal({
           delete overlay.dataset.confirmModalKind;
           cancelBtn.removeAttribute('data-no-click-sfx');
           cancelBtn.style.display = '';
+          okBtn.disabled = false;
+          okBtn.classList.remove('is-disabled');
+          okBtn.style.opacity = '';
+          okBtn.style.pointerEvents = '';
+          msgEl.parentNode.querySelector('.modal-purchase-item-row')?.remove();
+          msgEl.parentNode.querySelector('.modal-quantity-selector')?.remove();
           if (choicesRow) choicesRow.classList.remove('modal-choices-single');
           if (messageIsHtml) {
             msgEl.innerHTML = '';
@@ -200,6 +447,12 @@ export function showConfirmModal({
       if (e.key === 'Enter') {
         e.preventDefault();
         onOk();
+      } else if (e.key === 'ArrowUp' && enableQuantity) {
+        e.preventDefault();
+        qtyUpBtn?.click();
+      } else if (e.key === 'ArrowDown' && enableQuantity) {
+        e.preventDefault();
+        qtyDownBtn?.click();
       } else if (e.key === 'Escape') {
         e.preventDefault();
         if (hideCancel) {
@@ -212,11 +465,11 @@ export function showConfirmModal({
 
     const onOk = async () => {
       if (settled) return;
+      if (enableQuantity && selectedQuantity <= 0) return;
       settled = true;
       detachHandlers();
 
       if (typeof window !== 'undefined' && window.AudioManager) {
-        const isCurrencyGain = isCostedAction && currencyFloatDirection === 'gain';
         if (isPurchase || (isCostedAction && !isCurrencyGain)) {
           window.AudioManager.playSFX('purchase');
         } else {
@@ -227,16 +480,18 @@ export function showConfirmModal({
       if (isCostedAction) {
         const costContainer = msgEl.parentNode.querySelector('.modal-cost-display');
         if (costContainer) {
+          const floatAmount = enableQuantity ? currentTotalCost : cost;
           if (currencyFloatDirection === 'gain') {
-            createModalFloatingText(costContainer, `+$${cost}`, '#00FF88', 48, 1.6875, 40, -45);
+            createModalFloatingText(costContainer, `+$${floatAmount}`, '#00FF88', 48, 1.6875, 40, -45);
           } else {
-            createModalFloatingText(costContainer, `-$${cost}`, '#FF3963', 32, 1.5, 50, -20);
+            createModalFloatingText(costContainer, `-$${floatAmount}`, '#FF3963', 32, 1.5, 50, -20);
           }
         }
       }
       
       await cleanup();
-      resolve(true);
+      // Quantity purchases resolve to the selected count; all other confirms resolve true/false.
+      resolve(enableQuantity ? selectedQuantity : true);
     };
     const onCancel = async () => {
       if (settled) return;

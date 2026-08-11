@@ -47,8 +47,8 @@ export const TUTORIAL_LIGHTNING_HEX = { q: -7, r: 7 };
 /** Fire spawner hex (cinder spawner above rightmost path) */
 export const TUTORIAL_FIRE_SPAWNER_HEX = { q: 10, r: -3 };
 
-/** Hex where user must place the first jet tower (up 1, right 1 from previous - gap between fire and tower) */
-export const TUTORIAL_TOWER_PLACEMENT_HEX = { q: -5, r: 5 };
+/** Hex where user must place the first jet tower (adjacent to burning hex; L1 jet range is 1) */
+export const TUTORIAL_TOWER_PLACEMENT_HEX = { q: -6, r: 6 };
 
 /** Step 9 part 1: initial placement hex (two left of final) - place tower here first; step 10 drags 2 hexes right */
 export const TUTORIAL_STEP9_INITIAL_PLACEMENT_HEX = { q: 5, r: 0 };
@@ -76,9 +76,9 @@ export const TUTORIAL_STEP13_RIGHT_EDGE_HEXES = [
 /** Step 13: direction from tower at (7,0) along the path toward (8,0) - East = 0 */
 export const TUTORIAL_STEP13_DIRECTION_ALONG_PATH = 0;
 
-/** Step 26: water tank hex - down and to the left of fire spawner (SW neighbor of 10,-3) */
-export const TUTORIAL_WATER_TANK_HEX = { q: 9, r: -2 };
-/** Step 26: direction from tower at (7,0) toward water tank (9,-2) - NE = 1 */
+/** Step 27+: water bucket hex — SW of old spawner-adjacent spot so L1 jet at (7,0) can reach it */
+export const TUTORIAL_WATER_TANK_HEX = { q: 8, r: -1 };
+/** Step 27: direction from tower at (7,0) toward water tank (8,-1) - NE = 1 */
 export const TUTORIAL_STEP26_DIRECTION_TOWARD_WATER_TANK = 1;
 
 /**
@@ -147,10 +147,12 @@ export const TUTORIAL_STEPS = [
     arrowSide: 'left',
     offsetX: -10 // Shift 50px right from -60
   },
-  // Step 7: Arrow + bubble at newly placed tower - rotate it, then rotate back to face the burning hex
+  // Step 7: Arrow + bubble at newly placed tower - rotate it, then rotate back to face the burning hex.
+  // Message is resolved at display time for hover vs click tower-select mode (see updateTutorialArrow).
   {
     targetHex: TUTORIAL_TOWER_PLACEMENT_HEX,
-    message: 'Rotate this tower toward the burning hex. Hover to see rotation arrows.',
+    message: 'Rotate this tower toward the burning hex. Hover over the tower to rotate.',
+    messageClickMode: 'Rotate this tower toward the burning hex. Click the tower to rotate.',
     arrowSide: 'left'
   },
   // Step 8: Placement phase explanation
@@ -297,12 +299,13 @@ export const TUTORIAL_STEPS = [
     bubbleBelowArrow: true,
     offsetX: 5
   },
-  // Step 27: Water tank adjacent to fire spawner - rotate tower to hit it (advance when tank explodes)
+  // Step 27: Water bucket adjacent to path tower - rotate tower to hit it (advance when tank explodes)
   {
     targetHex: TUTORIAL_WATER_TANK_HEX,
     message: "Nice job! Hey look, a WATER BUCKET randomly spawned! Rotate the tower on the path to target it.",
     arrowSide: 'left',
-    offsetX: -20  // Shift 40px right from -60
+    offsetX: -20,
+    offsetY: 8
   },
   // Step 28: Point at Resume button - tell user to resume (advance when clicked; then 1s delay before step 29)
   {

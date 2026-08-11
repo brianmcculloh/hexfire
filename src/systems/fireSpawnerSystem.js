@@ -141,11 +141,12 @@ export class FireSpawnerSystem {
         const hex = this.gridSystem.getHex(q, r);
         if (!hex) continue;
         
-        // Cannot spawn on: town hexes, path hexes, within 2 rings of town, water tank hexes
+        // Cannot spawn on: town, path, town buffer, water tanks, or persistent dungeon entrances
         if (hex.isTown) continue;
         if (hex.isPath) continue;
         if (this.isWithinTownBuffer(q, r)) continue;
         if (hex.hasWaterTank) continue;
+        if (hex.hasDungeonEntrance) continue;
         
         validLocations.push({ q, r });
       }
@@ -247,11 +248,13 @@ export class FireSpawnerSystem {
   placeSpawner(q, r, spawnerType) {
     const hex = this.gridSystem.getHex(q, r);
     if (!hex) return;
-    
+    // Persistent dungeon entrances own their hex — never overwrite.
+    if (hex.hasDungeonEntrance) return;
+
     // Get fire type color for the spawner
     const fireConfig = getFireTypeConfig(spawnerType);
     const spawnerColor = fireConfig ? fireConfig.color : CONFIG.COLOR_FIRE_CINDER;
-    
+
     this.gridSystem.setHex(q, r, {
       hasFireSpawner: true,
       fireSpawnerType: spawnerType,

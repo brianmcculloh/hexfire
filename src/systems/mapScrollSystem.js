@@ -39,6 +39,11 @@ export class MapScrollSystem {
     this.scrollAnimationStart = { x: 0, y: 0 };
     this.scrollAnimationDuration = 0;
     this.scrollAnimationElapsed = 0;
+
+    // Click-drag pan (grab the map)
+    this.isPanning = false;
+    this._panLastClientX = 0;
+    this._panLastClientY = 0;
   }
 
   /**
@@ -122,6 +127,55 @@ export class MapScrollSystem {
   }
 
   /**
+   * Apply a camera offset delta with the same boundary rules as wheel/edge scroll.
+   * Positive deltaX/deltaY moves the map with the pointer (grab-to-pan).
+   * @param {number} deltaOffsetX
+   * @param {number} deltaOffsetY
+   */
+  applyCameraDelta(deltaOffsetX, deltaOffsetY) {
+    if (!deltaOffsetX && !deltaOffsetY) return;
+
+    const newOffsetX = this.renderer.offsetX + deltaOffsetX;
+    const newOffsetY = this.renderer.offsetY + deltaOffsetY;
+
+    // visible extents account for camera zoom
+    const visible = this.renderer.getVisibleWorldExtents
+      ? this.renderer.getVisibleWorldExtents(newOffsetX, newOffsetY)
+      : null;
+    const visibleLeft = visible ? visible.left : -newOffsetX;
+    const visibleRight = visible ? visible.right : (this.renderer.canvasCssWidth || this.canvas.width) - newOffsetX;
+    const visibleTop = visible ? visible.top : -newOffsetY;
+    const visibleBottom = visible ? visible.bottom : (this.renderer.canvasCssHeight || this.canvas.height) - newOffsetY;
+
+    let finalOffsetX = this.renderer.offsetX;
+    let finalOffsetY = this.renderer.offsetY;
+
+    // deltaOffsetX > 0 reveals more of the left edge (same as wheel scrollAmountX < 0)
+    if (deltaOffsetX > 0) {
+      if (visibleLeft > this.mapBounds.minX) {
+        finalOffsetX = newOffsetX;
+      }
+    } else if (deltaOffsetX < 0) {
+      if (visibleRight < this.mapBounds.maxX) {
+        finalOffsetX = newOffsetX;
+      }
+    }
+
+    if (deltaOffsetY > 0) {
+      if (visibleTop > this.mapBounds.minY) {
+        finalOffsetY = newOffsetY;
+      }
+    } else if (deltaOffsetY < 0) {
+      if (visibleBottom < this.mapBounds.maxY) {
+        finalOffsetY = newOffsetY;
+      }
+    }
+
+    this.renderer.offsetX = finalOffsetX;
+    this.renderer.offsetY = finalOffsetY;
+  }
+
+  /**
    * Apply wheel scroll directly to camera position for linear scrolling
    * @param {number} deltaX - Horizontal wheel delta
    * @param {number} deltaY - Vertical wheel delta
@@ -134,58 +188,54 @@ export class MapScrollSystem {
     if (this.mouseOverUI) {
       return;
     }
-    
-    // Apply wheel scroll directly to camera position for linear movement
-    // Each wheel tick moves the camera by a fixed amount
-    const scrollAmountX = deltaX * speed;
-    const scrollAmountY = deltaY * speed;
-    
-    // Calculate new camera position
-    const newOffsetX = this.renderer.offsetX - scrollAmountX;
-    const newOffsetY = this.renderer.offsetY - scrollAmountY;
-    
-    // Apply boundary checking (same logic as applyScroll method)
-    // Use CSS dimensions, not DPR-scaled backing buffer dimensions
-    const canvasWidth = this.renderer.canvasCssWidth || this.canvas.width;
-    const canvasHeight = this.renderer.canvasCssHeight || this.canvas.height;
-    const visibleLeft = -newOffsetX;
-    const visibleRight = canvasWidth - newOffsetX;
-    const visibleTop = -newOffsetY;
-    const visibleBottom = canvasHeight - newOffsetY;
-    
-    // Check boundaries and apply final offset
-    let finalOffsetX = this.renderer.offsetX;
-    let finalOffsetY = this.renderer.offsetY;
-    
-    // Horizontal boundary check
-    if (scrollAmountX < 0) {
-      // Scrolling left - check if we can see more of the left edge
-      if (visibleLeft > this.mapBounds.minX) {
-        finalOffsetX = newOffsetX;
-      }
-    } else if (scrollAmountX > 0) {
-      // Scrolling right - check if we can see more of the right edge
-      if (visibleRight < this.mapBounds.maxX) {
-        finalOffsetX = newOffsetX;
-      }
+
+    // Wheel delta positive → reveal more of that side (opposite of grab-pan delta)
+    this.applyCameraDelta(-(deltaX * speed), -(deltaY * speed));
+  }
+
+  /**
+   * Begin click-drag map pan at the given client coordinates.
+   * @param {number} clientX
+   * @param {number} clientY
+   * @returns {boolean}
+   */
+  startPan(clientX, clientY) {
+    if (!CONFIG.ENABLE_CLICK_TO_SCROLL) return false;
+    if (this.gameState.tutorialMode) return false;
+    if (this.isPanning) return false;
+
+    this.isPanning = true;
+    this._panLastClientX = clientX;
+    this._panLastClientY = clientY;
+    this.scrollAnimationTarget = null;
+    this.scrollVelocity = { x: 0, y: 0 };
+    this.targetScrollVelocity = { x: 0, y: 0 };
+    return true;
+  }
+
+  /**
+   * Continue click-drag map pan.
+   * @param {number} clientX
+   * @param {number} clientY
+   */
+  updatePan(clientX, clientY) {
+    if (!this.isPanning) return;
+    const dx = clientX - this._panLastClientX;
+    const dy = clientY - this._panLastClientY;
+    this._panLastClientX = clientX;
+    this._panLastClientY = clientY;
+    if (dx || dy) {
+      this.applyCameraDelta(dx, dy);
     }
-    
-    // Vertical boundary check
-    if (scrollAmountY < 0) {
-      // Scrolling up - check if we can see more of the top edge
-      if (visibleTop > this.mapBounds.minY) {
-        finalOffsetY = newOffsetY;
-      }
-    } else if (scrollAmountY > 0) {
-      // Scrolling down - check if we can see more of the bottom edge
-      if (visibleBottom < this.mapBounds.maxY) {
-        finalOffsetY = newOffsetY;
-      }
-    }
-    
-    // Apply the final offset directly
-    this.renderer.offsetX = finalOffsetX;
-    this.renderer.offsetY = finalOffsetY;
+  }
+
+  /**
+   * End click-drag map pan.
+   */
+  endPan() {
+    this.isPanning = false;
+    this._panLastClientX = 0;
+    this._panLastClientY = 0;
   }
 
   /**
@@ -196,6 +246,8 @@ export class MapScrollSystem {
     
     // Tutorial: lock edge scrolling - map position is guard-railed per step
     if (this.gameState.tutorialMode) return;
+    // Don't edge-scroll while the player is click-dragging the map
+    if (this.isPanning) return;
     // Check if edge scrolling is enabled
     if (!CONFIG.ENABLE_EDGE_SCROLLING) {
       return;
@@ -305,14 +357,19 @@ export class MapScrollSystem {
     // Calculate new camera position
     const newOffsetX = this.renderer.offsetX - this.scrollVelocity.x;
     const newOffsetY = this.renderer.offsetY - this.scrollVelocity.y;
-    
-    // Match wheel scroll: use CSS layout size (not DPR-scaled backing store) for boundary checks
-    const canvasWidth = this.renderer.canvasCssWidth || this.canvas.width;
-    const canvasHeight = this.renderer.canvasCssHeight || this.canvas.height;
-    const visibleLeft = -this.renderer.offsetX;
-    const visibleRight = canvasWidth - this.renderer.offsetX;
-    const visibleTop = -this.renderer.offsetY;
-    const visibleBottom = canvasHeight - this.renderer.offsetY;
+
+    // evaluate the *proposed* offset's visible extents (zoom-aware)
+    const visible = this.renderer.getVisibleWorldExtents
+      ? this.renderer.getVisibleWorldExtents(newOffsetX, newOffsetY)
+      : null;
+    const visibleLeft = visible ? visible.left : -newOffsetX;
+    const visibleRight = visible
+      ? visible.right
+      : (this.renderer.canvasCssWidth || this.canvas.width) - newOffsetX;
+    const visibleTop = visible ? visible.top : -newOffsetY;
+    const visibleBottom = visible
+      ? visible.bottom
+      : (this.renderer.canvasCssHeight || this.canvas.height) - newOffsetY;
     
     // Check if we can scroll in each direction
     let finalOffsetX = this.renderer.offsetX;
@@ -385,6 +442,7 @@ export class MapScrollSystem {
       velocity: this.scrollVelocity,
       targetVelocity: this.targetScrollVelocity,
       isScrolling: this.isScrolling,
+      isPanning: this.isPanning,
       scrollDirection: this.scrollDirection,
       mousePos: this.mousePos,
       mouseInCanvas: this.mouseInCanvas,
@@ -431,8 +489,17 @@ export class MapScrollSystem {
     const targetX = hBias === 'left' ? 0.35 : hBias === 'right' ? 0.65 : 0.5;
     const targetY = vBias === 'top' ? 0.35 : vBias === 'bottom' ? 0.65 : 0.5;
 
-    let newOffsetX = canvasWidth * targetX - worldX;
-    let newOffsetY = canvasHeight * targetY - worldY;
+    // place hex at screen fraction, then invert zoom to logical offset
+    const z = this.renderer.getMapZoom ? this.renderer.getMapZoom() : 1;
+    const cx = canvasWidth / 2;
+    const cy = canvasHeight / 2;
+    const screenTargetX = canvasWidth * targetX;
+    const screenTargetY = canvasHeight * targetY;
+    const logicalTargetX = (screenTargetX - cx) / z + cx;
+    const logicalTargetY = (screenTargetY - cy) / z + cy;
+
+    let newOffsetX = logicalTargetX - worldX;
+    let newOffsetY = logicalTargetY - worldY;
     if (options.extraOffsetX) {
       newOffsetX += options.extraOffsetX; // Positive = scroll left (show more of right edge)
     }
@@ -441,11 +508,17 @@ export class MapScrollSystem {
     }
 
     // Clamp to map bounds (rightPadding keeps map content away from right edge / sidebar)
-    const effectiveRightEdge = canvasWidth - (options.rightPadding ?? 0);
-    const minOffsetX = effectiveRightEdge - this.mapBounds.maxX;
-    const maxOffsetX = -this.mapBounds.minX;
-    const minOffsetY = canvasHeight - this.mapBounds.maxY;
-    const maxOffsetY = -this.mapBounds.minY;
+    // clamp using zoomed visible edge ↔ map bound equality
+    const padRight = options.rightPadding ?? 0;
+    const rightScreen = canvasWidth - padRight;
+    const logicalRight = (rightScreen - cx) / z + cx;
+    const logicalLeft = (0 - cx) / z + cx;
+    const logicalTop = (0 - cy) / z + cy;
+    const logicalBottom = (canvasHeight - cy) / z + cy;
+    const minOffsetX = logicalRight - this.mapBounds.maxX;
+    const maxOffsetX = logicalLeft - this.mapBounds.minX;
+    const minOffsetY = logicalBottom - this.mapBounds.maxY;
+    const maxOffsetY = logicalTop - this.mapBounds.minY;
 
     newOffsetX = Math.max(minOffsetX, Math.min(maxOffsetX, newOffsetX));
     newOffsetY = Math.max(minOffsetY, Math.min(maxOffsetY, newOffsetY));
@@ -480,6 +553,7 @@ export class MapScrollSystem {
     this.mouseOverUI = false;
     this.scrollAnimationTarget = null;
     this.scrollAnimationElapsed = 0;
+    this.endPan();
 
     this.debugLog('MapScrollSystem reset');
   }

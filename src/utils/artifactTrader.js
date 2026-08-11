@@ -10,6 +10,7 @@ import {
   getArtifactById,
   getArtifactsBySet,
   getSuppressionBombTotalUses,
+  clampSuppressionBombLevel,
   getPowerUpGraphicFilename,
   ARTIFACT_SET_IDS,
   applyCurrencyGainBonuses,
@@ -372,6 +373,23 @@ function playerOwnsArtifactId(gameState, artifactId) {
   return true;
 }
 
+/**
+ * For pair/triple/quad bounties: an artifact counts toward the set if the player still holds it
+ * OR already surrendered it in an individual (or other) trader claim this run. Singles still
+ * require the item to be in hand at claim time.
+ * @param {object} gameState
+ * @param {string} artifactId
+ * @returns {boolean}
+ */
+function artifactFulfilledForComboTrade(gameState, artifactId) {
+  if (!artifactId) return false;
+  const s = String(artifactId);
+  const col = gameState?.player?.inventory?.collectedArtifactIds;
+  if (!Array.isArray(col) || !col.some((id) => String(id) === s)) return false;
+  if (playerOwnsArtifactId(gameState, artifactId)) return true;
+  return isArtifactTradedToTrader(gameState, artifactId);
+}
+
 /** Every artifact portrait in the trader uses this pixel height (width auto). */
 const TRADER_ARTIFACT_IMG_HEIGHT_PX = 58;
 /** Same height for all want boxes; widths scale by set size. */
@@ -520,7 +538,7 @@ function applyRewardBundleToPlayer(gameState, rewardBundle) {
         gameState.player.inventory.purchasedShields.push({ type: 'shield', level });
       }
     } else if (part.type === 'suppression_bomb') {
-      const level = Math.min(4, Math.max(1, Math.round(Number(part.level || 1))));
+      const level = clampSuppressionBombLevel(part.level || 1);
       if (!Array.isArray(gameState.player?.inventory?.purchasedSuppressionBombs)) {
         gameState.player.inventory.purchasedSuppressionBombs = [];
       }
@@ -612,7 +630,7 @@ function createTraderRewardIconElement(part, unitIndex = 0, gameState = null) {
     img.dataset.traderReward = 'shield';
     img.dataset.traderRewardLevel = String(level);
   } else if (part.type === 'suppression_bomb') {
-    const level = Math.min(4, Math.max(1, Math.round(Number(part.level || 1))));
+    const level = clampSuppressionBombLevel(part.level || 1);
     img.src = `assets/images/items/suppression_${level}.png`;
     img.alt = 'Suppression bomb';
     img.dataset.traderReward = 'suppression_bomb';
@@ -700,7 +718,11 @@ export function playRewardBundleFloatAnimation(rewardWrap) {
   });
 }
 
-export { applyRewardBundleToPlayer, buildArtifactTraderRewardRow as buildRewardStackRow };
+export {
+  applyRewardBundleToPlayer,
+  buildArtifactTraderRewardRow as buildRewardStackRow,
+  wireTraderRewardTooltips,
+};
 
 function rewardBundleVisualWidth(bundle) {
   const iconCount = countRewardBundleIcons(bundle);
@@ -788,10 +810,15 @@ function createTradeRow(artifactBoxEl, artifactIds, gameState, rowOpts = {}) {
 
   const refresh = () => {
     const completed = isTradeRowCompleted(gameState, key);
+    const isComboRow = Array.isArray(artifactIds) && artifactIds.length > 1;
+    const artifactSatisfied = (id) =>
+      isComboRow
+        ? artifactFulfilledForComboTrade(gameState, id)
+        : playerOwnsArtifactId(gameState, id);
     const allOwned =
       Array.isArray(artifactIds) &&
       artifactIds.length > 0 &&
-      artifactIds.every((id) => playerOwnsArtifactId(gameState, id));
+      artifactIds.every((id) => artifactSatisfied(id));
     const canExecuteTrade = allOwned && !completed;
     const dimFilter = TRADER_DIM_FILTER;
     const dimFilterHeavy = TRADER_DIM_FILTER_HEAVY;
@@ -848,7 +875,7 @@ function createTradeRow(artifactBoxEl, artifactIds, gameState, rowOpts = {}) {
 
     row.querySelectorAll('.artifact-trader-want-box img[data-artifact-id]').forEach((img) => {
       const id = img.getAttribute('data-artifact-id');
-      img.style.filter = playerOwnsArtifactId(gameState, id) ? '' : dimFilter;
+      img.style.filter = artifactSatisfied(id) ? '' : dimFilter;
     });
     row.querySelectorAll('.artifact-trader-set-plus').forEach((el) => {
       el.style.filter = dimFilter;
@@ -895,7 +922,10 @@ function wireTraderRewardTooltips(root, gameState) {
       const ts = gameState?.inputHandler?.tooltipSystem;
       if (!ts) return;
       const key = img.getAttribute('data-trader-reward') || 'upgrade_plans';
-      const lvl = Math.min(4, Math.max(1, Math.round(Number(img.getAttribute('data-trader-reward-level') || 1))));
+      const rawLvl = Math.round(Number(img.getAttribute('data-trader-reward-level') || 1));
+      const lvl = key === 'suppression_bomb'
+        ? clampSuppressionBombLevel(rawLvl)
+        : Math.min(4, Math.max(1, rawLvl));
       let html = '';
       if (key === 'currency') {
         const amt = Number(img.getAttribute('data-trader-currency-amount') || 0);
@@ -908,6 +938,13 @@ function wireTraderRewardTooltips(root, gameState) {
         html = ts.getLevelUpRewardTooltipContent?.({ towerType: 'shield', level: lvl }, gameState, { omitShopCost: true }) || '';
       } else if (key === 'suppression_bomb') {
         html = ts.getSuppressionBombTooltipContentForInventory?.({ level: lvl }, {}) || '';
+      } else if (key === 'permanent_power_up') {
+        const powerUpId = img.getAttribute('data-trader-reward-power-up-id');
+        if (powerUpId) {
+          html = ts.getLevelUpRewardTooltipContent?.({ towerType: powerUpId }, gameState, { omitShopCost: true }) || '';
+        }
+      } else if (key === 'movement_token') {
+        html = ts.getLevelUpRewardTooltipContent?.({ towerType: 'movement_token' }, gameState, { omitShopCost: true }) || '';
       }
       if (!html) return;
       ts.show(html, e.clientX, e.clientY);

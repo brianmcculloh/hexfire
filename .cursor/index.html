@@ -138,7 +138,7 @@
                 <div class="overlay-row overlay-row-right tower-status-header-row">
                     <label class="label label-white">
                         <span class="label-middle-bg"></span>
-                        <span class="label-text">Towers On Map</span>
+                        <span class="label-text">Map Towers</span>
                     </label>
                 </div>
                 <div class="tower-status-scroll-area">
@@ -458,7 +458,7 @@
                 <!-- Sound Effects -->
                 <div class="setting-item">
                     <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default); margin-bottom: 6px;">
-                        <span style="font-weight: bold;">Enable Sound Effects</span>
+                        <span style="font-weight: bold;">Enable SFX</span>
                         <label class="toggle-switch">
                             <input type="checkbox" id="settingEnableSfx" checked>
                             <span class="toggle-slider"></span>
@@ -773,8 +773,12 @@
             
             <div class="story-panel" id="storyPanel2" data-panel="2">
                 <div class="story-panel-content">
-                    <div class="story-image">
-                        <img src="assets/images/items/flame_spawner.png" alt="Flame Spawner" class="story-icon">
+                    <div class="story-image story-image-threats">
+                        <img src="assets/images/items/flame_spawner.png" alt="Flame Spawner" class="story-icon story-spawner-icon">
+                        <div class="story-vortex-wrap">
+                            <canvas class="story-vortex-fx" aria-hidden="true"></canvas>
+                            <img src="assets/images/items/vortex_whirlwind.png" alt="Fire Whirlwind" class="story-vortex-icon" style="--vortex-spin-duration: 2.427s;">
+                        </div>
                     </div>
                     <div class="story-text-frame modal modal-frame-9patch">
                         <div class="modal-frame-content">
@@ -782,7 +786,7 @@
                                 <h2 class="story-panel-header">It's a dangerous world out there.</h2>
                                 <p class="story-paragraph">Hexalon has one thing in common with Earth: <span class="text-jitter-fast text-fire-cinder text-uppercase">lightning</span>. It strikes randomly, without warning—setting the ground alight.</p>
                                 <p class="story-paragraph">Even worse: <span class="text-cycle-fire">Fire Spawners</span>. Seemingly wired to Hexalon's core, they're indestructible and spread fire in every direction.</p>
-                                <p class="story-paragraph">You'll start out battling <span class="text-fire-cinder">Cinders</span>, but as you get stronger, so do the fire types—from <span class="text-fire-flame">Flames</span>, to <span class="text-fire-blaze">Blazes</span>, to <span class="text-fire-firestorm">Firestorms</span>, to <span class="text-fire-inferno">Infernos</span>, to the strongest type of fire Hexalon keeps within its depths: <span class="text-fire-cataclysm">Cataclysms</span>.</p>
+                                <p class="story-paragraph">And then there are <span class="text-fire-blaze text-pulse-fast">Fire Vortexes</span>—very strong, swirling storms of flame that slowly move along the path towards the grove.</p>
                                 <div class="story-nav-buttons">
                                     <button type="button" class="story-back-btn cta-button"><img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon story-arrow-back" /> Back</button>
                                     <button type="button" class="story-next-btn cta-button">Next <img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon" /></button>

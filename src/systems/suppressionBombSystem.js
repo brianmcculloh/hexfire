@@ -1,6 +1,6 @@
 // Suppression Bomb System - Manages suppression bomb placement, detection, and explosions
 
-import { CONFIG, getSuppressionBombRadius, getSuppressionBombCost, getSuppressionBombImpactZone, getSuppressionBombTotalUses, getEffectiveSuppressionBombPower } from '../config.js';
+import { CONFIG, getSuppressionBombRadius, getSuppressionBombCost, getSuppressionBombImpactZone, getSuppressionBombTotalUses, getEffectiveSuppressionBombPower, getSuppressionBombMaxLevel, clampSuppressionBombLevel } from '../config.js';
 import { getNeighbors } from '../utils/hexMath.js';
 
 let suppressionBombIdCounter = 0;
@@ -18,7 +18,7 @@ export class SuppressionBombSystem {
    * Place a suppression bomb
    * @param {number} q - Hex q coordinate
    * @param {number} r - Hex r coordinate
-   * @param {number} level - Bomb level (1-4)
+   * @param {number} level - Bomb level (1–{@link CONFIG.SUPPRESSION_BOMB_MAX_LEVEL})
    * @returns {string|null} Bomb ID or null if placement failed
    */
   placeSuppressionBomb(q, r, level = 1, options = {}) {
@@ -27,16 +27,17 @@ export class SuppressionBombSystem {
       return null;
     }
     
+    const safeLevel = clampSuppressionBombLevel(level);
     const bombId = `suppression_bomb_${suppressionBombIdCounter++}`;
     
     const bomb = {
       id: bombId,
       q,
       r,
-      level,
-      radius: getSuppressionBombRadius(level),
-      totalUses: Math.max(1, Math.floor(options.totalUses ?? getSuppressionBombTotalUses(level))),
-      usesRemaining: Math.max(1, Math.floor(options.usesRemaining ?? getSuppressionBombTotalUses(level))),
+      level: safeLevel,
+      radius: getSuppressionBombRadius(safeLevel),
+      totalUses: Math.max(1, Math.floor(options.totalUses ?? getSuppressionBombTotalUses(safeLevel))),
+      usesRemaining: Math.max(1, Math.floor(options.usesRemaining ?? getSuppressionBombTotalUses(safeLevel))),
       isActive: true,
       triggered: false,
       explosionTime: 0,
@@ -141,28 +142,38 @@ export class SuppressionBombSystem {
   }
 
   /**
-   * Check for fire spreading to suppression bomb or adjacent hexes and trigger explosion
+   * Whether a hex should arm adjacent/on-hex suppression bombs.
+   * Vortexes are a fire threat even when the tile itself is not `isBurning`.
+   * @param {object|null|undefined} hex
+   * @returns {boolean}
+   */
+  _hexTriggersSuppressionBomb(hex) {
+    return !!(hex && (hex.isBurning || hex.hasVortex));
+  }
+
+  /**
+   * Check for fire/vortex on the bomb hex or adjacent hexes and trigger explosion
    * @param {number} deltaTime - Time elapsed in seconds
    */
   update(deltaTime) {
     if (!this.gameState?.wave?.isActive) return;
 
-    // Check each suppression bomb for fire triggers
+    // Check each suppression bomb for fire / vortex triggers
     this.suppressionBombs.forEach(bomb => {
       if (!bomb.isActive || bomb.triggered) return;
       
-      // Check if the bomb's hex is on fire
+      // Check if the bomb's hex is on fire or hosting a vortex
       const bombHex = this.gridSystem.getHex(bomb.q, bomb.r);
-      if (bombHex && bombHex.isBurning) {
+      if (this._hexTriggersSuppressionBomb(bombHex)) {
         this.triggerExplosion(bomb);
         return;
       }
       
-      // Check if any adjacent hex is on fire
+      // Check if any adjacent hex is on fire or hosting a vortex
       const neighbors = getNeighbors(bomb.q, bomb.r);
       for (const neighbor of neighbors) {
         const neighborHex = this.gridSystem.getHex(neighbor.q, neighbor.r);
-        if (neighborHex && neighborHex.isBurning) {
+        if (this._hexTriggersSuppressionBomb(neighborHex)) {
           this.triggerExplosion(bomb);
           return;
         }
@@ -219,7 +230,7 @@ export class SuppressionBombSystem {
 
   /**
    * Explode a suppression bomb: extinguish fires in radius and apply water to map items (tanks, temp pickups, mystery, currency, dig sites), matching tower/bomber water behavior.
-   * Damage uses {@link CONFIG.SUPPRESSION_BOMB_POWER} only (not affected by Water Pressure / temp water multipliers).
+   * Damage uses {@link CONFIG.SUPPRESSION_BOMB_POWER_LEVEL_1}–{@link CONFIG.SUPPRESSION_BOMB_POWER_LEVEL_5} via getSuppressionBombPower (not affected by Water Pressure / temp water multipliers).
    * @param {Object} bomb - Suppression bomb data
    */
   explodeSuppressionBomb(bomb) {
@@ -246,6 +257,13 @@ export class SuppressionBombSystem {
       const hex = this.gridSystem.getHex(impactHex.q, impactHex.r);
       if (!hex) return;
 
+      const hitsSomething = hex.isBurning || hex.hasWaterTank || hex.hasTempPowerUpItem
+        || hex.hasMysteryItem || hex.hasArtifactItem || hex.hasCurrencyItem
+        || hex.hasDigSite || hex.hasBurningVault || hex.hasDungeonEntrance || hex.hasVortex;
+      if (hitsSomething) {
+        hex.isBeingSprayed = true;
+      }
+
       if (hex.isBurning) {
         const extinguished = this.fireSystem.extinguishHex(
           impactHex.q,
@@ -258,36 +276,35 @@ export class SuppressionBombSystem {
       }
 
       if (hex.hasWaterTank) {
-        hex.isBeingSprayed = true;
         this.gameState.waterTankSystem?.damageWaterTank(impactHex.q, impactHex.r, finalPower);
       }
       if (hex.hasTempPowerUpItem) {
-        hex.isBeingSprayed = true;
         this.gameState.tempPowerUpItemSystem?.damageItem(impactHex.q, impactHex.r, finalPower);
         this.gameState.tempPowerUpItemSystem?.checkCollection(impactHex.q, impactHex.r);
       }
       if (hex.hasMysteryItem) {
-        hex.isBeingSprayed = true;
         this.gameState.mysteryItemSystem?.damageItem(impactHex.q, impactHex.r, finalPower);
         this.gameState.mysteryItemSystem?.checkCollection(impactHex.q, impactHex.r);
       }
       if (hex.hasArtifactItem) {
-        hex.isBeingSprayed = true;
         this.gameState.artifactSystem?.damageItem(impactHex.q, impactHex.r, finalPower);
         this.gameState.artifactSystem?.checkCollection(impactHex.q, impactHex.r);
       }
       if (hex.hasCurrencyItem) {
-        hex.isBeingSprayed = true;
         this.gameState.currencyItemSystem?.damageItem(impactHex.q, impactHex.r, finalPower);
         this.gameState.currencyItemSystem?.checkCollection(impactHex.q, impactHex.r);
       }
       if (hex.hasDigSite) {
-        hex.isBeingSprayed = true;
         this.gameState.digSiteSystem?.addWaterPower(impactHex.q, impactHex.r, finalPower);
       }
       if (hex.hasBurningVault) {
-        hex.isBeingSprayed = true;
         this.gameState.burningVaultSystem?.addWaterPower(impactHex.q, impactHex.r, finalPower);
+      }
+      if (hex.hasDungeonEntrance) {
+        this.gameState.dungeonEntranceSystem?.addWaterPower(impactHex.q, impactHex.r, finalPower);
+      }
+      if (hex.hasVortex) {
+        this.gameState.vortexSystem?.addWaterPower(impactHex.q, impactHex.r, finalPower);
       }
     });
     
@@ -363,14 +380,14 @@ export class SuppressionBombSystem {
    */
   getStats() {
     const bombs = this.getAllSuppressionBombs();
+    const byLevel = {};
+    const maxLevel = getSuppressionBombMaxLevel();
+    for (let lv = 1; lv <= maxLevel; lv++) {
+      byLevel[lv] = bombs.filter((b) => b.level === lv).length;
+    }
     return {
       total: bombs.length,
-      byLevel: {
-        1: bombs.filter(b => b.level === 1).length,
-        2: bombs.filter(b => b.level === 2).length,
-        3: bombs.filter(b => b.level === 3).length,
-        4: bombs.filter(b => b.level === 4).length,
-      },
+      byLevel,
       exploding: this.explodingBombs.size,
     };
   }
