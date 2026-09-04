@@ -1,4 +1,5 @@
 import { CONFIG, getSentinelModeLabel } from '../config.js';
+import { assetUrl } from './assetUrl.js';
 
 let activeOverlay = null;
 /** @type {string|null} Tower id while its mode picker is open (suppresses map tooltip for that tower). */
@@ -89,7 +90,7 @@ export function showSentinelModeModal(gameState, tower, clientX, clientY) {
     }
 
     const icon = document.createElement('img');
-    icon.src = mode.icon;
+    icon.src = assetUrl(mode.icon);
     icon.alt = '';
     icon.className = 'sentinel-mode-btn-icon';
     if (mode.id === CONFIG.SENTINEL_MODE_VORTEX || mode.id === 'vortex') {
@@ -160,9 +161,10 @@ export function showSentinelModeModal(gameState, tower, clientX, clientY) {
   document.body.appendChild(overlay);
 
   const margin = 12;
+  const arrowClearance = 50; // Leave room to click the upward rotation arrow
   const rect = panel.getBoundingClientRect();
   let left = clientX - rect.width / 2;
-  let top = clientY - rect.height - margin;
+  let top = clientY - rect.height - margin - arrowClearance;
   if (top < margin) top = clientY + margin;
   left = Math.max(margin, Math.min(left, window.innerWidth - rect.width - margin));
   top = Math.max(margin, Math.min(top, window.innerHeight - rect.height - margin));

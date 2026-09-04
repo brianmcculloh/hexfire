@@ -1,9 +1,9 @@
 // Input Handler - Manages mouse/touch input and drag-and-drop
 
 import { pixelToAxial, axialToPixel, getDirectionAngle, getDirectionAngle12 } from './hexMath.js';
-import { CONFIG, isTowerMovementAllowed, getBossPatternForWaveGroup, getHeroPatternForWaveGroup, getActiveHeroPowerPattern, getResolvedHeroPowers, getPlacementBossAbilityDescription, applyCurrencyGainBonuses } from '../config.js';
+import { CONFIG, isTowerMovementAllowed, getBossPatternForWaveGroup, getHeroPatternForWaveGroup, getActiveHeroPowerPattern, getResolvedHeroPowers, getPlacementBossAbilityDescription, applyCurrencyGainBonuses, canTowerBeUpgraded, getUpgradePlanCostToReachLevel } from '../config.js';
 import { MapScrollSystem } from '../systems/mapScrollSystem.js';
-import { TooltipSystem } from './tooltip.js';
+import { TooltipSystem, getTooltipLevel } from './tooltip.js';
 import { showConfirmModal } from './modal.js';
 import { isHexUnderSentinelModeModal, isSentinelModePickerBlocked } from './sentinelModeUI.js';
 import { isHexUnderPerimeterModeModal, isPerimeterModePickerBlocked } from './perimeterModeUI.js';
@@ -70,6 +70,12 @@ export class InputHandler {
     this.isDragging = false;
     this.dragType = null; // 'tower-new', 'tower-existing', 'suppression-bomb-new', 'suppression-bomb-existing', 'shield-new', 'water-tank-existing'
     this.dragData = null;
+    /** @type {HTMLElement|null} */
+    this._towerDragGhost = null;
+    /** @type {HTMLElement|null} */
+    this._towerDragSourceEl = null;
+    this._towerDragGrabOffsetX = 0;
+    this._towerDragGrabOffsetY = 0;
     
     this.hoveredHex = null;
     this.mousePos = { x: 0, y: 0 };
@@ -77,6 +83,8 @@ export class InputHandler {
     this._lastMouseClientY = 0;
     this._dragStartClientX = 0;
     this._dragStartClientY = 0;
+    /** Right-click inspect: keep this hex's tooltip active and towers unselected while the cursor stays on it. */
+    this.pinnedInspectHex = null;
     
     // Shield placement state
     this.selectedShieldForPlacement = null; // { shield, shieldIndex } or null
@@ -184,6 +192,12 @@ export class InputHandler {
   /** @returns {boolean} */
   isPlacingSuppressionBombFromInventory() {
     return this.isDragging && this.dragType === 'suppression-bomb-new';
+  }
+
+  /** Click-selected or drag-dropping a tower from inventory onto the map. */
+  isPlacingTowerFromInventory() {
+    if (this.selectedTowerForPlacement) return true;
+    return this.isDragging && (this.dragType === 'tower-new' || this.dragType === 'tower-stored');
   }
 
   /** Cancel inventory suppression-bomb placement (right-click, UI chrome, or another inventory item). */
@@ -357,6 +371,13 @@ export class InputHandler {
       
       if (!item || item.classList.contains('locked')) return;
 
+      // Movement-token phase: only session-stored (pink) towers are interactive in inventory.
+      if (this.gameState.isMovementTokenMode && !item.classList.contains('movement-mode-stored-target')) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+
       // Parts voucher targeting: click a broken stored tower to permanently recycle it for currency.
       if (this.gameState.isPartsRecycleMode && item.id && item.id.startsWith('stored-tower-')) {
         const index = parseInt(item.id.split('-')[2], 10);
@@ -517,7 +538,7 @@ export class InputHandler {
             return;
           }
           
-          if (tower && (tower.rangeLevel < 4 || tower.powerLevel < 4)) {
+          if (tower && canTowerBeUpgraded(this.gameState, tower)) {
             // Play button2 sound when clicking tower for upgrade
             if (typeof window !== 'undefined' && window.AudioManager) {
               window.AudioManager.playSFX('button2');
@@ -542,7 +563,7 @@ export class InputHandler {
             }
             return;
           }
-          if (storedTower && (storedTower.rangeLevel < 4 || storedTower.powerLevel < 4)) {
+          if (storedTower && canTowerBeUpgraded(this.gameState, storedTower)) {
             // Play button2 sound when clicking tower for upgrade
             if (typeof window !== 'undefined' && window.AudioManager) {
               window.AudioManager.playSFX('button2');
@@ -577,6 +598,11 @@ export class InputHandler {
       
       // Check if clicking on a "tower to place" item (individual buttons)
       if (item.id && item.id.startsWith('tower-to-place-')) {
+        if (this.gameState.isMovementTokenMode) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
         const towerIndex = parseInt(item.id.split('-')[3]);
         const tower = this.gameState.player.inventory.purchasedTowers?.[towerIndex];
         
@@ -591,7 +617,7 @@ export class InputHandler {
           }
           // Same as normal: drag-and-drop (tutorial steps 6 and 9 restrict drop to placement hex via handleMouseUp)
           this.setPlacingActiveItem(item);
-          this.startDraggingNewTower(e, tower.type, towerIndex);
+          this.startDraggingNewTower(e, tower.type, towerIndex, item);
           e.preventDefault();
         }
         return;
@@ -610,8 +636,16 @@ export class InputHandler {
             }
             return;
           }
+          if (
+            this.gameState.isMovementTokenMode &&
+            !this.gameState.isMovementTokenSessionStoredTower?.(storedTower)
+          ) {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+          }
           this.setPlacingActiveItem(item);
-          this.startDraggingStoredTower(e, storedTower, index);
+          this.startDraggingStoredTower(e, storedTower, index, item);
           e.preventDefault();
         }
         return;
@@ -696,8 +730,9 @@ export class InputHandler {
    * @param {string} towerType - Type of tower
    * @param {number} towerIndex - Index of tower in purchasedTowers array
    */
-  startDraggingNewTower(e, towerType = 'jet', towerIndex = 0) {
+  startDraggingNewTower(e, towerType = 'jet', towerIndex = 0, sourceEl = null) {
     if (this.gameState.gameOver) return;
+    this.clearTowerRotationSelection();
     this.isDragging = true;
     this.dragType = 'tower-new';
     this.dragData = {
@@ -708,6 +743,7 @@ export class InputHandler {
     if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_select');
     setBodyCursor(CURSOR_DRAG);
     this.setPlacingItemMode(true);
+    this._startTowerDragGhostFromInventory(e, sourceEl);
   }
 
   /**
@@ -716,8 +752,9 @@ export class InputHandler {
    * @param {Object} storedTower - Stored tower data
    * @param {number} index - Index in stored towers array
    */
-  startDraggingStoredTower(e, storedTower, index) {
+  startDraggingStoredTower(e, storedTower, index, sourceEl = null) {
     if (this.gameState.gameOver) return;
+    this.clearTowerRotationSelection();
     this.isDragging = true;
     this.dragType = 'tower-stored';
     this.dragData = {
@@ -728,6 +765,7 @@ export class InputHandler {
     if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_select');
     setBodyCursor(CURSOR_DRAG);
     this.setPlacingItemMode(true);
+    this._startTowerDragGhostFromInventory(e, sourceEl);
   }
 
   /**
@@ -784,8 +822,8 @@ export class InputHandler {
    */
   selectTowerForPlacement(tower, towerIndex) {
     this.clearTowerSelection();
+    this.clearTowerRotationSelection();
     this.selectedTowerForPlacement = { tower, towerIndex };
-    this.gameState.selectedTowerId = null;
     const towerEl = document.getElementById(`tower-to-place-${towerIndex}`);
     if (towerEl) towerEl.classList.add('shield-selected'); // Reuse highlight style
     if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_select');
@@ -852,6 +890,7 @@ export class InputHandler {
     if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tower_select');
     setBodyCursor(CURSOR_DRAG);
     this.setPlacingItemMode(true);
+    this._startTowerDragGhostFromMap(tower);
   }
 
   /**
@@ -896,6 +935,140 @@ export class InputHandler {
     this.setPlacingItemMode(true);
   }
 
+  /**
+   * True when the pointer is over the inventory side panel (canvas sprites would be hidden under it).
+   */
+  isPointerOverSidePanel(clientX = this._lastMouseClientX, clientY = this._lastMouseClientY) {
+    const sidePanel = document.querySelector('.side-panel');
+    if (!sidePanel || sidePanel.classList.contains('collapsed')) return false;
+    const r = sidePanel.getBoundingClientRect();
+    return clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
+  }
+
+  /**
+   * Inventory tower drags always use a DOM ghost. Map tower drags use the canvas sprite
+   * except when the pointer is over the side panel (where canvas drawing sits underneath).
+   */
+  isTowerDragUsingDomGhost() {
+    if (!this.isDragging) return false;
+    if (this.dragType === 'tower-new' || this.dragType === 'tower-stored') return true;
+    if (this.dragType === 'tower-existing') return this.isPointerOverSidePanel();
+    return false;
+  }
+
+  /**
+   * Canvas-CSS position of the dragged tower's visual center (grab-offset applied).
+   * @returns {{x: number, y: number}|null}
+   */
+  getTowerDragVisualCanvasPos() {
+    if (!this.canvas) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    return {
+      x: this._lastMouseClientX - this._towerDragGrabOffsetX - rect.left,
+      y: this._lastMouseClientY - this._towerDragGrabOffsetY - rect.top,
+    };
+  }
+
+  _ensureTowerDragGhost() {
+    if (this._towerDragGhost) return this._towerDragGhost;
+    const el = document.createElement('div');
+    el.id = 'tower-drag-ghost';
+    el.className = 'tower-drag-ghost';
+    el.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(el);
+    this._towerDragGhost = el;
+    return el;
+  }
+
+  _alignGhostSpinTurrets(root) {
+    if (!root) return;
+    const align = typeof window !== 'undefined' ? window.alignInventorySpinTurretPivot : null;
+    root.querySelectorAll?.('.inventory-spin-turret').forEach((img) => {
+      delete img.dataset.pivotAligned;
+      if (typeof align !== 'function') return;
+      if (img.complete && img.naturalWidth) align(img);
+      else img.addEventListener('load', () => align(img), { once: true });
+    });
+  }
+
+  _startTowerDragGhostFromInventory(e, sourceEl) {
+    this.tooltipSystem?.hide();
+    const ghost = this._ensureTowerDragGhost();
+    ghost.replaceChildren();
+    const icon = sourceEl?.querySelector('.icon-inner') || sourceEl?.querySelector('.icon');
+    if (icon) {
+      const clone = icon.cloneNode(true);
+      this._alignGhostSpinTurrets(clone);
+      ghost.appendChild(clone);
+    }
+    if (sourceEl) {
+      sourceEl.classList.add('tower-drag-source');
+      this._towerDragSourceEl = sourceEl;
+    }
+    const rect = (icon || sourceEl)?.getBoundingClientRect();
+    if (rect) {
+      this._towerDragGrabOffsetX = e.clientX - (rect.left + rect.width / 2);
+      this._towerDragGrabOffsetY = e.clientY - (rect.top + rect.height / 2);
+    } else {
+      this._towerDragGrabOffsetX = 0;
+      this._towerDragGrabOffsetY = 0;
+    }
+    this._syncTowerDragGhostVisibility();
+    this._updateTowerDragGhostPosition(e.clientX, e.clientY);
+  }
+
+  _startTowerDragGhostFromMap(tower) {
+    this.tooltipSystem?.hide();
+    const ghost = this._ensureTowerDragGhost();
+    ghost.replaceChildren();
+    const html = typeof window !== 'undefined' && typeof window.createTowerIconHTML === 'function'
+      ? window.createTowerIconHTML(tower.type, tower.rangeLevel || 1, tower.powerLevel || 1, false, false)
+      : '';
+    if (html) ghost.innerHTML = html;
+    this._alignGhostSpinTurrets(ghost);
+
+    const { x, y } = axialToPixel(tower.q, tower.r);
+    const screen = this.renderer?.worldToScreen?.(x, y) || { x: 0, y: 0 };
+    const canvasRect = this.canvas.getBoundingClientRect();
+    const centerClientX = canvasRect.left + screen.x;
+    const centerClientY = canvasRect.top + screen.y;
+    this._towerDragGrabOffsetX = (this._lastMouseClientX ?? 0) - centerClientX;
+    this._towerDragGrabOffsetY = (this._lastMouseClientY ?? 0) - centerClientY;
+
+    this._syncTowerDragGhostVisibility();
+    this._updateTowerDragGhostPosition(this._lastMouseClientX, this._lastMouseClientY);
+  }
+
+  _syncTowerDragGhostVisibility() {
+    const ghost = this._towerDragGhost;
+    if (!ghost) return;
+    const useDom = this.isTowerDragUsingDomGhost();
+    ghost.classList.toggle('tower-drag-ghost--visible', useDom);
+    const zoom = this.renderer?.getMapZoom?.() || 1;
+    ghost.style.setProperty('--tower-drag-scale', this.dragType === 'tower-existing' ? String(zoom) : '1');
+  }
+
+  _updateTowerDragGhostPosition(clientX, clientY) {
+    const ghost = this._towerDragGhost;
+    if (!ghost) return;
+    const x = clientX - this._towerDragGrabOffsetX;
+    const y = clientY - this._towerDragGrabOffsetY;
+    const scale = ghost.style.getPropertyValue('--tower-drag-scale') || '1';
+    ghost.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%) scale(${scale})`;
+  }
+
+  _destroyTowerDragGhost() {
+    if (this._towerDragSourceEl) {
+      this._towerDragSourceEl.classList.remove('tower-drag-source');
+      this._towerDragSourceEl = null;
+    }
+    if (this._towerDragGhost) {
+      this._towerDragGhost.remove();
+      this._towerDragGhost = null;
+    }
+    this._towerDragGrabOffsetX = 0;
+    this._towerDragGrabOffsetY = 0;
+  }
 
   /**
    * Check if an upgrade-related modal is currently visible
@@ -943,7 +1116,7 @@ export class InputHandler {
     if (this.gameState.tutorialMode && this.selectedTowerForPlacement) {
       const placementHex = this.gameState.tutorialTowerPlacementHex;
       const progress = this.gameState.getTutorialProgress?.() ?? -1;
-      if (placementHex && (progress === 5 || progress === 8)) {
+      if (placementHex && (progress === 5 || progress === 8 || progress === 35)) {
         if (hexCoords && hexCoords.q === placementHex.q && hexCoords.r === placementHex.r &&
             this.gameState.gridSystem?.canPlaceTower(hexCoords.q, hexCoords.r)) {
           setBodyCursor(CURSOR_PLUS);
@@ -988,11 +1161,10 @@ export class InputHandler {
       setBodyCursor(CURSOR_X);
       return;
     }
-    // Movement token mode: drag designated tower (or any tower before one is chosen), x on other towers and map items
+    // Movement token mode: drag any map tower (budget enforced on drop / store)
     if (this.gameState.isMovementTokenMode) {
-      const targetId = this.gameState.movementTokenTargetTowerId;
       if (tower) {
-        setBodyCursor((!targetId || tower.id === targetId) ? CURSOR_DRAG : CURSOR_X);
+        setBodyCursor(CURSOR_DRAG);
       } else if (hexCoords) {
         setBodyCursor(CURSOR_X);
       } else {
@@ -1044,12 +1216,12 @@ export class InputHandler {
     }
     // Upgrade selection mode: plus over upgradeable tower, x over invalid targets, drag elsewhere
     if (this.gameState.isUpgradeSelectionMode) {
-      if (tower && (tower.rangeLevel < 4 || tower.powerLevel < 4)) {
+      if (tower && canTowerBeUpgraded(this.gameState, tower)) {
         setBodyCursor(CURSOR_PLUS);
       } else {
         const hex = this.gameState.gridSystem?.getHex(hexCoords.q, hexCoords.r);
         const hasInvalidTarget = hex && (
-          (tower && tower.rangeLevel >= 4 && tower.powerLevel >= 4) ||
+          (tower && !canTowerBeUpgraded(this.gameState, tower)) ||
           this.gameState.suppressionBombSystem?.getSuppressionBombAt(hexCoords.q, hexCoords.r) ||
           this.gameState.waterTankSystem?.getWaterTankAt(hexCoords.q, hexCoords.r) ||
           hex.hasMysteryItem ||
@@ -1085,7 +1257,7 @@ export class InputHandler {
       return;
     if (this.isUpgradeModalVisible()) return; // Don't override default cursor when modal is open
     if (this.gameState.isMovementTokenMode) {
-      setBodyCursor(canUpgrade ? CURSOR_DEFAULT : CURSOR_X);
+      setBodyCursor(canUpgrade ? CURSOR_DRAG : CURSOR_X);
       return;
     }
     setBodyCursor(canUpgrade ? CURSOR_PLUS : CURSOR_X);
@@ -1097,7 +1269,10 @@ export class InputHandler {
   resetCursorToDefault() {
     if (this.isDragging) return;
     if (this.gameState.tutorialMode) return;
-    if (this.gameState.isMovementTokenMode) return;
+    if (this.gameState.isMovementTokenMode) {
+      setBodyCursor(CURSOR_DEFAULT);
+      return;
+    }
     // Keep drag cursor when an item is selected for placement (e.g. shield click-to-place)
     if (this.selectedShieldForPlacement) {
       setBodyCursor(CURSOR_DRAG);
@@ -1171,10 +1346,16 @@ export class InputHandler {
     // Get hex at mouse position
     const hexCoords = pixelToAxial(worldPos.x, worldPos.y);
     this.hoveredHex = hexCoords;
+    if (
+      this.pinnedInspectHex &&
+      (this.pinnedInspectHex.q !== hexCoords.q || this.pinnedInspectHex.r !== hexCoords.r)
+    ) {
+      this.pinnedInspectHex = null;
+    }
     
     // Update placement preview when dragging or when tower selected for click-to-place (tutorial step 6)
     const progress = this.gameState.getTutorialProgress?.() ?? -1;
-    const isTutorialTowerStep = this.gameState.tutorialMode && (progress === 5 || progress === 8);
+    const isTutorialTowerStep = this.gameState.tutorialMode && (progress === 5 || progress === 8 || progress === 35);
     if (this.isDragging || (this.selectedTowerForPlacement && isTutorialTowerStep)) {
       this.updatePlacementPreview(hexCoords);
     } else if (this.selectedTowerForPlacement && !isTutorialTowerStep) {
@@ -1186,6 +1367,11 @@ export class InputHandler {
     if (!this.gameState.isGameOverMapInspecting && this.isDynamicGameCursorActive()) {
       this.updateGameCursor(hexCoords, towerAtCursor);
     }
+
+    // Rotation-arrow hover must run before tooltips so arrow hexes can suppress grove/etc. tips.
+    if (!this.isPlacingSuppressionBombFromInventory()) {
+      this.updateTowerSelectionFromHover(hexCoords, canvasMouseX, canvasMouseY);
+    }
     
     // Update tooltip (pass canvas mouse coordinates for boss image detection)
     this._lastCanvasTooltipState = {
@@ -1196,12 +1382,6 @@ export class InputHandler {
       canvasMouseY,
     };
     this.updateTooltip(e.clientX, e.clientY, hexCoords, canvasMouseX, canvasMouseY);
-    
-    // Side panel drag detection is now handled globally
-    
-    if (!this.isPlacingSuppressionBombFromInventory()) {
-      this.updateTowerSelectionFromHover(hexCoords, canvasMouseX, canvasMouseY);
-    }
   }
 
   /**
@@ -1251,31 +1431,21 @@ export class InputHandler {
     }
 
     if (this.gameState.isMovementTokenMode) {
-      const targetId = this.gameState.movementTokenTargetTowerId;
       if (!this.hoveredHex) {
         this.tryStartMapPan(e);
         return;
       }
       const { q, r } = this.hoveredHex;
-      if (targetId && this.tryRotateTowerAtHex(q, r)) {
+      if (this.tryRotateTowerAtHex(q, r)) {
         return;
       }
       const tower = this.gameState.towerSystem?.getTowerAt(q, r);
-      if (!targetId) {
-        if (tower) {
-          this.gameState.designateMovementTokenTarget?.(tower.id);
-          // Designate + drag: arrows stay hidden during the drag; click-release / force-select restores them.
-          this.startDraggingExistingTower(tower.id);
-          return;
-        }
-        this.tryStartMapPan(e);
-        return;
-      }
-      if (tower?.id === targetId) {
+      if (tower) {
+        this.gameState.selectedTowerId = tower.id;
         this.startDraggingExistingTower(tower.id);
         return;
       }
-      // Empty hex / non-target tower: pan the map (don't steal tower-drag gestures)
+      // Empty hex / non-tower: pan the map
       this.tryStartMapPan(e);
       return;
     }
@@ -1292,7 +1462,8 @@ export class InputHandler {
     
     const { q, r } = this.hoveredHex;
     
-    if (this.tryRotateTowerAtHex(q, r)) {
+    // Placement owns the click — never rotate a map tower in the same gesture.
+    if (!this.isPlacingTowerFromInventory() && this.tryRotateTowerAtHex(q, r)) {
       return;
     }
     
@@ -1402,7 +1573,7 @@ export class InputHandler {
       const { tower: towerData, towerIndex } = this.selectedTowerForPlacement;
       const placementHex = this.gameState.tutorialTowerPlacementHex;
       const progress = this.gameState.getTutorialProgress?.() ?? -1;
-      const isTutorialPlacementStep = this.gameState.tutorialMode && placementHex && (progress === 5 || progress === 8);
+      const isTutorialPlacementStep = this.gameState.tutorialMode && placementHex && (progress === 5 || progress === 8 || progress === 35);
       const canPlace = isTutorialPlacementStep
         ? (q === placementHex.q && r === placementHex.r && this.gameState.gridSystem?.canPlaceTower(q, r))
         : this.gameState.gridSystem?.canPlaceTower(q, r);
@@ -1473,17 +1644,34 @@ export class InputHandler {
     // Find tower at this location
     const tower = this.gameState.towerSystem?.getTowerAt(hexCoords.q, hexCoords.r);
     if (tower) {
+      this.pinnedInspectHex = null;
       // Placement / movement-token: store in inventory. During waves: instant select.
+      // Click-select mode: first right-click selects (so an adjacent tower isn't yanked
+      // into inventory); second right-click on the selected tower stores it.
       if (isTowerMovementAllowed(this.gameState)) {
+        if (this.isTowerSelectClickMode() && this.gameState.selectedTowerId !== tower.id) {
+          this.selectTowerForRotationArrows(tower);
+          return;
+        }
+        if (
+          this.gameState.isMovementTokenMode &&
+          this.gameState.canMovementTokenAcceptStore &&
+          !this.gameState.canMovementTokenAcceptStore(tower.id)
+        ) {
+          this.gameState.notificationSystem?.showToast(
+            'Not enough movement tokens to store another tower.',
+            3000,
+            'neutral',
+            { critical: true }
+          );
+          return;
+        }
         const success = this.gameState.towerSystem?.storeTowerInInventory(tower.id);
         if (success) {
+          this.clearTowerRotationSelection();
           if (this.gameState.isMovementTokenMode) {
-            if (this.gameState.movementTokenTargetTowerId === tower.id) {
-              this.gameState.movementTokenTargetTowerId = null;
-            }
-            if (!this.gameState.movementTokenCommitted) {
-              this.gameState.commitMovementTokenViaInventoryStore?.();
-            }
+            this.gameState.recordMovementTokenStore?.(tower.id);
+            this.gameState.onMovementTokenSessionChanged?.();
             if (
               this.isDragging &&
               this.dragType === 'tower-existing' &&
@@ -1506,6 +1694,12 @@ export class InputHandler {
         }
       }
       return;
+    }
+
+    // Right-click any non-tower hex to make it active: deselect covering rotation
+    // arrows so the underlying hex (dungeon, spawner, grove, etc.) can show its tooltip.
+    if (!this.isDragging && !this.selectedTowerForPlacement) {
+      this.activateHexForInspect(hexCoords, e.clientX, e.clientY, mouseX, mouseY);
     }
     
     // Find suppression bomb at this location (inventory store only when movement is allowed)
@@ -1563,7 +1757,7 @@ export class InputHandler {
         // Place new tower (tutorial step 9: only on placement hex)
         const placementHex = this.gameState.tutorialTowerPlacementHex;
         const progress = this.gameState.getTutorialProgress?.() ?? -1;
-        const isTutorialPlacementStep = this.gameState.tutorialMode && placementHex && (progress === 5 || progress === 8);
+        const isTutorialPlacementStep = this.gameState.tutorialMode && placementHex && (progress === 5 || progress === 8 || progress === 35);
         if (isTutorialPlacementStep && (q !== placementHex.q || r !== placementHex.r)) {
           // Don't place - wrong hex (notification shown above)
         } else {
@@ -1589,31 +1783,63 @@ export class InputHandler {
         // Place stored tower (with retained upgrades)
         const storedTower = this.dragData.storedTower;
         const storedIndex = this.dragData.storedIndex;
-        
-        // Remove from stored towers array
-        this.gameState.player.inventory.storedTowers.splice(storedIndex, 1);
-        
-        // Place the tower with its retained upgrades
-        const towerId = this.gameState.towerSystem?.placeTower(q, r, this.dragData.direction, storedTower.type, true, storedTower);
-        if (towerId) {
-          placed = true;
-          this.gameState.checkTutorialPlacementAdvance?.(q, r);
-          this.gameState.towerSystem?.updateTowerAffectedHexes(towerId);
-          this.gameState.selectedTowerId = towerId;
-          if (window.updateInventory) window.updateInventory();
-          if (window.updateUI) window.updateUI();
-          if (this.gameState.waveSystem) this.gameState.waveSystem.updateClearAllButtonVisibility();
+        const sessionOriginalId = storedTower?.movementTokenOriginalId || null;
+        const isSessionPlace =
+          this.gameState.isMovementTokenMode &&
+          this.gameState.isMovementTokenSessionStoredTower?.(storedTower);
+
+        if (this.gameState.isMovementTokenMode && !isSessionPlace) {
+          // Non-session inventory towers stay locked during movement mode
+        } else {
+          // Remove from stored towers array
+          this.gameState.player.inventory.storedTowers.splice(storedIndex, 1);
+
+          // Place the tower with its retained upgrades
+          const towerId = this.gameState.towerSystem?.placeTower(q, r, this.dragData.direction, storedTower.type, true, storedTower);
+          if (towerId) {
+            placed = true;
+            if (isSessionPlace && sessionOriginalId) {
+              delete storedTower.movementTokenOriginalId;
+              delete storedTower.movementTokenOriginQ;
+              delete storedTower.movementTokenOriginR;
+              this.gameState.recordMovementTokenPlace?.(sessionOriginalId, towerId);
+              this.gameState.onMovementTokenSessionChanged?.();
+            }
+            this.gameState.checkTutorialPlacementAdvance?.(q, r);
+            this.gameState.towerSystem?.updateTowerAffectedHexes(towerId);
+            this.gameState.selectedTowerId = towerId;
+            if (window.updateInventory) window.updateInventory();
+            if (window.updateUI) window.updateUI();
+            if (this.gameState.waveSystem) this.gameState.waveSystem.updateClearAllButtonVisibility();
+          } else {
+            // Restore inventory entry if placement failed
+            this.gameState.player.inventory.storedTowers.splice(storedIndex, 0, storedTower);
+          }
         }
       } else if (this.dragType === 'tower-existing') {
         // Move existing tower
         const tower = this.gameState.towerSystem?.getTower(this.dragData.towerId);
         const fromQ = tower?.q, fromR = tower?.r;
-        const moved = this.gameState.towerSystem?.moveTower(this.dragData.towerId, q, r);
-        if (moved) {
-          placed = true;
-          this.gameState.checkTutorialTowerMoveAdvance?.(fromQ, fromR, q, r);
-          if (this.gameState.isMovementTokenMode) {
-            this.gameState.onMovementTokenReposition?.();
+        if (
+          this.gameState.isMovementTokenMode &&
+          this.gameState.canMovementTokenAcceptMove &&
+          !this.gameState.canMovementTokenAcceptMove(this.dragData.towerId, q, r)
+        ) {
+          this.gameState.notificationSystem?.showToast(
+            'Not enough movement tokens to move another tower.',
+            3000,
+            'neutral',
+            { critical: true }
+          );
+        } else {
+          const moved = this.gameState.towerSystem?.moveTower(this.dragData.towerId, q, r);
+          if (moved) {
+            placed = true;
+            this.gameState.selectedTowerId = this.dragData.towerId;
+            this.gameState.checkTutorialTowerMoveAdvance?.(fromQ, fromR, q, r);
+            if (this.gameState.isMovementTokenMode) {
+              this.gameState.onMovementTokenSessionChanged?.();
+            }
           }
         }
       } else if (this.dragType === 'water-tank-existing') {
@@ -1785,7 +2011,7 @@ export class InputHandler {
       this.selectTowerForRotationArrows(tower, { playSound: false });
 
       // Check if tower has upgrade slots available
-      if (tower.rangeLevel < 4 || tower.powerLevel < 4) {
+      if (canTowerBeUpgraded(this.gameState, tower)) {
         // Play button2 sound when clicking tower for upgrade
         if (typeof window !== 'undefined' && window.AudioManager) {
           window.AudioManager.playSFX('button2');
@@ -1801,15 +2027,7 @@ export class InputHandler {
   }
 
   getUpgradePlansSpentOnTower(tower) {
-    const costToReachLevel = (level) => {
-      const n = Math.max(1, Math.min(4, Math.floor(Number(level) || 1)));
-      if (n <= 1) return 0;
-      if (n === 2) return 1;
-      if (n === 3) return 3;
-      return 7;
-    };
-
-    return costToReachLevel(tower?.rangeLevel) + costToReachLevel(tower?.powerLevel);
+    return getUpgradePlanCostToReachLevel(tower?.rangeLevel) + getUpgradePlanCostToReachLevel(tower?.powerLevel);
   }
 
   enterTowerSellbackMode() {
@@ -2114,6 +2332,19 @@ export class InputHandler {
 
   updateTooltip(mouseX, mouseY, hexCoords, canvasMouseX = null, canvasMouseY = null) {
     if (!this.tooltipSystem) return;
+    if (this.isDragging && (this.dragType === 'tower-new' || this.dragType === 'tower-stored' || this.dragType === 'tower-existing')) {
+      this.tooltipSystem.hide();
+      return;
+    }
+    const tooltipLevel = getTooltipLevel();
+    if (tooltipLevel === 'none') {
+      this.tooltipSystem.hide();
+      return;
+    }
+    if (tooltipLevel === 'hud') {
+      if (this.tooltipSystem.isFromCanvas()) this.tooltipSystem.hide();
+      return;
+    }
     
     // Update tooltip position
     this.tooltipSystem.updateMousePosition(mouseX, mouseY);
@@ -2196,6 +2427,14 @@ export class InputHandler {
       return;
     }
     if (isHexUnderChargeModeModal(hexCoords.q, hexCoords.r, this.gameState)) {
+      this.tooltipSystem.hide();
+      return;
+    }
+
+    // Rotation arrows sit on neighboring hexes — don't show that hex's tooltip (e.g. Ancient Grove)
+    // while the cursor is over an arrow for the selected tower. Right-click inspect pins the hex
+    // so the player can still read dungeon/spawner/etc. tips under covering arrows.
+    if (this.isHoveringSelectedTowerRotationArrow(hexCoords) && !this.isPinnedInspectHex(hexCoords)) {
       this.tooltipSystem.hide();
       return;
     }
@@ -2525,6 +2764,7 @@ export class InputHandler {
   handleMouseLeave() {
     this._lastCanvasTooltipState = null;
     this.clearTowerPierceDwell();
+    this.pinnedInspectHex = null;
     // Hide tooltip
     if (this.tooltipSystem) {
       this.tooltipSystem.hide();
@@ -2571,6 +2811,12 @@ export class InputHandler {
    * @param {MouseEvent} e - Mouse event
    */
   handleGlobalMouseMove(e) {
+    this._lastMouseClientX = e.clientX;
+    this._lastMouseClientY = e.clientY;
+    if (this.isDragging && this._towerDragGhost) {
+      this._syncTowerDragGhostVisibility();
+      this._updateTowerDragGhostPosition(e.clientX, e.clientY);
+    }
     // Click-drag map pan (continues even if pointer leaves the canvas)
     if (this.mapScrollSystem.isPanning) {
       this.mapScrollSystem.updatePan(e.clientX, e.clientY);
@@ -2583,7 +2829,7 @@ export class InputHandler {
     if (this.gameState.tutorialMode && this.selectedTowerForPlacement) {
       const placementHex = this.gameState.tutorialTowerPlacementHex;
       const progress = this.gameState.getTutorialProgress?.() ?? -1;
-      if (placementHex && (progress === 5 || progress === 8)) {
+      if (placementHex && (progress === 5 || progress === 8 || progress === 35)) {
         const canvasRect = this.canvas.getBoundingClientRect();
         const mouseX = e.clientX;
         const mouseY = e.clientY;
@@ -2942,6 +3188,7 @@ export class InputHandler {
     this.dragData = null;
     this.gameState.placementPreview = null;
     this.clearPlacingActiveHighlight();
+    this._destroyTowerDragGhost();
     setBodyCursor(CURSOR_DEFAULT);
     this.setPlacingItemMode(false);
     
@@ -2968,7 +3215,7 @@ export class InputHandler {
     const progress = this.gameState.getTutorialProgress?.() ?? -1;
     const placementHex = this.gameState.tutorialTowerPlacementHex;
     const moveToHex = this.gameState.tutorialTowerMoveToHex;
-    const isTutorialTowerStep = this.gameState.tutorialMode && (progress === 5 || progress === 8);
+    const isTutorialTowerStep = this.gameState.tutorialMode && (progress === 5 || progress === 8 || progress === 35);
     if (isTutorialTowerStep && placementHex && (this.dragType === 'tower-new' || this.selectedTowerForPlacement)) {
       isValid = (q === placementHex.q && r === placementHex.r) && (this.gameState.gridSystem?.canPlaceTower(q, r) ?? false);
     } else if (moveToHex && this.dragType === 'tower-existing') {
@@ -3019,6 +3266,7 @@ export class InputHandler {
    */
   selectTowerForRotationArrows(tower, options = {}) {
     if (!tower) return;
+    this.pinnedInspectHex = null;
     const playSound = options.playSound !== false;
     this.clearTowerPierceDwell();
     this.gameState.selectedTowerId = tower.id;
@@ -3041,6 +3289,43 @@ export class InputHandler {
     this.clearTowerPierceDwell();
     this.gameState.selectedTowerId = null;
     this.renderer?.arrowHoverState?.clear?.();
+  }
+
+  /**
+   * @param {{ q: number, r: number } | null} hexCoords
+   * @returns {boolean}
+   */
+  isPinnedInspectHex(hexCoords) {
+    return !!(
+      this.pinnedInspectHex &&
+      hexCoords &&
+      this.pinnedInspectHex.q === hexCoords.q &&
+      this.pinnedInspectHex.r === hexCoords.r
+    );
+  }
+
+  /**
+   * Right-click a hex to make it the active inspect target: deselect towers (so
+   * rotation arrows stop covering it) and show that hex's tooltip immediately.
+   * @param {{ q: number, r: number }} hexCoords
+   * @param {number} clientX
+   * @param {number} clientY
+   * @param {number} canvasMouseX
+   * @param {number} canvasMouseY
+   */
+  activateHexForInspect(hexCoords, clientX, clientY, canvasMouseX, canvasMouseY) {
+    if (!hexCoords) return;
+    this.pinnedInspectHex = { q: hexCoords.q, r: hexCoords.r };
+    this.hoveredHex = hexCoords;
+    this.clearTowerRotationSelection();
+    this._lastCanvasTooltipState = {
+      clientX,
+      clientY,
+      hexCoords: { q: hexCoords.q, r: hexCoords.r },
+      canvasMouseX,
+      canvasMouseY,
+    };
+    this.updateTooltip(clientX, clientY, hexCoords, canvasMouseX, canvasMouseY);
   }
 
   /**
@@ -3098,6 +3383,34 @@ export class InputHandler {
     };
     const key = `${dq},${dr}`;
     return directionMap[key] !== undefined ? directionMap[key] : null;
+  }
+
+  /**
+   * True when the cursor is on any of the selected tower's six rotation hexes
+   * (including the current facing arrow). Suppresses that hex's map tooltip so
+   * grove/spawner tips don't cover the rotation UI.
+   * @param {{ q: number, r: number }} hexCoords
+   * @returns {boolean}
+   */
+  isHoveringSelectedTowerRotationArrow(hexCoords) {
+    const selectedId = this.gameState?.selectedTowerId;
+    if (!selectedId || !hexCoords) return false;
+    const tower = this.gameState.towerSystem?.getTower(selectedId);
+    if (!tower || !this.isDirectionalRotatableTower(tower)) return false;
+
+    // Any neighbor with a rotation arrow counts — facing direction included
+    // (that arrow is always drawn and often sits on grove/path hexes).
+    if (this.getRotationDirectionForHex(tower, hexCoords.q, hexCoords.r) !== null) {
+      return true;
+    }
+
+    // Arrow tip can still be hovered while pixel→hex maps to the tower tile itself.
+    const hover = this.renderer?.arrowHoverState;
+    if (!hover) return false;
+    for (let d = 0; d < 6; d++) {
+      if (hover.get(`${tower.q},${tower.r},${d}`)) return true;
+    }
+    return false;
   }
 
   /**
@@ -3304,25 +3617,29 @@ export class InputHandler {
    * @param {number} canvasMouseY
    */
   updateTowerSelectionFromHover(hexCoords, canvasMouseX, canvasMouseY) {
-    if (this.selectedShieldForPlacement) {
-      this.clearTowerPierceDwell();
-      this.gameState.selectedTowerId = null;
-      this.renderer.arrowHoverState.clear();
+    if (this.selectedShieldForPlacement || this.isPlacingTowerFromInventory()) {
+      this.clearTowerRotationSelection();
+      return;
+    }
+
+    // Right-click inspect: keep towers unselected while the cursor stays on this hex
+    // so rotation arrows don't cover its tooltip.
+    if (this.isPinnedInspectHex(hexCoords)) {
+      this.clearTowerRotationSelection();
       return;
     }
 
     if (
       this.gameState.isMovementTokenMode &&
-      this.gameState.movementTokenTargetTowerId &&
       !this.isDragging
     ) {
-      const targetTower = this.gameState.towerSystem?.getTower(
-        this.gameState.movementTokenTargetTowerId
-      );
-      if (targetTower) {
-        this.gameState.selectedTowerId = targetTower.id;
-        this.clearTowerPierceDwell();
-        this.updateArrowHoverForTower(targetTower, canvasMouseX, canvasMouseY, hexCoords);
+      // Keep rotation arrows for the selected tower during multi-tower repositioning
+      const selectedId = this.gameState.selectedTowerId;
+      const selectedTower = selectedId
+        ? this.gameState.towerSystem?.getTower(selectedId)
+        : null;
+      if (selectedTower) {
+        this.updateArrowHoverForTower(selectedTower, canvasMouseX, canvasMouseY, hexCoords);
         return;
       }
     }
@@ -3424,17 +3741,12 @@ export class InputHandler {
 
   /**
    * Rotate the hovered/selected tower when (q,r) is a rotation hex.
-   * In movement-token mode, only the designated reposition tower may rotate.
    * @param {number} q
    * @param {number} r
    * @returns {boolean} True if a rotation was performed
    */
   tryRotateTowerAtHex(q, r) {
-    const movementTargetId =
-      this.gameState.isMovementTokenMode && this.gameState.movementTokenTargetTowerId
-        ? this.gameState.movementTokenTargetTowerId
-        : null;
-    const towerId = movementTargetId || this.gameState.selectedTowerId;
+    const towerId = this.gameState.selectedTowerId;
     if (!towerId) return false;
 
     const tower = this.gameState.towerSystem?.getTower(towerId);

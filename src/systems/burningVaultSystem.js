@@ -1,8 +1,10 @@
-// Burning Vault — high-health map object; fire refills it, water drains it (net = fire DPS − water “strength” per tick)
+// Burning Vault — high-health map object; fire refills it, water drains it.
+// Towers currently applying water are shocked back (config DPS) along tesla bolts.
 
 import { CONFIG, getFireTypeConfig, getPowerUpMultiplier, addPlayerScore, getPowerUpGraphicFilename, getWaterTankTypeConfig, resolveWaterTankTypeIdFromPoolRow, getHeroPowerFireDamageResistanceMultiplier, clampSuppressionBombLevel, getSuppressionBombMaxLevel } from '../config.js';
 import { isMetaItemUnlocked } from '../utils/metaProgression.js';
-import { filterWeightedRewardPool } from '../utils/rewardPoolUnlocks.js';
+import { filterWeightedRewardPool, pickRandomUnlockedTowerType, rollRandomTowerUpgradeLevels } from '../utils/rewardPoolUnlocks.js';
+import { rngLoot, rngSim } from '../utils/rng.js';
 
 let burningVaultIdCounter = 0;
 
@@ -14,6 +16,10 @@ export class BurningVaultSystem {
     this.items = new Map();
     /** Same accumulation pattern as dig sites: tower hits add “strength” each frame; cleared once per vault tick */
     this.waterPowerOnVaults = new Map();
+    /** @type {Map<string, Map<string, number>>} vaultId → (towerId → remaining zap linger seconds) */
+    this.targetingTowers = new Map();
+    /** Reused each health tick for the renderer (vault → tower shock bolts). */
+    this._activeZapLinks = [];
   }
 
   getValidSpawnLocations() {
@@ -76,6 +82,7 @@ export class BurningVaultSystem {
     this.items.set(id, item);
     this.gridSystem.placeBurningVault(q, r, id);
     this.waterPowerOnVaults.set(id, 0);
+    this.targetingTowers.set(id, new Map());
 
     if (options.notifyAppear) {
       if (typeof window !== 'undefined' && window.AudioManager) {
@@ -106,19 +113,23 @@ export class BurningVaultSystem {
     const scale = cfg.spawnChancePerWaveGroup ?? 0.11;
     const chance = Math.min(0.045, base * (1 + groupsSince * scale));
 
-    if (Math.random() >= chance) return;
+    if (rngSim().nextFloat() >= chance) return;
 
     const locs = this.getValidSpawnLocations();
     if (locs.length === 0) return;
 
-    const loc = locs[Math.floor(Math.random() * locs.length)];
+    const loc = rngSim().pick(locs);
     this.spawnBurningVault(loc.q, loc.r, { notifyAppear: true });
   }
 
   /**
    * Tower “water strength” for this tick (same units as dig-site accumulation).
+   * @param {number} q
+   * @param {number} r
+   * @param {number} strength
+   * @param {string} [towerId] - If a tower applied this water, it becomes a zap target.
    */
-  addWaterPower(q, r, strength) {
+  addWaterPower(q, r, strength, towerId) {
     const hex = this.gridSystem.getHex(q, r);
     if (!hex?.hasBurningVault) return;
 
@@ -128,6 +139,51 @@ export class BurningVaultSystem {
 
     const cur = this.waterPowerOnVaults.get(id) || 0;
     this.waterPowerOnVaults.set(id, cur + strength);
+
+    if (towerId && (CONFIG.BURNING_VAULT?.targetingTowerDps || 0) > 0) {
+      this.registerTargetingTower(id, towerId);
+    }
+  }
+
+  /**
+   * Mark a tower as currently extinguishing this vault (refreshes zap linger).
+   * @param {string} vaultId
+   * @param {string} towerId
+   */
+  registerTargetingTower(vaultId, towerId) {
+    if (!vaultId || !towerId) return;
+    let map = this.targetingTowers.get(vaultId);
+    if (!map) {
+      map = new Map();
+      this.targetingTowers.set(vaultId, map);
+    }
+    const linger = Math.max(0.05, Number(CONFIG.BURNING_VAULT?.zapLingerSeconds) || 0.5);
+    map.set(towerId, linger);
+  }
+
+  /**
+   * Vault → tower shock bolts currently live (for the renderer).
+   * @returns {Array<{ vaultId: string, vaultQ: number, vaultR: number, towerId: string, towerQ: number, towerR: number }>}
+   */
+  getActiveZapLinks() {
+    return this._activeZapLinks;
+  }
+
+  /**
+   * Combined shock DPS currently hitting a tower (stacks if it is spraying multiple vaults).
+   * @param {string} towerId
+   * @returns {number}
+   */
+  getZapDpsOnTower(towerId) {
+    if (!towerId) return 0;
+    const dps = Math.max(0, Number(CONFIG.BURNING_VAULT?.targetingTowerDps) || 0);
+    if (dps <= 0) return 0;
+    const links = this._activeZapLinks;
+    let n = 0;
+    for (let i = 0; i < links.length; i++) {
+      if (links[i].towerId === towerId) n++;
+    }
+    return n * dps;
   }
 
   /**
@@ -157,7 +213,7 @@ export class BurningVaultSystem {
     }
     const totalWeight = pool.reduce((sum, row) => sum + (row.weight || 1), 0);
     if (totalWeight <= 0) return null;
-    let roll = Math.random() * totalWeight;
+    let roll = rngLoot().nextFloat() * totalWeight;
     let selected = pool[0];
     for (const row of pool) {
       roll -= (row.weight || 1);
@@ -197,7 +253,7 @@ export class BurningVaultSystem {
       if (selected.level != null && Number.isFinite(Number(selected.level))) {
         level = Math.min(4, Math.max(1, Math.round(Number(selected.level))));
       } else {
-        level = Math.floor(Math.random() * 4) + 1;
+        level = rngLoot().intRange(1, 4);
       }
       const id = this.gameState.currencyItemSystem?.spawnCurrencyItem(q, r, 'shield', level, true);
       return { ok: !!id, preview: id ? itemPreview(`shield_${level}.png`) : null };
@@ -207,28 +263,48 @@ export class BurningVaultSystem {
       if (selected.level != null && Number.isFinite(Number(selected.level))) {
         level = clampSuppressionBombLevel(selected.level);
       } else {
-        level = Math.floor(Math.random() * getSuppressionBombMaxLevel()) + 1;
+        level = rngLoot().int(getSuppressionBombMaxLevel()) + 1;
       }
       const id = this.gameState.currencyItemSystem?.spawnCurrencyItem(q, r, 'suppression_bomb', level, true);
       return { ok: !!id, preview: id ? itemPreview(`suppression_${level}.png`) : null };
     }
-    if (type === 'currency' || type === 'money' || type === 'xp' || type === 'movement_token' || type === 'upgrade_plans' || type === 'specialty_plans' || type === 'tree_juice') {
+    if (type === 'currency' || type === 'money' || type === 'xp' || type === 'movement_token' || type === 'upgrade_plans' || type === 'specialty_plans' || type === 'tree_juice' || type === 'supercharger') {
       let value = 1;
       if (type === 'currency' || type === 'money' || type === 'xp') {
         const minV = selected.minValue ?? 1;
         const maxV = selected.maxValue ?? 50;
-        value = Math.floor(Math.random() * (maxV - minV + 1)) + minV;
+        value = rngLoot().intRange(minV, maxV);
+      } else if (type === 'supercharger') {
+        value = Math.max(1, Math.floor(Number(selected.count) || 1));
       }
       let spriteFilename = 'currency.png';
       if (type === 'xp') spriteFilename = 'xp.png';
       else if (type === 'movement_token') spriteFilename = 'movement_token.png';
       else if (type === 'upgrade_plans') spriteFilename = 'upgrade_token.png';
       else if (type === 'specialty_plans') spriteFilename = 'special.png';
+      else if (type === 'supercharger') spriteFilename = CONFIG.TOWER_SUPERCHARGE?.sprite || 'supercharger.png';
       else if (type === 'tree_juice') spriteFilename = 'town_defense.png';
 
       const normalizedType = type === 'money' ? 'currency' : type;
       const id = this.gameState.currencyItemSystem?.spawnCurrencyItem(q, r, normalizedType, value, true);
       return { ok: !!id, preview: id ? itemPreview(spriteFilename) : null };
+    }
+    if (type === 'random_tower') {
+      const towerType = pickRandomUnlockedTowerType(this.gameState);
+      if (!towerType) return { ok: false, preview: null };
+      const { rangeLevel, powerLevel } = rollRandomTowerUpgradeLevels(
+        selected.minUpgrades,
+        selected.maxUpgrades,
+      );
+      const id = this.gameState.currencyItemSystem?.spawnCurrencyItem(q, r, 'tower', 1, true, {
+        towerType,
+        rangeLevel,
+        powerLevel,
+      });
+      return {
+        ok: !!id,
+        preview: id ? { spriteCategory: 'towers', spriteFilename: `${towerType}_range_${rangeLevel}.png` } : null,
+      };
     }
     return { ok: false, preview: null };
   }
@@ -262,6 +338,7 @@ export class BurningVaultSystem {
   /**
    * Per-frame fire refill / water drain. Water accumulator is HP this frame
    * (towers add power×dt or burst amounts); fire is DPS × dt.
+   * Towers currently applying water also take {@link CONFIG.BURNING_VAULT.targetingTowerDps}.
    * @param {number} deltaTime
    */
   updateHealth(deltaTime) {
@@ -269,6 +346,9 @@ export class BurningVaultSystem {
     if (dt <= 0) return;
 
     const toOpen = [];
+    const zapDps = Math.max(0, Number(CONFIG.BURNING_VAULT?.targetingTowerDps) || 0);
+    const zapDamageByTower = zapDps > 0 ? new Map() : null;
+    this._activeZapLinks.length = 0;
 
     this.items.forEach((item) => {
       if (!item.isActive) return;
@@ -294,12 +374,47 @@ export class BurningVaultSystem {
       item.health += fireDps * dt - waterHp;
       item.health = Math.max(0, Math.min(item.maxHealth, item.health));
 
+      if (zapDamageByTower) {
+        const tmap = this.targetingTowers.get(item.id);
+        if (tmap && tmap.size) {
+          const expired = [];
+          tmap.forEach((remaining, towerId) => {
+            const tower = this.gameState.towerSystem?.getTower(towerId);
+            if (!tower?.isActive) {
+              expired.push(towerId);
+              return;
+            }
+            const next = remaining - dt;
+            if (next <= 0) expired.push(towerId);
+            else tmap.set(towerId, next);
+
+            zapDamageByTower.set(towerId, (zapDamageByTower.get(towerId) || 0) + zapDps * dt);
+            this._activeZapLinks.push({
+              vaultId: item.id,
+              vaultQ: item.q,
+              vaultR: item.r,
+              towerId,
+              towerQ: tower.q,
+              towerR: tower.r,
+            });
+          });
+          for (let i = 0; i < expired.length; i++) tmap.delete(expired[i]);
+        }
+      }
+
       if (item.health <= 0) {
         toOpen.push(item);
       }
 
       this.waterPowerOnVaults.set(item.id, 0);
     });
+
+    if (zapDamageByTower && zapDamageByTower.size) {
+      const towerSystem = this.gameState.towerSystem;
+      zapDamageByTower.forEach((amount, towerId) => {
+        towerSystem?.applyExternalDamage?.(towerId, amount);
+      });
+    }
 
     toOpen.forEach((item) => this.openVault(item));
   }
@@ -323,6 +438,7 @@ export class BurningVaultSystem {
     this.gridSystem.removeBurningVault(item.q, item.r);
     this.items.delete(itemId);
     this.waterPowerOnVaults.delete(itemId);
+    this.targetingTowers.delete(itemId);
   }
 
   clearAllItems() {
@@ -331,6 +447,8 @@ export class BurningVaultSystem {
     });
     this.items.clear();
     this.waterPowerOnVaults.clear();
+    this.targetingTowers.clear();
+    this._activeZapLinks.length = 0;
   }
 
   getAllItems() {

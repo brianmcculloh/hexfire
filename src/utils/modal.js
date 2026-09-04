@@ -49,6 +49,119 @@ function formatPurchaseCostLabel(unitCost, quantity, totalCost, isFlatPricing) {
   return `$${total}`;
 }
 
+/**
+ * Nested "Maximum purchase?" confirm stacked above the active shop quantity modal.
+ * Does not close or replace #confirmModal.
+ * @param {{ quantity: number, totalCost: number, message?: string }} opts
+ * @returns {Promise<boolean>}
+ */
+function showMaxPurchaseConfirmModal({ quantity, totalCost, message } = {}) {
+  return new Promise((resolve) => {
+    const overlay = document.getElementById('confirmModalMax');
+    const titleEl = document.getElementById('confirmMaxTitle');
+    const msgEl = document.getElementById('confirmMaxMessage');
+    const costEl = document.getElementById('confirmMaxCost');
+    const okBtn = document.getElementById('confirmMaxOkBtn');
+    const cancelBtn = document.getElementById('confirmMaxCancelBtn');
+
+    if (!overlay || !titleEl || !msgEl || !okBtn || !cancelBtn) {
+      resolve(false);
+      return;
+    }
+
+    const qty = Math.max(0, Math.floor(Number(quantity) || 0));
+    const total = Math.max(0, Math.floor(Number(totalCost) || 0));
+
+    titleEl.textContent = 'Maximum purchase?';
+    msgEl.style.display = 'block';
+    msgEl.style.color = '#FFFFFF';
+    msgEl.textContent = message
+      || `You're about to spend all of your money on this item (${qty}×).`;
+
+    if (costEl) {
+      costEl.style.display = 'flex';
+      costEl.style.cssText =
+        'display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; margin-bottom: 8px;';
+      costEl.replaceChildren();
+      const currencyIcon = document.createElement('img');
+      currencyIcon.src = 'assets/images/misc/total_earned.png';
+      currencyIcon.alt = '';
+      currencyIcon.style.cssText = 'width: 40px; height: auto; image-rendering: crisp-edges;';
+      const amountSpan = document.createElement('span');
+      amountSpan.className = 'modal-cost-amount';
+      amountSpan.textContent = `$${total}`;
+      amountSpan.style.cssText = 'color: #00FF88; font-size: 36px; font-weight: bold;';
+      costEl.appendChild(currencyIcon);
+      costEl.appendChild(amountSpan);
+    }
+
+    okBtn.className = 'choice-btn cta-button cta-lime';
+    okBtn.innerHTML = '';
+    const img = document.createElement('img');
+    img.src = 'assets/images/misc/total_earned.png';
+    img.style.cssText = 'margin-right: 8px;';
+    okBtn.appendChild(img);
+    const textSpan = document.createElement('span');
+    textSpan.textContent = 'Purchase';
+    okBtn.appendChild(textSpan);
+    cancelBtn.textContent = 'Cancel';
+
+    overlay.style.background = 'rgba(0, 0, 0, 0.55)';
+    overlay.style.pointerEvents = 'auto';
+    overlay.classList.add('confirm-modal-purchase');
+    openModalOverlay(overlay);
+
+    let settled = false;
+    const detach = () => {
+      okBtn.removeEventListener('click', onOk);
+      cancelBtn.removeEventListener('click', onCancel);
+      overlay.removeEventListener('click', onBackdrop);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+    const finish = async (result) => {
+      if (settled) return;
+      settled = true;
+      detach();
+      await closeModalOverlay(overlay, {
+        extraRemove: ['confirm-modal-purchase'],
+        onDone: () => {
+          if (costEl) {
+            costEl.replaceChildren();
+            costEl.style.display = 'none';
+          }
+        },
+      });
+      resolve(result);
+    };
+    const onOk = () => {
+      if (typeof window !== 'undefined' && window.AudioManager) {
+        window.AudioManager.playSFX('button1');
+      }
+      void finish(true);
+    };
+    const onCancel = () => {
+      void finish(false);
+    };
+    const onBackdrop = (e) => {
+      if (e.target === overlay) onCancel();
+    };
+    const onKeyDown = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        onOk();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        onCancel();
+      }
+    };
+
+    okBtn.addEventListener('click', onOk);
+    cancelBtn.addEventListener('click', onCancel);
+    overlay.addEventListener('click', onBackdrop);
+    document.addEventListener('keydown', onKeyDown);
+  });
+}
+
 // Simple reusable confirm modal helper
 export function showConfirmModal({
   title = 'Confirm',
@@ -65,6 +178,8 @@ export function showConfirmModal({
   muteCancelClickSfx = false,
   /** When true, `message` is set as `innerHTML` (caller must supply safe HTML). */
   messageIsHtml = false,
+  /** Place `itemIcon` above the title instead of between title and message. */
+  itemIconAboveTitle = false,
   /** Hide cancel; backdrop and Escape dismiss like OK (informational dialogs). */
   hideCancel = false,
   /** Pin dialog toward the right (same layout as shop purchase confirms). */
@@ -90,6 +205,15 @@ export function showConfirmModal({
    * Up/down clicks still fire but show the tutorial-blocked notice instead of changing qty.
    */
   lockQuantity = false,
+  /** Optional CSS color for the title (reset on close). */
+  titleColor = null,
+  /** Optional DOM node used as the primary confirm button's content. */
+  confirmButtonContent = null,
+  /** Optional third button (e.g. "Use All") after the primary confirm. */
+  extraConfirmText = null,
+  extraConfirmButtonClass = 'cta-lime',
+  extraConfirmButtonContent = null,
+  extraConfirmValue = 'extra',
 } = {}) {
   return new Promise((resolve) => {
     const overlay = document.getElementById('confirmModal');
@@ -107,24 +231,30 @@ export function showConfirmModal({
 
     // Set content
     titleEl.textContent = title;
+    titleEl.style.color = titleColor || '';
+    choicesRow?.querySelectorAll('.modal-extra-confirm-btn').forEach((el) => el.remove());
+    if (choicesRow) choicesRow.classList.remove('modal-choices-triple');
 
-    // Clear prior purchase-item / quantity / cost UI from previous opens
+    titleEl.parentNode.querySelectorAll('.modal-item-icon').forEach((el) => el.remove());
     msgEl.parentNode.querySelector('.modal-purchase-item-row')?.remove();
     msgEl.parentNode.querySelector('.modal-quantity-selector')?.remove();
     msgEl.parentNode.querySelector('.modal-cost-display')?.remove();
-    const priorIcon = msgEl.previousElementSibling;
-    if (priorIcon?.classList?.contains('modal-item-icon')) {
-      priorIcon.remove();
-    }
     
-    // Show message (description) for all modals
-    msgEl.style.display = 'block';
-    if (messageIsHtml) {
-      msgEl.innerHTML = message;
+    // Show message (description) unless the caller passed an empty string
+    if (message) {
+      msgEl.style.display = 'block';
+      if (messageIsHtml) {
+        msgEl.innerHTML = message;
+        msgEl.style.color = '';
+      } else {
+        msgEl.textContent = message;
+        msgEl.style.color = '#FFFFFF';
+      }
     } else {
-      msgEl.textContent = message;
+      msgEl.textContent = '';
+      msgEl.innerHTML = '';
+      msgEl.style.display = 'none';
     }
-    msgEl.style.color = '#FFFFFF';
     
     // Check if this is a purchase or upgrade that should show cost
     const isPurchase = confirmText === 'Purchase';
@@ -144,9 +274,15 @@ export function showConfirmModal({
     let iconContainer = null;
     if (itemIcon) {
       iconContainer = document.createElement('div');
-      iconContainer.className = 'modal-item-icon';
+      iconContainer.className = itemIconAboveTitle
+        ? 'modal-item-icon modal-item-icon--above-title'
+        : 'modal-item-icon';
       iconContainer.innerHTML = itemIcon;
-      msgEl.parentNode.insertBefore(iconContainer, msgEl);
+      if (itemIconAboveTitle) {
+        titleEl.parentNode.insertBefore(iconContainer, titleEl);
+      } else {
+        msgEl.parentNode.insertBefore(iconContainer, msgEl);
+      }
     }
 
     const unitCost = isCostedAction ? Math.max(0, Number(cost) || 0) : 0;
@@ -180,7 +316,12 @@ export function showConfirmModal({
     let qtyValueEl = null;
     let qtyUpBtn = null;
     let qtyDownBtn = null;
+    let qtyUp5Btn = null;
+    let qtyDown5Btn = null;
+    let qtyMaxBtn = null;
+    let qtyMaxCountEl = null;
     let currentTotalCost = isCostedAction ? resolveTotalCost(enableQuantity ? selectedQuantity : 1) : 0;
+    let maxConfirmOpen = false;
 
     const syncQuantityUi = () => {
       if (!enableQuantity) return;
@@ -200,6 +341,28 @@ export function showConfirmModal({
         const canDecrease = lockQuantity ? true : selectedQuantity > 1;
         qtyDownBtn.disabled = !canDecrease;
         qtyDownBtn.classList.toggle('is-disabled', !canDecrease && !lockQuantity);
+      }
+      if (qtyUp5Btn) {
+        const canIncrease5 = lockQuantity
+          ? true
+          : selectedQuantity < maxAffordable &&
+            resolveTotalCost(Math.min(maxAffordable, selectedQuantity + 5)) <= resolvedCurrency &&
+            selectedQuantity + 1 <= maxAffordable;
+        qtyUp5Btn.disabled = !canIncrease5;
+        qtyUp5Btn.classList.toggle('is-disabled', !canIncrease5 && !lockQuantity);
+      }
+      if (qtyDown5Btn) {
+        const canDecrease5 = lockQuantity ? true : selectedQuantity > 1;
+        qtyDown5Btn.disabled = !canDecrease5;
+        qtyDown5Btn.classList.toggle('is-disabled', !canDecrease5 && !lockQuantity);
+      }
+      if (qtyMaxBtn) {
+        const canMax = lockQuantity ? true : maxAffordable >= 1;
+        qtyMaxBtn.disabled = !canMax;
+        qtyMaxBtn.classList.toggle('is-disabled', !canMax && !lockQuantity);
+      }
+      if (qtyMaxCountEl) {
+        qtyMaxCountEl.textContent = `x${Math.max(0, maxAffordable)}`;
       }
       if (amountSpan) {
         const label = formatPurchaseCostLabel(
@@ -226,6 +389,14 @@ export function showConfirmModal({
       qtyWrap.setAttribute('role', 'group');
       qtyWrap.setAttribute('aria-label', 'Purchase quantity');
 
+      qtyUp5Btn = document.createElement('button');
+      qtyUp5Btn.type = 'button';
+      qtyUp5Btn.className = 'modal-quantity-btn modal-quantity-btn-step5 modal-quantity-btn-up5';
+      qtyUp5Btn.setAttribute('aria-label', 'Increase quantity by 5');
+      qtyUp5Btn.setAttribute('data-no-click-sfx', '1');
+      qtyUp5Btn.innerHTML =
+        '<span class="modal-quantity-btn-arrow" aria-hidden="true">▲</span><span class="modal-quantity-btn-step-label" aria-hidden="true">×5</span>';
+
       qtyUpBtn = document.createElement('button');
       qtyUpBtn.type = 'button';
       qtyUpBtn.className = 'modal-quantity-btn modal-quantity-btn-up';
@@ -245,11 +416,35 @@ export function showConfirmModal({
       qtyDownBtn.setAttribute('data-no-click-sfx', '1');
       qtyDownBtn.innerHTML = '<span aria-hidden="true">▼</span>';
 
+      qtyDown5Btn = document.createElement('button');
+      qtyDown5Btn.type = 'button';
+      qtyDown5Btn.className = 'modal-quantity-btn modal-quantity-btn-step5 modal-quantity-btn-down5';
+      qtyDown5Btn.setAttribute('aria-label', 'Decrease quantity by 5');
+      qtyDown5Btn.setAttribute('data-no-click-sfx', '1');
+      qtyDown5Btn.innerHTML =
+        '<span class="modal-quantity-btn-arrow" aria-hidden="true">▼</span><span class="modal-quantity-btn-step-label" aria-hidden="true">×5</span>';
+
+      qtyWrap.appendChild(qtyUp5Btn);
       qtyWrap.appendChild(qtyUpBtn);
       qtyWrap.appendChild(qtyValueEl);
       qtyWrap.appendChild(qtyDownBtn);
+      qtyWrap.appendChild(qtyDown5Btn);
 
-      // Layout: [item icon] × [qty stepper] on one row
+      qtyMaxBtn = document.createElement('button');
+      qtyMaxBtn.type = 'button';
+      qtyMaxBtn.className = 'choice-btn cta-button cta-purple modal-quantity-max-btn';
+      qtyMaxBtn.setAttribute('aria-label', 'Set quantity to maximum affordable');
+      qtyMaxBtn.setAttribute('data-no-click-sfx', '1');
+      const maxLabel = document.createElement('span');
+      maxLabel.className = 'modal-quantity-max-label';
+      maxLabel.textContent = 'MAX';
+      qtyMaxCountEl = document.createElement('span');
+      qtyMaxCountEl.className = 'modal-quantity-max-count';
+      qtyMaxCountEl.textContent = `x${Math.max(0, maxAffordable)}`;
+      qtyMaxBtn.appendChild(maxLabel);
+      qtyMaxBtn.appendChild(qtyMaxCountEl);
+
+      // Layout: [item icon] × [qty stepper] [max]
       const itemRow = document.createElement('div');
       itemRow.className = 'modal-purchase-item-row';
 
@@ -264,6 +459,7 @@ export function showConfirmModal({
       timesEl.textContent = '×';
       itemRow.appendChild(timesEl);
       itemRow.appendChild(qtyWrap);
+      itemRow.appendChild(qtyMaxBtn);
       msgEl.parentNode.insertBefore(itemRow, msgEl);
 
       const notifyQuantityLocked = (e) => {
@@ -275,6 +471,12 @@ export function showConfirmModal({
         }
       };
 
+      const playQtyClick = () => {
+        if (typeof window !== 'undefined' && window.AudioManager) {
+          window.AudioManager.playSFX('button1');
+        }
+      };
+
       qtyUpBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         if (lockQuantity) {
@@ -282,9 +484,7 @@ export function showConfirmModal({
           return;
         }
         if (qtyUpBtn.disabled) return;
-        if (typeof window !== 'undefined' && window.AudioManager) {
-          window.AudioManager.playSFX('button1');
-        }
+        playQtyClick();
         selectedQuantity = Math.min(maxAffordable, selectedQuantity + 1);
         syncQuantityUi();
       });
@@ -295,11 +495,55 @@ export function showConfirmModal({
           return;
         }
         if (qtyDownBtn.disabled) return;
-        if (typeof window !== 'undefined' && window.AudioManager) {
-          window.AudioManager.playSFX('button1');
-        }
+        playQtyClick();
         selectedQuantity = Math.max(1, selectedQuantity - 1);
         syncQuantityUi();
+      });
+      qtyUp5Btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (lockQuantity) {
+          notifyQuantityLocked(e);
+          return;
+        }
+        if (qtyUp5Btn.disabled) return;
+        playQtyClick();
+        selectedQuantity = Math.min(maxAffordable, selectedQuantity + 5);
+        syncQuantityUi();
+      });
+      qtyDown5Btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (lockQuantity) {
+          notifyQuantityLocked(e);
+          return;
+        }
+        if (qtyDown5Btn.disabled) return;
+        playQtyClick();
+        selectedQuantity = Math.max(1, selectedQuantity - 5);
+        syncQuantityUi();
+      });
+      qtyMaxBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (lockQuantity) {
+          notifyQuantityLocked(e);
+          return;
+        }
+        if (qtyMaxBtn.disabled || maxConfirmOpen || maxAffordable < 1) return;
+        playQtyClick();
+        maxConfirmOpen = true;
+        const maxQty = maxAffordable;
+        const maxTotal = resolveTotalCost(maxQty);
+        void showMaxPurchaseConfirmModal({
+          quantity: maxQty,
+          totalCost: maxTotal,
+          message: `You're about to spend all of your money on this item (${maxQty}×).`,
+        }).then((confirmed) => {
+          maxConfirmOpen = false;
+          if (!confirmed || settled) return;
+          selectedQuantity = maxQty;
+          syncQuantityUi();
+          // Complete the purchase at max quantity (nested Purchase confirmed the spend).
+          void onOk();
+        });
       });
     }
     
@@ -348,6 +592,8 @@ export function showConfirmModal({
       const textSpan = document.createElement('span');
       textSpan.textContent = confirmText;
       okBtn.appendChild(textSpan);
+    } else if (confirmButtonContent instanceof Node) {
+      okBtn.replaceChildren(confirmButtonContent);
     } else if (confirmButtonIcon) {
       okBtn.innerHTML = '';
       const img = document.createElement('img');
@@ -386,6 +632,22 @@ export function showConfirmModal({
       okBtn.style.opacity = '';
       okBtn.style.pointerEvents = '';
     }
+
+    const extraLabel = extraConfirmText != null ? String(extraConfirmText).trim() : '';
+    let extraBtn = null;
+    if (extraLabel && choicesRow) {
+      extraBtn = document.createElement('button');
+      extraBtn.type = 'button';
+      extraBtn.id = 'confirmExtraBtn';
+      extraBtn.className = `choice-btn cta-button ${extraConfirmButtonClass} modal-extra-confirm-btn`;
+      if (extraConfirmButtonContent instanceof Node) {
+        extraBtn.replaceChildren(extraConfirmButtonContent);
+      } else {
+        extraBtn.textContent = extraLabel;
+      }
+      choicesRow.appendChild(extraBtn);
+      choicesRow.classList.add('modal-choices-triple');
+    }
     
     // Set dark overlay background and pointer events like other modals
     overlay.style.background = 'rgba(0, 0, 0, 0.85)';
@@ -417,6 +679,7 @@ export function showConfirmModal({
     const detachHandlers = () => {
       okBtn.removeEventListener('click', onOk);
       cancelBtn.removeEventListener('click', onCancel);
+      extraBtn?.removeEventListener('click', onExtra);
       overlay.removeEventListener('click', onBackdrop);
       document.removeEventListener('keydown', onKeyDown);
     };
@@ -433,9 +696,15 @@ export function showConfirmModal({
           okBtn.classList.remove('is-disabled');
           okBtn.style.opacity = '';
           okBtn.style.pointerEvents = '';
+          titleEl.style.color = '';
+          extraBtn?.remove();
+          extraBtn = null;
           msgEl.parentNode.querySelector('.modal-purchase-item-row')?.remove();
           msgEl.parentNode.querySelector('.modal-quantity-selector')?.remove();
-          if (choicesRow) choicesRow.classList.remove('modal-choices-single');
+          if (choicesRow) {
+            choicesRow.classList.remove('modal-choices-single');
+            choicesRow.classList.remove('modal-choices-triple');
+          }
           if (messageIsHtml) {
             msgEl.innerHTML = '';
           }
@@ -444,15 +713,18 @@ export function showConfirmModal({
     };
 
     const onKeyDown = (e) => {
+      if (maxConfirmOpen) return;
       if (e.key === 'Enter') {
         e.preventDefault();
         onOk();
       } else if (e.key === 'ArrowUp' && enableQuantity) {
         e.preventDefault();
-        qtyUpBtn?.click();
+        if (e.shiftKey) qtyUp5Btn?.click();
+        else qtyUpBtn?.click();
       } else if (e.key === 'ArrowDown' && enableQuantity) {
         e.preventDefault();
-        qtyDownBtn?.click();
+        if (e.shiftKey) qtyDown5Btn?.click();
+        else qtyDownBtn?.click();
       } else if (e.key === 'Escape') {
         e.preventDefault();
         if (hideCancel) {
@@ -464,7 +736,7 @@ export function showConfirmModal({
     };
 
     const onOk = async () => {
-      if (settled) return;
+      if (settled || maxConfirmOpen) return;
       if (enableQuantity && selectedQuantity <= 0) return;
       settled = true;
       detachHandlers();
@@ -494,11 +766,21 @@ export function showConfirmModal({
       resolve(enableQuantity ? selectedQuantity : true);
     };
     const onCancel = async () => {
-      if (settled) return;
+      if (settled || maxConfirmOpen) return;
       settled = true;
       detachHandlers();
       await cleanup();
       resolve(false);
+    };
+    const onExtra = async () => {
+      if (settled || maxConfirmOpen || !extraBtn) return;
+      settled = true;
+      detachHandlers();
+      if (typeof window !== 'undefined' && window.AudioManager) {
+        window.AudioManager.playSFX('confirm');
+      }
+      await cleanup();
+      resolve(extraConfirmValue);
     };
     const onBackdrop = (e) => {
       if (e.target === overlay) {
@@ -512,6 +794,7 @@ export function showConfirmModal({
 
     okBtn.addEventListener('click', onOk);
     cancelBtn.addEventListener('click', onCancel);
+    extraBtn?.addEventListener('click', onExtra);
     overlay.addEventListener('click', onBackdrop);
     document.addEventListener('keydown', onKeyDown);
   });
@@ -527,7 +810,7 @@ const RENAME_MODAL_DEFAULTS = {
  * Show a custom rename modal prompt
  * @param {string} currentName - Current name to display
  * @param {string} title - Modal title (optional)
- * @param {{ subtitle?: string, confirmText?: string }} [options]
+ * @param {{ subtitle?: string, confirmText?: string, hideCancel?: boolean, placeholder?: string, maxLength?: number }} [options]
  * @returns {Promise<string|null>} The new name or null if cancelled
  */
 export function showRenameModal(currentName = '', title = RENAME_MODAL_DEFAULTS.title, options = {}) {
@@ -538,6 +821,7 @@ export function showRenameModal(currentName = '', title = RENAME_MODAL_DEFAULTS.
     const inputEl = document.getElementById('renameInput');
     const okBtn = document.getElementById('renameOkBtn');
     const cancelBtn = document.getElementById('renameCancelBtn');
+    const choicesRow = overlay?.querySelector('.modal-choices');
 
     if (!overlay || !titleEl || !inputEl || !okBtn || !cancelBtn) {
       // Fallback: use browser prompt if modal elements are missing
@@ -549,6 +833,9 @@ export function showRenameModal(currentName = '', title = RENAME_MODAL_DEFAULTS.
     const subtitleProvided = Object.prototype.hasOwnProperty.call(options, 'subtitle');
     const subtitle = subtitleProvided ? options.subtitle : RENAME_MODAL_DEFAULTS.subtitle;
     const confirmText = options.confirmText ?? RENAME_MODAL_DEFAULTS.confirmText;
+    const hideCancel = options.hideCancel === true;
+    const placeholder = options.placeholder ?? 'Save name';
+    const maxLength = Math.max(1, Math.floor(Number(options.maxLength) || 50));
 
     // Set content
     titleEl.textContent = title;
@@ -562,6 +849,15 @@ export function showRenameModal(currentName = '', title = RENAME_MODAL_DEFAULTS.
     }
     okBtn.textContent = confirmText;
     inputEl.value = currentName;
+    inputEl.placeholder = placeholder;
+    inputEl.maxLength = maxLength;
+    if (hideCancel) {
+      cancelBtn.style.display = 'none';
+      choicesRow?.classList.add('modal-choices-single');
+    } else {
+      cancelBtn.style.display = '';
+      choicesRow?.classList.remove('modal-choices-single');
+    }
     inputEl.focus();
     inputEl.select(); // Select all text for easy editing
 
@@ -586,6 +882,10 @@ export function showRenameModal(currentName = '', title = RENAME_MODAL_DEFAULTS.
             subtitleEl.style.display = '';
           }
           okBtn.textContent = RENAME_MODAL_DEFAULTS.confirmText;
+          inputEl.placeholder = 'Save name';
+          inputEl.maxLength = 50;
+          cancelBtn.style.display = '';
+          choicesRow?.classList.remove('modal-choices-single');
           okBtn.removeEventListener('click', onOk);
           cancelBtn.removeEventListener('click', onCancel);
           overlay.removeEventListener('click', onBackdrop);
@@ -607,7 +907,10 @@ export function showRenameModal(currentName = '', title = RENAME_MODAL_DEFAULTS.
     };
 
     const onBackdrop = (e) => {
-      if (e.target === overlay) { onCancel(); }
+      if (e.target === overlay) {
+        if (hideCancel) return;
+        onCancel();
+      }
     };
 
     const onKeyDown = (e) => {
@@ -615,6 +918,7 @@ export function showRenameModal(currentName = '', title = RENAME_MODAL_DEFAULTS.
         e.preventDefault();
         onOk();
       } else if (e.key === 'Escape') {
+        if (hideCancel) return;
         e.preventDefault();
         onCancel();
       }
@@ -792,16 +1096,18 @@ export const playGameModalEnterAnimation = playModalEnterAnimation;
 
 /**
  * @param {HTMLElement | null | undefined} overlayEl
- * @param {{ extraAdd?: string[], pointerEvents?: string | false }} [options]
+ * @param {{ extraAdd?: string[], pointerEvents?: string | false, skipEnterAnimation?: boolean }} [options]
  */
 export function openModalOverlay(overlayEl, options = {}) {
   if (!overlayEl) return;
-  const { extraAdd = [], pointerEvents = 'auto' } = options;
+  const { extraAdd = [], pointerEvents = 'auto', skipEnterAnimation = false } = options;
   overlayEl.classList.add('active', ...extraAdd);
   if (pointerEvents !== false) {
     overlayEl.style.pointerEvents = pointerEvents === true ? 'auto' : pointerEvents;
   }
-  playModalEnterAnimation(overlayEl);
+  if (!skipEnterAnimation) {
+    playModalEnterAnimation(overlayEl);
+  }
 }
 
 /**

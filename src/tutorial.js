@@ -2,7 +2,7 @@
 // The tutorial uses a scenario-like fixed map (same paths every time) and explicit step sequence.
 
 import { CONFIG } from './config.js';
-import { getNeighbors } from './utils/hexMath.js';
+import { getNeighbors, getHexesInRing } from './utils/hexMath.js';
 
 /**
  * Tutorial map configuration - fixed paths, always the same layout.
@@ -30,14 +30,14 @@ export const TUTORIAL_CONFIG = {
   inventory: {
     towers: [
       { type: 'jet', rangeLevel: 1, powerLevel: 1 },
-      { type: 'jet', rangeLevel: 1, powerLevel: 1 }
+      { type: 'spread', rangeLevel: 1, powerLevel: 1 }
     ],
     suppressionBombs: [],
     shields: [],
     storedTowers: []
   },
   currency: CONFIG.DEBUG_MODE ? 99999 : CONFIG.STARTING_CURRENCY,
-  unlockedItems: ['jet', 'rain', 'shield_1'],
+  unlockedItems: ['jet', 'spread', 'rain', 'shield_1'],
   townHealth: CONFIG.TOWN_HEALTH_BASE
 };
 
@@ -80,6 +80,21 @@ export const TUTORIAL_STEP13_DIRECTION_ALONG_PATH = 0;
 export const TUTORIAL_WATER_TANK_HEX = { q: 8, r: -1 };
 /** Step 27: direction from tower at (7,0) toward water tank (8,-1) - NE = 1 */
 export const TUTORIAL_STEP26_DIRECTION_TOWARD_WATER_TANK = 1;
+
+/** Step 27: rings 1–2 around the fire spawner, excluding the water bucket hex — ignited to show blast AoE */
+export const TUTORIAL_STEP27_SPAWNER_RING_FIRE_HEXES = [
+  ...getHexesInRing(TUTORIAL_FIRE_SPAWNER_HEX.q, TUTORIAL_FIRE_SPAWNER_HEX.r, 1),
+  ...getHexesInRing(TUTORIAL_FIRE_SPAWNER_HEX.q, TUTORIAL_FIRE_SPAWNER_HEX.r, 2),
+].filter(
+  (h) => !(h.q === TUTORIAL_WATER_TANK_HEX.q && h.r === TUTORIAL_WATER_TANK_HEX.r)
+);
+
+/** Step 30: path hex immediately east of the grove (first tutorial path hex) — lightning strike target */
+export const TUTORIAL_GROVE_PATH_FIRE_HEX = { q: 2, r: 0 };
+/** Step 30: eastern grove hex — fire spreads here from the path (not the center) */
+export const TUTORIAL_GROVE_FIRE_HEX = { q: 1, r: 0 };
+/** Step 36: Ancient Grove center — rain tower is placed here */
+export const TUTORIAL_GROVE_HEX = { q: 0, r: 0 };
 
 /**
  * Tutorial step definition.
@@ -162,7 +177,7 @@ export const TUTORIAL_STEPS = [
     buttonText: 'Next',
     arrowSide: 'right'
   },
-  // Step 9: Place second jet tower on path at (6,0)
+  // Step 9: Place spread tower on path at (5,0)
   {
     target: '#tower-to-place-0',
     placementHex: TUTORIAL_STEP9_INITIAL_PLACEMENT_HEX,
@@ -179,9 +194,11 @@ export const TUTORIAL_STEPS = [
     offsetX: 5  // Shift right ~30px from default to center on destination hex (matches step 11 alignment)
   },
   // Step 11: Rotate tower at (7,0) toward fire spawner
+  // Message is resolved at display time for hover vs click tower-select mode (see updateTutorialArrow).
   {
     targetHex: TUTORIAL_STEP9_PLACEMENT_HEX,
-    message: "Rotate it toward the fire spawner.",
+    message: "Rotate it toward the fire spawner. Hover to see rotation arrows.",
+    messageClickMode: "Rotate it toward the fire spawner. Click to see rotation arrows.",
     arrowSide: 'bottom',
     bubbleBelowArrow: true
   },
@@ -307,17 +324,75 @@ export const TUTORIAL_STEPS = [
     offsetX: -20,
     offsetY: 8
   },
-  // Step 28: Point at Resume button - tell user to resume (advance when clicked; then 1s delay before step 29)
+  // Step 29: Point at Resume button - tell user to resume (water tank bubble; then grove-fire sequence)
   {
     target: '#pauseBtn',
     message: "Click RESUME to see what happens when the tower hits the water tank!",
     arrowSide: 'top',
     offsetY: 22
   },
-  // Step 29: Tutorial complete
+  // Step 30: Lightning hits path east of grove, spreads into grove; click Pause
+  {
+    target: '#pauseBtn',
+    message: 'Uh oh, The Ancient Grove burns! We must put it out! Click pause.',
+    arrowSide: 'top',
+    offsetY: 22
+  },
+  // Step 31: Open shop
+  {
+    target: '#shopTabBtn',
+    message: "Quick—open the SHOP. We'll need to buy another tower!",
+    arrowSide: 'left',
+    offsetX: -60 // Shifted ~40px left from -20
+  },
+  // Step 32: Towers sub-tab
+  {
+    target: '.shop-sub-tabs',
+    message: 'Click TOWERS.',
+    arrowSide: 'left',
+    offsetX: 40 // Shifted ~50px right toward sidebar
+  },
+  // Step 33: Purchase rain tower
+  {
+    target: '#rain-tower-shop',
+    message: 'Let\'s go with a RAIN tower. Click to purchase.',
+    arrowSide: 'left',
+    offsetX: -10 // Shifted ~50px right toward sidebar
+  },
+  // Step 34: Confirm rain purchase
+  {
+    target: '#confirmOkBtn',
+    message: 'Click PURCHASE to confirm.',
+    arrowSide: 'bottom',
+    offsetX: 0,
+    offsetY: -30
+  },
+  // Step 35: Point at inventory tab — rain tower is now in inventory
+  {
+    target: '.tab-button[data-tab="inventory"]',
+    message: "Nice! Your rain tower is in INVENTORY. Click INVENTORY to grab it.",
+    arrowSide: 'left',
+    offsetX: 5
+  },
+  // Step 36: Place rain tower on grove center
+  {
+    target: '#tower-to-place-0',
+    placementHex: TUTORIAL_GROVE_HEX,
+    message: 'Place this rain tower right on the Ancient Grove.',
+    arrowSide: 'left',
+    offsetX: -10
+  },
+  // Step 37: Resume to extinguish grove fire
+  {
+    target: '#pauseBtn',
+    message: 'Click RESUME and watch the rain put out that grove fire!',
+    arrowSide: 'top',
+    offsetY: 22
+  },
+  // Step 38: Tutorial complete
   {
     centered: true,
-    message: 'Those water tanks have some nice fire-stopping power! You\'re ready to defend the Ancient Grove. There\'s so much more to discover. Good luck, water wielder!',
+    message: 'You\'re ready to defend the Ancient Grove. There\'s so much more to discover. Good luck, water wielder!',
     buttonText: 'Finish'
   }
 ];

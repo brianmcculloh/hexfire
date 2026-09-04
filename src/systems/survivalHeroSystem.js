@@ -10,6 +10,7 @@ import {
   isFinalSurvivalBossWaveGroup,
   isGroveIncarnateHeroPatternGroup,
 } from '../config.js';
+import { rngLoot } from '../utils/rng.js';
 
 const TRANSITION_DURATION_SEC = 1.1;
 const SPEECH_DURATION_MS = 4000;
@@ -292,10 +293,7 @@ export class SurvivalHeroSystem {
     const end = getCampaignEndWaveGroup();
     const pool = [];
     for (let i = 1; i <= end; i++) pool.push(i);
-    for (let i = pool.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [pool[i], pool[j]] = [pool[j], pool[i]];
-    }
+    rngLoot().shuffle(pool);
     if (excludeLast != null && pool.length > 1 && pool[0] === excludeLast) {
       [pool[0], pool[1]] = [pool[1], pool[0]];
     }

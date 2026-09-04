@@ -15,6 +15,7 @@ import {
   getHeroPowerVortexSpawnChanceMultiplier,
 } from '../config.js';
 import { getNeighbors, getHexesInRing } from '../utils/hexMath.js';
+import { rngSim } from '../utils/rng.js';
 
 let vortexIdCounter = 0;
 
@@ -254,7 +255,7 @@ export class VortexSystem {
   _spawnAtRandomValidLocation(level, isFast) {
     const locs = this.getValidSpawnLocations();
     if (locs.length === 0) return false;
-    const loc = locs[Math.floor(Math.random() * locs.length)];
+    const loc = rngSim().pick(locs);
     return this._spawnAtPathIndex(level, isFast, loc.pathIndex);
   }
 
@@ -281,11 +282,11 @@ export class VortexSystem {
     const fastAvailable =
       !!fastCfg && waveGroup >= fastMin && waveGroup <= fastMax;
 
-    if (Math.random() < chance) {
+    if (rngSim().nextFloat() < chance) {
       this._spawnAtRandomValidLocation(level, false);
     }
 
-    if (fastAvailable && fastChance > 0 && Math.random() < fastChance) {
+    if (fastAvailable && fastChance > 0 && rngSim().nextFloat() < fastChance) {
       this._spawnAtRandomValidLocation(level, true);
     }
   }
@@ -594,6 +595,7 @@ export class VortexSystem {
     if (!item?.isActive) return;
     this.vortexesExtinguishedThisWave =
       (Math.max(0, Math.floor(Number(this.vortexesExtinguishedThisWave)) || 0)) + 1;
+    this.gameState.runStats?.recordVortexExtinguishedThisWave?.();
     const { q, r, level, isFast } = item;
     const levelCfg = getVortexLevelConfig(level || 1, { isFast: !!isFast });
     // Base XP for this vortex type/level; wave chain = previous total + this base.
@@ -627,6 +629,7 @@ export class VortexSystem {
       window.AudioManager.playSFX('vortex_extinguished', { volume: 0.7, dedupeMs: 250 });
     }
     this.gameState.renderer?.spawnBonusItemCollectionParticles?.(q, r);
+    this.gameState.comboSystem?.recordVortexExtinguished?.(q, r);
     // Intentionally do not notifyMapItemCollected — vortexes must not trigger Mytherios Provoked Burn.
   }
 

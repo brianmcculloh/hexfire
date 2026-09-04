@@ -2,6 +2,7 @@
 
 import { CONFIG, getExpectedTownMaxHealth, getFireTypeConfig, getPowerUpMultiplier, getHeroPowerTownFireDamageMultiplier, getHeroPowerFireDamageResistanceMultiplier, getEffectiveHealthRegrowRate } from '../config.js';
 import { hexKey, isInBounds, getNeighbors, getHexesInRing } from '../utils/hexMath.js';
+import { rngLayout } from '../utils/rng.js';
 
 /**
  * Creates and manages the hexagonal grid
@@ -36,6 +37,12 @@ export class GridSystem {
     this.townDamageThisWave = 0;
     /** Grove HP lost this wave from spread fires only (excludes lightning/random spawns). */
     this.townSpreadDamageThisWave = 0;
+    /**
+     * True once any fire spreads onto a grove hex or between grove hexes this wave.
+     * Direct lightning/random strikes on the grove do not set this (they use isSpawn).
+     * Source of truth for the wave-complete "no fire spread" bonus.
+     */
+    this.townReceivedSpreadFireThisWave = false;
     /** Per-frame water HP/s totals by hex (tooltip display; committed each tower update). */
     this.waterHitRateFrame = new Map();
     this.waterHitRateDisplay = new Map();
@@ -106,7 +113,7 @@ export class GridSystem {
                 CONFIG.FIRE_TYPE_CATACLYSM,
                 CONFIG.FIRE_TYPE_BLACKFYRE,
               ];
-              fireType = allFireTypes[Math.floor(Math.random() * allFireTypes.length)];
+              fireType = rngLayout().pick(allFireTypes);
             } else {
               fireType = CONFIG.FIRE_TYPE_CINDER;
             }
@@ -789,7 +796,8 @@ export class GridSystem {
       if (liveHex.isBurning && !burningTownHexes.has(key)) {
         burningTownHexes.set(key, {
           fireType: liveHex.fireType,
-          fromSpawn: !!liveHex.fireIgnitedBySpawn,
+          // Only explicit false counts as spread; missing/true = spawn/direct strike
+          fromSpawn: liveHex.fireIgnitedBySpawn !== false,
         });
       }
       if (liveHex.hasVortex && gameState?.vortexSystem) {
@@ -860,11 +868,28 @@ export class GridSystem {
 
   /**
    * Grove HP lost this wave from fires that spread onto the grove (excludes lightning/random spawns).
-   * Used for the wave-complete "no damage" / no-spread bonus.
+   * Used for diagnostics / legacy damage attribution; bonus uses {@link hadTownSpreadFireThisWave}.
    * @returns {number}
    */
   getTownSpreadDamageThisWave() {
     return this.townSpreadDamageThisWave || 0;
+  }
+
+  /**
+   * Record that fire spread onto or within the Ancient Grove this wave.
+   * Call only for adjacent-hex spread (not lightning / random / wave spawn strikes).
+   */
+  noteTownSpreadFireThisWave() {
+    this.townReceivedSpreadFireThisWave = true;
+  }
+
+  /**
+   * Whether any fire spread onto the grove or between grove hexes this wave.
+   * Direct strikes on the grove do not count.
+   * @returns {boolean}
+   */
+  hadTownSpreadFireThisWave() {
+    return !!this.townReceivedSpreadFireThisWave;
   }
 
   /**
@@ -873,6 +898,7 @@ export class GridSystem {
   resetTownDamageThisWave() {
     this.townDamageThisWave = 0;
     this.townSpreadDamageThisWave = 0;
+    this.townReceivedSpreadFireThisWave = false;
   }
 
   /** Start a new frame of water-hit rate accumulation (call at start of tower update). */

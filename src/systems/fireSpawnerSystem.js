@@ -2,6 +2,7 @@
 
 import { CONFIG, getFireTypeConfig, getBaseSpreadRate } from '../config.js';
 import { hexKey, isInBounds, getHexesInRadius, getHexesInRing, hexDistance, getNeighbors } from '../utils/hexMath.js';
+import { rngLayout, rngSim } from '../utils/rng.js';
 
 export class FireSpawnerSystem {
   constructor(gridSystem, fireSystem, gameState = null) {
@@ -141,7 +142,7 @@ export class FireSpawnerSystem {
         const hex = this.gridSystem.getHex(q, r);
         if (!hex) continue;
         
-        // Cannot spawn on: town, path, town buffer, water tanks, or persistent dungeon entrances
+        // Cannot spawn on: town, path, town buffer, water tanks, or dungeon entrances
         if (hex.isTown) continue;
         if (hex.isPath) continue;
         if (this.isWithinTownBuffer(q, r)) continue;
@@ -223,7 +224,7 @@ export class FireSpawnerSystem {
     
     for (let i = 0; i < spawnerTypes.length && availableLocations.length > 0; i++) {
       const spawnerType = spawnerTypes[i];
-      const randomIndex = Math.floor(Math.random() * availableLocations.length);
+      const randomIndex = rngLayout().int(availableLocations.length);
       const location = availableLocations.splice(randomIndex, 1)[0];
       
       // Place spawner on the grid
@@ -248,7 +249,7 @@ export class FireSpawnerSystem {
   placeSpawner(q, r, spawnerType) {
     const hex = this.gridSystem.getHex(q, r);
     if (!hex) return;
-    // Persistent dungeon entrances own their hex — never overwrite.
+    // Dungeon entrances own their hex — never overwrite.
     if (hex.hasDungeonEntrance) return;
 
     // Get fire type color for the spawner
@@ -339,7 +340,7 @@ export class FireSpawnerSystem {
           return;
         }
         
-        const roll = Math.random();
+        const roll = rngSim().nextFloat();
         
         if (roll < ringSpawnChance) {
           // Calculate spread rate based on distance (reduced by configurable factor per ring)
@@ -349,7 +350,7 @@ export class FireSpawnerSystem {
           const spawnerSpreadRate = baseSpreadRate * spawnerMultiplier;
           
           // Select fire type based on spawner probabilities
-          const rand = Math.random();
+          const rand = rngSim().nextFloat();
           let cumulative = 0;
           let selectedFireType = CONFIG.FIRE_TYPE_CINDER;
           

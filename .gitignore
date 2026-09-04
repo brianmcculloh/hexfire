@@ -38,8 +38,9 @@ pids
 # Yarn Integrity file
 .yarn-integrity
 
-# dotenv environment variables file
-.env
+# Leaderboard SQLite (created at runtime)
+api/data/*.sqlite
+api/data/*.sqlite-*
 .env.local
 .env.development.local
 .env.test.local

@@ -3,6 +3,8 @@
 import { CONFIG, getFireTypeConfig, addPlayerScore, getPowerUpMultiplier, resolveWaterTankTypeIdFromPoolRow, getHeroPowerFireDamageResistanceMultiplier, getSuppressionBombTotalUses, clampSuppressionBombLevel, getSuppressionBombMaxLevel, applyCurrencyGainBonuses } from '../config.js';
 import { getNeighbors } from '../utils/hexMath.js';
 import { filterWeightedRewardPool, isWeightedRewardUnlockedInRun } from '../utils/rewardPoolUnlocks.js';
+import { grantTreeJuice } from '../utils/treeJuiceUI.js';
+import { rngLoot } from '../utils/rng.js';
 
 let currencyItemIdCounter = 0;
 
@@ -12,13 +14,13 @@ let currencyItemIdCounter = 0;
  * @param {object|null|undefined} hex
  * @returns {boolean}
  */
-export function isValidMysteryDropHex(hex) {
+export function isValidMysteryDropHex(hex, options = {}) {
   if (!hex) return false;
   if (hex.isTown || hex.hasTower || hex.hasFireSpawner) return false;
   if (
     hex.hasWaterTank ||
     hex.hasTempPowerUpItem ||
-    hex.hasMysteryItem ||
+    (hex.hasMysteryItem && !options.ignoreMysteryItem) ||
     hex.hasCurrencyItem ||
     hex.hasBurningVault ||
     hex.hasDungeonEntrance ||
@@ -54,8 +56,15 @@ function getCurrencyItemCollectSpriteSpec(item) {
       return { spriteCategory: 'items', spriteFilename: 'upgrade_token.png' };
     case 'specialty_plans':
       return { spriteCategory: 'items', spriteFilename: 'special.png' };
+    case 'supercharger':
+      return { spriteCategory: 'items', spriteFilename: CONFIG.TOWER_SUPERCHARGE?.sprite || 'supercharger.png' };
     case 'tree_juice':
       return { spriteCategory: 'items', spriteFilename: 'town_defense.png' };
+    case 'tower': {
+      const towerType = item.towerType || 'jet';
+      const rangeLevel = Math.min(4, Math.max(1, Math.floor(Number(item.rangeLevel) || 1)));
+      return { spriteCategory: 'towers', spriteFilename: `${towerType}_range_${rangeLevel}.png` };
+    }
     default:
       return null;
   }
@@ -74,7 +83,7 @@ export class CurrencyItemSystem {
       isWeightedRewardUnlockedInRun(this.gameState, { type: 'permanent_power_up', powerUpId })
     );
     if (!ids.length) return null;
-    return ids[Math.floor(Math.random() * ids.length)];
+    return rngLoot().pick(ids);
   }
 
   /**
@@ -121,10 +130,10 @@ export class CurrencyItemSystem {
       id: itemId,
       q,
       r,
-      itemType: normalizedType, // 'currency', 'xp', 'movement_token', 'shield', 'suppression_bomb', 'upgrade_plans', 'tree_juice'
+      itemType: normalizedType, // 'currency', 'xp', 'movement_token', 'shield', 'suppression_bomb', 'upgrade_plans', 'tree_juice', 'tower'
       value: (normalizedType === 'currency' || normalizedType === 'xp'
         ? (value || 1)
-        : normalizedType === 'shield' || normalizedType === 'suppression_bomb'
+        : normalizedType === 'shield' || normalizedType === 'suppression_bomb' || normalizedType === 'supercharger'
           ? (value || 1)
           : null),
       health: 4, // Same health as mystery boxes
@@ -136,6 +145,13 @@ export class CurrencyItemSystem {
           ? undefined
           : performance.now(),
     };
+    if (normalizedType === 'tower') {
+      const rangeLevel = Math.min(4, Math.max(1, Math.floor(Number(spawnOptions?.rangeLevel) || 1)));
+      const powerLevel = Math.min(4, Math.max(1, Math.floor(Number(spawnOptions?.powerLevel) || 1)));
+      item.towerType = spawnOptions?.towerType || 'jet';
+      item.rangeLevel = rangeLevel;
+      item.powerLevel = powerLevel;
+    }
     
     this.items.set(itemId, item);
     this.gridSystem.placeCurrencyItem(q, r, itemId);
@@ -159,17 +175,22 @@ export class CurrencyItemSystem {
       pool = [{ type: 'currency', weight: 1, minValue: 10, maxValue: 50 }];
     }
 
-    // Get the 7 hexes: center + 6 neighbors
+    // Get the 7 hexes: center + 6 neighbors. The origin hex is eligible even if the
+    // collected gift is still flagged there — drops can land where the gift just was.
     const hexes = [{ q: centerQ, r: centerR }, ...getNeighbors(centerQ, centerR)];
     
     // Filter to only available hexes
-    const availableHexes = hexes.filter(({ q, r }) => isValidMysteryDropHex(this.gridSystem.getHex(q, r)));
+    const availableHexes = hexes.filter(({ q, r }) =>
+      isValidMysteryDropHex(this.gridSystem.getHex(q, r), {
+        ignoreMysteryItem: q === centerQ && r === centerR,
+      })
+    );
     
     // Limit count to available hexes
     const actualCount = Math.min(count, availableHexes.length);
     
     // Shuffle available hexes to randomize placement
-    const shuffledHexes = [...availableHexes].sort(() => Math.random() - 0.5);
+    const shuffledHexes = rngLoot().shuffledCopy(availableHexes);
     
     // Calculate total weight for random selection
     const totalWeight = pool.reduce((sum, item) => sum + (item.weight || 1), 0);
@@ -180,7 +201,7 @@ export class CurrencyItemSystem {
       const { q, r } = shuffledHexes[i];
       
       // Select item type based on weights
-      let roll = Math.random() * totalWeight;
+      let roll = rngLoot().nextFloat() * totalWeight;
       let selectedItem = null;
       for (const poolItem of pool) {
         roll -= (poolItem.weight || 1);
@@ -224,7 +245,7 @@ export class CurrencyItemSystem {
         const ast = this.gameState.artifactSystem;
         const defs = ast?.getSpawnableDefinitions?.() || [];
         if (defs.length) {
-          const def = defs[Math.floor(Math.random() * defs.length)];
+          const def = rngLoot().pick(defs);
           didSpawn = !!ast?.spawnArtifact?.(q, r, def.id, {
             timeLeftSeconds: CONFIG.ARTIFACT_LIFETIME_SECONDS ?? 10,
             fromMystery: true,
@@ -235,7 +256,7 @@ export class CurrencyItemSystem {
         if (selectedItem.level != null && Number.isFinite(Number(selectedItem.level))) {
           level = Math.min(4, Math.max(1, Math.round(Number(selectedItem.level))));
         } else {
-          level = Math.floor(Math.random() * 4) + 1;
+          level = rngLoot().intRange(1, 4);
         }
         didSpawn = !!this.spawnCurrencyItem(q, r, 'shield', level, true);
       } else if (selectedItem.type === 'suppression_bomb') {
@@ -243,7 +264,7 @@ export class CurrencyItemSystem {
         if (selectedItem.level != null && Number.isFinite(Number(selectedItem.level))) {
           level = clampSuppressionBombLevel(selectedItem.level);
         } else {
-          level = Math.floor(Math.random() * getSuppressionBombMaxLevel()) + 1;
+          level = rngLoot().int(getSuppressionBombMaxLevel()) + 1;
         }
         didSpawn = !!this.spawnCurrencyItem(q, r, 'suppression_bomb', level, true);
       } else {
@@ -252,7 +273,9 @@ export class CurrencyItemSystem {
         if (selectedItem.type === 'currency' || selectedItem.type === 'money' || selectedItem.type === 'xp') {
           const minValue = selectedItem.minValue || 1;
           const maxValue = selectedItem.maxValue || 25;
-          value = Math.floor(Math.random() * (maxValue - minValue + 1)) + minValue;
+          value = rngLoot().intRange(minValue, maxValue);
+        } else if (selectedItem.type === 'supercharger') {
+          value = Math.max(1, Math.floor(Number(selectedItem.count) || 1));
         }
         const normalizedType = selectedItem.type === 'money' ? 'currency' : selectedItem.type;
         didSpawn = !!this.spawnCurrencyItem(q, r, normalizedType, value, true);
@@ -361,35 +384,34 @@ export class CurrencyItemSystem {
       this.gameState.runStats?.recordUpgradePlanFromMapDrop?.();
     } else if (item.itemType === 'specialty_plans') {
       this.gameState.player.specialtyPlans = (this.gameState.player.specialtyPlans || 0) + 1;
+    } else if (item.itemType === 'supercharger') {
+      const amount = Math.max(1, Math.floor(Number(item.value) || 1));
+      this.gameState.player.superchargers = (this.gameState.player.superchargers || 0) + amount;
     } else if (item.itemType === 'tree_juice') {
-      this.gameState.townLevel = (this.gameState.townLevel || 1) + 1;
-      this.gameState.gridSystem?.applyTownUpgrade(
-        CONFIG.TOWN_HEALTH_PER_UPGRADE,
-        this.gameState.townLevel,
-      );
-      this.gameState.runStats?.recordTownHealthUpgrade?.();
-
-      if (typeof window !== 'undefined' && window.AudioManager) {
-        window.AudioManager.playSFX('tree_juice');
-      }
-
+      grantTreeJuice(this.gameState, 1);
       if (this.gameState.notificationSystem) {
         this.gameState.notificationSystem.showToast(
-          `Tree Juice collected! Town level ${this.gameState.townLevel} (+${CONFIG.TOWN_HEALTH_PER_UPGRADE} grove HP)`,
+          'Tree Juice collected!',
           3500,
           'positive'
         );
       }
-
-      try {
-        const centerKey = '0,0';
-        this.gameState.renderer?.hexFlashes?.set(centerKey, {
-          startTime: performance.now(),
-          duration: 800,
-          color: 'white',
-        });
-      } catch (e) {
-        // ignore
+    } else if (item.itemType === 'tower') {
+      if (!this.gameState.player.inventory.purchasedTowers) {
+        this.gameState.player.inventory.purchasedTowers = [];
+      }
+      const towerType = item.towerType || 'jet';
+      const rangeLevel = Math.min(4, Math.max(1, Math.floor(Number(item.rangeLevel) || 1)));
+      const powerLevel = Math.min(4, Math.max(1, Math.floor(Number(item.powerLevel) || 1)));
+      const rid = this.gameState.runStats?.allocateTowerInstanceId?.();
+      this.gameState.player.inventory.purchasedTowers.push({
+        type: towerType,
+        rangeLevel,
+        powerLevel,
+        ...(rid != null ? { runStatsInstanceId: rid } : {}),
+      });
+      if (typeof window !== 'undefined' && window.AudioManager) {
+        window.AudioManager.playSFX('earn');
       }
     }
     
@@ -416,6 +438,9 @@ export class CurrencyItemSystem {
     this.gameState.runStats?.recordMapItemCollection?.('currency_item', {
       itemType: item.itemType,
       value: item.value,
+      towerType: item.towerType,
+      rangeLevel: item.rangeLevel,
+      powerLevel: item.powerLevel,
       q,
       r,
     });

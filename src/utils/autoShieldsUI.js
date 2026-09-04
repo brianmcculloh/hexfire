@@ -369,12 +369,12 @@ export function showAutoShieldsModal(gameState, anchorEl = null) {
 
   const shields = gameState?.player?.inventory?.purchasedShields;
   if (!Array.isArray(shields) || shields.length === 0) {
-    gameState.notificationSystem?.showToast?.('No shields to apply.', 3000, 'neutral');
+    gameState.notificationSystem?.showToast?.('No shields to apply.', 3000, 'neutral', { critical: true });
     return;
   }
 
   if (getAutoShieldTargetPool(gameState, 'all').length === 0) {
-    gameState.notificationSystem?.showToast?.('No towers to shield.', 3000, 'neutral');
+    gameState.notificationSystem?.showToast?.('No towers to shield.', 3000, 'neutral', { critical: true });
     return;
   }
 
@@ -403,7 +403,13 @@ export function showAutoShieldsModal(gameState, anchorEl = null) {
 
   const title = document.createElement('div');
   title.className = 'token-voucher-sellback-title';
-  title.textContent = 'Auto-shields';
+  const titleIcon = document.createElement('img');
+  titleIcon.src = 'assets/images/misc/autoshields.png';
+  titleIcon.alt = '';
+  titleIcon.draggable = false;
+  titleIcon.className = 'auto-shields-panel-title-icon';
+  title.appendChild(titleIcon);
+  title.appendChild(document.createTextNode('Auto-shields'));
   panel.appendChild(title);
 
   const buttonsWrap = document.createElement('div');
@@ -447,7 +453,7 @@ export function showAutoShieldsModal(gameState, anchorEl = null) {
       if (!confirmed) return;
 
       if ((gameState.player.inventory.purchasedShields?.length || 0) <= 0) {
-        gameState.notificationSystem?.showToast?.('No shields to apply.', 3000, 'warning');
+        gameState.notificationSystem?.showToast?.('No shields to apply.', 3000, 'warning', { critical: true });
         return;
       }
 
@@ -458,7 +464,7 @@ export function showAutoShieldsModal(gameState, anchorEl = null) {
       }
 
       if (applied <= 0) {
-        gameState.notificationSystem?.showToast?.('No matching towers to shield.', 3000, 'neutral');
+        gameState.notificationSystem?.showToast?.('No matching towers to shield.', 3000, 'neutral', { critical: true });
       } else {
         gameState.notificationSystem?.showToast?.(
           `Applied ${applied} shield${applied === 1 ? '' : 's'} automatically.`,

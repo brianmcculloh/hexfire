@@ -837,9 +837,9 @@ export const DEFAULT_HERO_POWER = {
   type: 'knights-blessing',
           screenShake: true,
   name: "The Knight's Blessing",
-  description: 'Increases the strength of all jet towers by 25%.',
+  description: 'Jet tower strength is doubled.',
   params: {
-    jetStrengthMultiplier: 1.25,
+    jetStrengthMultiplier: 2.0,
   },
 };
 
@@ -852,8 +852,8 @@ export const GROVE_INCARNATE_ANCIENT_BLESSING_POWER = {
   type: 'ancient-blessing',
           screenShake: true,
   name: 'The Ancient Blessing',
-  description: 'Fire regrow rates are reduced by 50%.',
-  params: { fireRegrowMultiplier: 0.5 },
+  description: 'Fire regrow rates are reduced by 75%.',
+  params: { fireRegrowMultiplier: 0.25 },
 };
 
 export const GROVE_INCARNATE_ANCIENT_BLESSING_SPEECH =
@@ -905,8 +905,8 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'fairydust',
       name: 'Fairydust',
-      description: 'Increases the strength of all spread towers by 25%.',
-      params: { spreadStrengthMultiplier: 1.25 },
+      description: 'Spread tower strength is doubled.',
+      params: { spreadStrengthMultiplier: 2.0 },
     }],
     bossWaveSpeech: 'My <span class="text-grove text-glow">Fairydust</span> strengthens your spread towers!',
     speechBubbles: [
@@ -935,8 +935,8 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'seek-water',
       name: 'Seek Water',
-      description: 'All water item spawn rates increase by 25%.',
-      params: { waterItemSpawnMultiplier: 1.25 },
+      description: 'Water bucket/tank/vat spawn rates are doubled.',
+      params: { waterItemSpawnMultiplier: 2.0 },
     }],
     bossWaveSpeech: 'I call <span class="text-water text-glow">Seek Water!</span>. Be quenched.',
     speechBubbles: [
@@ -965,8 +965,8 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'mirth',
       name: 'Mirth',
-      description: 'Fire spread rates along paths decrease by 25%.',
-      params: { pathFireSpreadMultiplier: 0.75 },
+      description: 'Fire spread rates along paths decreased by 50%.',
+      params: { pathFireSpreadMultiplier: 0.5 },
     }],
     bossWaveSpeech: '<span class="text-grove text-glow">Mirth</span> helps protect your paths!',
     speechBubbles: [
@@ -995,8 +995,8 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'seed-sower',
       name: 'Seed Sower',
-      description: 'The Ancient Grove takes 25% less fire damage.',
-      params: { townFireDamageMultiplier: 0.75 },
+      description: 'The Ancient Grove takes 75% less fire damage.',
+      params: { townFireDamageMultiplier: 0.25 },
     }],
     bossWaveSpeech: 'My <span class="text-grove text-glow">Seed Sower</span> blessing helps protect the Grove!',
     speechBubbles: [
@@ -1025,8 +1025,8 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'twirling',
       name: 'Twirling',
-      description: 'Rain towers do 25% more damage.',
-      params: { rainTowerPowerMultiplier: 1.25 },
+      description: 'Rain tower strength is doubled.',
+      params: { rainTowerPowerMultiplier: 2.0 },
     }],
     bossWaveSpeech: 'With <span class="text-cycle-rainbow">Twirling</span> favor, your rain towers have more stopping power!',
     speechBubbles: [
@@ -1055,8 +1055,8 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'flight',
       name: 'Flight',
-      description: 'Bomber towers do 25% more damage.',
-      params: { bomberDamageMultiplier: 1.25 },
+      description: 'Bomber tower strength is doubled.',
+      params: { bomberDamageMultiplier: 2.0 },
     }],
     bossWaveSpeech: 'Take <span class="text-shimmer text-water">Flight</span> with me — your bomber towers have more stopping power!',
     speechBubbles: [
@@ -1085,10 +1085,10 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'suppression',
       name: 'Suppression',
-      description: 'Suppression bombs do double damage.',
-      params: { suppressionBombDamageMultiplier: 2 },
+      description: 'Suppression bombs do quad damage.',
+      params: { suppressionBombDamageMultiplier: 4 },
     }],
-    bossWaveSpeech: 'My <span class="text-water text-glow">Suppression</span> blessing doubles your suppression bombs\' power!',
+    bossWaveSpeech: 'My <span class="text-water text-glow">Suppression</span> blessing quadruples your suppression bombs\' power!',
     speechBubbles: [
       { 
         placement: 'I\'ve been looking for you! I\'ve heard tell of your <span class="text-gradient-grove">bravery and skill</span>. I need your help.', 
@@ -1115,12 +1115,12 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'singing',
       name: 'Singing',
-      description: 'Spread resistance increased by 25%.',
-      params: { fireSpreadResistanceMultiplier: 0.75 },
+      description: 'Spread resistance increased by 50%.',
+      params: { fireSpreadResistanceMultiplier: 0.5 },
       requiresMetaUnlock: 'spread_resistance',
       whenMetaLocked: {
-        description: 'Vortexes move 25% slower (including fast vortexes).',
-        params: { vortexMoveSpeedMultiplier: 0.75 },
+        description: 'Vortexes move 50% slower (including fast vortexes).',
+        params: { vortexMoveSpeedMultiplier: 0.5 },
         bossWaveSpeech: 'My <span class="text-cycle-rainbow">Singing</span> slows down vortexes!',
       },
     }],
@@ -1151,12 +1151,12 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'safety',
       name: 'Safety',
-      description: 'Fire resistance increased by 25%.',
-      params: { fireDamageResistanceMultiplier: 0.75 },
+      description: 'Fire resistance increased by 50%.',
+      params: { fireDamageResistanceMultiplier: 0.5 },
       requiresMetaUnlock: 'fire_resistance',
       whenMetaLocked: {
-        description: 'Vortexes have a 25% reduced chance of spawning (including fast vortexes).',
-        params: { vortexSpawnChanceMultiplier: 0.75 },
+        description: 'Vortexes have a 50% reduced chance of spawning (including fast vortexes).',
+        params: { vortexSpawnChanceMultiplier: 0.5 },
         bossWaveSpeech: '<span class="text-gradient-rainbow">Safety</span> stops vortexes from forming as often!',
       },
     }],
@@ -1187,8 +1187,8 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'windfall',
       name: 'Windfall',
-      description: 'Gifts of the Grove spawn 25% more often.',
-      params: { mysteryItemSpawnMultiplier: 1.25 },
+      description: 'Gifts of the Grove spawn twice as often.',
+      params: { mysteryItemSpawnMultiplier: 2 },
     }],
     bossWaveSpeech: '<span class="text-grove text-glow">Windfall</span> brings more Gifts of the Grove!',
     speechBubbles: [
@@ -1217,8 +1217,8 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'muster',
       name: 'Muster',
-      description: 'Pulsing towers do 25% more damage.',
-      params: { pulsingTowerPowerMultiplier: 1.25 },
+      description: 'Pulsing tower strength is doubled.',
+      params: { pulsingTowerPowerMultiplier: 2.0 },
     }],
     bossWaveSpeech: '<span class="text-glow-pulse">Muster</span> strengthens your pulsing towers!',
     speechBubbles: [
@@ -1247,8 +1247,8 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'blessing-of-stonekeep',
       name: 'The Blessing of Stonekeep',
-      description: 'Permanent power-ups are 10% more effective.',
-      params: { permanentPowerUpEffectMultiplier: 1.1 },
+      description: 'Permanent power-ups are 50% more effective.',
+      params: { permanentPowerUpEffectMultiplier: 1.5 },
     }],
     bossWaveSpeech: 'The <span class="text-glow-pulse">Blessing of Stonekeep</span> strengthens all your permanent power-ups!',
     speechBubbles: [
@@ -1277,8 +1277,8 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'luck',
       name: 'Luck',
-      description: 'Rare spawns are 50% more likely.',
-      params: { rareSpawnMultiplier: 1.5 },
+      description: 'Rare spawns are twice as likely.',
+      params: { rareSpawnMultiplier: 2.0 },
     }],
     bossWaveSpeech: 'My <span class="text-grove text-glow">Luck</span> is with you, spawning more rare items!',
     speechBubbles: [
@@ -1307,12 +1307,12 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'bolster',
       name: 'Bolster',
-      description: 'Perimeter towers do 25% more damage.',
-      params: { perimeterTowerPowerMultiplier: 1.25 },
+      description: 'Perimeter tower strength is doubled.',
+      params: { perimeterTowerPowerMultiplier: 2.0 },
       requiresMetaUnlock: 'perimeter_tower',
       whenMetaLocked: {
-        description: 'Pulsing towers activate 25% faster.',
-        params: { pulsingAttackIntervalScale: 0.75 },
+        description: 'Pulsing towers activate twice as fast.',
+        params: { pulsingAttackIntervalScale: 0.5 },
         bossWaveSpeech: '<span class="text-water text-wave">Bolster</span> increases the speed of your pulsing towers!',
       },
     }],
@@ -1343,12 +1343,12 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'punch',
       name: 'Punch',
-      description: 'Charge towers do 25% more damage.',
-      params: { chargeTowerPowerMultiplier: 1.25 },
+      description: 'Charge tower power is doubled.',
+      params: { chargeTowerPowerMultiplier: 2.0 },
       requiresMetaUnlock: 'charge_tower',
       whenMetaLocked: {
-        description: 'Bomber towers activate 25% faster.',
-        params: { bomberAttackIntervalScale: 0.75 },
+        description: 'Bomber towers activate twice as fast.',
+        params: { bomberAttackIntervalScale: 0.5 },
         bossWaveSpeech: '<span class="text-gradient-upgrade">Punch!</span> Sprigget makes bomber towers faster!',
       },
     }],
@@ -1379,8 +1379,8 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'favor',
       name: 'Favor',
-      description: 'Temporary power-up spawns increase by 25%.',
-      params: { tempPowerUpSpawnMultiplier: 1.25 },
+      description: 'Temporary power-up spawn rate is doubled.',
+      params: { tempPowerUpSpawnMultiplier: 2.0 },
     }],
     bossWaveSpeech: '<span class="text-water text-wave">Favor</span> increases the chance of temporary power-ups to spawn!',
     speechBubbles: [
@@ -1409,16 +1409,16 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'sentry',
       name: 'Sentry',
-      description: 'Sentinel towers attack 25% faster.',
-      params: { sentinelAttackIntervalScale: 0.8 },
+      description: 'Sentinel towers attack twice as fast.',
+      params: { sentinelAttackIntervalScale: 0.5 },
       requiresMetaUnlock: 'sentinel_tower',
       whenMetaLocked: {
-        description: 'All applied shield amounts are doubled.',
-        params: { shieldHealthMultiplier: 2 },
-        bossWaveSpeech: '<span class="text-grove text-glow">Sentry</span> doubles the strength of shields when you apply them!',
+        description: 'All applied shield amounts are tripled.',
+        params: { shieldHealthMultiplier: 3 },
+        bossWaveSpeech: '<span class="text-grove text-glow">Sentry</span> triples the strength of shields when you apply them!',
       },
     }],
-    bossWaveSpeech: '<span class="text-grove text-glow">Sentry</span> increases the speed of your sentinel towers!',
+    bossWaveSpeech: '<span class="text-grove text-glow">Sentry</span> doubles the speed of your sentinel towers!',
     speechBubbles: [
       { 
         placement: 'Behold, the <span class="text-gradient-fire text-grow-pulse">Infernal Forge</span>. You must calm yourself in the face of the almighty <span class="text-fire-cataclysm text-glow-pulse">Cataclysm</span>.', 
@@ -1445,10 +1445,10 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'wisdom',
       name: 'Wisdom',
-      description: 'All XP collected is doubled.',
-      params: { xpGainMultiplier: 2 },
+      description: 'All XP collected is tripled.',
+      params: { xpGainMultiplier: 3 },
     }],
-    bossWaveSpeech: '<span class="text-water text-wave">Wisdom</span> doubles earned XP points!',
+    bossWaveSpeech: '<span class="text-water text-wave">Wisdom</span> triples earned XP points!',
     speechBubbles: [
       { 
         placement: 'I serve the <span class="text-water text-wave text-glow">queen of the sea</span>, though I know not where she is. I must find her. If you are willing to help me, we could work together...', 
@@ -1475,8 +1475,8 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'longevity',
       name: 'Longevity',
-      description: 'All temporary power-ups last 10s longer.',
-      params: { tempPowerUpBonusDurationSec: 10 },
+      description: 'All temporary power-ups last 15s longer.',
+      params: { tempPowerUpBonusDurationSec: 15 },
     }],
     bossWaveSpeech: '<span class="text-water text-glow">Longevity</span> extends your temporary power-ups!',
     speechBubbles: [
@@ -1505,10 +1505,10 @@ export const HERO_PATTERNS = {
     powers: [{
       type: 'fortune',
       name: 'Fortune',
-      description: 'All money collected on the map is doubled.',
-      params: { mapCurrencyMultiplier: 2 },
+      description: 'All money collected on the map is tripled.',
+      params: { mapCurrencyMultiplier: 3 },
     }],
-    bossWaveSpeech: '<span class="text-cycle-water text-shimmer">Fortune</span> doubles all money collected on the map!',
+    bossWaveSpeech: '<span class="text-cycle-water text-shimmer">Fortune</span> triples all money collected on the map!',
     speechBubbles: [
       { 
         placement: 'You shouldn\'t be here. The <span class="text-fire-cataclysm text-shimmer text-uppercase">Altar of Cataclysm</span> is not meant for mortals.', 
@@ -1733,26 +1733,26 @@ for (const key of Object.keys(HERO_PATTERNS)) {
 
 /** Short victory-line placeholders (tone matches each hero’s in-game voice). */
 export const VICTORY_SPEECH_PLACEHOLDERS = {
-  1: 'Placeholder: Splendid work, champion! The Ancient Grove sings of your valor!',
-  2: 'Placeholder: You did it you did it!! Thank you thank you!',
-  3: 'Placeholder: Impressive. Methodical. Your deeds have been noted.',
-  4: 'Placeholder: A triumph worthy of verse! The chorus practically writes itself!',
-  5: 'Placeholder: The seeds of hope take root. The Silver City may yet bloom again.',
-  6: 'Placeholder: A dance of victory! The dunes themselves whirl in celebration!',
-  7: 'Placeholder: Cloudband stands taller yet today.',
-  8: 'Placeholder: The wilds are safer tonight. My bow and I salute you, ranger of water.',
-  9: 'Placeholder: *strums* A ballad for the ages! Encore, encore!!',
-  10: 'Placeholder: Fascinating! Pure alchemy of the battlefield!',
-  11: 'Placeholder: Order is restored. The upright path was hard, but you walked it with honor.',
-  12: 'Placeholder: …Thank you. Maybe the path home is a little clearer now. Maybe.',
-  13: 'Placeholder: The elfkind owe you a debt. Name it, and it\'s yours.',
-  14: 'Placeholder: Grr-ateful! Time for some celebratory salmon and honey!',
-  15: 'Placeholder: Who will tell the tale of your numerous victories? Shall I...!?',
-  16: 'Placeholder: The gems shine brighter tonight! Favor upon you!',
-  17: 'Placeholder: You have earned the court’s eternal thanks and cemented yourself as a legend among our people',
-  18: 'Placeholder: Unshakable you were, and unbroken we stand.',
-  19: 'Placeholder: Highborn or low, today we bow to you. The realm remembers its champion.',
-  20: 'Placeholder: The throne’s fires cool at last. Ahh..... sweet relief.',
-  21: 'Placeholder: Not many alive today can boast of the dragons\'s favor. You are one of the few.',
-  22: 'Placeholder: The Spirit of the Grove whispers: you did what gods could not—Hexalon lives on.',
+  1: 'Splendid work, champion! The Ancient Grove sings of your valor!',
+  2: 'You did it you did it!! Thank you thank you!',
+  3: 'Impressive. Methodical. Your deeds have been noted.',
+  4: 'A triumph worthy of verse! The chorus practically writes itself!',
+  5: 'The seeds of hope take root. The Silver City may yet bloom again.',
+  6: 'A dance of victory! The dunes themselves whirl in celebration!',
+  7: 'Cloudband stands taller yet today.',
+  8: 'The wilds are safer tonight. My bow and I salute you, ranger of water.',
+  9: '*strums* A ballad for the ages! Encore, encore!!',
+  10: 'Fascinating! Pure alchemy of the battlefield!',
+  11: 'Order is restored. The upright path was hard, but you walked it with honor.',
+  12: '…Thank you. Maybe the path home is a little clearer now. Maybe.',
+  13: 'The elfkind owe you a debt. Name it, and it\'s yours.',
+  14: 'Grr-ateful! Time for some celebratory salmon and honey!',
+  15: 'Who will tell the tale of your numerous victories? Shall I...!?',
+  16: 'The gems shine brighter tonight! Favor upon you!',
+  17: 'You have earned the court’s eternal thanks and cemented yourself as a legend among our people',
+  18: 'Unshakable you were, and unbroken we stand.',
+  19: 'Highborn or low, today we bow to you. The realm remembers its champion.',
+  20: 'The throne’s fires cool at last. Ahh..... sweet relief.',
+  21: 'Not many alive today can boast of the dragons\'s favor. You are one of the few.',
+  22: 'The Spirit of the Grove whispers: you did what gods could not—Hexalon lives on.',
 };

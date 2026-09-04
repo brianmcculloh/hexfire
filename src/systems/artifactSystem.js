@@ -3,6 +3,7 @@
 import { CONFIG, getFireTypeConfig, getPowerUpMultiplier, getHeroPowerFireDamageResistanceMultiplier } from '../config.js';
 import { isValidMysteryDropHex } from './currencyItemSystem.js';
 import { isMetaItemUnlocked } from '../utils/metaProgression.js';
+import { rngLoot, rngSim } from '../utils/rng.js';
 
 let artifactInstanceIdCounter = 0;
 
@@ -137,13 +138,13 @@ export class ArtifactSystem {
     const maxC = CONFIG.ARTIFACT_SPAWN?.maxSpawnChancePerTick ?? 0.0045;
     const chance = Math.min(maxC, base * (1 + groupsSince * scale));
 
-    if (Math.random() >= chance) return;
+    if (rngSim().nextFloat() >= chance) return;
 
     const locs = this.getValidSpawnLocations();
     if (locs.length === 0) return;
 
-    const def = spawnable[Math.floor(Math.random() * spawnable.length)];
-    const loc = locs[Math.floor(Math.random() * locs.length)];
+    const def = rngLoot().pick(spawnable);
+    const loc = rngSim().pick(locs);
     this.spawnArtifact(loc.q, loc.r, def.id);
   }
 

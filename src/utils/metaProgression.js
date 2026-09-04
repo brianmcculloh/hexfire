@@ -1,4 +1,5 @@
 import { CONFIG, getPowerUpGraphicFilename } from '../config.js';
+import { assetUrl } from './assetUrl.js';
 
 const META_ITEM_ALIASES = {
   bomber: 'bomber_tower',
@@ -77,6 +78,40 @@ export function startMetaProgressionRunSnapshot(gameState) {
   gameState.meta.progression = normalizeMetaProgression(gameState.meta.progression);
   gameState.meta.activeRunProgression = normalizeMetaProgression(gameState.meta.progression);
   gameState.meta.useRunStartMetaProgression = true;
+  snapshotLoadedSaveMetaProgression(gameState);
+}
+
+/**
+ * Remember meta from the current save / run start so debug Max Meta can be undone
+ * without wiping unlocks to 0. Not written into save files.
+ */
+export function snapshotLoadedSaveMetaProgression(gameState) {
+  if (!gameState) return;
+  gameState.meta = gameState.meta || {};
+  const progression = normalizeMetaProgression(gameState.meta.progression);
+  const useRunStart = gameState.meta.useRunStartMetaProgression === true;
+  gameState.meta.loadedSaveProgressionSnapshot = {
+    progression,
+    activeRunProgression: useRunStart
+      ? normalizeMetaProgression(gameState.meta.activeRunProgression || progression)
+      : null,
+    useRunStartMetaProgression: useRunStart,
+  };
+}
+
+/**
+ * Restore {@link snapshotLoadedSaveMetaProgression} onto live meta.
+ * @returns {boolean} false if there is no snapshot
+ */
+export function restoreLoadedSaveMetaProgression(gameState) {
+  if (!gameState?.meta?.loadedSaveProgressionSnapshot) return false;
+  const snap = gameState.meta.loadedSaveProgressionSnapshot;
+  gameState.meta.progression = normalizeMetaProgression(snap.progression);
+  gameState.meta.useRunStartMetaProgression = snap.useRunStartMetaProgression === true;
+  gameState.meta.activeRunProgression = gameState.meta.useRunStartMetaProgression
+    ? normalizeMetaProgression(snap.activeRunProgression || snap.progression)
+    : null;
+  return true;
 }
 
 export function endMetaProgressionRunSnapshot(gameState) {
@@ -173,7 +208,7 @@ function getMetaUnlockIconHtml(def) {
     if (typeof window !== 'undefined' && typeof window.createTowerIconHTML === 'function') {
       return `<div class="meta-progression-tower-icon">${window.createTowerIconHTML(def.towerType, 1, 1, true)}</div>`;
     }
-    return `<img src="assets/images/towers/${def.towerType}_power_1.png" alt="${escapeHtml(def.name)}" class="placement-new-item-icon" />`;
+    return `<img src="${assetUrl(`assets/images/towers/${def.towerType}_power_1.png`)}" alt="${escapeHtml(def.name)}" class="placement-new-item-icon" />`;
   }
 
   if (def.iconType === 'power_up') {
@@ -230,17 +265,27 @@ export function buildMetaProgressionGalleryHtml(gameState) {
     return '<div class="meta-progression-gallery-empty">No meta progression unlocks configured yet.</div>';
   }
 
-  return unlocks.map((def) => {
-    const unlocked = isMetaProgressionUnlocked(gameState, def.id);
+  const unlocked = [];
+  const locked = [];
+  for (const def of unlocks) {
+    if (isMetaProgressionUnlocked(gameState, def.id)) unlocked.push(def);
+    else locked.push(def);
+  }
+  // Unlocked first (wave-group order), then remaining locks, so the list always
+  // fills top-to-bottom instead of leaving locked rows between unlocked ones.
+  const ordered = unlocked.concat(locked);
+
+  return ordered.map((def) => {
+    const isUnlocked = isMetaProgressionUnlocked(gameState, def.id);
     const required = Math.max(0, Math.floor(Number(def.requiredCompletedWaveGroup) || 0));
-    const displayName = unlocked ? escapeHtml(def.name).toUpperCase() : '???';
-    const lockedClass = unlocked ? '' : ' is-locked';
+    const displayName = isUnlocked ? escapeHtml(def.name).toUpperCase() : '???';
+    const lockedClass = isUnlocked ? '' : ' is-locked';
 
     return `
       <div class="placement-new-item-frame meta-progression-gallery-card${lockedClass}">
         <div class="meta-progression-gallery-icon-wrap">
           ${getMetaUnlockIconHtml(def)}
-          ${unlocked ? '' : '<img src="assets/images/misc/lock.png" alt="Locked" class="meta-progression-gallery-lock" />'}
+          ${isUnlocked ? '' : '<img src="assets/images/misc/lock.png" alt="Locked" class="meta-progression-gallery-lock" />'}
         </div>
         <div class="placement-new-item-content">
           <div class="placement-new-item-name">${displayName}</div>

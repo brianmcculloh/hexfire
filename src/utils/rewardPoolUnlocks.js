@@ -1,5 +1,6 @@
 import { CONFIG, getTowerUnlockStatus, isWaterTankDropPoolType, isWaterTankTypeAvailableAtWaveGroup } from '../config.js';
 import { isMetaItemUnlocked } from './metaProgression.js';
+import { rngLoot } from './rng.js';
 
 /** Permanent power-up IDs whose shop progression key differs from POWER_UPS id */
 const POWER_UP_ID_TO_UNLOCK_TYPE = {
@@ -32,11 +33,66 @@ export function hasUnlockedTempPowerUpForMystery(gameState) {
   });
 }
 
+/** Shop tower types that can drop from `random_tower` vault rewards. */
+const SHOP_TOWER_TYPES = ['jet', 'spread', 'pulsing', 'rain', 'bomber', 'sentinel', 'perimeter', 'charge'];
+const TOWER_MAX_UPGRADE_LEVEL = 4;
+
+function isShopTowerUnlockedInRun(gameState, towerType) {
+  if (!towerType) return false;
+  if (!isMetaItemUnlocked(gameState, towerType)) return false;
+  const playerLevel = Math.max(1, Math.floor(Number(gameState?.player?.level) || 1));
+  const wa = waveActiveForShopGate(gameState);
+  return getTowerUnlockStatus(towerType, playerLevel, null, wa).unlocked;
+}
+
+/** True if at least one shop tower is currently unlocked. */
+export function hasUnlockedTowerForReward(gameState) {
+  return SHOP_TOWER_TYPES.some((towerType) => isShopTowerUnlockedInRun(gameState, towerType));
+}
+
+/** Random currently-unlocked shop tower type, or null. */
+export function pickRandomUnlockedTowerType(gameState) {
+  const types = SHOP_TOWER_TYPES.filter((towerType) => isShopTowerUnlockedInRun(gameState, towerType));
+  if (!types.length) return null;
+  return rngLoot().pick(types);
+}
+
+/**
+ * Roll Speed/Range + Power levels whose sum is in [minUpgrades, maxUpgrades].
+ * Each track is at least 1 and at most 4, so the legal sum range is 2–8 (1+1 through 4+4).
+ * @param {number} minUpgrades
+ * @param {number} maxUpgrades
+ * @returns {{ rangeLevel: number, powerLevel: number }}
+ */
+export function rollRandomTowerUpgradeLevels(minUpgrades, maxUpgrades) {
+  const minSum = 2;
+  const maxSum = TOWER_MAX_UPGRADE_LEVEL * 2;
+  let minU = Math.max(minSum, Math.floor(Number(minUpgrades) || minSum));
+  let maxU = Math.max(minU, Math.floor(Number(maxUpgrades) || minU));
+  minU = Math.min(minU, maxSum);
+  maxU = Math.min(maxU, maxSum);
+  const total = rngLoot().intRange(minU, maxU);
+  const rangeMin = Math.max(1, total - TOWER_MAX_UPGRADE_LEVEL);
+  const rangeMax = Math.min(TOWER_MAX_UPGRADE_LEVEL, total - 1);
+  const rangeLevel = rngLoot().intRange(rangeMin, rangeMax);
+  const powerLevel = total - rangeLevel;
+  return { rangeLevel, powerLevel };
+}
+
 /** True if at least one permanent power-up can spawn from a mystery reward row. */
 export function hasUnlockedPermanentPowerUpForMystery(gameState) {
   return Object.keys(CONFIG.POWER_UPS || {}).some((powerUpId) =>
     isWeightedRewardUnlockedInRun(gameState, { type: 'permanent_power_up', powerUpId })
   );
+}
+
+/** Random shop-unlocked permanent power-up id, or null if none are available. */
+export function pickRandomUnlockedPermanentPowerUpId(gameState) {
+  const ids = Object.keys(CONFIG.POWER_UPS || {}).filter((powerUpId) =>
+    isWeightedRewardUnlockedInRun(gameState, { type: 'permanent_power_up', powerUpId })
+  );
+  if (!ids.length) return null;
+  return rngLoot().pick(ids);
 }
 
 /**
@@ -115,6 +171,14 @@ export function isWeightedRewardUnlockedInRun(gameState, row) {
 
   if (t === 'artifact_random') {
     return hasUnlockedArtifactForMystery(gameState);
+  }
+
+  if (t === 'random_tower') {
+    return hasUnlockedTowerForReward(gameState);
+  }
+
+  if (t === 'supercharger' || t === 'specialty_plans') {
+    return true;
   }
 
   return true;

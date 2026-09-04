@@ -17,6 +17,8 @@
 
 let audioContext = null;
 let musicGainNode = null;
+/** Wave/group-complete stingers: music volume/mute, without group-30 loop boost. */
+let musicStingerGainNode = null;
 let sfxGainNode = null;
 
 /** @type {Map<string, AudioBuffer>} */
@@ -100,6 +102,9 @@ let ambientGainNode = null;
 /** Max effective music volume (0.5 = slider at 100% gives 50% volume) */
 const MUSIC_VOLUME_SCALE = 0.5;
 
+/** SFX-folder stingers that follow music volume / mute instead of SFX. */
+const MUSIC_STINGER_KEYS = new Set(['wave_complete', 'group_complete']);
+
 /** Last wave group with its own loop track (1–30). */
 const LAST_UNIQUE_WAVE_GROUP_MUSIC = 30;
 /** Loop for wave groups beyond {@link LAST_UNIQUE_WAVE_GROUP_MUSIC} (endless). */
@@ -135,9 +140,13 @@ function getMusicGainForKey(musicKey) {
 function syncMusicGain() {
   const config = window.__audioConfig || {};
   const gain = getMusicGainForKey(currentMusicKey);
-  if (config.musicUseWebApi && musicGainNode) {
+  if (musicGainNode) {
     musicGainNode.gain.value = gain;
-  } else if (musicElement && currentMusicKey?.startsWith('group')) {
+  }
+  if (musicStingerGainNode) {
+    musicStingerGainNode.gain.value = getBaseMusicEffectiveGain();
+  }
+  if (!config.musicUseWebApi && musicElement && currentMusicKey?.startsWith('group')) {
     musicElement.volume = gain;
   }
 }
@@ -186,6 +195,11 @@ function getContext() {
 
   musicGainNode = audioContext.createGain();
   musicGainNode.connect(masterGain);
+  musicGainNode.gain.value = getMusicGainForKey(currentMusicKey);
+
+  musicStingerGainNode = audioContext.createGain();
+  musicStingerGainNode.connect(masterGain);
+  musicStingerGainNode.gain.value = getBaseMusicEffectiveGain();
 
   return audioContext;
 }
@@ -271,12 +285,28 @@ function stopWebApiMusic() {
  * Play a sound effect. No-op if key not loaded, SFX disabled, or volume 0.
  * Respects maxConcurrent per key to avoid too many overlapping same SFX.
  * @param {string} key - Key from AUDIO_SFX_PATHS
- * @param {object} options - { volume: 0-1 override, maxConcurrent: number, dedupeMs: number }
+ * @param {object} options - { volume: 0-1 override, maxConcurrent: number, dedupeMs: number, playbackRate: number, detune: number }
  */
+/**
+ * Resolve play volume for an SFX key.
+ * Prefer an explicit options.volume, then per-key override ({@link CONFIG.AUDIO_SFX_VOLUME_BY_KEY}),
+ * then global SFX volume.
+ * @param {string} key
+ * @param {object} options
+ * @param {object} config
+ * @returns {number}
+ */
+function resolveSfxVolume(key, options, config) {
+  const byKey = config.sfxVolumeByKey?.[key];
+  if (options.volume != null) return options.volume;
+  if (typeof byKey === 'number') return byKey;
+  return config.sfxVolume ?? 1;
+}
+
 function playSFX(key, options = {}) {
   const config = window.__audioConfig || {};
   if (config.sfxEnabled === false) return;
-  let vol = options.volume ?? config.sfxVolume ?? 1;
+  let vol = resolveSfxVolume(key, options, config) * (options.volumeMultiplier ?? 1);
   vol = applyBossAbilitySfxVolume(key, vol);
   if (vol <= 0) return;
 
@@ -301,6 +331,12 @@ function playSFX(key, options = {}) {
 
   const source = ctx.createBufferSource();
   source.buffer = buffer;
+  if (Number.isFinite(options.playbackRate) && options.playbackRate > 0) {
+    source.playbackRate.value = options.playbackRate;
+  }
+  if (Number.isFinite(options.detune)) {
+    source.detune.value = options.detune;
+  }
 
   const gain = ctx.createGain();
   gain.gain.value = vol;
@@ -348,7 +384,7 @@ function stopSFXKey(key) {
 function playSFXSegment(key, duration, options = {}) {
   const config = window.__audioConfig || {};
   if (config.sfxEnabled === false) return;
-  let vol = options.volume ?? config.sfxVolume ?? 1;
+  let vol = resolveSfxVolume(key, options, config);
   vol = applyBossAbilitySfxVolume(key, vol);
   if (vol <= 0) return;
 
@@ -442,15 +478,23 @@ let reverbTailOnlyImpulseBuffer = null;
 
 /**
  * Play a musical stinger with optional fade in, fade out, and reverb.
+ * `wave_complete` / `group_complete` ride the music bus (music volume + mute).
  * @param {string} key - Key from AUDIO_SFX_PATHS
  * @param {object} options - { fadeIn, fadeOut, reverb, reverbTailOnly, duration, startOffset, volume, volumeMultiplier }
  *   reverbTailOnly: if true, apply reverb only to the last ~0.2s (softens abrupt trim without echoing the whole sound)
  */
 function playSFXStinger(key, options = {}) {
   const config = window.__audioConfig || {};
-  if (config.sfxEnabled === false) return;
-  let vol = (options.volume ?? config.sfxVolume ?? 1) * (options.volumeMultiplier ?? 1);
-  vol = applyBossAbilitySfxVolume(key, vol);
+  const asMusic = MUSIC_STINGER_KEYS.has(key);
+  if (asMusic) {
+    if (config.musicEnabled === false) return;
+  } else if (config.sfxEnabled === false) {
+    return;
+  }
+  let vol = asMusic
+    ? (options.volume != null ? options.volume : 1) * (options.volumeMultiplier ?? 1)
+    : resolveSfxVolume(key, options, config) * (options.volumeMultiplier ?? 1);
+  if (!asMusic) vol = applyBossAbilitySfxVolume(key, vol);
   if (vol <= 0) return;
 
   const buffer = sfxBuffers.get(key);
@@ -458,6 +502,8 @@ function playSFXStinger(key, options = {}) {
 
   const ctx = getContext();
   if (!ctx) return;
+  const bus = asMusic ? musicStingerGainNode : sfxGainNode;
+  if (!bus) return;
 
   const fadeIn = options.fadeIn ?? 0;
   const fadeOut = options.fadeOut ?? 0;
@@ -480,7 +526,7 @@ function playSFXStinger(key, options = {}) {
     const dryGain = ctx.createGain();
     dryGain.gain.setValueAtTime(vol, now);
     source.connect(dryGain);
-    dryGain.connect(sfxGainNode);
+    dryGain.connect(bus);
 
     const sendGain = ctx.createGain();
     sendGain.gain.setValueAtTime(0, now);
@@ -498,7 +544,7 @@ function playSFXStinger(key, options = {}) {
     const reverbGain = ctx.createGain();
     reverbGain.gain.value = 1;
     convolver.connect(reverbGain);
-    reverbGain.connect(sfxGainNode);
+    reverbGain.connect(bus);
   } else if (reverb) {
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(0, now);
@@ -520,7 +566,7 @@ function playSFXStinger(key, options = {}) {
     convolver.normalize = true;
     source.connect(convolver);
     convolver.connect(gain);
-    gain.connect(sfxGainNode);
+    gain.connect(bus);
   } else {
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(0, now);
@@ -535,7 +581,7 @@ function playSFXStinger(key, options = {}) {
       gain.gain.linearRampToValueAtTime(0, fadeStart + fadeOut);
     }
     source.connect(gain);
-    gain.connect(sfxGainNode);
+    gain.connect(bus);
   }
 
   source.start(0, startOffset, playDuration);
@@ -550,7 +596,7 @@ function playSFXStinger(key, options = {}) {
 function playLoopingSFX(key, options = {}) {
   const config = window.__audioConfig || {};
   if (config.sfxEnabled === false) return null;
-  let vol = options.volume ?? config.sfxVolume ?? 1;
+  let vol = resolveSfxVolume(key, options, config);
   vol = applyBossAbilitySfxVolume(key, vol);
   if (vol <= 0) return null;
 
@@ -621,7 +667,7 @@ function setSFXVolume(value) {
 
 /**
  * Set global music volume (0-1). Affects current and future music. Effective volume is 0 when music disabled.
- * Also affects ambient loop volume.
+ * Also affects ambient loop volume and wave/group-complete stingers.
  * @param {number} value
  */
 function setMusicVolume(value) {

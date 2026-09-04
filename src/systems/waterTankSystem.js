@@ -13,6 +13,7 @@ import {
 } from '../config.js';
 import { isValidMysteryDropHex } from './currencyItemSystem.js';
 import { getNeighbors } from '../utils/hexMath.js';
+import { rngSim } from '../utils/rng.js';
 
 let waterTankIdCounter = 0;
 
@@ -40,7 +41,7 @@ export class WaterTankSystem {
     // Try to spawn tanks
     for (let i = 0; i < count && validLocations.length > 0; i++) {
       // Pick a random location from valid locations
-      const randomIndex = Math.floor(Math.random() * validLocations.length);
+      const randomIndex = rngSim().int(validLocations.length);
       const location = validLocations[randomIndex];
       
       // Remove this location from the list to prevent duplicates
@@ -193,9 +194,9 @@ export class WaterTankSystem {
     for (let i = 0; i < typeIds.length; i++) {
       const typeId = typeIds[i];
       const scaledChance = getWaterTankScaledSpawnChance(typeId, this.gameState);
-      if (scaledChance <= 0 || Math.random() > scaledChance) continue;
+      if (scaledChance <= 0 || rngSim().nextFloat() > scaledChance) continue;
 
-      const randomIndex = Math.floor(Math.random() * validLocations.length);
+      const randomIndex = rngSim().int(validLocations.length);
       const location = validLocations[randomIndex];
       const tankId = this.spawnWaterTank(location.q, location.r, { typeId });
 

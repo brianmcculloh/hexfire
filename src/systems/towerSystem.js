@@ -1,9 +1,10 @@
 // Tower System - Manages tower placement, rotation, and spraying
 
-import { CONFIG, getTowerRange, getSpreadTowerRange, getTowerPower, getSpreadTowerPower, getPulsingAttackInterval, getPulsingPower, getRainRange, getRainPower, getBomberAttackInterval, getBomberImpactZone, getBomberMaxDistance, getBomberMinDistance, getEffectiveShieldHealth, getFireTypeConfig, getPowerUpMultiplier, getEffectiveDurationTowerAttackIntervalWithHeroPower, getEffectivePerimeterAttackInterval, getTowerMaxHealth, getTowerBaseHealth, getHeroPowerJetMultiplier, getHeroPowerSpreadMultiplier, getHeroPowerRainTowerMultiplier, getHeroPowerBomberDamageMultiplier, getHeroPowerPulsingTowerMultiplier, getHeroPowerPerimeterTowerMultiplier, getHeroPowerChargeTowerMultiplier, getHeroPowerFireDamageResistanceMultiplier, getSentinelAttackInterval, getSentinelPower, getSentinelImpactZone, getPerimeterImpactZone, getSentinelConcreteTargetModes, getPerimeterPower, getPerimeterTurretAimLagRadians, clampPerimeterRing, getChargeAttackInterval, getChargePerHexPower, getChargeTotalHpPerBomb, getChargeImpactZone, clampChargeTargetDistance, normalizeChargeMode, getChargeImpactLevel, getEffectiveHealthRegrowRate } from '../config.js';
+import { CONFIG, getTowerRange, getSpreadTowerRange, getTowerPower, getSpreadTowerPower, getPulsingAttackInterval, getPulsingPower, getRainRange, getRainPower, getBomberAttackInterval, getBomberImpactZone, getBomberMaxDistance, getBomberMinDistance, getEffectiveShieldHealth, getFireTypeConfig, getPowerUpMultiplier, getEffectiveDurationTowerAttackIntervalWithHeroPower, getEffectivePerimeterAttackInterval, getTowerMaxHealth, getTowerBaseHealth, getHeroPowerJetMultiplier, getHeroPowerSpreadMultiplier, getHeroPowerRainTowerMultiplier, getHeroPowerBomberDamageMultiplier, getHeroPowerPulsingTowerMultiplier, getHeroPowerPerimeterTowerMultiplier, getHeroPowerChargeTowerMultiplier, getHeroPowerFireDamageResistanceMultiplier, getSentinelAttackInterval, getSentinelPower, getSentinelImpactZone, getPerimeterImpactZone, getSentinelConcreteTargetModes, getPerimeterPower, getPerimeterTurretAimLagRadians, clampPerimeterRing, getChargeAttackInterval, getChargePerHexPower, getChargeTotalHpPerBomb, getChargeImpactZone, clampChargeTargetDistance, normalizeChargeMode, getChargeImpactLevel, getEffectiveHealthRegrowRate, getTowerSuperchargePowerMultiplier, getTowerSuperchargeRangeBonus, getTowerTrackMaxLevel } from '../config.js';
 import { getTowerRangeHexBonusForGameState } from '../utils/tempPowerUpClock.js';
 import { getHexLine, hexKey, getHexInDirection, getDirectionAngle, getSpreadTowerTargets, hexDistance, getHexesInRing, axialToPixel } from '../utils/hexMath.js';
 import { getTempPowerUpTimeReference } from '../utils/tempPowerUpClock.js';
+import { rngLoot, rngSim } from '../utils/rng.js';
 
 let towerIdCounter = 0;
 
@@ -41,7 +42,8 @@ export class TowerSystem {
       tower.rangeLevel,
       this.gameState?.player?.powerUps || {},
       this.gameState?.player?.tempPowerUps || [],
-      this._getTowerAttackIntervalNow()
+      this._getTowerAttackIntervalNow(),
+      this.gameState
     );
   }
 
@@ -88,7 +90,8 @@ export class TowerSystem {
       this.gameState.notificationSystem?.showToast?.(
         'This tower is broken. Use Repair Supplies from your inventory.',
         4000,
-        'neutral'
+        'neutral',
+        { critical: true }
       );
       return null;
     }
@@ -218,7 +221,8 @@ export class TowerSystem {
       const powerUps = this.gameState?.player?.powerUps || {};
       const tempPowerUps = this.gameState?.player?.tempPowerUps || [];
       const waterPowerMultiplier = getPowerUpMultiplier('waterTowerPower', powerUps, tempPowerUps, this.gameState);
-      attackPower *= waterPowerMultiplier * getHeroPowerPulsingTowerMultiplier(this.gameState);
+      attackPower *= waterPowerMultiplier * getHeroPowerPulsingTowerMultiplier(this.gameState)
+        * getTowerSuperchargePowerMultiplier(this.gameState, CONFIG.TOWER_TYPE_PULSING);
       tower.flashTime = 0.45; // Visual flash window
       tower.pulseBurstId = (tower.pulseBurstId || 0) + 1; // Monotonic id so fast speed tiers can't drop FX
       tower.pendingPulseBurst = true; // Reliable one-shot for renderer blast FX
@@ -342,7 +346,8 @@ export class TowerSystem {
    */
   upgradeTowerRange(towerId) {
     const tower = this.towers.get(towerId);
-    if (!tower || tower.rangeLevel >= 4) return false;
+    const maxLevel = getTowerTrackMaxLevel(this.gameState, tower?.type, 'range');
+    if (!tower || tower.rangeLevel >= maxLevel) return false;
     
     tower.rangeLevel++;
     this.updateTowerAffectedHexes(towerId);
@@ -356,7 +361,8 @@ export class TowerSystem {
    */
   upgradeTowerPower(towerId) {
     const tower = this.towers.get(towerId);
-    if (!tower || tower.powerLevel >= 4) return false;
+    const maxLevel = getTowerTrackMaxLevel(this.gameState, tower?.type, 'power');
+    if (!tower || tower.powerLevel >= maxLevel) return false;
     
     tower.powerLevel++;
     return true;
@@ -371,7 +377,7 @@ export class TowerSystem {
     if (!tower) return;
     
     let affectedHexes = [];
-    const hexBonus = this._getRangeHexBonus();
+    const hexBonus = this._getRangeHexBonus(tower.type);
     
     if (tower.type === CONFIG.TOWER_TYPE_PULSING) {
       // Pulsing tower: ring-1 AOE by default; Range Extender adds further rings (same rule as rain radius)
@@ -427,10 +433,11 @@ export class TowerSystem {
     });
   }
 
-  /** Range Extender (+hex rings) using the same temp clock as the HUD. */
-  _getRangeHexBonus() {
+  /** Range Extender (+hex rings) plus type-specific supercharge range, using the same temp clock as the HUD. */
+  _getRangeHexBonus(towerType = null) {
     const gameLoop = typeof window !== 'undefined' ? window.gameLoop : null;
-    return getTowerRangeHexBonusForGameState(this.gameState, gameLoop);
+    return getTowerRangeHexBonusForGameState(this.gameState, gameLoop)
+      + getTowerSuperchargeRangeBonus(this.gameState, towerType);
   }
   
   /**
@@ -643,7 +650,8 @@ export class TowerSystem {
         // Pulsing tower: periodic AOE attacks
         tower.timeSinceLastAttack += deltaTime;
         const attackInterval = this._effectiveDurationAttackInterval(getPulsingAttackInterval(tower.rangeLevel), CONFIG.TOWER_TYPE_PULSING); // Tower Speed shortens interval
-        const ratePerSecond = getPulsingPower(tower.powerLevel) * waterPowerMultiplier * heroPulsingPowerMultiplier;
+        const ratePerSecond = getPulsingPower(tower.powerLevel) * waterPowerMultiplier * heroPulsingPowerMultiplier
+          * getTowerSuperchargePowerMultiplier(this.gameState, CONFIG.TOWER_TYPE_PULSING);
 
         // Show average HP/s on covered water targets every frame (pulses are bursts of that rate).
         tower.affectedHexes.forEach(hexCoord => {
@@ -729,7 +737,7 @@ export class TowerSystem {
 
             if (hex.hasBurningVault) {
               markHit();
-              this.gameState.burningVaultSystem?.addWaterPower(hexCoord.q, hexCoord.r, attackPower);
+              this.gameState.burningVaultSystem?.addWaterPower(hexCoord.q, hexCoord.r, attackPower, tower.id);
             }
             if (hex.hasDungeonEntrance) {
               markHit();
@@ -749,7 +757,8 @@ export class TowerSystem {
       } else if (tower.type === CONFIG.TOWER_TYPE_RAIN) {
         // Rain tower: constant AOE effect — waterPowerMultiplier hoisted at update() top
         let rainPower = getRainPower(tower.powerLevel); // Power per second
-        rainPower *= waterPowerMultiplier * heroRainPowerMultiplier;
+        rainPower *= waterPowerMultiplier * heroRainPowerMultiplier
+          * getTowerSuperchargePowerMultiplier(this.gameState, CONFIG.TOWER_TYPE_RAIN);
         const extinguishAmount = rainPower * deltaTime;
         
         tower.affectedHexes.forEach(hexCoord => {
@@ -814,7 +823,7 @@ export class TowerSystem {
 
           if (hex.hasBurningVault) {
             markHit();
-            this.gameState.burningVaultSystem?.addWaterPower(hexCoord.q, hexCoord.r, extinguishAmount);
+            this.gameState.burningVaultSystem?.addWaterPower(hexCoord.q, hexCoord.r, extinguishAmount, tower.id);
           }
           if (hex.hasDungeonEntrance) {
             markHit();
@@ -883,6 +892,7 @@ export class TowerSystem {
         } else if (tower.type === CONFIG.TOWER_TYPE_SPREAD) {
           power *= heroSpreadPowerMultiplier;
         }
+        power *= getTowerSuperchargePowerMultiplier(this.gameState, tower.type);
         
         tower.affectedHexes.forEach(hexCoord => {
           const hex = this.gridSystem.getHex(hexCoord.q, hexCoord.r);
@@ -955,7 +965,7 @@ export class TowerSystem {
 
           if (hex.hasBurningVault) {
             markHit();
-            this.gameState.burningVaultSystem?.addWaterPower(hexCoord.q, hexCoord.r, power * deltaTime);
+            this.gameState.burningVaultSystem?.addWaterPower(hexCoord.q, hexCoord.r, power * deltaTime, tower.id);
           }
           if (hex.hasDungeonEntrance) {
             markHit();
@@ -985,6 +995,46 @@ export class TowerSystem {
    */
   _recordWaterHitRate(q, r, ratePerSecond) {
     this.gridSystem?.addWaterHitRate?.(q, r, ratePerSecond);
+  }
+
+  /**
+   * Damage a map tower from a non-fire source (e.g. burning-vault shock).
+   * Shields absorb first; leftover does not overflow onto HP in the same tick (matches fire).
+   * @param {string} towerId
+   * @param {number} amount
+   * @returns {boolean} True if the tower was broken this call
+   */
+  applyExternalDamage(towerId, amount) {
+    const dmg = Math.max(0, Number(amount) || 0);
+    if (dmg <= 0) return false;
+    const tower = this.getTower(towerId);
+    if (!tower?.isActive) return false;
+
+    const hasActiveShield = tower.shield && tower.shield.health > 0;
+    if (hasActiveShield) {
+      tower.shield.health -= dmg;
+      this.gameState.runStats?.addTowerDamageThisWave?.(dmg);
+      if (tower.shield.health <= 0) {
+        tower.shield = null;
+      }
+      return false;
+    }
+
+    tower.health -= dmg;
+    this.gameState.runStats?.addTowerDamageThisWave?.(dmg);
+    if (tower.health <= 0) {
+      try {
+        this.gameState?.renderer?.spawnFireExplosionParticles?.(tower.q, tower.r, 'tower');
+      } catch (e) {
+        // ignore render side errors
+      }
+      if (typeof window !== 'undefined' && window.AudioManager) {
+        window.AudioManager.playSFX('destroyed');
+      }
+      this.breakTowerToInventory(towerId);
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -1040,7 +1090,7 @@ export class TowerSystem {
     const totalWeight = tiers.reduce((sum, tier) => sum + Math.max(0, Number(tier.weight) || 0), 0);
     if (totalWeight <= 0) return 100;
 
-    let roll = Math.random() * totalWeight;
+    let roll = rngLoot().nextFloat() * totalWeight;
     for (const tier of tiers) {
       roll -= Math.max(0, Number(tier.weight) || 0);
       if (roll <= 0) {
@@ -1048,7 +1098,7 @@ export class TowerSystem {
         const max = Math.floor(Number(tier.max) || min);
         const lo = Math.min(min, max);
         const hi = Math.max(min, max);
-        return lo + Math.floor(Math.random() * (hi - lo + 1));
+        return rngLoot().intRange(lo, hi);
       }
     }
 
@@ -1088,6 +1138,17 @@ export class TowerSystem {
     this.removeTower(towerId);
     this.gameState.player.inventory.storedTowers.push(storedTower);
 
+    if (!this.gameState.suppressRunStatsHooks) {
+      this.gameState.destroyedTowersThisWave = (this.gameState.destroyedTowersThisWave || 0) + 1;
+      this.gameState.runStats?.recordTowerDestroyed?.({
+        towerType: tower.type,
+        q: tower.q,
+        r: tower.r,
+        runStatsInstanceId: tower.runStatsInstanceId ?? null,
+        cause: 'fire',
+      });
+    }
+
     const towerTypeLabels = {
       jet: 'jet tower',
       spread: 'spread tower',
@@ -1102,7 +1163,8 @@ export class TowerSystem {
     this.gameState.notificationSystem?.showToast?.(
       `Your ${label} is broken`,
       3500,
-      'negative'
+      'negative',
+      { critical: true }
     );
     if (typeof window !== 'undefined' && window.updateInventory) {
       window.updateInventory();
@@ -1215,7 +1277,7 @@ export class TowerSystem {
     const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
     
     // Generate random number between 0 and totalWeight
-    let random = Math.random() * totalWeight;
+    let random = rngSim().nextFloat() * totalWeight;
     
     // Find which distance this random number corresponds to
     for (let i = 0; i < distances.length; i++) {
@@ -1327,7 +1389,8 @@ export class TowerSystem {
     const chargeMode = normalizeChargeMode(tower.chargeMode ?? CONFIG.CHARGE_MODE_DEFAULT);
     const basePower = getChargePerHexPower(tower.powerLevel, chargeMode)
       * getHeroPowerBomberDamageMultiplier(this.gameState)
-      * getHeroPowerChargeTowerMultiplier(this.gameState);
+      * getHeroPowerChargeTowerMultiplier(this.gameState)
+      * getTowerSuperchargePowerMultiplier(this.gameState, CONFIG.TOWER_TYPE_CHARGE);
 
     const bomb = {
       id: `bomb_${Date.now()}_${Math.random()}`,
@@ -1381,7 +1444,8 @@ export class TowerSystem {
     const targetHex = getHexInDirection(tower.q, tower.r, tower.direction, actualDistance);
 
     const basePower = CONFIG.BOMBER_BASE_POWER;
-    const powerPerBomb = basePower * getHeroPowerBomberDamageMultiplier(this.gameState);
+    const powerPerBomb = basePower * getHeroPowerBomberDamageMultiplier(this.gameState)
+      * getTowerSuperchargePowerMultiplier(this.gameState, CONFIG.TOWER_TYPE_BOMBER);
 
     const bomb = {
       id: `bomb_${Date.now()}_${Math.random()}`,
@@ -1500,7 +1564,7 @@ export class TowerSystem {
     if (volleyMode === CONFIG.SENTINEL_MODE_RANDOM) {
       const pool = this.getSentinelModesWithTargets(tower);
       if (pool.length === 0) return;
-      volleyMode = pool[Math.floor(Math.random() * pool.length)];
+      volleyMode = rngSim().pick(pool);
     }
 
     const targets = this.getSentinelTargets(tower, volleyMode);
@@ -1512,7 +1576,8 @@ export class TowerSystem {
       window.AudioManager.playSFXSegment('sentinel_tower_shoots', 0.5, { volume: 0.03515625, startOffset: 0, dedupeMs: 50 });
     }
 
-    const basePower = getSentinelPower(tower.powerLevel) * getHeroPowerPulsingTowerMultiplier(this.gameState);
+    const basePower = getSentinelPower(tower.powerLevel) * getHeroPowerPulsingTowerMultiplier(this.gameState)
+      * getTowerSuperchargePowerMultiplier(this.gameState, CONFIG.TOWER_TYPE_SENTINEL);
 
     targets.forEach((target) => {
       const distance = Math.max(1, hexDistance(tower.q, tower.r, target.q, target.r));
@@ -1713,7 +1778,8 @@ export class TowerSystem {
     tower.perimeterRingIndex = (tower.perimeterRingIndex + 1) % ringHexes.length;
     tower.lastBombFiredAt = now;
 
-    const basePower = getPerimeterPower(tower.powerLevel) * getHeroPowerPerimeterTowerMultiplier(this.gameState);
+    const basePower = getPerimeterPower(tower.powerLevel) * getHeroPowerPerimeterTowerMultiplier(this.gameState)
+      * getTowerSuperchargePowerMultiplier(this.gameState, CONFIG.TOWER_TYPE_PERIMETER);
     const distance = Math.max(1, hexDistance(tower.q, tower.r, target.q, target.r));
 
     const bomb = {
@@ -1862,7 +1928,8 @@ export class TowerSystem {
       window.AudioManager.playSFX('suppression_bomb_explodes', { volume: explosionVolume, dedupeMs: 50, maxConcurrent: 8 });
     }
 
-    const rangeHexBonus = this._getRangeHexBonus();
+    const owner = this.towers.get(bomb.towerId);
+    const rangeHexBonus = this._getRangeHexBonus(owner?.type);
     const impactHexes = bomb.isPerimeter
       ? getPerimeterImpactZone(bomb.targetQ, bomb.targetR)
       : bomb.isCharge
@@ -1933,7 +2000,7 @@ export class TowerSystem {
       }
 
       if (hex.hasBurningVault) {
-        this.gameState.burningVaultSystem?.addWaterPower(impactHex.q, impactHex.r, finalPower);
+        this.gameState.burningVaultSystem?.addWaterPower(impactHex.q, impactHex.r, finalPower, bomb.towerId);
       }
       if (hex.hasDungeonEntrance) {
         this.gameState.dungeonEntranceSystem?.addWaterPower(impactHex.q, impactHex.r, finalPower);

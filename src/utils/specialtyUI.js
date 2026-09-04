@@ -1,4 +1,4 @@
-// Specialty research tree — four paths (Time, Power, Money, Health), levels I–V
+// Specialty research tree — four paths (Time, Power, Money, Health), levels I–VII
 
 import {
   CONFIG,
@@ -7,6 +7,7 @@ import {
   getSpecialtyLevelDef,
   getSpecialtyLevelEffectDescription,
   getSpecialtyLevelKeyword,
+  getSpecialtyMaxLevel,
 } from '../config.js';
 import { closeModalOverlay, openModalOverlay, playModalEnterAnimation, showConfirmModal, createModalFloatingText } from './modal.js';
 import {
@@ -15,6 +16,7 @@ import {
   getSpecialtyMilestoneDescription,
   getSpecialtyMilestoneTooltipHtml,
   grantSpecialtyMilestoneReward,
+  isSpecialtyMilestoneLevel,
 } from './specialtyRewards.js';
 
 /** @typedef {'time'|'power'|'money'|'health'} SpecialtyId */
@@ -227,35 +229,45 @@ export function renderSpecialtyTree(gameState) {
       }
 
       trackItems.push(btn);
+
+      if (isSpecialtyMilestoneLevel(levelDef.level)) {
+        const currentLevel = getSpecialtyLevel(gameState, specialtyId);
+        const milestoneEarned = currentLevel >= levelDef.level;
+        const milestoneCard = document.createElement('div');
+        milestoneCard.className = 'specialty-milestone-card';
+        milestoneCard.classList.add(
+          milestoneEarned ? 'specialty-milestone-card--earned' : 'specialty-milestone-card--locked',
+        );
+        milestoneCard.dataset.specialtyMilestone = specialtyId;
+        milestoneCard.dataset.specialtyMilestoneLevel = String(levelDef.level);
+        milestoneCard.setAttribute('aria-label', `${spec.name} level ${levelDef.roman} reward`);
+
+        const milestonePreview = buildSpecialtyMilestonePreview(gameState, specialtyId, levelDef.level);
+        milestoneCard.appendChild(milestonePreview);
+
+        const milestoneTooltipHtml = getSpecialtyMilestoneTooltipHtml(
+          gameState,
+          specialtyId,
+          levelDef.level,
+        );
+        milestoneCard.addEventListener('mouseenter', (e) => {
+          const ts = gameState?.inputHandler?.tooltipSystem ?? window.gameState?.inputHandler?.tooltipSystem;
+          if (!ts || !milestoneTooltipHtml) return;
+          ts.show(milestoneTooltipHtml, e.clientX, e.clientY);
+        });
+        milestoneCard.addEventListener('mouseleave', () => {
+          gameState?.inputHandler?.tooltipSystem?.hide?.();
+          window.gameState?.inputHandler?.tooltipSystem?.hide?.();
+        });
+        milestoneCard.addEventListener('mousemove', (e) => {
+          const ts = gameState?.inputHandler?.tooltipSystem ?? window.gameState?.inputHandler?.tooltipSystem;
+          if (ts?.currentContent) ts.updateMousePosition(e.clientX, e.clientY);
+        });
+
+        trackItems.push(milestoneCard);
+      }
     });
 
-    const milestoneLevel = getSpecialtyLevel(gameState, specialtyId);
-    const milestoneEarned = milestoneLevel >= 5;
-    const milestoneCard = document.createElement('div');
-    milestoneCard.className = 'specialty-milestone-card';
-    milestoneCard.classList.add(milestoneEarned ? 'specialty-milestone-card--earned' : 'specialty-milestone-card--locked');
-    milestoneCard.dataset.specialtyMilestone = specialtyId;
-    milestoneCard.setAttribute('aria-label', `${spec.name} mastery reward`);
-
-    const milestonePreview = buildSpecialtyMilestonePreview(gameState, specialtyId);
-    milestoneCard.appendChild(milestonePreview);
-
-    const milestoneTooltipHtml = getSpecialtyMilestoneTooltipHtml(gameState, specialtyId);
-    milestoneCard.addEventListener('mouseenter', (e) => {
-      const ts = gameState?.inputHandler?.tooltipSystem ?? window.gameState?.inputHandler?.tooltipSystem;
-      if (!ts || !milestoneTooltipHtml) return;
-      ts.show(milestoneTooltipHtml, e.clientX, e.clientY);
-    });
-    milestoneCard.addEventListener('mouseleave', () => {
-      gameState?.inputHandler?.tooltipSystem?.hide?.();
-      window.gameState?.inputHandler?.tooltipSystem?.hide?.();
-    });
-    milestoneCard.addEventListener('mousemove', (e) => {
-      const ts = gameState?.inputHandler?.tooltipSystem ?? window.gameState?.inputHandler?.tooltipSystem;
-      if (ts?.currentContent) ts.updateMousePosition(e.clientX, e.clientY);
-    });
-
-    trackItems.push(milestoneCard);
     appendSpecialtyTrackItems(levelsWrap, trackItems);
 
     col.appendChild(levelsWrap);
@@ -280,10 +292,14 @@ export async function tryUnlockSpecialtyLevel(gameState, specialtyId, levelIndex
   if (!spec || !def) return;
 
   const effect = getSpecialtyLevelEffectDescription(specialtyId, levelIndex);
+  const maxLevel = spec.levels?.length || getSpecialtyMaxLevel(specialtyId);
   let confirmMessage = effect;
-  if (levelIndex === 5) {
-    const mastery = getSpecialtyMilestoneDescription(gameState, specialtyId);
-    confirmMessage += `\n\nMastery reward: ${mastery}`;
+  if (isSpecialtyMilestoneLevel(levelIndex)) {
+    const reward = getSpecialtyMilestoneDescription(gameState, specialtyId, levelIndex);
+    if (reward) {
+      const label = levelIndex >= maxLevel ? 'Mastery reward' : 'Path reward';
+      confirmMessage += `\n\n${label}: ${reward}`;
+    }
   }
   const confirmed = await showConfirmModal({
     title: `Unlock ${spec.name} Level ${def.roman}?`,
@@ -308,9 +324,11 @@ export async function tryUnlockSpecialtyLevel(gameState, specialtyId, levelIndex
 
   requestAnimationFrame(() => {
     playSpecialtyLevelUnlockFloat(specialtyId, levelIndex, def.roman);
-    if (levelIndex === 5) {
-      const milestoneCard = document.querySelector(`[data-specialty-milestone="${specialtyId}"]`);
-      grantSpecialtyMilestoneReward(gameState, specialtyId, milestoneCard);
+    if (isSpecialtyMilestoneLevel(levelIndex)) {
+      const milestoneCard = document.querySelector(
+        `[data-specialty-milestone="${specialtyId}"][data-specialty-milestone-level="${levelIndex}"]`,
+      );
+      grantSpecialtyMilestoneReward(gameState, specialtyId, levelIndex, milestoneCard);
     }
   });
 

@@ -3,7 +3,7 @@
 import { getScenarioByName } from '../scenarios.js';
 import { CONFIG, getExpectedTownMaxHealth, getPlayerLevel, normalizeWaveGroupIndex, clampPerimeterRing, clampChargeTargetDistance, normalizeChargeMode, isFinalSurvivalBossWaveGroup } from '../config.js';
 import { RunStatsTracker, getTotalRunFiresExtinguished } from '../systems/runStatsSystem.js';
-import { normalizeMetaProgression } from './metaProgression.js';
+import { normalizeMetaProgression, snapshotLoadedSaveMetaProgression } from './metaProgression.js';
 import { migrateSeenShopItems, syncNewlyUnlockedFromSeen, seedAnnouncedUnlocksFromPlayerLevel } from './shopSeenItems.js';
 import {
   normalizeMaxFiresExtinguishedByWave,
@@ -13,6 +13,7 @@ import { setLocalStorageItemWithRetry } from './localStorageQuota.js';
 import { artifactTraderWantsAreRevealed } from './artifactTrader.js';
 import { ensureSpecialtyMilestoneRewards } from './specialtyRewards.js';
 import { getTempPowerUpTimeReference } from './tempPowerUpClock.js';
+import { restoreRngState, initRunRng, serializeRngState } from './rng.js';
 
 const SAVE_KEY_PREFIX = 'hexfire_save_';
 const AUTOSAVE_KEY = 'hexfire_autosave';
@@ -453,8 +454,10 @@ function serializeGameState(gameState) {
     burningVaults: serializeBurningVaults(gameState.burningVaultSystem),
 
     dungeonEntrances: serializeDungeonEntrances(gameState.dungeonEntranceSystem),
+    dungeonMidWaveSpawns: serializeDungeonMidWaveSpawns(gameState.dungeonEntranceSystem),
 
     vortexes: serializeVortexes(gameState.vortexSystem),
+    vortexWave: serializeVortexWaveTracking(gameState.vortexSystem),
 
     artifacts: serializeArtifacts(gameState.artifactSystem),
     
@@ -475,12 +478,51 @@ function serializeGameState(gameState) {
       currency: gameState.player.currency || 0,
       upgradePlans: gameState.player.upgradePlans || 0,
       specialtyPlans: gameState.player.specialtyPlans || 0,
+      superchargers: gameState.player.superchargers || 0,
+      towerSupercharges: cloneTowerSupercharges(gameState.player.towerSupercharges),
       specialties: { ...(gameState.player.specialties || { time: 0, power: 0, money: 0, health: 0 }) },
-      specialtyTimeMilestonePowerUps: Array.isArray(gameState.player.specialtyTimeMilestonePowerUps)
-        ? [...gameState.player.specialtyTimeMilestonePowerUps]
-        : null,
+      specialtyTimeMilestonePowerUps: null,
+      specialtyPowerMilestonePowerUps:
+        gameState.player.specialtyPowerMilestonePowerUps
+        && typeof gameState.player.specialtyPowerMilestonePowerUps === 'object'
+          ? { ...gameState.player.specialtyPowerMilestonePowerUps }
+          : null,
       movementTokens: gameState.player.movementTokens || 0,
       movementTokensPurchased: gameState.player.movementTokensPurchased || 0,
+      upgradePlansPurchased: gameState.player.upgradePlansPurchased || 0,
+      townHealthUpgradesPurchased: gameState.player.townHealthUpgradesPurchased || 0,
+      treeJuice: gameState.player.treeJuice || 0,
+      towerRepairsPurchased: gameState.player.towerRepairsPurchased || 0,
+      shieldPurchasesByLevel: {
+        1: Math.max(0, Math.floor(Number(gameState.player.shieldPurchasesByLevel?.[1]) || 0)),
+        2: Math.max(0, Math.floor(Number(gameState.player.shieldPurchasesByLevel?.[2]) || 0)),
+        3: Math.max(0, Math.floor(Number(gameState.player.shieldPurchasesByLevel?.[3]) || 0)),
+        4: Math.max(0, Math.floor(Number(gameState.player.shieldPurchasesByLevel?.[4]) || 0)),
+      },
+      suppressionBombPurchasesByLevel: {
+        1: Math.max(0, Math.floor(Number(gameState.player.suppressionBombPurchasesByLevel?.[1]) || 0)),
+        2: Math.max(0, Math.floor(Number(gameState.player.suppressionBombPurchasesByLevel?.[2]) || 0)),
+        3: Math.max(0, Math.floor(Number(gameState.player.suppressionBombPurchasesByLevel?.[3]) || 0)),
+        4: Math.max(0, Math.floor(Number(gameState.player.suppressionBombPurchasesByLevel?.[4]) || 0)),
+        5: Math.max(0, Math.floor(Number(gameState.player.suppressionBombPurchasesByLevel?.[5]) || 0)),
+      },
+      runShopPricePasses: Array.isArray(gameState.player.runShopPricePasses)
+        ? [...gameState.player.runShopPricePasses]
+        : [],
+      upgradePlanPriceLocked: gameState.player.upgradePlanPriceLocked ?? null,
+      townUpgradePriceLocked: gameState.player.townUpgradePriceLocked ?? null,
+      towerRepairPriceLocked: gameState.player.towerRepairPriceLocked ?? null,
+      shieldPriceLockedByLevel: gameState.player.shieldPriceLockedByLevel
+        ? { ...gameState.player.shieldPriceLockedByLevel }
+        : null,
+      suppressionBombPriceLockedByLevel: gameState.player.suppressionBombPriceLockedByLevel
+        ? { ...gameState.player.suppressionBombPriceLockedByLevel }
+        : null,
+      shieldBundlePriceLocked: gameState.player.shieldBundlePriceLocked ?? null,
+      suppressionBundlePriceLocked: gameState.player.suppressionBundlePriceLocked ?? null,
+      powerUpPriceLockedById: gameState.player.powerUpPriceLockedById
+        ? { ...gameState.player.powerUpPriceLockedById }
+        : null,
       towerSellbacks: gameState.player.towerSellbacks || 0,
       towerRepairs: gameState.player.towerRepairs || 0,
       partsVouchers: gameState.player.partsVouchers || 0,
@@ -517,6 +559,16 @@ function serializeGameState(gameState) {
       tempPowerUpMessageShown: gameState.waveSystem?.tempPowerUpMessageShown || false,
       townBonusAward: gameState.wave.townBonusAward ?? 0,
       townNoSpreadBonusAward: gameState.wave.townNoSpreadBonusAward ?? 0,
+      lastStarResult: gameState.wave.lastStarResult
+        ? {
+            wave: gameState.wave.lastStarResult.wave,
+            waveGroup: gameState.wave.lastStarResult.waveGroup,
+            waveInGroup: gameState.wave.lastStarResult.waveInGroup,
+            stars: gameState.wave.lastStarResult.stars,
+            perfect: !!gameState.wave.lastStarResult.perfect,
+            criteria: gameState.wave.lastStarResult.criteria || undefined,
+          }
+        : null,
       pendingGroupRewards: gameState.wave.pendingGroupRewards || null,
       // Must persist with logical currentGroup so load restores "waiting for Collect" (paths/spawners still previous group).
       pendingGroupTransition:
@@ -550,7 +602,7 @@ function serializeGameState(gameState) {
       useRunStartMetaProgression: gameState.meta?.useRunStartMetaProgression === true,
       showFpsCounter: CONFIG.SHOW_FPS_COUNTER === true,
       mapZoom: (() => {
-        const levels = CONFIG.MAP_ZOOM_LEVELS || [0.75, 1, 1.25];
+        const levels = CONFIG.MAP_ZOOM_LEVELS || [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
         const z = CONFIG.MAP_ZOOM;
         if (typeof z === 'number' && levels.includes(z)) return z;
         return CONFIG.MAP_ZOOM_DEFAULT ?? 1;
@@ -564,6 +616,7 @@ function serializeGameState(gameState) {
     },
 
     runStats: gameState.runStats?.toJSON?.() ?? null,
+    rng: serializeRngState(gameState),
     totalFiresExtinguished: getTotalRunFiresExtinguished(gameState),
   };
 }
@@ -615,6 +668,9 @@ function serializeTown(gridSystem) {
     r: townCenter.r,
     townHealth: townCenter.townHealth ?? 0,
     maxTownHealth: townCenter.maxTownHealth ?? 0,
+    townDamageThisWave: gridSystem.townDamageThisWave || 0,
+    townSpreadDamageThisWave: gridSystem.townSpreadDamageThisWave || 0,
+    townReceivedSpreadFireThisWave: !!gridSystem.townReceivedSpreadFireThisWave,
   };
 }
 
@@ -731,6 +787,15 @@ function applyTownHealthFromSave(gameState, loadedData) {
 
   gameState.gridSystem.setTownHealth(patched.town.townHealth, patched.town.maxTownHealth);
   loadedData.town = patched.town;
+  if (gameState.gridSystem) {
+    if (loadedData.wave?.isActive) {
+      gameState.gridSystem.townDamageThisWave = Math.max(0, Number(patched.town.townDamageThisWave) || 0);
+      gameState.gridSystem.townSpreadDamageThisWave = Math.max(0, Number(patched.town.townSpreadDamageThisWave) || 0);
+      gameState.gridSystem.townReceivedSpreadFireThisWave = !!patched.town.townReceivedSpreadFireThisWave;
+    } else {
+      gameState.gridSystem.resetTownDamageThisWave?.();
+    }
+  }
   return repaired;
 }
 
@@ -842,6 +907,20 @@ function serializeTempPowerUpItems(tempPowerUpItemSystem) {
   }));
 }
 
+function cloneTowerSupercharges(raw) {
+  if (!raw || typeof raw !== 'object') return {};
+  const out = {};
+  for (const [towerType, row] of Object.entries(raw)) {
+    if (!row || typeof row !== 'object') continue;
+    const attrs = {};
+    for (const [attr, on] of Object.entries(row)) {
+      if (on) attrs[attr] = true;
+    }
+    if (Object.keys(attrs).length) out[towerType] = attrs;
+  }
+  return out;
+}
+
 /**
  * Serialize mystery boxes on the map
  * @param {*} mysteryItemSystem
@@ -878,6 +957,24 @@ function serializeDungeonEntrances(dungeonEntranceSystem) {
   }));
 }
 
+function serializeDungeonMidWaveSpawns(dungeonEntranceSystem) {
+  const list = dungeonEntranceSystem?.pendingMidWaveSpawns;
+  const delayed = Array.isArray(list)
+    ? list
+        .filter((entry) => entry && Number.isFinite(entry.remainingSec) && entry.remainingSec > 0)
+        .map((entry) => ({
+          remainingSec: entry.remainingSec,
+          count: Math.max(1, Math.floor(Number(entry.count) || 2)),
+        }))
+    : [];
+  const staggered = Array.isArray(dungeonEntranceSystem?.pendingStaggeredSpawns)
+    ? dungeonEntranceSystem.pendingStaggeredSpawns
+        .filter((entry) => entry && Number.isFinite(entry.remainingSec))
+        .map((entry) => ({ remainingSec: Math.max(0, Number(entry.remainingSec) || 0) }))
+    : [];
+  return { delayed, staggered };
+}
+
 function serializeVortexes(vortexSystem) {
   if (!vortexSystem || !vortexSystem.getAllItems) return [];
   return vortexSystem.getAllItems().map((item) => ({
@@ -892,6 +989,40 @@ function serializeVortexes(vortexSystem) {
     pathPosition: item.pathPosition,
     moveTimer: item.moveTimer,
   }));
+}
+
+function serializeVortexWaveTracking(vortexSystem) {
+  if (!vortexSystem) return null;
+  return {
+    extinguishedThisWave: Math.max(0, Math.floor(Number(vortexSystem.vortexesExtinguishedThisWave)) || 0),
+    waveExtinguishXpTotal: Math.max(0, Math.floor(Number(vortexSystem.waveExtinguishXpTotal)) || 0),
+  };
+}
+
+function restoreVortexWaveTracking(gameState, loadedData) {
+  const vs = gameState?.vortexSystem;
+  if (!vs) return;
+  if (!loadedData?.wave?.isActive) {
+    vs.resetWaveTracking?.();
+    return;
+  }
+  const fromBlob = loadedData.vortexWave && typeof loadedData.vortexWave === 'object'
+    ? loadedData.vortexWave
+    : {};
+  const fromTracking = gameState.runStats?.data?.waveStarTracking?.vortexesExtinguished;
+  const extinguished = Math.max(
+    Math.max(0, Math.floor(Number(fromBlob.extinguishedThisWave)) || 0),
+    Math.max(0, Math.floor(Number(fromTracking)) || 0)
+  );
+  vs.vortexesExtinguishedThisWave = extinguished;
+  vs.waveExtinguishXpTotal = Math.max(0, Math.floor(Number(fromBlob.waveExtinguishXpTotal)) || 0);
+  const tracking = gameState.runStats?.data?.waveStarTracking;
+  if (tracking && typeof tracking === 'object') {
+    tracking.vortexesExtinguished = Math.max(
+      Math.max(0, Math.floor(Number(tracking.vortexesExtinguished)) || 0),
+      extinguished
+    );
+  }
 }
 
 function serializeArtifacts(artifactSystem) {
@@ -920,6 +1051,9 @@ function serializeCurrencyItems(currencyItemSystem) {
     health: item.health,
     maxHealth: item.maxHealth,
     spawnedFromMystery: !!item.spawnedFromMystery,
+    towerType: item.towerType || null,
+    rangeLevel: item.rangeLevel || null,
+    powerLevel: item.powerLevel || null,
   }));
 }
 
@@ -1030,6 +1164,19 @@ export function applyLoadedState(gameState, loadedData) {
   // Avoid a stale pause timestamp from the pre-load session affecting temp power-up expiry / UI
   gameState.pauseStartTime = null;
 
+  if (loadedData.rng) {
+    restoreRngState(gameState, loadedData.rng);
+  } else {
+    initRunRng(gameState, {
+      mode: 'campaign',
+      contentVersion: CONFIG.CONTENT_VERSION,
+      waveNumber: loadedData.wave?.number || 1,
+    });
+  }
+  if (typeof document !== 'undefined') {
+    document.body.classList.toggle('daily-challenge-mode', gameState.rng?.mode === 'daily');
+  }
+
   // Restore player data
   gameState.player.xp = loadedData.player.xp;
   gameState.player.level = loadedData.player.level;
@@ -1040,21 +1187,136 @@ export function applyLoadedState(gameState, loadedData) {
   gameState.player.currency = loadedData.player.currency || 0;
   gameState.player.upgradePlans = loadedData.player.upgradePlans || 0;
   gameState.player.specialtyPlans = loadedData.player.specialtyPlans || 0;
+  gameState.player.superchargers = loadedData.player.superchargers || 0;
+  gameState.player.towerSupercharges = cloneTowerSupercharges(loadedData.player.towerSupercharges);
   gameState.player.specialties = {
     time: loadedData.player.specialties?.time || 0,
     power: loadedData.player.specialties?.power || 0,
     money: loadedData.player.specialties?.money ?? loadedData.player.specialties?.savvy ?? 0,
     health: loadedData.player.specialties?.health || 0,
   };
-  gameState.player.specialtyTimeMilestonePowerUps = Array.isArray(loadedData.player.specialtyTimeMilestonePowerUps)
-    ? [...loadedData.player.specialtyTimeMilestonePowerUps]
-    : null;
+  gameState.player.specialtyTimeMilestonePowerUps = null;
+  const loadedPowerMilestone = loadedData.player.specialtyPowerMilestonePowerUps;
+  gameState.player.specialtyPowerMilestonePowerUps =
+    loadedPowerMilestone && typeof loadedPowerMilestone === 'object' && !Array.isArray(loadedPowerMilestone)
+      ? { ...loadedPowerMilestone }
+      : null;
   ensureSpecialtyMilestoneRewards(gameState);
   gameState.player.movementTokens = loadedData.player.movementTokens || 0;
   gameState.player.movementTokensPurchased = Math.max(
     0,
     Math.floor(Number(loadedData.player.movementTokensPurchased) || 0)
   );
+  gameState.player.upgradePlansPurchased = Math.max(
+    0,
+    Math.floor(Number(loadedData.player.upgradePlansPurchased) || 0)
+  );
+  gameState.player.townHealthUpgradesPurchased = Math.max(
+    0,
+    Math.floor(Number(loadedData.player.townHealthUpgradesPurchased) || 0)
+  );
+  gameState.player.treeJuice = Math.max(
+    0,
+    Math.floor(Number(loadedData.player.treeJuice) || 0)
+  );
+  gameState.player.towerRepairsPurchased = Math.max(
+    0,
+    Math.floor(Number(loadedData.player.towerRepairsPurchased) || 0)
+  );
+  const loadedShieldPurchases = loadedData.player.shieldPurchasesByLevel;
+  gameState.player.shieldPurchasesByLevel = { 1: 0, 2: 0, 3: 0, 4: 0 };
+  if (loadedShieldPurchases && typeof loadedShieldPurchases === 'object') {
+    for (let lv = 1; lv <= 4; lv++) {
+      gameState.player.shieldPurchasesByLevel[lv] = Math.max(
+        0,
+        Math.floor(Number(loadedShieldPurchases[lv]) || 0)
+      );
+    }
+  }
+  const loadedBombPurchases = loadedData.player.suppressionBombPurchasesByLevel;
+  gameState.player.suppressionBombPurchasesByLevel = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+  if (loadedBombPurchases && typeof loadedBombPurchases === 'object') {
+    for (let lv = 1; lv <= 5; lv++) {
+      gameState.player.suppressionBombPurchasesByLevel[lv] = Math.max(
+        0,
+        Math.floor(Number(loadedBombPurchases[lv]) || 0)
+      );
+    }
+  }
+  gameState.player.runShopPricePasses = Array.isArray(loadedData.player.runShopPricePasses)
+    ? loadedData.player.runShopPricePasses.filter(Boolean)
+    : [];
+  const lockedUpgrade = loadedData.player.upgradePlanPriceLocked;
+  gameState.player.upgradePlanPriceLocked =
+    lockedUpgrade == null || lockedUpgrade === ''
+      ? null
+      : (Number.isFinite(Number(lockedUpgrade)) && Number(lockedUpgrade) > 0
+        ? Math.floor(Number(lockedUpgrade))
+        : null);
+  const lockedTown = loadedData.player.townUpgradePriceLocked;
+  gameState.player.townUpgradePriceLocked =
+    lockedTown == null || lockedTown === ''
+      ? null
+      : (Number.isFinite(Number(lockedTown)) && Number(lockedTown) > 0
+        ? Math.floor(Number(lockedTown))
+        : null);
+  const lockedRepair = loadedData.player.towerRepairPriceLocked;
+  gameState.player.towerRepairPriceLocked =
+    lockedRepair == null || lockedRepair === ''
+      ? null
+      : (Number.isFinite(Number(lockedRepair)) && Number(lockedRepair) > 0
+        ? Math.floor(Number(lockedRepair))
+        : null);
+  const normalizeLevelPriceLocks = (raw, maxLevel) => {
+    if (!raw || typeof raw !== 'object') return null;
+    const out = {};
+    let any = false;
+    for (let lv = 1; lv <= maxLevel; lv++) {
+      const n = Math.floor(Number(raw[lv]));
+      if (Number.isFinite(n) && n > 0) {
+        out[lv] = n;
+        any = true;
+      }
+    }
+    return any ? out : null;
+  };
+  gameState.player.shieldPriceLockedByLevel = normalizeLevelPriceLocks(
+    loadedData.player.shieldPriceLockedByLevel,
+    4
+  );
+  gameState.player.suppressionBombPriceLockedByLevel = normalizeLevelPriceLocks(
+    loadedData.player.suppressionBombPriceLockedByLevel,
+    5
+  );
+  const lockedShieldBundle = loadedData.player.shieldBundlePriceLocked;
+  gameState.player.shieldBundlePriceLocked =
+    lockedShieldBundle == null || lockedShieldBundle === ''
+      ? null
+      : (Number.isFinite(Number(lockedShieldBundle)) && Number(lockedShieldBundle) > 0
+        ? Math.floor(Number(lockedShieldBundle))
+        : null);
+  const lockedBombBundle = loadedData.player.suppressionBundlePriceLocked;
+  gameState.player.suppressionBundlePriceLocked =
+    lockedBombBundle == null || lockedBombBundle === ''
+      ? null
+      : (Number.isFinite(Number(lockedBombBundle)) && Number(lockedBombBundle) > 0
+        ? Math.floor(Number(lockedBombBundle))
+        : null);
+  const loadedPowerUpLocks = loadedData.player.powerUpPriceLockedById;
+  if (loadedPowerUpLocks && typeof loadedPowerUpLocks === 'object' && !Array.isArray(loadedPowerUpLocks)) {
+    const out = {};
+    let any = false;
+    for (const [id, raw] of Object.entries(loadedPowerUpLocks)) {
+      const n = Math.floor(Number(raw));
+      if (id && Number.isFinite(n) && n > 0) {
+        out[id] = n;
+        any = true;
+      }
+    }
+    gameState.player.powerUpPriceLockedById = any ? out : null;
+  } else {
+    gameState.player.powerUpPriceLockedById = null;
+  }
   gameState.player.towerSellbacks = loadedData.player.towerSellbacks || 0;
   gameState.player.towerRepairs = loadedData.player.towerRepairs || 0;
   gameState.player.partsVouchers = loadedData.player.partsVouchers || 0;
@@ -1086,7 +1348,7 @@ export function applyLoadedState(gameState, loadedData) {
       w &&
       typeof w === 'object' &&
       Array.isArray(w.individuals) &&
-      w.individuals.length === 5 &&
+      w.individuals.length >= 5 &&
       Array.isArray(w.pairs) &&
       w.pairs.length === 3;
     if (hasLockedWants) {
@@ -1116,9 +1378,10 @@ export function applyLoadedState(gameState, loadedData) {
   migrateSeenShopItems(gameState);
   syncNewlyUnlockedFromSeen(gameState);
   gameState.isMovementTokenMode = false;
-  gameState.movementTokenTargetTowerId = null;
-  gameState.movementTokenRepositioned = false;
-  gameState.movementTokenCommitted = false;
+  gameState.movementTokenOrigins = null;
+  gameState.movementTokenStoredTowerIds = [];
+  gameState.movementTokenIdRemap = null;
+  gameState.movementTokenAvailableAtStart = 0;
   if (typeof document !== 'undefined') {
     document.body.classList.remove('movement-token-mode');
   }
@@ -1177,6 +1440,10 @@ export function applyLoadedState(gameState, loadedData) {
   gameState.wave.scenarioName = loadedData.wave.scenarioName || null;
   gameState.wave.townBonusAward = loadedData.wave.townBonusAward ?? 0;
   gameState.wave.townNoSpreadBonusAward = loadedData.wave.townNoSpreadBonusAward ?? 0;
+  gameState.wave.lastStarResult =
+    loadedData.wave.lastStarResult && typeof loadedData.wave.lastStarResult === 'object'
+      ? loadedData.wave.lastStarResult
+      : null;
   gameState.wave.pendingGroupRewards = loadedData.wave.pendingGroupRewards ?? null;
   // Deferred map transition (group-complete modal open): must match logical wave group or UI/rendering diverges from paths/spawners
   if (gameState.waveSystem) {
@@ -1275,8 +1542,9 @@ export function applyLoadedState(gameState, loadedData) {
     if (typeof loadedData.meta.showFpsCounter === 'boolean') {
       CONFIG.SHOW_FPS_COUNTER = loadedData.meta.showFpsCounter;
     }
+    snapshotLoadedSaveMetaProgression(gameState);
     if (typeof loadedData.meta.mapZoom === 'number' && Number.isFinite(loadedData.meta.mapZoom)) {
-      const levels = CONFIG.MAP_ZOOM_LEVELS || [0.75, 1, 1.25];
+      const levels = CONFIG.MAP_ZOOM_LEVELS || [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
       let bestIdx = 0;
       let bestDist = Infinity;
       for (let i = 0; i < levels.length; i++) {
@@ -1354,7 +1622,7 @@ export function applyLoadedState(gameState, loadedData) {
     });
   }
 
-  // Dungeon entrances before paths/spawners/dig sites — they own their hex until flooded.
+  // Dungeon entrances before paths/spawners/dig sites — they own their hex until flooded or the group ends.
   // Vacate leftover ambient flags on the target hex so restore can succeed over a prior in-memory map;
   // path/spawner/dig restore afterward yields to the entrance.
   if (gameState.dungeonEntranceSystem) {
@@ -1403,11 +1671,52 @@ export function applyLoadedState(gameState, loadedData) {
         }
       });
     }
-    // Legacy / empty saves: ensure one entrance exists for the current wave group.
+
+    const restoredSpawns = [];
+    const restoredStaggered = [];
+    const midWaveRaw = loadedData.dungeonMidWaveSpawns;
+    const delayedList = Array.isArray(midWaveRaw)
+      ? midWaveRaw
+      : Array.isArray(midWaveRaw?.delayed)
+        ? midWaveRaw.delayed
+        : [];
+    delayedList.forEach((row) => {
+      const remaining = Number(row?.remainingSec);
+      const count = Math.max(1, Math.floor(Number(row?.count) || 2));
+      if (Number.isFinite(remaining) && remaining > 0) {
+        restoredSpawns.push({ remainingSec: remaining, count });
+      }
+    });
+    if (!Array.isArray(midWaveRaw) && Array.isArray(midWaveRaw?.staggered)) {
+      midWaveRaw.staggered.forEach((row) => {
+        const remaining = Number(row?.remainingSec);
+        if (Number.isFinite(remaining)) {
+          restoredStaggered.push({ remainingSec: Math.max(0, remaining) });
+        }
+      });
+    }
+    if (delayedList.length === 0 && restoredStaggered.length === 0) {
+      const legacyRemaining = Number(loadedData.dungeonMidWaveSpawnRemainingSec);
+      if (Number.isFinite(legacyRemaining) && legacyRemaining > 0) {
+        restoredSpawns.push({ remainingSec: legacyRemaining, count: 2 });
+      }
+    }
+    gameState.dungeonEntranceSystem.pendingMidWaveSpawns = restoredSpawns;
+    gameState.dungeonEntranceSystem.pendingStaggeredSpawns = restoredStaggered;
+
+    // Opening-of-group fallback: placement on wave 1 with no entrance and no queue → spawn one.
+    const wig = Math.max(
+      1,
+      Math.floor(
+        Number(loadedData.wave?.waveInGroup || gameState.waveSystem?.waveInGroup) || 1
+      )
+    );
     if (
       !gameState.tutorialMode &&
       !gameState.dungeonEntranceSystem.getActiveItem() &&
-      !loadedData.wave?.isActive
+      !gameState.dungeonEntranceSystem.hasPendingMidWaveSpawns() &&
+      !loadedData.wave?.isActive &&
+      wig === 1
     ) {
       const wg =
         loadedData.wave?.currentGroup ||
@@ -1689,6 +1998,7 @@ export function applyLoadedState(gameState, loadedData) {
         }
       });
     }
+    restoreVortexWaveTracking(gameState, loadedData);
   }
 
   if (gameState.artifactSystem) {
@@ -1726,13 +2036,17 @@ export function applyLoadedState(gameState, loadedData) {
         const value =
           itemType === 'currency' || itemType === 'xp'
             ? (row.value != null && Number.isFinite(Number(row.value)) ? Number(row.value) : 1)
-            : itemType === 'shield' || itemType === 'suppression_bomb'
+            : itemType === 'shield' || itemType === 'suppression_bomb' || itemType === 'supercharger'
               ? (row.value != null && Number.isFinite(Number(row.value)) ? Number(row.value) : 1)
               : 1;
         const fromMystery = !!row.spawnedFromMystery;
-        const spawnedId = gameState.currencyItemSystem.spawnCurrencyItem(row.q, row.r, itemType, value, fromMystery, {
-          skipSpawnBounce: true,
-        });
+        const spawnOpts = { skipSpawnBounce: true };
+        if (itemType === 'tower') {
+          spawnOpts.towerType = row.towerType || 'jet';
+          spawnOpts.rangeLevel = row.rangeLevel || 1;
+          spawnOpts.powerLevel = row.powerLevel || 1;
+        }
+        const spawnedId = gameState.currencyItemSystem.spawnCurrencyItem(row.q, row.r, itemType, value, fromMystery, spawnOpts);
         if (spawnedId && row.health !== undefined) {
           const item = gameState.currencyItemSystem.getItem(spawnedId);
           if (item) {

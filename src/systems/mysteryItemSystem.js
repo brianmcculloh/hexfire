@@ -3,6 +3,7 @@
 import { CONFIG, getFireTypeConfig, addPlayerScore, getPowerUpMultiplier, getHeroPowerMysteryItemSpawnMultiplier, getHeroPowerFireDamageResistanceMultiplier } from '../config.js';
 import { isValidMysteryDropHex } from './currencyItemSystem.js';
 import { getNeighbors } from '../utils/hexMath.js';
+import { rngLoot, rngSim } from '../utils/rng.js';
 let mysteryItemIdCounter = 0;
 
 export class MysteryItemSystem {
@@ -82,7 +83,7 @@ export class MysteryItemSystem {
     });
     
     // Random roll
-    let roll = Math.random() * totalWeight;
+    let roll = rngLoot().nextFloat() * totalWeight;
     
     // Find which item this roll corresponds to
     for (const item of availableItems) {
@@ -142,9 +143,9 @@ export class MysteryItemSystem {
       let scaledChance = baseChance * mysterySpawnMult * (1 + wavesSinceMin * scalingFactor);
       
       // Check if we should spawn this item type
-      if (Math.random() < scaledChance) {
+      if (rngSim().nextFloat() < scaledChance) {
         // Pick random location
-        const randomIndex = Math.floor(Math.random() * validLocations.length);
+        const randomIndex = rngSim().int(validLocations.length);
         const location = validLocations[randomIndex];
         
         // Spawn the item
@@ -225,22 +226,29 @@ export class MysteryItemSystem {
     
     const itemConfig = CONFIG.MYSTERY_ITEMS[item.itemId];
     if (!itemConfig) return false;
-    
+    const collectedMysteryItemId = item.itemId;
+
     // Get max items from config
     const maxItems = itemConfig.maxItems || 1;
+
+    // Clear the gift first so the origin hex can receive a drop (same pool as its 6 neighbors).
+    this.destroyItem(itemId);
+    this.gridSystem.setHex(q, r, { isBeingSprayed: false });
     
     // Get the 7 hexes: center + 6 neighbors
     const hexes = [{ q, r }, ...getNeighbors(q, r)];
     
     const availableHexes = hexes.filter(({ q: hexQ, r: hexR }) =>
-      isValidMysteryDropHex(this.gridSystem.getHex(hexQ, hexR))
+      isValidMysteryDropHex(this.gridSystem.getHex(hexQ, hexR), {
+        ignoreMysteryItem: hexQ === q && hexR === r,
+      })
     );
     
     // Adjust max items based on available hexes
     const actualMaxItems = Math.min(maxItems, availableHexes.length);
     
     // Randomly choose number of items between 1 and max
-    const itemCount = Math.floor(Math.random() * actualMaxItems) + 1;
+    const itemCount = rngLoot().int(actualMaxItems) + 1;
     
     // Spawn bonus items in the cluster using weighted drop pool
     if (this.gameState.currencyItemSystem && itemConfig.dropPool) {
@@ -259,15 +267,9 @@ export class MysteryItemSystem {
     if (this.gameState.renderer) {
       this.gameState.renderer.spawnBonusItemCollectionParticles(q, r);
     }
-    
-    // Remove item from map
-    this.destroyItem(itemId);
-    
-    // Clear the isBeingSprayed flag from the hex to prevent visual glitch
-    this.gridSystem.setHex(q, r, { isBeingSprayed: false });
 
     this.gameState.runStats?.recordMapItemCollection?.('mystery_box', {
-      mysteryItemId: item.itemId,
+      mysteryItemId: collectedMysteryItemId,
       q,
       r,
     });

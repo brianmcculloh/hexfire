@@ -1,42 +1,24 @@
 // Progression System - Manages XP, leveling, and upgrades
 
-import { CONFIG, getFireTypeConfig, getLevelThreshold, getPlayerLevel, getTowerUnlockStatus, getPowerUpMultiplier, getTowerRange, getSpreadTowerRange, getRainRange, getTowerPower, getSpreadTowerPower, getPulsingPower, getRainPower, getPulsingAttackInterval, getBomberAttackInterval, getSentinelAttackInterval, getSentinelPower, getPerimeterShotIntervalSeconds, getPerimeterPower, getChargeAttackInterval, getChargePerHexPower, getPowerUpGraphicFilename, getBomberImpactZone, formatWaterDamageRate, formatEveryInterval, getHeroPowerXpGainMultiplier, getTowerDisplayName } from '../config.js';
+import { CONFIG, getFireTypeConfig, getLevelThreshold, getPlayerLevel, getTowerUnlockStatus, getPowerUpMultiplier, getTowerRange, getSpreadTowerRange, getRainRange, getTowerPower, getSpreadTowerPower, getPulsingPower, getRainPower, getPulsingAttackInterval, getBomberAttackInterval, getSentinelAttackInterval, getSentinelPower, getPerimeterShotIntervalSeconds, getPerimeterPower, getChargeAttackInterval, getChargePerHexPower, getPowerUpGraphicFilename, getBomberImpactZone, formatWaterDamageRate, formatEveryInterval, getHeroPowerXpGainMultiplier, getTowerDisplayName, getUpgradePlanCostForStep, getUpgradePlanCostToMax, getTowerTrackMaxLevel, canTowerBeUpgraded } from '../config.js';
 import { isMetaItemUnlocked } from '../utils/metaProgression.js';
 import { isShopItemSeen } from '../utils/shopSeenItems.js';
 import { awardSpecialtyPlansForLevels, openSpecialtyModal } from '../utils/specialtyUI.js';
 import { pixelToAxial, axialToPixel } from '../utils/hexMath.js';
-import { createModalFloatingText, closeModalOverlay, openModalOverlay } from '../utils/modal.js';
+import { createModalFloatingText, closeModalOverlay, openModalOverlay, crossfadeModalShellContent, clearModalShellSwapAnimationState, prefersReducedModalMotion, MODAL_CONTENT_FADE_OUT_MS, MODAL_CONTENT_FADE_IN_MS } from '../utils/modal.js';
 
 /** Human-readable bomber impact area for upgrade modals (base zone, no temp range bonus). */
 function getBomberImpactHexDisplayLabel(impactLevel) {
-  const level = Math.min(4, Math.max(1, Math.floor(impactLevel)));
+  const level = Math.max(1, Math.floor(impactLevel));
   const count = getBomberImpactZone(0, 0, level, 0).length;
   return count === 1 ? '1 hex' : `${count} hexes`;
 }
 
-const TOWER_UPGRADE_MAX_LEVEL = 4;
-
-/** Upgrade-plan cost for a single step from currentLevel (1–3) to the next level. */
-function getUpgradePlanCostForStep(currentLevel) {
+/** Max shortcut is redundant when only one level remains. */
+function shouldShowMaxUpgradeButton(currentLevel, maxLevel) {
   const lv = Math.floor(Number(currentLevel)) || 1;
-  return lv === 3 ? 4 : lv;
-}
-
-/** Total upgrade plans to reach max from currentLevel (0 if already max). */
-function getUpgradePlanCostToMax(currentLevel) {
-  const lv = Math.floor(Number(currentLevel)) || 1;
-  if (lv >= TOWER_UPGRADE_MAX_LEVEL) return 0;
-  let total = 0;
-  for (let step = lv; step < TOWER_UPGRADE_MAX_LEVEL; step++) {
-    total += getUpgradePlanCostForStep(step);
-  }
-  return total;
-}
-
-/** Max shortcut is redundant when only one level remains (3 → 4). */
-function shouldShowMaxUpgradeButton(currentLevel) {
-  const lv = Math.floor(Number(currentLevel)) || 1;
-  return lv >= 1 && lv <= 2;
+  const max = Math.floor(Number(maxLevel)) || 4;
+  return lv + 1 < max;
 }
 
 /** Purple CTA row: label + upgrade-plan icon + x{cost}. */
@@ -631,8 +613,8 @@ export class ProgressionSystem {
         break;
       case 'town_health':
         name = 'Tree Juice';
-        description = 'Upgrade your tree juice';
-        stats = `+${CONFIG.TOWN_HEALTH_PER_UPGRADE} HP per upgrade`;
+        description = 'Use from inventory to raise grove max health and restore the grove to 100%';
+        stats = `+${CONFIG.TOWN_HEALTH_PER_UPGRADE} max HP and full heal per use`;
         break;
       case 'suppression_bundle':
         name = 'Suppression Bomb Bundle';
@@ -1190,7 +1172,7 @@ export class ProgressionSystem {
     // Check map towers
     const mapTowers = this.gameState.towerSystem.getAllTowers();
     for (const tower of mapTowers) {
-      if (tower.rangeLevel < 4 || tower.powerLevel < 4) {
+      if (canTowerBeUpgraded(this.gameState, tower)) {
         return false;
       }
     }
@@ -1198,7 +1180,7 @@ export class ProgressionSystem {
     // Check stored towers
     const storedTowers = this.gameState.player.inventory.storedTowers || [];
     for (const tower of storedTowers) {
-      if (tower.rangeLevel < 4 || tower.powerLevel < 4) {
+      if (canTowerBeUpgraded(this.gameState, tower)) {
         return false;
       }
     }
@@ -1206,7 +1188,7 @@ export class ProgressionSystem {
     // Check purchased towers
     const purchasedTowers = this.gameState.player.inventory.purchasedTowers || [];
     for (const tower of purchasedTowers) {
-      if (tower.rangeLevel < 4 || tower.powerLevel < 4) {
+      if (canTowerBeUpgraded(this.gameState, tower)) {
         return false;
       }
     }
@@ -1289,9 +1271,14 @@ export class ProgressionSystem {
   }
 
   /**
-   * Show skip upgrade confirmation dialog
+   * Show skip upgrade confirmation dialog ("Tower Upgraded!")
+   * @param {string|null} [towerId]
+   * @param {string|null} [upgradeType]
+   * @param {boolean} [isInventory]
+   * @param {{ reuseOverlay?: boolean }} [options] - When true, overlay is already open (content crossfade); skip backdrop open animation.
    */
-  showSkipUpgradeConfirmation(towerId = null, upgradeType = null, isInventory = false) {
+  showSkipUpgradeConfirmation(towerId = null, upgradeType = null, isInventory = false, options = {}) {
+    const { reuseOverlay = false } = options;
     const modal = document.getElementById('modalOverlay');
     const choicesDiv = document.getElementById('modalChoices');
     
@@ -1395,8 +1382,16 @@ export class ProgressionSystem {
         }
       }
       
-      openModalOverlay(modal, { extraAdd: ['skip-upgrade-mask'] });
-      modal.classList.remove('upgrade-token-mask');
+      // Keep backdrop visible when swapping from Confirm Upgrade; only open (fade backdrop) when fresh.
+      if (reuseOverlay && modal.classList.contains('active')) {
+        modal.classList.add('skip-upgrade-mask');
+        modal.classList.remove('upgrade-token-mask');
+        modal.style.pointerEvents = 'auto';
+        modal.style.background = 'rgba(0, 0, 0, 0.85)';
+      } else {
+        openModalOverlay(modal, { extraAdd: ['skip-upgrade-mask'] });
+        modal.classList.remove('upgrade-token-mask');
+      }
       
       // Add skip-upgrade-modal class to modal inner for width styling
       const modalInner = modal.querySelector('.modal');
@@ -1436,7 +1431,7 @@ export class ProgressionSystem {
         };
         buttonContainer.appendChild(doneBtn);
         
-        // Upgrade More button (right)
+        // Upgrade More button (right) — skip the "Select tower" intro modal on subsequent upgrades
         const upgradeMoreBtn = document.createElement('button');
         upgradeMoreBtn.className = 'choice-btn cta-button cta-purple';
         upgradeMoreBtn.textContent = 'Upgrade More';
@@ -1445,8 +1440,7 @@ export class ProgressionSystem {
         upgradeMoreBtn.onclick = () => {
           modal.classList.remove('skip-upgrade-mask');
           modal.classList.remove('upgrade-token-mask');
-          // Go back to select tower to upgrade modal
-          this.showUpgradePlanSelectionModal();
+          this.startMapSelection();
         };
         buttonContainer.appendChild(upgradeMoreBtn);
         
@@ -1479,6 +1473,7 @@ export class ProgressionSystem {
     // Set a flag to indicate we're in upgrade selection mode
     this.gameState.isUpgradeSelectionMode = true;
     document.body.classList.add('upgrade-selection-mode');
+    this.gameState.waveSystem?.updateClearAllButtonVisibility?.();
     // Click-select mode: don't carry over a prior hover selection into upgrade targeting.
     if (CONFIG.TOWER_SELECT_MODE === 'click') {
       this.gameState.selectedTowerId = null;
@@ -1505,7 +1500,7 @@ export class ProgressionSystem {
     
     // Get the specific tower that was clicked
     const tower = purchasedTowers[towerIndex];
-    if (!tower || (tower.rangeLevel >= 4 && tower.powerLevel >= 4)) {
+    if (!tower || !canTowerBeUpgraded(this.gameState, tower)) {
       return;
     }
     
@@ -1988,6 +1983,7 @@ export class ProgressionSystem {
       towerType = 'jet',
       towerRangeLevel = 1,
       towerPowerLevel = 1,
+      maxLevel = 4,
     }) => {
       const btn = document.createElement('button');
       const clickable = canAfford && !isMaxed;
@@ -2041,7 +2037,7 @@ export class ProgressionSystem {
           btn.style.backgroundImage = `url('assets/images/ui/hex-yellow.png')`;
           // Play hover sound (same as shop/inventory hover)
           if (typeof window !== 'undefined' && window.AudioManager) {
-            window.AudioManager.playSFX('hover1', { volume: 0.5 });
+            window.AudioManager.playSFX('hover1');
           }
         });
         btn.addEventListener('mouseleave', () => {
@@ -2066,12 +2062,12 @@ export class ProgressionSystem {
       levelsRow.style.justifyContent = 'center';
       levelsRow.style.gap = '6px';
 
-      // Maxed: show full 4 icons. Otherwise show current → next (even when unaffordable).
+      // Maxed: show full slot row. Otherwise show current → next (even when unaffordable).
       if (isMaxed) {
-        const fullLevelContainer = createLevelGraphicsContainer(4, 4, upgradeImage);
+        const fullLevelContainer = createLevelGraphicsContainer(maxLevel, maxLevel, upgradeImage);
         levelsRow.appendChild(fullLevelContainer);
       } else {
-        const currentContainer = createLevelGraphicsContainer(currentLevel, 4, upgradeImage);
+        const currentContainer = createLevelGraphicsContainer(currentLevel, maxLevel, upgradeImage);
         levelsRow.appendChild(currentContainer);
 
         const arrowSpan = document.createElement('span');
@@ -2080,7 +2076,7 @@ export class ProgressionSystem {
         levelsRow.appendChild(arrowSpan);
 
         const nextLevel = currentLevel + 1;
-        const nextContainer = createLevelGraphicsContainer(nextLevel, 4, upgradeImage);
+        const nextContainer = createLevelGraphicsContainer(nextLevel, maxLevel, upgradeImage);
         levelsRow.appendChild(nextContainer);
       }
 
@@ -2153,8 +2149,7 @@ export class ProgressionSystem {
 
       if (clickable) {
         btn.onclick = () => {
-          this.hideTowerUpgradePopup();
-          this.applyUpgrade(towerId, upgradeType, isInventory);
+          this.transitionFromChooseUpgradeToConfirm(towerId, upgradeType, isInventory, false);
         };
       } else if (!isMaxed) {
         btn.addEventListener('mouseenter', (e) => {
@@ -2183,14 +2178,15 @@ export class ProgressionSystem {
       upgradeType,
       currentLevel,
       isMaxed,
+      maxLevel,
     }) => {
       const column = document.createElement('div');
       column.className = 'upgrade-option-column';
       column.style.cssText = 'display: flex; flex-direction: column; align-items: center; gap: 6px;';
       column.appendChild(btn);
 
-      if (!isMaxed && shouldShowMaxUpgradeButton(currentLevel)) {
-        const maxCost = getUpgradePlanCostToMax(currentLevel);
+      if (!isMaxed && shouldShowMaxUpgradeButton(currentLevel, maxLevel)) {
+        const maxCost = getUpgradePlanCostToMax(currentLevel, maxLevel);
         const maxCanAfford = availablePlans >= maxCost;
         const maxBtn = document.createElement('button');
         maxBtn.className = 'choice-btn cta-button cta-purple tower-upgrade-max-btn';
@@ -2198,8 +2194,7 @@ export class ProgressionSystem {
 
         if (maxCanAfford) {
           maxBtn.onclick = () => {
-            this.hideTowerUpgradePopup();
-            this.applyUpgrade(towerId, upgradeType, isInventory, true);
+            this.transitionFromChooseUpgradeToConfirm(towerId, upgradeType, isInventory, true);
           };
         } else {
           maxBtn.classList.add('tower-upgrade-max-btn--disabled');
@@ -2224,7 +2219,8 @@ export class ProgressionSystem {
       buttonsDiv.appendChild(column);
     };
 
-    const firstIsMaxed = tower.rangeLevel >= 4;
+    const firstMaxLevel = getTowerTrackMaxLevel(this.gameState, tower.type, 'range');
+    const firstIsMaxed = tower.rangeLevel >= firstMaxLevel;
     const firstRequiredTokens = firstIsMaxed ? 0 : getUpgradePlanCostForStep(tower.rangeLevel);
     const firstCanAfford = availablePlans >= firstRequiredTokens;
     const firstBtn = createUpgradeButton({
@@ -2242,14 +2238,17 @@ export class ProgressionSystem {
       towerType: tower.type,
       towerRangeLevel: tower.rangeLevel,
       towerPowerLevel: tower.powerLevel,
+      maxLevel: firstMaxLevel,
     });
     appendUpgradeOptionColumn(firstBtn, {
       upgradeType: firstUpgradeType,
       currentLevel: tower.rangeLevel,
       isMaxed: firstIsMaxed,
+      maxLevel: firstMaxLevel,
     });
 
-    const secondIsMaxed = tower.powerLevel >= 4;
+    const secondMaxLevel = getTowerTrackMaxLevel(this.gameState, tower.type, 'power');
+    const secondIsMaxed = tower.powerLevel >= secondMaxLevel;
     const secondRequiredTokens = secondIsMaxed ? 0 : getUpgradePlanCostForStep(tower.powerLevel);
     const secondCanAfford = availablePlans >= secondRequiredTokens;
     const secondBtn = createUpgradeButton({
@@ -2267,11 +2266,13 @@ export class ProgressionSystem {
       towerType: tower.type,
       towerRangeLevel: tower.rangeLevel,
       towerPowerLevel: tower.powerLevel,
+      maxLevel: secondMaxLevel,
     });
     appendUpgradeOptionColumn(secondBtn, {
       upgradeType: secondUpgradeType,
       currentLevel: tower.powerLevel,
       isMaxed: secondIsMaxed,
+      maxLevel: secondMaxLevel,
     });
     
     // Cancel button (auto width, bottom area) - wrap in container like other modals
@@ -2404,6 +2405,94 @@ export class ProgressionSystem {
   }
 
   /**
+   * Choose-an-upgrade → Confirm Upgrade without blinking the dark mask.
+   * Choose uses #towerUpgradePopupOverlay; Confirm uses #modalOverlay — hand off with
+   * content-only fades so the shared backdrop opacity never drops.
+   * @param {string|null} towerId
+   * @param {string} upgradeType
+   * @param {boolean} isInventory
+   * @param {boolean} [toMax]
+   */
+  transitionFromChooseUpgradeToConfirm(towerId, upgradeType, isInventory, toMax = false) {
+    const fromOverlay = document.getElementById('towerUpgradePopupOverlay');
+    const toModal = document.getElementById('modalOverlay');
+
+    const openConfirm = (opts = {}) => {
+      this.showUpgradeConfirmation(towerId, upgradeType, isInventory, toMax, opts);
+    };
+
+    // Already on the shared modal shell (legacy choose-in-modal path)
+    if (!fromOverlay?.classList.contains('active') && toModal?.classList.contains('active')) {
+      if (prefersReducedModalMotion()) {
+        openConfirm({ skipEnterAnimation: true, reuseOverlay: true });
+        return;
+      }
+      crossfadeModalShellContent(toModal, () => {
+        openConfirm({ skipEnterAnimation: true, reuseOverlay: true });
+      });
+      return;
+    }
+
+    if (!fromOverlay?.classList.contains('active') || prefersReducedModalMotion()) {
+      this.hideTowerUpgradePopup();
+      openConfirm();
+      return;
+    }
+
+    fromOverlay.classList.remove('game-modal-enter', 'game-modal-exit', 'game-modal-shell-swap-in');
+    fromOverlay.classList.add('game-modal-shell-swap-out');
+    fromOverlay.style.pointerEvents = 'none';
+
+    window.setTimeout(() => {
+      openConfirm({ skipEnterAnimation: true });
+      // Confirm overlay is now opaque on top — drop the choose overlay without a backdrop blink.
+      this.hideTowerUpgradePopup();
+      if (toModal?.classList.contains('active')) {
+        toModal.classList.remove('game-modal-enter', 'game-modal-exit', 'game-modal-shell-swap-out');
+        void toModal.offsetWidth;
+        toModal.classList.add('game-modal-shell-swap-in');
+        window.setTimeout(() => {
+          clearModalShellSwapAnimationState(toModal);
+        }, MODAL_CONTENT_FADE_IN_MS);
+      }
+    }, MODAL_CONTENT_FADE_OUT_MS);
+  }
+
+  /**
+   * Confirm Upgrade → Choose an upgrade without blinking the dark mask.
+   * @param {string|null} towerId
+   * @param {boolean} isInventory
+   */
+  transitionFromConfirmUpgradeToChoose(towerId, isInventory) {
+    const fromModal = document.getElementById('modalOverlay');
+
+    if (!fromModal?.classList.contains('active') || prefersReducedModalMotion()) {
+      closeModalOverlay(fromModal, {
+        onDone: () => this.showTowerUpgradePopup(towerId, isInventory),
+      });
+      return;
+    }
+
+    fromModal.classList.remove('game-modal-enter', 'game-modal-exit', 'game-modal-shell-swap-in');
+    fromModal.classList.add('game-modal-shell-swap-out');
+    fromModal.style.pointerEvents = 'none';
+
+    window.setTimeout(() => {
+      this.showTowerUpgradePopup(towerId, isInventory);
+      const chooseOverlay = document.getElementById('towerUpgradePopupOverlay');
+      closeModalOverlay(fromModal, { skipAnimation: true });
+      if (chooseOverlay) {
+        chooseOverlay.classList.remove('game-modal-enter', 'game-modal-exit', 'game-modal-shell-swap-out');
+        void chooseOverlay.offsetWidth;
+        chooseOverlay.classList.add('game-modal-shell-swap-in');
+        window.setTimeout(() => {
+          clearModalShellSwapAnimationState(chooseOverlay);
+        }, MODAL_CONTENT_FADE_IN_MS);
+      }
+    }, MODAL_CONTENT_FADE_OUT_MS);
+  }
+
+  /**
    * Apply the selected upgrade
    * @param {string|null} towerId - Tower ID (null for inventory)
    * @param {string} upgradeType - 'range' or 'power'
@@ -2411,8 +2500,7 @@ export class ProgressionSystem {
    * @param {boolean} [toMax] - When true, upgrade this stat all the way to level 4
    */
   applyUpgrade(towerId, upgradeType, isInventory, toMax = false) {
-    // Show confirmation modal
-    this.showUpgradeConfirmation(towerId, upgradeType, isInventory, toMax);
+    this.transitionFromChooseUpgradeToConfirm(towerId, upgradeType, isInventory, toMax);
   }
 
   /**
@@ -2421,8 +2509,10 @@ export class ProgressionSystem {
    * @param {string} upgradeType - 'range' or 'power'
    * @param {boolean} isInventory - Whether this is for an inventory tower
    * @param {boolean} [toMax] - When true, preview/apply upgrade to max level
+   * @param {{ skipEnterAnimation?: boolean, reuseOverlay?: boolean }} [options]
    */
-  showUpgradeConfirmation(towerId, upgradeType, isInventory, toMax = false) {
+  showUpgradeConfirmation(towerId, upgradeType, isInventory, toMax = false, options = {}) {
+    const { skipEnterAnimation = false, reuseOverlay = false } = options;
     const modal = document.getElementById('modalOverlay');
     const choicesDiv = document.getElementById('modalChoices');
     
@@ -2433,12 +2523,18 @@ export class ProgressionSystem {
         existingLevelUpContainer.remove();
       }
       
-      // Add dark overlay background like other modals
-      openModalOverlay(modal);
-      modal.classList.remove('upgrade-token-mask');
-      modal.classList.remove('skip-upgrade-mask');
-      modal.style.pointerEvents = 'auto';
-      modal.style.background = 'rgba(0, 0, 0, 0.85)';
+      // Add dark overlay background like other modals (skip backdrop fade when handing off from Choose)
+      if (reuseOverlay && modal.classList.contains('active')) {
+        modal.classList.remove('upgrade-token-mask', 'skip-upgrade-mask');
+        modal.style.pointerEvents = 'auto';
+        modal.style.background = 'rgba(0, 0, 0, 0.85)';
+      } else {
+        openModalOverlay(modal, { skipEnterAnimation });
+        modal.classList.remove('upgrade-token-mask');
+        modal.classList.remove('skip-upgrade-mask');
+        modal.style.pointerEvents = 'auto';
+        modal.style.background = 'rgba(0, 0, 0, 0.85)';
+      }
       const modalInner = modal.querySelector('.modal');
       if (modalInner) {
         modalInner.style.pointerEvents = 'auto';
@@ -2496,9 +2592,10 @@ export class ProgressionSystem {
         ? (isPulsing || isBomber || isSentinel || isPerimeter || isCharge ? '#FFC41D' : '#00FF00')
         : (isBomber ? '#F7375C' : '#00D9FF');
       const currentLevel = upgradeType === 'range' ? rangeLevel : powerLevel;
-      const newLevel = toMax ? TOWER_UPGRADE_MAX_LEVEL : currentLevel + 1;
+      const trackMaxLevel = getTowerTrackMaxLevel(this.gameState, towerType, upgradeType === 'range' ? 'range' : 'power');
+      const newLevel = toMax ? trackMaxLevel : Math.min(trackMaxLevel, currentLevel + 1);
       const requiredTokens = toMax
-        ? getUpgradePlanCostToMax(currentLevel)
+        ? getUpgradePlanCostToMax(currentLevel, trackMaxLevel)
         : getUpgradePlanCostForStep(currentLevel);
       
       // Determine background image based on upgrade type
@@ -2517,9 +2614,9 @@ export class ProgressionSystem {
       let newRangeLevel = rangeLevel;
       let newPowerLevel = powerLevel;
       if (upgradeType === 'range') {
-        newRangeLevel = toMax ? TOWER_UPGRADE_MAX_LEVEL : Math.min(TOWER_UPGRADE_MAX_LEVEL, rangeLevel + 1);
+        newRangeLevel = toMax ? trackMaxLevel : Math.min(trackMaxLevel, rangeLevel + 1);
       } else if (upgradeType === 'power') {
-        newPowerLevel = toMax ? TOWER_UPGRADE_MAX_LEVEL : Math.min(TOWER_UPGRADE_MAX_LEVEL, powerLevel + 1);
+        newPowerLevel = toMax ? trackMaxLevel : Math.min(trackMaxLevel, powerLevel + 1);
       }
       
       // Get tower image HTML for current and upgraded versions
@@ -2672,7 +2769,7 @@ export class ProgressionSystem {
       levelsRow.style.justifyContent = 'center';
       levelsRow.style.gap = '6px';
 
-      const currentContainer = createLevelGraphicsContainer(currentLevel, 4, upgradeImage);
+      const currentContainer = createLevelGraphicsContainer(currentLevel, trackMaxLevel, upgradeImage);
       levelsRow.appendChild(currentContainer);
 
       const arrowSpan = document.createElement('span');
@@ -2680,7 +2777,7 @@ export class ProgressionSystem {
       arrowSpan.style.color = upgradeColor;
       levelsRow.appendChild(arrowSpan);
 
-      const nextContainer = createLevelGraphicsContainer(newLevel, 4, upgradeImage);
+      const nextContainer = createLevelGraphicsContainer(newLevel, trackMaxLevel, upgradeImage);
       levelsRow.appendChild(nextContainer);
 
       hexagonContainer.appendChild(levelsRow);
@@ -2738,10 +2835,7 @@ export class ProgressionSystem {
       backBtn.className = 'choice-btn cta-button';
       backBtn.textContent = 'Back';
       backBtn.onclick = () => {
-        // Close the confirmation modal
-        closeModalOverlay(modal, {
-          onDone: () => this.showTowerUpgradePopup(towerId, isInventory),
-        });
+        this.transitionFromConfirmUpgradeToChoose(towerId, isInventory);
       };
       buttonContainer.appendChild(backBtn);
       
@@ -2757,10 +2851,24 @@ export class ProgressionSystem {
         
         // Show floating text for plans spent (red, negative)
         createModalFloatingText(confirmBtn, `-${requiredTokens}`, '#FF3963', 32, 1.5, 50, -20);
-        
-        // Close the confirmation modal first
+
+        const plansAfter = Math.max(0, (this.gameState.player.upgradePlans || 0) - requiredTokens);
+        const isWaveActive = this.gameState.wave?.isActive || false;
+        const showSuccessModal = plansAfter > 0 && !isWaveActive;
+        const overlayActive = modal.classList.contains('active');
+
+        const runUpgrade = (reuseOverlay = false) => {
+          this.executeUpgrade(towerId, upgradeType, isInventory, toMax, { reuseOverlay });
+        };
+
+        // Confirm → "Tower Upgraded!": crossfade content only so the dark mask stays put.
+        if (overlayActive && showSuccessModal) {
+          crossfadeModalShellContent(modal, () => runUpgrade(true));
+          return;
+        }
+
         closeModalOverlay(modal, {
-          onDone: () => this.executeUpgrade(towerId, upgradeType, isInventory, toMax),
+          onDone: () => runUpgrade(false),
         });
       };
       buttonContainer.appendChild(confirmBtn);
@@ -2774,12 +2882,15 @@ export class ProgressionSystem {
    * @param {string|null} towerId - Tower ID or 'stored-X' for stored towers
    * @param {string} upgradeType - 'range' or 'power'
    * @param {boolean} isInventory - Whether this is for an inventory tower
-   * @param {boolean} [toMax] - When true, upgrade this stat all the way to level 4
+   * @param {boolean} [toMax] - When true, upgrade this stat all the way to its current max
+   * @param {{ reuseOverlay?: boolean }} [options] - When true, success UI replaces confirm content in-place (no backdrop blink)
    */
-  executeUpgrade(towerId, upgradeType, isInventory, toMax = false) {
+  executeUpgrade(towerId, upgradeType, isInventory, toMax = false, options = {}) {
+    const { reuseOverlay = false } = options;
     // First, determine the current level and required token cost
     let currentLevel = 1;
     let requiredTokens = 1;
+    const track = upgradeType === 'range' ? 'range' : 'power';
     
     if (towerId && towerId.startsWith('purchased-')) {
       // Handle purchased tower upgrade
@@ -2788,19 +2899,20 @@ export class ProgressionSystem {
       const tower = purchasedTowers[index];
       
       if (tower) {
+        const trackMax = getTowerTrackMaxLevel(this.gameState, tower.type, track);
         currentLevel = upgradeType === 'range' ? tower.rangeLevel : tower.powerLevel;
         requiredTokens = toMax
-          ? getUpgradePlanCostToMax(currentLevel)
+          ? getUpgradePlanCostToMax(currentLevel, trackMax)
           : getUpgradePlanCostForStep(currentLevel);
         
         if (upgradeType === 'range') {
           tower.rangeLevel = toMax
-            ? TOWER_UPGRADE_MAX_LEVEL
-            : Math.min(TOWER_UPGRADE_MAX_LEVEL, tower.rangeLevel + 1);
+            ? trackMax
+            : Math.min(trackMax, tower.rangeLevel + 1);
         } else if (upgradeType === 'power') {
           tower.powerLevel = toMax
-            ? TOWER_UPGRADE_MAX_LEVEL
-            : Math.min(TOWER_UPGRADE_MAX_LEVEL, tower.powerLevel + 1);
+            ? trackMax
+            : Math.min(trackMax, tower.powerLevel + 1);
         }
         
         // Update inventory display to show upgrade levels
@@ -2813,19 +2925,20 @@ export class ProgressionSystem {
       const index = parseInt(towerId.split('-')[1]);
       const storedTower = this.gameState.player.inventory.storedTowers[index];
       if (storedTower) {
+        const trackMax = getTowerTrackMaxLevel(this.gameState, storedTower.type, track);
         currentLevel = upgradeType === 'range' ? storedTower.rangeLevel : storedTower.powerLevel;
         requiredTokens = toMax
-          ? getUpgradePlanCostToMax(currentLevel)
+          ? getUpgradePlanCostToMax(currentLevel, trackMax)
           : getUpgradePlanCostForStep(currentLevel);
         
         if (upgradeType === 'range') {
           storedTower.rangeLevel = toMax
-            ? TOWER_UPGRADE_MAX_LEVEL
-            : Math.min(TOWER_UPGRADE_MAX_LEVEL, storedTower.rangeLevel + 1);
+            ? trackMax
+            : Math.min(trackMax, storedTower.rangeLevel + 1);
         } else if (upgradeType === 'power') {
           storedTower.powerLevel = toMax
-            ? TOWER_UPGRADE_MAX_LEVEL
-            : Math.min(TOWER_UPGRADE_MAX_LEVEL, storedTower.powerLevel + 1);
+            ? trackMax
+            : Math.min(trackMax, storedTower.powerLevel + 1);
         }
         
         // Update inventory display
@@ -2837,17 +2950,18 @@ export class ProgressionSystem {
       // Apply upgrade to existing tower on the map
       const tower = this.gameState.towerSystem.getTower(towerId);
       if (tower) {
+        const trackMax = getTowerTrackMaxLevel(this.gameState, tower.type, track);
         currentLevel = upgradeType === 'range' ? tower.rangeLevel : tower.powerLevel;
         requiredTokens = toMax
-          ? getUpgradePlanCostToMax(currentLevel)
+          ? getUpgradePlanCostToMax(currentLevel, trackMax)
           : getUpgradePlanCostForStep(currentLevel);
         
         if (toMax) {
           if (upgradeType === 'range') {
-            tower.rangeLevel = TOWER_UPGRADE_MAX_LEVEL;
+            tower.rangeLevel = trackMax;
             this.gameState.towerSystem.updateTowerAffectedHexes(towerId);
           } else if (upgradeType === 'power') {
-            tower.powerLevel = TOWER_UPGRADE_MAX_LEVEL;
+            tower.powerLevel = trackMax;
           }
         } else if (upgradeType === 'range') {
           this.gameState.towerSystem.upgradeTowerRange(towerId);
@@ -2911,7 +3025,7 @@ export class ProgressionSystem {
         this.hideMapSelectionInstructions();
       } else {
         // Not in a wave, go to "Done Upgrading" modal instead of level-up modal
-        this.showSkipUpgradeConfirmation(towerId, upgradeType, isInventory);
+        this.showSkipUpgradeConfirmation(towerId, upgradeType, isInventory, { reuseOverlay });
       }
     }
     
@@ -2942,6 +3056,7 @@ export class ProgressionSystem {
     
     // Disable tower selection mode
     this.disableTowerSelectionMode();
+    this.gameState.waveSystem?.updateClearAllButtonVisibility?.();
     
     // Refresh inventory to remove pulse animations
     if (window.updateInventory) {

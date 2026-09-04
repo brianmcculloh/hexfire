@@ -2,6 +2,7 @@
 
 import { CONFIG, getPathCountForWave } from '../config.js';
 import { getNeighbors, hexKey, hexDistance, isInBounds } from '../utils/hexMath.js';
+import { rngLayout } from '../utils/rng.js';
 
 export class PathSystem {
   constructor(gridSystem) {
@@ -62,7 +63,7 @@ export class PathSystem {
     // Mark home base as used
     usedHexes.add(hexKey(0, 0));
 
-    // Persist dungeon entrances across wave groups — paths must plan around them.
+    // Dungeon entrances own their hex for the current wave group — paths must plan around them.
     for (const hex of this.gridSystem.getAllHexes()) {
       if (hex?.hasDungeonEntrance) {
         usedHexes.add(hexKey(hex.q, hex.r));
@@ -94,381 +95,301 @@ export class PathSystem {
   }
 
   /**
-   * Generate a single path that moves away from town
+   * Generate a single path that moves away from town.
+   * Retries from alternate ring starts until the path meets PATH_HARD_MIN_LENGTH.
    * @param {Set} usedHexes - Set of hex keys already used by other paths
    * @param {Set} usedRingHexes - Set of hex keys in the home base ring already used by paths
    * @param {number} pathIndex - Index of this path (0-3) for color assignment
    * @returns {Array} Array of hex coordinates
    */
   generateSinglePath(usedHexes, usedRingHexes, pathIndex = 0) {
-    // Filter to available ring hexes (not already used by other paths)
     const availableRingHexes = this.homeBaseRingHexes.filter(hex => {
       const key = hexKey(hex.q, hex.r);
       return !usedHexes.has(key) && !usedRingHexes.has(key);
     });
-    
+
     if (availableRingHexes.length === 0) {
       return null;
     }
-    
-    // Separate available ring hexes into two groups:
-    // 1. Non-adjacent to existing paths (preferred)
-    // 2. Adjacent to existing paths (only if no non-adjacent options exist)
+
+    const hardMin = Math.max(1, Math.floor(Number(CONFIG.PATH_HARD_MIN_LENGTH) || 3));
     const nonAdjacentRingHexes = [];
     const adjacentRingHexes = [];
-    
+
     for (const hex of availableRingHexes) {
       const hexNeighbors = getNeighbors(hex.q, hex.r);
       let isAdjacentToOtherPath = false;
-      
-      // Check if any neighbor is a path hex from another path
       for (const neighbor of hexNeighbors) {
-        const neighborKey = hexKey(neighbor.q, neighbor.r);
-        if (usedHexes.has(neighborKey)) {
+        if (usedHexes.has(hexKey(neighbor.q, neighbor.r))) {
           isAdjacentToOtherPath = true;
           break;
         }
       }
-      
-      if (isAdjacentToOtherPath) {
-        adjacentRingHexes.push(hex);
-      } else {
-        nonAdjacentRingHexes.push(hex);
+      if (isAdjacentToOtherPath) adjacentRingHexes.push(hex);
+      else nonAdjacentRingHexes.push(hex);
+    }
+
+    const shuffle = (arr) => rngLayout().shuffledCopy(arr);
+
+    // Prefer non-adjacent starts; fall back to adjacent. Retry until hard min length is met.
+    const startCandidates = [...shuffle(nonAdjacentRingHexes), ...shuffle(adjacentRingHexes)];
+
+    for (const startHex of startCandidates) {
+      const path = this.buildPathFromStart(startHex, usedHexes, usedRingHexes, pathIndex, hardMin);
+      if (path && path.length >= hardMin) {
+        return path;
+      }
+      // Roll back a failed/short attempt so the next start can reuse those hexes
+      if (path && path.length) {
+        for (const hex of path) {
+          usedHexes.delete(hexKey(hex.q, hex.r));
+        }
       }
     }
-    
-    // Prioritize non-adjacent ring hexes - only use adjacent ones if there are no other options
-    let startHex;
-    if (nonAdjacentRingHexes.length > 0) {
-      // Prefer starting points that are not adjacent to other paths
-      startHex = nonAdjacentRingHexes[Math.floor(Math.random() * nonAdjacentRingHexes.length)];
-    } else if (adjacentRingHexes.length > 0) {
-      // Only use adjacent ring hexes if no non-adjacent options exist
-      startHex = adjacentRingHexes[Math.floor(Math.random() * adjacentRingHexes.length)];
-    } else {
-      // This shouldn't happen since we already checked availableRingHexes.length > 0, but safety check
-      return null;
-    }
-    
-    // Add path color to the starting hex
+
+    return null;
+  }
+
+  /**
+   * Grow one path from a chosen ring start hex.
+   * @param {{q:number,r:number}} startHex
+   * @param {Set} usedHexes
+   * @param {number} pathIndex
+   * @param {number} hardMin
+   * @returns {Array|null}
+   */
+  buildPathFromStart(startHex, usedHexes, usedRingHexes, pathIndex, hardMin) {
     const path = [{ ...startHex, pathColor: this.getPathColor(pathIndex) }];
-    
-    // Mark starting hex as used immediately
     usedHexes.add(hexKey(startHex.q, startHex.r));
-    
-    // Determine random length
-    const length = Math.floor(
-      Math.random() * (CONFIG.PATH_MAX_LENGTH - CONFIG.PATH_MIN_LENGTH + 1)
-    ) + CONFIG.PATH_MIN_LENGTH;
-    
-    
+
+    const length = rngLayout().intRange(CONFIG.PATH_MIN_LENGTH, CONFIG.PATH_MAX_LENGTH);
+
     let currentHex = startHex;
-    let previousHex = null; // Track previous hex for direction bias
-    let hasUsedRingHex = true; // Starting hex is in the ring
-    
-    // Create a Set of current path hex keys for adjacency checking
+    let previousHex = null;
+    let hasUsedRingHex = true;
+
     const currentPathHexKeys = new Set();
     currentPathHexKeys.add(hexKey(startHex.q, startHex.r));
-    
-    // Create array of current path hex coordinates for distance calculations
     const currentPathHexes = [{ q: startHex.q, r: startHex.r }];
-    
-    // Build path step by step
-    // Continue building until we hit a dead end (no valid neighbors) or reach target length
-    // Also allow early termination if we'd be forced to use Priority 3 (self-clustering)
+
     while (path.length < length) {
       const neighbors = getNeighbors(currentHex.q, currentHex.r);
-      
-      // Filter to valid next hexes
+
       const validNeighbors = neighbors.filter(hex => {
         const key = hexKey(hex.q, hex.r);
-        
-        // Basic checks
+
         if (!isInBounds(hex.q, hex.r)) return false;
-        if (usedHexes.has(key)) return false; // Can't use hexes already used by any path (prevents crossing)
-        
+        if (usedHexes.has(key)) return false;
+
         const gridHex = this.gridSystem.getHex(hex.q, hex.r);
         if (!gridHex || gridHex.isTown) return false;
         if (gridHex.hasDungeonEntrance) return false;
-        
-        // CRITICAL: If we've already used a ring hex, never allow another ring hex
+
         if (hasUsedRingHex && this.isInHomeBaseRing(hex)) {
           return false;
         }
-        
+
+        if (this.isInHomeBaseRing(hex) && usedRingHexes.has(key)) {
+          return false;
+        }
+
         return true;
       });
-      
-      // CRITICAL: If we're at the map edge, immediately terminate the path
-      const isAtEdge = !isInBounds(currentHex.q, currentHex.r) || 
-        Math.abs(currentHex.q) >= Math.floor(CONFIG.MAP_SIZE / 2) || 
-        Math.abs(currentHex.r) >= Math.floor(CONFIG.MAP_SIZE / 2) ||
-        Math.abs(currentHex.q + currentHex.r) >= Math.floor(CONFIG.MAP_SIZE / 2);
-      
-      if (isAtEdge) {
-        break;
-      }
-      
-      // If no valid neighbors, we've hit a dead end - terminate the path
-      // This happens when all neighbors are either:
-      // - Already used by other paths
-      // - Out of bounds
-      // - Town hexes
-      // - In the home base ring (if we've already left it)
+
       if (validNeighbors.length === 0) {
-        // True dead end - all borders are blocked, end path here
         break;
       }
-      
-      // Separate valid neighbors into enhanced priority groups:
-      // Priority 1: Minimum 2 hexes away from current path, non-adjacent to any paths
-      // Priority 2: Minimum 2 hexes away from current path, but adjacent to other paths
-      // Priority 3: Non-adjacent to any paths (but less than 2 hexes from current path)
-      // Priority 4: Adjacent to other existing paths (acceptable - paths can run parallel)
-      // Priority 5: Adjacent only to current path (least preferred - prevents self-clustering)
-      const priority1_DistantNonAdjacent = [];
-      const priority2_DistantAdjacentToOther = [];
-      const priority3_CloseNonAdjacent = [];
-      const priority4_AdjacentToOtherPaths = [];
-      const priority5_AdjacentToCurrentOnly = [];
-      
-      // Calculate direction from previous hex if available (for direction bias)
+
       let currentDirection = null;
       if (previousHex) {
-        const dq = currentHex.q - previousHex.q;
-        const dr = currentHex.r - previousHex.r;
-        // Normalize direction vector
-        currentDirection = { dq, dr };
+        currentDirection = {
+          dq: currentHex.q - previousHex.q,
+          dr: currentHex.r - previousHex.r
+        };
       }
-      
+
+      const scoredNeighbors = [];
+
       for (const hex of validNeighbors) {
         const hexNeighbors = getNeighbors(hex.q, hex.r);
         let isAdjacentToAnyPath = false;
         let isAdjacentToOtherPath = false;
         let isAdjacentToCurrentPath = false;
         let minDistanceFromCurrentPath = Infinity;
-        
-        // Calculate minimum distance from any hex in current path (excluding current and previous hex)
-        // We're always adjacent to current hex, so exclude it to check distance from earlier path segments
+
         for (const pathHex of currentPathHexes) {
-          // Skip the current hex (we're always adjacent to it - distance 1)
-          if (pathHex.q === currentHex.q && pathHex.r === currentHex.r) {
-            continue;
-          }
-          // Skip the previous hex (we're allowed to be adjacent to it)
-          if (previousHex && pathHex.q === previousHex.q && pathHex.r === previousHex.r) {
-            continue;
-          }
+          if (pathHex.q === currentHex.q && pathHex.r === currentHex.r) continue;
+          if (previousHex && pathHex.q === previousHex.q && pathHex.r === previousHex.r) continue;
           const distance = hexDistance(hex.q, hex.r, pathHex.q, pathHex.r);
           if (distance < minDistanceFromCurrentPath) {
             minDistanceFromCurrentPath = distance;
           }
         }
-        // If we haven't found any earlier path hexes (only 1-2 hexes in path so far), set to 2+
         if (minDistanceFromCurrentPath === Infinity) {
-          minDistanceFromCurrentPath = 2; // Treat as distant when path is too short to measure
+          minDistanceFromCurrentPath = 2;
         }
-        
-        // Check all neighbors (except the current hex we're coming from)
+
         for (const neighbor of hexNeighbors) {
           const neighborKey = hexKey(neighbor.q, neighbor.r);
-          
-          // Skip the current hex (where we're coming from) - it's part of this path
-          if (neighbor.q === currentHex.q && neighbor.r === currentHex.r) {
-            continue;
-          }
-          
-          // Check if this neighbor is a path hex
+          if (neighbor.q === currentHex.q && neighbor.r === currentHex.r) continue;
+
           if (usedHexes.has(neighborKey)) {
             isAdjacentToAnyPath = true;
-            
-            // Check if it's part of the current path being built
             if (currentPathHexKeys.has(neighborKey)) {
               isAdjacentToCurrentPath = true;
             } else {
-              // It's part of a different path
               isAdjacentToOtherPath = true;
             }
           }
         }
-        
-        // Calculate direction score for this candidate (for direction bias)
-        // Note: Axial coordinates (q, r) are not orthogonal, so we need proper hex dot product
-        // Convert to cube coordinates for accurate direction similarity calculation
+
         let directionScore = 0;
         if (currentDirection) {
           const candidateDq = hex.q - currentHex.q;
           const candidateDr = hex.r - currentHex.r;
-          
-          // Convert axial direction vectors to cube coordinates for accurate dot product
-          // Axial (q, r) -> Cube (x, y, z) where x = q, z = r, y = -x - z
           const currentX = currentDirection.dq;
           const currentZ = currentDirection.dr;
           const currentY = -currentX - currentZ;
-          
           const candidateX = candidateDq;
           const candidateZ = candidateDr;
           const candidateY = -candidateX - candidateZ;
-          
-          // Dot product in cube coordinates (all three components)
-          const dotProduct = currentX * candidateX + currentY * candidateY + currentZ * candidateZ;
-          directionScore = dotProduct;
+          directionScore = currentX * candidateX + currentY * candidateY + currentZ * candidateZ;
         }
-        
-        // Count how many neighbors of this candidate are part of the current path
-        // This helps detect when we'd be creating tight clusters
-        let currentPathAdjacencyCount = 0;
+
+        let adjacentCurrentPathCount = 0;
         for (const neighbor of hexNeighbors) {
           const neighborKey = hexKey(neighbor.q, neighbor.r);
-          // Skip the current hex (where we're coming from)
-          if (neighbor.q === currentHex.q && neighbor.r === currentHex.r) {
-            continue;
-          }
+          if (neighbor.q === currentHex.q && neighbor.r === currentHex.r) continue;
           if (currentPathHexKeys.has(neighborKey)) {
-            currentPathAdjacencyCount++;
+            adjacentCurrentPathCount++;
           }
         }
-        
-        // Special case: When path is very short (1-2 hexes), allow more flexibility
-        // to prevent paths from terminating prematurely
-        const isVeryShortPath = path.length <= 2;
-        
-        // Categorize based on adjacency and distance
-        // Use stricter distance thresholds to prevent clustering (except for very short paths)
-        const isVeryDistant = minDistanceFromCurrentPath >= 3; // At least 3 hexes away
-        const isDistantFromCurrentPath = minDistanceFromCurrentPath >= 2; // At least 2 hexes away
-        
-        // Strongly penalize hexes that would create multiple adjacencies to current path
-        // But allow it for very short paths to prevent early termination
-        const wouldCreateCluster = currentPathAdjacencyCount >= 2 && !isVeryShortPath;
-        
-        // For very short paths (1-2 hexes), use simplified logic to ensure we accept valid neighbors
-        if (isVeryShortPath) {
-          // For very short paths, accept any valid neighbor to prevent early termination
-          // Prioritize non-clustering options, but accept anything valid
-          if (!isAdjacentToAnyPath) {
-            priority1_DistantNonAdjacent.push({ hex, directionScore });
-          } else if (isAdjacentToOtherPath) {
-            // Adjacent to other paths - always acceptable for short paths
-            priority4_AdjacentToOtherPaths.push({ hex, directionScore });
-          } else if (isAdjacentToCurrentPath) {
-            // Only adjacent to current path - acceptable for short paths
-            priority5_AdjacentToCurrentOnly.push({ hex, directionScore });
-          }
-        } else {
-          // For longer paths, use stricter clustering prevention
-          if (!isAdjacentToAnyPath && isVeryDistant && !wouldCreateCluster) {
-            // Priority 1: Very distant from current path, non-adjacent to any paths, no clustering
-            priority1_DistantNonAdjacent.push({ hex, directionScore });
-          } else if (!isAdjacentToAnyPath && isDistantFromCurrentPath && !wouldCreateCluster) {
-            // Priority 1b: Distant but not very distant, still good
-            priority1_DistantNonAdjacent.push({ hex, directionScore });
-          } else if (isAdjacentToOtherPath && isDistantFromCurrentPath && !wouldCreateCluster) {
-            // Priority 2: Distant from current path, but adjacent to other paths
-            priority2_DistantAdjacentToOther.push({ hex, directionScore });
-          } else if (!isAdjacentToAnyPath && !isDistantFromCurrentPath && !wouldCreateCluster) {
-            // Priority 3: Close to current path, but non-adjacent to any paths, no clustering
-            priority3_CloseNonAdjacent.push({ hex, directionScore });
-          } else if (isAdjacentToOtherPath && !wouldCreateCluster) {
-            // Priority 4: Adjacent to other existing paths (may also be adjacent to current), but no cluster
-            priority4_AdjacentToOtherPaths.push({ hex, directionScore });
-          } else if (isAdjacentToCurrentPath && !wouldCreateCluster && currentPathAdjacencyCount === 1) {
-            // Priority 5: Only adjacent to current path (single adjacency, acceptable)
-            priority5_AdjacentToCurrentOnly.push({ hex, directionScore });
-          } else if (wouldCreateCluster || (isAdjacentToCurrentPath && currentPathAdjacencyCount >= 2)) {
-            // Skip hexes that would create clusters (multiple adjacencies to current path)
-            continue;
-          }
+
+        scoredNeighbors.push({
+          hex,
+          isAdjacentToAnyPath,
+          isAdjacentToOtherPath,
+          isAdjacentToCurrentPath,
+          minDistanceFromCurrentPath,
+          directionScore,
+          adjacentCurrentPathCount
+        });
+      }
+
+      scoredNeighbors.sort((a, b) => {
+        if (a.isAdjacentToOtherPath !== b.isAdjacentToOtherPath) {
+          return a.isAdjacentToOtherPath ? 1 : -1;
         }
-      }
-      
-      // Path length flexibility: If we're near target length and would be forced to use low priorities,
-      // allow early termination to avoid forced self-clustering
-      // Also terminate earlier if we'd be forced to use Priority 5
-      const isNearTargetLength = path.length >= length * 0.6; // At least 60% of target length (lowered from 70%)
-      const hasGoodOptions = priority1_DistantNonAdjacent.length > 0 || 
-                            priority2_DistantAdjacentToOther.length > 0;
-      const wouldBeForcedToPriority5 = !hasGoodOptions &&
-                                        priority3_CloseNonAdjacent.length === 0 &&
-                                        priority4_AdjacentToOtherPaths.length === 0 &&
-                                        priority5_AdjacentToCurrentOnly.length > 0;
-      
-      if (isNearTargetLength && wouldBeForcedToPriority5) {
-        // Early termination to avoid forced self-clustering
-        break;
-      }
-      
-      // Also terminate if path is long enough and we have no good options (only Priority 3-5)
-      if (path.length >= length * 0.8 && !hasGoodOptions && priority3_CloseNonAdjacent.length === 0) {
-        // Path is 80%+ of target and has no good options left, terminate early
-        break;
-      }
-      
-      // Select next hex based on priority: 1 > 2 > 3 > 4 > 5
-      // Within each priority, prefer hexes that continue in the same direction
-      let nextHex;
-      let candidateList = null;
-      
-      if (priority1_DistantNonAdjacent.length > 0) {
-        candidateList = priority1_DistantNonAdjacent;
-      } else if (priority2_DistantAdjacentToOther.length > 0) {
-        candidateList = priority2_DistantAdjacentToOther;
-      } else if (priority3_CloseNonAdjacent.length > 0) {
-        candidateList = priority3_CloseNonAdjacent;
-      } else if (priority4_AdjacentToOtherPaths.length > 0) {
-        candidateList = priority4_AdjacentToOtherPaths;
-      } else if (priority5_AdjacentToCurrentOnly.length > 0) {
-        candidateList = priority5_AdjacentToCurrentOnly;
+        if (a.isAdjacentToCurrentPath !== b.isAdjacentToCurrentPath) {
+          return a.isAdjacentToCurrentPath ? 1 : -1;
+        }
+        if (a.minDistanceFromCurrentPath !== b.minDistanceFromCurrentPath) {
+          return b.minDistanceFromCurrentPath - a.minDistanceFromCurrentPath;
+        }
+        if (a.directionScore !== b.directionScore) {
+          return b.directionScore - a.directionScore;
+        }
+        return rngLayout().nextFloat() - 0.5;
+      });
+
+      const isVeryShortPath = path.length < hardMin;
+
+      const priority1 = scoredNeighbors.filter(n =>
+        !n.isAdjacentToAnyPath && n.minDistanceFromCurrentPath >= 2
+      );
+      const priority2 = scoredNeighbors.filter(n =>
+        n.isAdjacentToCurrentPath &&
+        !n.isAdjacentToOtherPath &&
+        n.minDistanceFromCurrentPath >= 2 &&
+        n.adjacentCurrentPathCount <= 1
+      );
+      const priority2b = scoredNeighbors.filter(n =>
+        !n.isAdjacentToOtherPath &&
+        n.minDistanceFromCurrentPath === 1 &&
+        n.adjacentCurrentPathCount <= 1
+      );
+      const priority3 = scoredNeighbors.filter(n =>
+        n.isAdjacentToCurrentPath &&
+        !n.isAdjacentToOtherPath &&
+        (n.minDistanceFromCurrentPath < 2 || n.adjacentCurrentPathCount > 1)
+      );
+      const priority4 = scoredNeighbors.filter(n => n.isAdjacentToOtherPath);
+
+      let selectedNeighbors = [];
+      let usingPriority3 = false;
+      let usingPriority4 = false;
+
+      if (priority1.length > 0) {
+        selectedNeighbors = priority1;
+      } else if (priority2.length > 0) {
+        selectedNeighbors = priority2;
+      } else if (priority2b.length > 0) {
+        selectedNeighbors = priority2b;
+      } else if (priority3.length > 0) {
+        if (!isVeryShortPath && path.length >= hardMin) {
+          break;
+        }
+        selectedNeighbors = priority3;
+        usingPriority3 = true;
+      } else if (priority4.length > 0) {
+        if (!isVeryShortPath && path.length >= hardMin) {
+          break;
+        }
+        selectedNeighbors = priority4;
+        usingPriority4 = true;
       } else {
-        // This shouldn't happen since we already checked validNeighbors.length > 0, but safety check
         break;
       }
-      
-      // Apply direction bias: Sort by direction score (higher = more similar direction)
-      // Then pick randomly from top N% of candidates (controlled by PATH_DIRECTION_BIAS_FACTOR)
-      // Higher factor = more random/windy paths, lower factor = straighter paths
-      // Direction bias decays as path grows longer to prevent long straight paths
-      candidateList.sort((a, b) => b.directionScore - a.directionScore);
-      const biasFactor = CONFIG.PATH_DIRECTION_BIAS_FACTOR || 0.5; // Default to 0.5 if not set
-      const biasDecay = CONFIG.PATH_DIRECTION_BIAS_DECAY || 1.0; // Default to no decay
-      // Apply decay: longer paths have less direction bias (more random)
-      const pathLengthMultiplier = Math.pow(biasDecay, Math.max(0, path.length - 3)); // Start decay after 3 hexes
-      const effectiveBiasFactor = Math.min(1.0, biasFactor + (1.0 - biasFactor) * (1.0 - pathLengthMultiplier));
-      const candidateCount = Math.max(1, Math.ceil(candidateList.length * effectiveBiasFactor));
-      const topCandidates = candidateList.slice(0, candidateCount);
-      const selected = topCandidates[Math.floor(Math.random() * topCandidates.length)];
-      nextHex = selected.hex;
-      
-      // Add path color to the next hex
-      path.push({ ...nextHex, pathColor: this.getPathColor(pathIndex) });
-      
-      // Mark this hex as used immediately (prevents crossing with other paths)
-      const nextHexKey = hexKey(nextHex.q, nextHex.r);
-      usedHexes.add(nextHexKey);
-      currentPathHexKeys.add(nextHexKey); // Track it as part of current path for adjacency checks
-      currentPathHexes.push({ q: nextHex.q, r: nextHex.r }); // Track for distance calculations
-      
-      // Update previous and current hex for next iteration
+
+      if (selectedNeighbors.length === 0) {
+        break;
+      }
+
+      let nextHex;
+      if ((usingPriority3 || usingPriority4) && selectedNeighbors.length > 1) {
+        selectedNeighbors.sort((a, b) => {
+          if (a.minDistanceFromCurrentPath !== b.minDistanceFromCurrentPath) {
+            return b.minDistanceFromCurrentPath - a.minDistanceFromCurrentPath;
+          }
+          if (a.adjacentCurrentPathCount !== b.adjacentCurrentPathCount) {
+            return a.adjacentCurrentPathCount - b.adjacentCurrentPathCount;
+          }
+          if (a.directionScore !== b.directionScore) {
+            return b.directionScore - a.directionScore;
+          }
+          return rngLayout().nextFloat() - 0.5;
+        });
+        nextHex = selectedNeighbors[0].hex;
+      } else {
+        nextHex = rngLayout().pick(selectedNeighbors).hex;
+      }
+
       previousHex = currentHex;
       currentHex = nextHex;
+      path.push({ ...nextHex, pathColor: this.getPathColor(pathIndex) });
+      const nextKey = hexKey(nextHex.q, nextHex.r);
+      usedHexes.add(nextKey);
+      currentPathHexKeys.add(nextKey);
+      currentPathHexes.push({ q: nextHex.q, r: nextHex.r });
+
+      if (this.isInHomeBaseRing(nextHex)) {
+        hasUsedRingHex = true;
+      }
     }
-    
+
     return path;
   }
 
   /**
-   * Shared path palette (board tint + minimap fill).
-   * Green family only — avoid yellow (fires) and blue (towers). Hue + lightness
-   * are spaced hard so tiny minimap hexes and map tints both read as distinct.
+   * Path tint palette for board sprites and minimap.
    * @returns {string[]}
    */
   getPathColors() {
-    // Format: hsl(hue, saturation%, lightness%)
     return [
       'hsl(145, 100.00%, 50.00%)',
       'hsl(90, 100.00%, 50.00%)',
-      'hsl(70, 100.00%, 50.00%)', 
-      'hsl(175, 100.00%, 50.00%)'
+      'hsl(70, 100.00%, 50.00%)',
+      'hsl(175, 100.00%, 50.00%)',
     ];
   }
 
@@ -543,7 +464,7 @@ export class PathSystem {
     });
     
     if (validNeighbors.length === 0) return null;
-    return validNeighbors[Math.floor(Math.random() * validNeighbors.length)];
+    return rngLayout().pick(validNeighbors);
   }
 
 

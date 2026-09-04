@@ -1,6 +1,6 @@
 // Shared DOM for wave group complete + victory modals (reward grid + total earned)
 
-import { CONFIG, applyCurrencyGainBonuses, getVortexLevelForWaveGroup, getVortexLevelConfig } from '../config.js';
+import { CONFIG, applyCurrencyGainBonuses, getVortexLevelForWaveGroup, getVortexLevelConfig, getArtifactById } from '../config.js';
 import { assetUrl } from '../utils/assetUrl.js';
 
 /**
@@ -96,6 +96,19 @@ function setBrLines(el, lines) {
  */
 export function appendExtinguishedPersonalBestLine(textContainer, sub, showHighScore) {
   if (!sub || typeof sub.personalBestAfter !== 'number' || Number.isNaN(sub.personalBestAfter)) {
+    return;
+  }
+  const thisRun = typeof sub.thisRunCount === 'number' && !Number.isNaN(sub.thisRunCount)
+    ? Math.max(0, Math.floor(sub.thisRunCount))
+    : null;
+  // Never celebrate or label a zero score as a personal best (matched / set / new / compare).
+  if (thisRun === 0) {
+    if (sub.hadPrior && typeof sub.previousBest === 'number' && sub.previousBest > 0) {
+      const compare = document.createElement('div');
+      compare.textContent = `Personal best: ${sub.previousBest}`;
+      compare.style.cssText = FIRES_PB_GREY_BASE;
+      textContainer.appendChild(compare);
+    }
     return;
   }
   // "new high score!" already shows the new total — list the score they beat underneath.
@@ -198,10 +211,8 @@ export function createVortexesExtinguishedStatItem(gs, options = {}) {
   numberWrap.appendChild(numberEl);
   if (showHighScore) {
     const hs = document.createElement('div');
-    hs.className = 'wave-complete-stat-celebrate';
+    hs.className = 'wave-complete-stat-celebrate wave-complete-high-score';
     hs.textContent = 'new high score!';
-    hs.style.cssText =
-      'position: absolute; top: 13px; right: -8px; font-size: 13px; font-weight: bold; color: #FFD700; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5); z-index: 2; pointer-events: none; letter-spacing: 0px; white-space: nowrap; font-family: "Exo 2", sans-serif;';
     numberWrap.appendChild(hs);
   }
   textContainer.appendChild(numberWrap);
@@ -287,10 +298,8 @@ export function buildWaveGroupCompleteStatsContainer(ws, digSiteRewards = []) {
   firesNumberWrap.appendChild(firesNumber);
   if (showFiresHighScore) {
     const hs = document.createElement('div');
-    hs.className = 'wave-complete-stat-celebrate';
+    hs.className = 'wave-complete-stat-celebrate wave-complete-high-score';
     hs.textContent = 'new high score!';
-    hs.style.cssText =
-      'position: absolute; top: 13px; right: -8px; font-size: 13px; font-weight: bold; color: #FFD700; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5); z-index: 2; pointer-events: none; letter-spacing: 0px; white-space: nowrap; font-family: "Exo 2", sans-serif;';
     firesNumberWrap.appendChild(hs);
   }
   firesTextContainer.appendChild(firesNumberWrap);
@@ -506,6 +515,25 @@ export function buildWaveGroupCompleteStatsContainer(ws, digSiteRewards = []) {
       valueSpan.textContent = stackCount === 1 ? '+1 Tree Juice' : `+${stackCount} Tree Juice`;
       valueRow.appendChild(valueSpan);
       textContainer.appendChild(valueRow);
+    } else if (reward.type === 'artifact') {
+      const def = getArtifactById(reward.artifactId);
+      const valueRow = document.createElement('div');
+      valueRow.style.cssText = 'display: flex; align-items: center; gap: 8px; margin-bottom: 5px;';
+      const imgWrap = document.createElement('div');
+      imgWrap.style.cssText =
+        'position: relative; flex-shrink: 0; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;';
+      const itemImg = document.createElement('img');
+      itemImg.src = `assets/images/artifacts/${def?.sprite || CONFIG.ARTIFACT_PLACEMENT_MODAL_SPRITE || 'artifact.png'}`;
+      itemImg.alt = def?.name || 'Artifact';
+      itemImg.className = 'artifact-sprite-smooth';
+      itemImg.style.cssText = 'width: 32px; height: 32px; object-fit: contain; flex-shrink: 0;';
+      imgWrap.appendChild(itemImg);
+      valueRow.appendChild(imgWrap);
+      const valueSpan = document.createElement('span');
+      valueSpan.style.cssText = 'font-size: 14px; font-weight: bold; font-family: "Exo 2", sans-serif; line-height: 1; color: #FFD700;';
+      valueSpan.textContent = def?.name || 'Artifact';
+      valueRow.appendChild(valueSpan);
+      textContainer.appendChild(valueRow);
     } else if (reward.type === 'currency') {
       const baseAmt = applyCurrencyGainBonuses(reward.amount ?? 0, gs);
       if (noDamageExtra > 0) {
@@ -562,7 +590,9 @@ export function buildWaveGroupCompleteStatsContainer(ws, digSiteRewards = []) {
 
     card.appendChild(textContainer);
 
-    if (i % 2 === 0) {
+    // Left already has fires + vortexes + grove (3); right has plans + boss (2).
+    // Always fill the shorter column so dig sites pair into rows instead of stacking left.
+    if (leftColumn.childElementCount <= rightColumn.childElementCount) {
       leftColumn.appendChild(card);
     } else {
       rightColumn.appendChild(card);

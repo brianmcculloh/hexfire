@@ -3,6 +3,7 @@
 import { CONFIG, getFireTypeConfig, getPowerUpMultiplier, getHeroPowerRareSpawnMultiplier, getHeroPowerFireDamageResistanceMultiplier } from '../config.js';
 import { isMetaItemUnlocked } from '../utils/metaProgression.js';
 import { hexDistance } from '../utils/hexMath.js';
+import { rngLayout } from '../utils/rng.js';
 
 let digSiteIdCounter = 0;
 
@@ -93,6 +94,10 @@ export class DigSiteSystem {
   generateDigSites(waveGroup) {
     if (!isMetaItemUnlocked(this.gameState, 'dig_sites')) return;
 
+    // No dig sites on the final untimed survival wave group (group 30).
+    const survivalGroup = Math.max(1, Math.floor(Number(CONFIG.FINAL_SURVIVAL_WAVE_GROUP) || 30));
+    if (Math.max(1, Math.floor(Number(waveGroup) || 0)) >= survivalGroup) return;
+
     // Don't clear existing dig sites - they persist through the wave group
     // Only clear at wave group boundaries (handled in completeWaveGroup)
     
@@ -120,10 +125,10 @@ export class DigSiteSystem {
       
       // Check spawn chance once per wave for this dig site type
       // If chance succeeds, spawn 1 new dig site of this type
-      if (Math.random() <= spawnChance) {
+      if (rngLayout().nextFloat() <= spawnChance) {
         // Find a valid location
         if (validLocations.length > 0) {
-          const randomIndex = Math.floor(Math.random() * validLocations.length);
+          const randomIndex = rngLayout().int(validLocations.length);
           const location = validLocations.splice(randomIndex, 1)[0];
           
           // Spawn the dig site
@@ -148,6 +153,13 @@ export class DigSiteSystem {
    */
   spawnDigSite(q, r, type, options = {}) {
     if (!isMetaItemUnlocked(this.gameState, 'dig_sites')) return null;
+
+    const survivalGroup = Math.max(1, Math.floor(Number(CONFIG.FINAL_SURVIVAL_WAVE_GROUP) || 30));
+    const currentGroup = Math.max(
+      1,
+      Math.floor(Number(this.gameState?.waveSystem?.currentWaveGroup ?? this.gameState?.wave?.currentGroup) || 0)
+    );
+    if (currentGroup >= survivalGroup) return null;
 
     const hex = this.gridSystem.getHex(q, r);
     if (!hex) return null;

@@ -1,10 +1,11 @@
 // Renderer - Handles all canvas drawing operations
 
-import { CONFIG, getFireTypeConfig, getFireTypeDisplayColor, getShieldColorRgba, getHealthBarFillColor, getTowerRange, getSpreadTowerRange, getSuppressionBombImpactZone, getRainRange, getPowerUpGraphicFilename, getArtifactById, getBomberMinDistance, getBossPatternForWaveGroup, getBossPatternForSpeech, getHeroPatternForWaveGroup, getWaterTankTypeConfig, getWaterTankMapSpriteSize, getArtifactMapSpriteSize, getMapCollectibleSpriteBaseSize, isWaterTankSpriteFilename, isArtifactSpriteFilename, getCampaignEndWaveGroup, getGroveIncarnateHeroSpriteGroup, isGroveIncarnateHeroPatternGroup, getBackgroundWaveGroupIndex, getSentinelTurretSizeMultiplier, getPerimeterTurretSizeMultiplier, getPerimeterTurretOffsetPx, getChargeTurretHeightMultiplier, getChargeTurretOffsetPx, clampPerimeterRing, getChargeImpactZone, clampChargeTargetDistance, normalizeChargeMode, clampSuppressionBombLevel, getTowerBaseHealth, getVortexLevelConfig, getPowerUpMultiplier, getHeroPowerFireDamageResistanceMultiplier } from '../config.js';
+import { CONFIG, getFireTypeConfig, getFireTypeDisplayColor, getShieldColorRgba, getHealthBarFillColor, getTowerRange, getSpreadTowerRange, getSuppressionBombImpactZone, getRainRange, getPowerUpGraphicFilename, getArtifactById, getBomberMinDistance, getBossPatternForWaveGroup, getBossPatternForSpeech, getHeroPatternForWaveGroup, getWaterTankTypeConfig, getWaterTankMapSpriteSize, getArtifactMapSpriteSize, getBurningVaultMapSpriteSize, getMapCollectibleSpriteBaseSize, isWaterTankSpriteFilename, isArtifactSpriteFilename, getCampaignEndWaveGroup, getGroveIncarnateHeroSpriteGroup, getGroveIncarnateHeroPatternGroup, isGroveIncarnateHeroPatternGroup, getBackgroundWaveGroupIndex, getSentinelTurretSizeMultiplier, getPerimeterTurretSizeMultiplier, getPerimeterTurretOffsetPx, getChargeTurretHeightMultiplier, getChargeTurretOffsetPx, clampPerimeterRing, getChargeImpactZone, clampChargeTargetDistance, normalizeChargeMode, clampSuppressionBombLevel, getTowerBaseHealth, getVortexLevelConfig, getPowerUpMultiplier, getHeroPowerFireDamageResistanceMultiplier, getTowerReachedSuperchargeLevelAttrs, getTowerSuperchargeRangeBonus, canTowerBeUpgraded, getTowerSpriteUpgradeLevel } from '../config.js';
 import { getTowerRangeHexBonusForGameState, getTempPowerUpTimeReference, isHealthBarDamageSimActive } from './tempPowerUpClock.js';
 import { getPerimeterModeModalTowerId, getPerimeterModePreviewRing } from './perimeterModeUI.js';
 import { getChargeModeModalTowerId, getChargeModePreviewDistance, getChargeModePreviewImpactMode } from './chargeModeUI.js';
 import { assetUrl, assetCacheKey } from './assetUrl.js';
+import { drawTreasureShimmerAura as paintTreasureShimmerAura } from './treasureShimmerAura.js';
 import { axialToPixel, pixelToAxial, getHexVertices, getDirectionAngle, getDirectionAngle12, getHexInDirection, getHexLineFromAngle, getSpreadTowerTargets, getSpreadTowerSprayEndpoints, getNeighbors, getHexesInRadius, getHexesInRing, isInBounds } from './hexMath.js';
 
 function getSpawnerDrawColor(hex) {
@@ -12,6 +13,21 @@ function getSpawnerDrawColor(hex) {
     return getFireTypeDisplayColor(hex.fireSpawnerType);
   }
   return hex.fireSpawnerColor || CONFIG.COLOR_FIRE_CINDER;
+}
+
+/** Particle density / violence scale by spawner fire type (cinder = 1). */
+const SPAWNER_FX_RANK = {
+  [CONFIG.FIRE_TYPE_CINDER]: 0,
+  [CONFIG.FIRE_TYPE_FLAME]: 1,
+  [CONFIG.FIRE_TYPE_BLAZE]: 2,
+  [CONFIG.FIRE_TYPE_FIRESTORM]: 3,
+  [CONFIG.FIRE_TYPE_INFERNO]: 4,
+  [CONFIG.FIRE_TYPE_CATACLYSM]: 5,
+  [CONFIG.FIRE_TYPE_BLACKFYRE]: 6,
+};
+
+function spawnerFxIntensity(spawnerType) {
+  return 1 + (SPAWNER_FX_RANK[spawnerType] ?? 0) * 0.14;
 }
 
 /** Ancient Grove map HP bar corner radius; tower map bars use one pixel less. */
@@ -22,6 +38,37 @@ const TOWER_MAP_STATUS_BAR_CORNER_RADIUS = GROVE_MAP_HEALTH_BAR_CORNER_RADIUS - 
 const BOMBER_WATER_CHROMA_SCALE = 0.28;
 /** After desaturation, lerp RGB toward white for luminance without adding much hue. */
 const BOMBER_WATER_BRIGHTNESS_LIFT = 0.26;
+
+/** Burning-vault shock bolts: hot pink / reddish electric (not sky-lightning orange). */
+const VAULT_ZAP_RIBBON = 'rgba(255, 36, 92, 0.16)';
+const VAULT_ZAP_GLOW = 'rgba(255, 28, 78, 0.28)';
+const VAULT_ZAP_MID = 'rgba(255, 70, 140, 0.78)';
+const VAULT_ZAP_HOT = 'rgba(255, 118, 186, 1)';
+const VAULT_ZAP_CORE = 'rgba(255, 244, 250, 1)';
+const VAULT_ZAP_FORK = 'rgba(255, 160, 210, 0.85)';
+
+/** Mix ints into a stable seed for tesla jitter (FNV-ish, no allocations). */
+function zapMix(a, b = 0, c = 0) {
+  let h = 2166136261 >>> 0;
+  h = Math.imul(h ^ (a >>> 0), 16777619) >>> 0;
+  h = Math.imul(h ^ (b >>> 0), 16777619) >>> 0;
+  h = Math.imul(h ^ (c >>> 0), 16777619) >>> 0;
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x7feb352d) >>> 0;
+  h ^= h >>> 15;
+  return h >>> 0;
+}
+
+/** Mulberry32 — tiny deterministic RNG for bolt displacement. */
+function zapMulberry(seed) {
+  let a = seed >>> 0;
+  return function zapRand() {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 const BOMBER_WATER_CORE_BRIGHTNESS_LIFT = 0.4;
 
 /** Burning hexes with a tower or map pickup get a late-pass draining fire border (see drawBurningOccupiedHexBorders). */
@@ -57,7 +104,7 @@ export class Renderer {
     this.offsetX = 0;
     this.offsetY = 0;
     // Camera zoom (1 = default / 100%). Driven by CONFIG.MAP_ZOOM + setMapZoom.
-    const levels = CONFIG.MAP_ZOOM_LEVELS || [0.75, 1, 1.25];
+    const levels = CONFIG.MAP_ZOOM_LEVELS || [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
     let initialZoom = CONFIG.MAP_ZOOM ?? CONFIG.MAP_ZOOM_DEFAULT ?? 1;
     let zoomIdx = levels.indexOf(initialZoom);
     if (zoomIdx < 0) {
@@ -99,21 +146,18 @@ export class Renderer {
     
     // Grid render cache (precomputed world positions + sort order)
     this.gridRenderCache = null;
-    // Cache for darkened tower base sprites (avoids per-frame pixel ops)
-    this.darkenedTowerSpriteCache = new Map();
-    // Cache for brightened tower turret sprites (avoids per-frame getImageData/putImageData).
-    // drawAllTowerTurrets used to brighten every turret pixel by 1.35x on every frame for
-    // every tower (~30+ towers × 60fps = mega-allocations + pixel work). Now cached by
-    // (towerType, rangeLevel, sizeBucket, brightness).
-    this.brightenedTurretSpriteCache = new Map();
-    // Cache for smooth (bilinear) downscaled tower sprites, used by sentinel base + turret.
-    // High-quality downscaling of the large source PNGs every frame for every sentinel was
-    // the single biggest cost with many sentinels on the map; pre-render once and blit after.
+    // Cache for smooth (bilinear) downscaled tower sprites (bases + turrets).
+    // High-quality downscaling of the large source PNGs every frame for every tower was
+    // the single biggest cost with many towers on the map; pre-render once and blit after.
     this.smoothScaledTowerSpriteCache = new Map();
+    /** Opaque-pixel bbox center vs PNG center, in source pixels. Used to pivot auto-rotating turrets. */
+    this._spriteOpaqueCenterCache = new Map();
     // Static grid cache (offscreen canvas)
     this.gridStaticCache = null;
     this.isBuildingGridCache = false;
-    this.lastTownBorderFailsafeCheck = 0; // For periodic verification that town borders match fire state
+    this.lastTownBorderFailsafeCheck = 0; // unused legacy; burning→clear invalidates static cache instead
+    /** True when the last drawGrid saw the grove burning (used to drop baked-red static caches). */
+    this._staticCacheHadTownBurning = false;
     // Background cache (offscreen canvas)
     this.backgroundCache = null;
     
@@ -154,6 +198,18 @@ export class Renderer {
     this.smoulderSparkPool = [];
     /** @type {Map<string, number>} fractional spawn credit per source id */
     this._smoulderSparkSpawnAcc = new Map();
+    /** Scratch polylines for burning-vault tesla zaps (reused every bolt/filament). */
+    this._zapPtX = new Float32Array(20);
+    this._zapPtY = new Float32Array(20);
+    this._zapForkX = new Float32Array(8);
+    this._zapForkY = new Float32Array(8);
+    /** Volatile 6-axis vent / tongue / crack FX for fire spawners */
+    this.spawnerEmbers = [];
+    this.spawnerEmberPool = [];
+    /** @type {Map<string, number>} fractional spawn credit per spawner id */
+    this._spawnerEmberSpawnAcc = new Map();
+    /** @type {Map<string, { dir: number, hold: number }>} rotating vent-jet direction */
+    this._spawnerVentState = new Map();
     /** Soft rising bubbles from water buckets / tanks / vats */
     this.waterBubbles = [];
     this.waterBubblePool = [];
@@ -175,6 +231,22 @@ export class Renderer {
     this.pulseBurstShells = [];
     this.pulseMists = [];
     this.pulseMistPool = [];
+    /**
+     * Bomber / sentinel / perimeter / charge impact FX: hex-sheet wash + a few
+     * expanding rings + a handful of large mist blobs (not a per-hex particle storm).
+     */
+    this.bombBlastWashes = [];
+    this.bombBlastShells = [];
+    this.bombBlastDroplets = [];
+    this.bombBlastDropletPool = [];
+    this.bombBlastWashPool = [];
+    /**
+     * Dungeon-flood geyser: rising water column + crown spray (hex-relative).
+     * @type {Array<{ hexQ: number, hexR: number, age: number, duration: number, emitUntil: number, particleId: string, emitAcc: number }>}
+     */
+    this.dungeonGeysers = [];
+    /** Flood geyser particle counts + visual size (game is paused during this FX). */
+    this.dungeonGeyserFxScale = 1.25;
     /** @type {Map<string|number, number>} last consumed pulseBurstId per tower */
     this._pulsingLastBurstIdByTower = new Map();
     // Hex flash effects (keyed by hex coord string)
@@ -184,6 +256,8 @@ export class Renderer {
     this.flashAnimationTime = 0; // Total time for flashing animation
     // Rotation time tracking for rain/pulsing turrets
     this.turretRotationTime = 0; // Total time for turret rotation animation
+    /** Visual-only facing tween for jet/spread/bomber/charge. Logical `tower.direction` still snaps. */
+    this._rotatableTurretVisual = new Map();
     
     // Expanding ring animations for upgradeable towers (keyed by tower ID)
     this.upgradeRings = new Map(); // Map<towerId, {rings: Array<{startTime, scale, alpha}>, lastSpawnTime: number}>
@@ -381,8 +455,6 @@ export class Renderer {
    * context. Position-only caches are also reset so the next frame rebuilds cleanly.
    */
   _invalidateCanvasBackedCaches() {
-    this.darkenedTowerSpriteCache?.clear?.();
-    this.brightenedTurretSpriteCache?.clear?.();
     this.smoothScaledTowerSpriteCache?.clear?.();
     this._waterParticleSpriteCache?.clear?.();
     this._mapFxStreakSpriteCache?.clear?.();
@@ -479,6 +551,29 @@ export class Renderer {
     if (typeof t !== 'number' || Number.isNaN(t)) t = 1;
     t = Math.max(0, Math.min(1, t));
     return Math.min(1, minAlpha + (maxAlpha - minAlpha) * t);
+  }
+
+  /**
+   * Extra dimming for tower explosion FX (bomber/sentinel/perimeter/charge/pulsing bursts).
+   * At min Water visibility these are scaled down further; at max they match the current look.
+   * @returns {number} Multiplier in [WATER_EXPLOSION_VISIBILITY_DIM_AT_MIN, 1]
+   */
+  _getWaterExplosionDimScale() {
+    let t = CONFIG.WATER_VISIBILITY;
+    if (typeof t !== 'number' || Number.isNaN(t)) t = 1;
+    t = Math.max(0, Math.min(1, t));
+    const floor = CONFIG.WATER_EXPLOSION_VISIBILITY_DIM_AT_MIN;
+    const minDim = typeof floor === 'number' && floor >= 0 && floor <= 1 ? floor : 0.5;
+    return minDim + (1 - minDim) * t;
+  }
+
+  /**
+   * Alpha multiplier for tower explosion water FX — same slider as {@link getWaterVisualAlphaScale}
+   * but with extra dimming at low visibility so large blast sheets stay readable.
+   * @returns {number}
+   */
+  getWaterExplosionVisualAlphaScale() {
+    return this.getWaterVisualAlphaScale() * this._getWaterExplosionDimScale();
   }
 
   /**
@@ -810,7 +905,7 @@ export class Renderer {
    * @returns {string} Sprite key
    */
   getTowerSpriteKey(type, upgradeType, level) {
-    return `${type}_${upgradeType}_${level}`;
+    return `${type}_${upgradeType}_${getTowerSpriteUpgradeLevel(level)}`;
   }
 
   /**
@@ -822,7 +917,7 @@ export class Renderer {
    * @returns {string} Sprite filename
    */
   getTowerSpriteFilename(type, upgradeType, level) {
-    return `${type}_${upgradeType}_${level}.png`;
+    return `${type}_${upgradeType}_${getTowerSpriteUpgradeLevel(level)}.png`;
   }
 
   /**
@@ -854,7 +949,7 @@ export class Renderer {
       console.warn(`Tower sprite not found: ${filename}`);
     };
     
-    img.src = `assets/images/towers/${filename}`;
+    img.src = assetUrl(`assets/images/towers/${filename}`);
     this.towerSprites.set(key, img);
     
     return img;
@@ -943,7 +1038,7 @@ export class Renderer {
    * Images should be placed in assets/images/hexes/ with naming:
    * - hex_path_1.png, hex_path_2.png, ... (for path hexes - up to 10 variations)
    * - hex_normal_1.png, hex_normal_2.png, ... (for normal/non-path hexes - up to 13 variations)
-   * - hex_town_ring_1.png, hex_town_ring_2.png, ... (for the 6 town hexes surrounding the center - up to 5 variations)
+   * - hex_town_ring_1.png, hex_town_ring_2.png, ... (for grove hexes: the center plus the 6 surrounding ring hexes - up to 5 variations)
    */
   loadHexBackgrounds() {
     const hexTypeVariations = {
@@ -1544,6 +1639,8 @@ export class Renderer {
     this.ctx.scale(-scale, scale);
     this.ctx.drawImage(heroSprite, 0, 0, layout.imageWidth, layout.imageHeight);
     this.ctx.restore();
+
+    this.drawHeroNameLabel(heroGroup);
   }
 
   /**
@@ -2589,14 +2686,34 @@ export class Renderer {
 
   /**
    * Draw hero name + power pills on boss waves (bottom-left, offset from viewport edge).
+   * @param {number} [heroSpriteGroupOverride] - Survival rotation sprite group (1–campaignEnd)
    */
-  drawHeroNameLabel() {
+  drawHeroNameLabel(heroSpriteGroupOverride = null) {
     this._heroPowerNameplateBounds = null;
-    const layout = this._getHeroPowerPortraitLayout();
-    if (!layout) return;
 
-    const currentWaveGroup = this.gameState.waveSystem?.currentWaveGroup || 1;
-    const heroPattern = getHeroPatternForWaveGroup(currentWaveGroup);
+    const isSurvivalHero = heroSpriteGroupOverride != null
+      || this.gameState?.survivalHeroSystem?.shouldDraw?.();
+
+    if (!isSurvivalHero) {
+      const layout = this._getHeroPowerPortraitLayout();
+      if (!layout) return;
+    }
+
+    let spriteGroup = heroSpriteGroupOverride;
+    if (spriteGroup == null && isSurvivalHero) {
+      spriteGroup = this.gameState?.survivalHeroSystem?.getDisplayHeroGroup?.();
+    }
+
+    let heroPattern;
+    if (spriteGroup != null) {
+      const patternGroup = isGroveIncarnateHeroPatternGroup(spriteGroup)
+        ? getGroveIncarnateHeroPatternGroup()
+        : spriteGroup;
+      heroPattern = getHeroPatternForWaveGroup(patternGroup);
+    } else {
+      const currentWaveGroup = this.gameState.waveSystem?.currentWaveGroup || 1;
+      heroPattern = getHeroPatternForWaveGroup(currentWaveGroup);
+    }
     if (!heroPattern) return;
 
     const heroName = heroPattern.name || 'Hero';
@@ -2963,14 +3080,16 @@ export class Renderer {
       this.getWaterParticleCountScale() * this._particleBudgetScale({ stream: true });
     if (emitScale <= 0) return;
     
-    // Spawn chance per hex (+25% twice from original rates)
+    // Spawn chance per hex — denser L1 so it reads on the map; still stepped up through L4
+    // (gaps between 2→3 and 3→4 tightened after lifting L1 toward L2)
     let spawnChance;
     switch (powerLevel) {
-      case 1: spawnChance = 0.0390625; break; // was 2.5% → 3.125% → 3.906%
-      case 2: spawnChance = 0.09375; break;   // was 6% → 7.5% → 9.375%
-      case 3: spawnChance = 0.1875; break;    // was 12% → 15% → 18.75%
-      case 4: spawnChance = 0.390625; break;  // was 25% → 31.25% → 39.06%
-      default: spawnChance = 0.0390625; break;
+      case 1: spawnChance = 0.072; break;   // was ~3.9% — closer to L2, still clearly lighter
+      case 2: spawnChance = 0.100; break;   // was ~9.4%
+      case 3: spawnChance = 0.155; break;   // was ~18.8%
+      case 4: spawnChance = 0.255; break;   // was ~39.1%
+      case 5: spawnChance = 0.355; break;   // supercharged power: same L3→L4 step
+      default: spawnChance = 0.072; break;
     }
     spawnChance *= emitScale;
     
@@ -3003,11 +3122,15 @@ export class Renderer {
           hexCoord.r
         );
         
-        // Rain particles have varied sizes (increased by 25% for better visibility with fewer particles)
-        particle.size = 1.5 + Math.random() * 2.5; // 1.5-4.0 pixels (25% increase from 1.2-3.2)
-        particle.sizeMultiplier = 0.7 + Math.random() * 0.3; // 0.7-1.0 multiplier
-        // +25% opacity twice from baseline so rain reads brighter / less washed out
-        particle.alphaScale = 1.5625;
+        if (CONFIG.ORGANIC_WATER_STREAMS) {
+          this._styleOrganicWaterParticle(particle, 'rain', { level: powerLevel });
+        } else {
+          // Non-organic fallback: same spectrum shift (floor up a lot, top up a little)
+          const levelSize = 1.05 + (powerLevel - 1) * 0.1; // L1: 1.05 … L5: 1.45
+          particle.size = (3.6 + Math.random() * 1.8) * levelSize; // was ~1.7–4.3
+          particle.sizeMultiplier = 0.75 + Math.random() * 0.3;
+          particle.alphaScale = 1.5625 * (0.95 + (powerLevel - 1) * 0.05);
+        }
         
         // Rain particles stay within hex boundaries
         particle.maxDistance = CONFIG.HEX_RADIUS * 0.7; // Limit to 70% of hex radius
@@ -3021,6 +3144,35 @@ export class Renderer {
         this.waterParticles.get(tower.id).push(particle);
       }
     });
+  }
+
+  /**
+   * Extra size/alpha on jet + spread streams so power 2–5 read thicker than power 1.
+   * Power 1 is left at 1× (locked). Compensates for existing L2 size being slightly under L1.
+   * L3 +10% / L4 +20% / L5 +30% vs prior look (thickness + brightness).
+   * @param {number} powerLevel
+   * @returns {{ size: number, alpha: number }}
+   */
+  _getJetSpreadStreamPowerLook(powerLevel) {
+    switch (powerLevel) {
+      case 2: return { size: 1.22, alpha: 1.12 };
+      case 3: return { size: 1.276, alpha: 1.342 };
+      case 4: return { size: 1.488, alpha: 1.608 };
+      case 5: return { size: 1.70, alpha: 1.874 };
+      default: return { size: 1, alpha: 1 };
+    }
+  }
+
+  /**
+   * Extra beam ribbon / bloom scale for jet + spread (L1–L2 unchanged).
+   * @param {number} powerLevel
+   * @returns {number}
+   */
+  _getJetSpreadPowerVisualBoost(powerLevel) {
+    if (powerLevel >= 5) return 1.3;
+    if (powerLevel === 4) return 1.2;
+    if (powerLevel === 3) return 1.1;
+    return 1;
   }
 
   /**
@@ -3040,6 +3192,7 @@ export class Renderer {
     const powerLevel = tower.powerLevel || 1;
     const isSpreadTower = tower.type === CONFIG.TOWER_TYPE_SPREAD;
     const isJetTower = tower.type === CONFIG.TOWER_TYPE_JET;
+    const organic = !!CONFIG.ORGANIC_WATER_STREAMS && (isJetTower || isSpreadTower);
     
     
     // Calculate how many filler particles we need based on distance and power level
@@ -3055,6 +3208,8 @@ export class Renderer {
         case 4: fillerDensityDivisor = 30; break; // Range 4: current density
         default: fillerDensityDivisor = 30; break;
     }
+    // Organic: denser micro-fillers, but each is much smaller (net overdraw similar/better)
+    if (organic) fillerDensityDivisor *= 0.72;
     
     const baseFillerCount = Math.max(2, Math.floor(distance / fillerDensityDivisor));
     // Continuous 60 Hz stream emitter — stochastic scale (no min-1 floor) + stream
@@ -3071,9 +3226,10 @@ export class Renderer {
       const particleX = screenStartX + deltaX * progress;
       const particleY = screenStartY + deltaY * progress;
       
-      // Very small random offset to stay within spray path
-      const randomOffsetX = (Math.random() - 0.5) * 3;
-      const randomOffsetY = (Math.random() - 0.5) * 3;
+      // Tight lateral jitter — stay on the hit-hex corridor (not neighboring columns)
+      const lateral = organic ? 2.2 : 3;
+      const randomOffsetX = (Math.random() - 0.5) * lateral;
+      const randomOffsetY = (Math.random() - 0.5) * lateral;
       
       // Very slow movement in the spray direction with minimal randomness
       const sprayDirectionX = deltaX / distance;
@@ -3094,30 +3250,52 @@ export class Renderer {
         tower.r
       );
       
-      // Progressive size range based on power level (same for jet and spread towers)
-      let sizeRange;
-      switch (powerLevel) {
-        case 1: sizeRange = 1.0; break; // Level 1: 1.0-2.0 pixels (smallest range - unchanged)
-        case 2: sizeRange = 2.5; break; // Level 2: 1.0-3.5 pixels (much larger range)
-        case 3: sizeRange = 4.0; break; // Level 3: 1.0-5.0 pixels (even larger range)
-        case 4: sizeRange = 5.5; break; // Level 4: 1.0-6.5 pixels (largest range)
-        default: sizeRange = 1.0; break;
-      }
-      particle.size = 1.0 + Math.random() * sizeRange; // Progressive size range
-      // Spread towers: 25% larger particles (applies to ALL 5 beams, not just center)
-      if (isSpreadTower) {
-        // SPECIAL FIX: For power level 1, reduce center beam (index 0) filler particle size
-        // to match the main particle adjustment and compensate for visual density
-        // Then increase all power level 1 filler particles by 50%, then reduce by 25%
-        if (powerLevel === 1 && beamIndex === 0) {
-          particle.size *= 1.125; // 1.5 * 0.75 = 25% reduction for center beam filler particles at power 1
-        } else if (powerLevel === 1) {
-          particle.size *= 1.40625; // 1.875 * 0.75 = 25% reduction for flanking beam filler particles at power 1
+      if (organic) {
+        // Micro mist flecks dominate; a few mid droplets for sparkle. Soft sprite baked once.
+        const roll = Math.random();
+        if (roll < 0.62) {
+          particle.size = 0.28 + Math.random() * 0.55; // micro 0.28–0.83
+        } else if (roll < 0.9) {
+          particle.size = 0.85 + Math.random() * 1.1; // small 0.85–1.95
         } else {
-          particle.size *= 1.25; // Normal 25% increase for other beams
+          particle.size = 1.8 + Math.random() * (0.8 + powerLevel * 0.45); // rare mid
         }
+        if (isSpreadTower) particle.size *= powerLevel === 1 ? 1.1 : 1.18;
+        particle.sizeMultiplier = 0.75 + Math.random() * 0.45;
+        particle.spriteVariant = 'soft';
+        particle.alphaScale = 0.75 + Math.random() * 0.35;
+      } else {
+        // Progressive size range based on power level (same for jet and spread towers)
+        let sizeRange;
+        switch (powerLevel) {
+          case 1: sizeRange = 1.0; break; // Level 1: 1.0-2.0 pixels (smallest range - unchanged)
+          case 2: sizeRange = 2.5; break; // Level 2: 1.0-3.5 pixels (much larger range)
+          case 3: sizeRange = 4.0; break; // Level 3: 1.0-5.0 pixels (even larger range)
+          case 4: sizeRange = 5.5; break; // Level 4: 1.0-6.5 pixels
+          case 5: sizeRange = 7.0; break; // Level 5: 1.0-8.0 pixels (supercharged power)
+          default: sizeRange = 1.0; break;
+        }
+        particle.size = 1.0 + Math.random() * sizeRange; // Progressive size range
+        // Spread towers: 25% larger particles (applies to ALL 5 beams, not just center)
+        if (isSpreadTower) {
+          // SPECIAL FIX: For power level 1, reduce center beam (index 0) filler particle size
+          // to match the main particle adjustment and compensate for visual density
+          // Then increase all power level 1 filler particles by 50%, then reduce by 25%
+          if (powerLevel === 1 && beamIndex === 0) {
+            particle.size *= 1.125; // 1.5 * 0.75 = 25% reduction for center beam filler particles at power 1
+          } else if (powerLevel === 1) {
+            particle.size *= 1.40625; // 1.875 * 0.75 = 25% reduction for flanking beam filler particles at power 1
+          } else {
+            particle.size *= 1.25; // Normal 25% increase for other beams
+          }
+        }
+        particle.sizeMultiplier = 0.8 + Math.random() * 0.4; // 0.8-1.2 multiplier for size variation
       }
-      particle.sizeMultiplier = 0.8 + Math.random() * 0.4; // 0.8-1.2 multiplier for size variation
+      if (isJetTower || isSpreadTower) {
+        const look = this._getJetSpreadStreamPowerLook(powerLevel);
+        particle.size *= look.size;
+        particle.alphaScale = (particle.alphaScale ?? 1) * look.alpha;
+      }
       particle.maxDistance = distance * 0.08; // 8% for all towers
       particle.startOffsetX = particle.offsetX;
       particle.startOffsetY = particle.offsetY;
@@ -3136,7 +3314,7 @@ export class Renderer {
    * @param {number} powerLevel
    */
   _getPulseBurstTier(powerLevel) {
-    const level = Math.min(4, Math.max(1, Math.floor(Number(powerLevel) || 1)));
+    const level = Math.min(5, Math.max(1, Math.floor(Number(powerLevel) || 1)));
     // reachMult is vs first-ring neighbor distance — keep FX on the adjacent hexes
     // with only a slight spill into the next ring. Coverage is nearly level-matched;
     // power reads as thickness/density (droplets, shellWidth, size, alpha).
@@ -3157,6 +3335,11 @@ export class Renderer {
           droplets: 70, arcs: 17, reachMult: 1.54, drift: 324, grow: 14,
           size: 9.0, flash: 1.62, shellWidth: 10.8, life: 0.55, alpha: 1.32,
         };
+      case 5:
+        return {
+          droplets: 122, arcs: 28, reachMult: 1.58, drift: 444, grow: 22,
+          size: 13.2, flash: 2.28, shellWidth: 15.2, life: 0.75, alpha: 1.68,
+        };
       case 4:
       default:
         return {
@@ -3175,7 +3358,7 @@ export class Renderer {
   spawnPulseBurst(tower) {
     if (!tower || CONFIG.DISABLE_ALL_WATER_EFFECTS || !CONFIG.USE_WATER_PARTICLES) return false;
 
-    const powerLevel = Math.min(4, Math.max(1, Math.floor(Number(tower.powerLevel) || 1)));
+    const powerLevel = Math.min(5, Math.max(1, Math.floor(Number(tower.powerLevel) || 1)));
     const tier = this._getPulseBurstTier(powerLevel);
     const simplified = this.isSimplifiedWaterVisualsEnabled();
     const countScale = simplified ? 0.55 : 1;
@@ -3401,7 +3584,7 @@ export class Renderer {
     }
 
     const ctx = this.ctx;
-    const wVis = this.getWaterVisualAlphaScale();
+    const wVis = this.getWaterExplosionVisualAlphaScale();
     if (wVis <= 0.001) return;
     const offsetX = this.offsetX;
     const offsetY = this.offsetY;
@@ -3574,6 +3757,364 @@ export class Renderer {
   }
 
   /**
+   * Palette for a water-bomb blast (matches in-flight projectile hue).
+   * @param {Object} bomb
+   * @returns {{ r: number, g: number, b: number, coreR: number, coreG: number, coreB: number }}
+   */
+  _getBombBlastPalette(bomb) {
+    if (bomb?.isCharge) {
+      return { r: 60, g: 255, b: 80, coreR: 180, coreG: 255, coreB: 150 };
+    }
+    if (bomb?.isPerimeter) {
+      return { r: 15, g: 170, b: 255, coreR: 110, coreG: 220, coreB: 255 };
+    }
+    if (bomb?.isSentinel) {
+      return { r: 200, g: 255, b: 160, coreR: 235, coreG: 255, coreB: 200 };
+    }
+    const [r, g, b] = this._toneBomberWaterColor(255, 50, 210, 1);
+    const [coreR, coreG, coreB] = this._toneBomberWaterColor(255, 160, 240, 1, BOMBER_WATER_CORE_BRIGHTNESS_LIFT);
+    return { r, g, b, coreR, coreG, coreB };
+  }
+
+  _acquireBombBlastDroplet() {
+    return this.bombBlastDropletPool.pop() || {};
+  }
+
+  _acquireBombBlastWash() {
+    return this.bombBlastWashPool.pop() || {};
+  }
+
+  _clearBombBlasts() {
+    for (let i = 0; i < this.bombBlastDroplets.length; i++) {
+      this.bombBlastDropletPool.push(this.bombBlastDroplets[i]);
+    }
+    for (let i = 0; i < this.bombBlastWashes.length; i++) {
+      this.bombBlastWashPool.push(this.bombBlastWashes[i]);
+    }
+    this.bombBlastDroplets.length = 0;
+    this.bombBlastWashes.length = 0;
+    this.bombBlastShells.length = 0;
+  }
+
+  /**
+   * Cheap area blast for bomber-family impacts: one nebulous wash per impact hex
+   * (uniform coverage of the damage zone), a few expanding rings, and a handful
+   * of large mist blobs — not dozens of particles per hex.
+   * @param {Object} bomb
+   * @param {Array<{q: number, r: number}>} impactHexes
+   */
+  _spawnBomberBlast(bomb, impactHexes) {
+    if (CONFIG.DISABLE_ALL_WATER_EFFECTS || !CONFIG.USE_WATER_PARTICLES) return;
+    if (!bomb || !impactHexes || impactHexes.length === 0) return;
+
+    const simplified = this.isSimplifiedWaterVisualsEnabled();
+    const pal = this._getBombBlastPalette(bomb);
+    const hexR = CONFIG.HEX_RADIUS || 40;
+    const centerQ = bomb.targetQ;
+    const centerR = bomb.targetR;
+    const { x: cx, y: cy } = axialToPixel(centerQ, centerR);
+    let maxReach = hexR * 1.15;
+    for (let i = 0; i < impactHexes.length; i++) {
+      const h = impactHexes[i];
+      const { x, y } = axialToPixel(h.q, h.r);
+      const d = Math.hypot(x - cx, y - cy);
+      if (d > maxReach) maxReach = d;
+    }
+    maxReach += hexR * 0.92;
+
+    const explosionAlphaScale = CONFIG.BOMBER_WATER_EXPLOSION_ALPHA_SCALE ?? 1;
+    // Config was tuned for tiny per-hex droplets; sheet FX needs a calmer scale.
+    const alphaScale = Math.min(1.15, 0.42 + explosionAlphaScale * 0.22);
+
+    const isSentinel = bomb.isSentinel === true;
+    const isPerimeter = bomb.isPerimeter === true;
+    const isCharge = bomb.isCharge === true;
+    const centerFlashColor = isCharge
+      ? 'charge-green'
+      : isPerimeter
+        ? 'perimeter-blue'
+        : isSentinel
+          ? 'sentinel-chartreuse'
+          : 'bomber-fuchsia';
+
+    this.hexFlashes.set(`${centerQ},${centerR}`, {
+      startTime: performance.now(),
+      duration: 280,
+      color: centerFlashColor,
+      opacityScale: explosionAlphaScale,
+    });
+
+    const washLife = 0.34;
+    for (let i = 0; i < impactHexes.length; i++) {
+      const h = impactHexes[i];
+      const w = this._acquireBombBlastWash();
+      w.hexQ = h.q;
+      w.hexR = h.r;
+      w.life = washLife;
+      w.maxLife = washLife;
+      w.size = hexR * (1.92 + Math.random() * 0.12);
+      w.alpha = alphaScale * (0.72 + Math.random() * 0.12);
+      w.r = pal.r;
+      w.g = pal.g;
+      w.b = pal.b;
+      w.coreR = pal.coreR;
+      w.coreG = pal.coreG;
+      w.coreB = pal.coreB;
+      this.bombBlastWashes.push(w);
+    }
+
+    const shellCount = simplified ? 3 : Math.min(7, 4 + Math.min(3, impactHexes.length > 19 ? 3 : impactHexes.length > 7 ? 2 : 1));
+    const TAU = Math.PI * 2;
+    for (let i = 0; i < shellCount; i++) {
+      const span = simplified
+        ? TAU * (0.55 + Math.random() * 0.45)
+        : TAU * (0.7 + Math.random() * 0.3);
+      const startAngle = Math.random() * TAU;
+      this.bombBlastShells.push({
+        hexQ: centerQ,
+        hexR: centerR,
+        age: -Math.random() * 0.03,
+        duration: 0.22 + Math.random() * 0.1,
+        maxRadius: maxReach * (0.78 + Math.random() * 0.22),
+        lineWidth: (10 + Math.random() * 7) * (simplified ? 0.85 : 1),
+        alpha: alphaScale * (0.5 + Math.random() * 0.28),
+        startAngle,
+        endAngle: startAngle + span,
+        r: pal.r,
+        g: pal.g,
+        b: pal.b,
+        coreR: pal.coreR,
+        coreG: pal.coreG,
+        coreB: pal.coreB,
+      });
+    }
+
+    if (simplified) return;
+
+    const dropletCount = Math.min(16, 8 + Math.min(8, Math.round(impactHexes.length * 0.22)));
+    for (let i = 0; i < dropletCount; i++) {
+      const p = this._acquireBombBlastDroplet();
+      const angle = Math.random() * TAU;
+      const birth = Math.random() * hexR * 0.25;
+      const speed = maxReach * (2.4 + Math.random() * 2.2);
+      p.hexQ = centerQ;
+      p.hexR = centerR;
+      p.ox = Math.cos(angle) * birth;
+      p.oy = Math.sin(angle) * birth;
+      p.vx = Math.cos(angle) * speed;
+      p.vy = Math.sin(angle) * speed;
+      p.life = 0.22 + Math.random() * 0.14;
+      p.maxLife = p.life;
+      p.size = (14 + Math.random() * 16);
+      p.grow = 18 + Math.random() * 16;
+      p.stretch = 1.15 + Math.random() * 0.55;
+      p.rotation = angle;
+      p.friction = 0.82 + Math.random() * 0.08;
+      p.maxReach = maxReach * (0.88 + Math.random() * 0.12);
+      p.alphaScale = alphaScale * (0.55 + Math.random() * 0.3);
+      p.r = pal.r;
+      p.g = pal.g;
+      p.b = pal.b;
+      p.coreR = pal.coreR;
+      p.coreG = pal.coreG;
+      p.coreB = pal.coreB;
+      this.bombBlastDroplets.push(p);
+    }
+  }
+
+  /**
+   * @param {number} deltaTime
+   */
+  updateBomberBlasts(deltaTime) {
+    if (CONFIG.DISABLE_ALL_WATER_EFFECTS || !CONFIG.USE_WATER_PARTICLES) {
+      if (this.bombBlastWashes.length || this.bombBlastShells.length || this.bombBlastDroplets.length) {
+        this._clearBombBlasts();
+      }
+      return;
+    }
+
+    const dt = Math.max(0, Math.min(0.05, Number(deltaTime) || 0));
+
+    const washes = this.bombBlastWashes;
+    const washPool = this.bombBlastWashPool;
+    for (let i = washes.length - 1; i >= 0; i--) {
+      const w = washes[i];
+      w.life -= dt;
+      w.size += dt * 22;
+      if (w.life <= 0) {
+        const last = washes.length - 1;
+        if (i !== last) washes[i] = washes[last];
+        washes.pop();
+        washPool.push(w);
+      }
+    }
+
+    const shells = this.bombBlastShells;
+    for (let i = shells.length - 1; i >= 0; i--) {
+      const shell = shells[i];
+      shell.age += dt;
+      if (shell.age > shell.duration) {
+        const last = shells.length - 1;
+        if (i !== last) shells[i] = shells[last];
+        shells.pop();
+      }
+    }
+
+    const drops = this.bombBlastDroplets;
+    const dropPool = this.bombBlastDropletPool;
+    for (let i = drops.length - 1; i >= 0; i--) {
+      const p = drops[i];
+      p.ox += p.vx * dt;
+      p.oy += p.vy * dt;
+      p.vx *= p.friction;
+      p.vy *= p.friction;
+      p.size += p.grow * dt;
+      p.life -= dt;
+      const distSq = p.ox * p.ox + p.oy * p.oy;
+      const maxR = p.maxReach;
+      if (distSq > maxR * maxR) {
+        const dist = Math.sqrt(distSq) || 1;
+        const s = maxR / dist;
+        p.ox *= s;
+        p.oy *= s;
+        p.vx *= 0.25;
+        p.vy *= 0.25;
+      }
+      if (p.life <= 0) {
+        const last = drops.length - 1;
+        if (i !== last) drops[i] = drops[last];
+        drops.pop();
+        dropPool.push(p);
+      }
+    }
+  }
+
+  /**
+   * Draw bomber-family impact FX (hex sheet + rings + large mist).
+   */
+  drawBomberBlasts() {
+    if (CONFIG.DISABLE_ALL_WATER_EFFECTS || !CONFIG.USE_WATER_PARTICLES) return;
+    if (!this.bombBlastWashes.length && !this.bombBlastShells.length && !this.bombBlastDroplets.length) {
+      return;
+    }
+
+    const ctx = this.ctx;
+    const wVis = this.getWaterExplosionVisualAlphaScale();
+    if (wVis <= 0.001) return;
+    const visScale = ctx.globalAlpha * wVis;
+    const offsetX = this.offsetX;
+    const offsetY = this.offsetY;
+    const hexCache = this._particleHexScreenCache;
+    hexCache.clear();
+
+    ctx.save();
+
+    // Pass 1: hex-shaped water sheet — uniform coverage of the actual impact zone
+    for (let i = 0; i < this.bombBlastWashes.length; i++) {
+      const w = this.bombBlastWashes[i];
+      const base = this._hexScreenCached(w.hexQ, w.hexR, hexCache);
+      const sx = base.x;
+      const sy = base.y;
+      if (!this.isHexInViewport(sx, sy)) continue;
+      const t = Math.max(0, w.life / w.maxLife);
+      const envelope = Math.sin(t * Math.PI);
+      const localAlpha = Math.min(1, w.alpha * envelope);
+      const alpha = localAlpha * visScale;
+      if (alpha <= 0.02) continue;
+      ctx.globalAlpha = alpha * 0.55;
+      this.drawHex(sx, sy, `rgba(${w.r},${w.g},${w.b},1)`, null);
+      ctx.globalAlpha = alpha * 0.32;
+      this.drawHex(sx, sy, `rgba(${w.coreR},${w.coreG},${w.coreB},1)`, null);
+    }
+
+    // Pass 2: soft nebulous bloom over each hex (baked sprite, not per-frame gradients)
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < this.bombBlastWashes.length; i++) {
+      const w = this.bombBlastWashes[i];
+      const base = this._hexScreenCached(w.hexQ, w.hexR, hexCache);
+      const sx = base.x;
+      const sy = base.y;
+      if (!this.isHexInViewport(sx, sy)) continue;
+      const t = Math.max(0, w.life / w.maxLife);
+      const envelope = Math.sin(t * Math.PI);
+      const localAlpha = Math.min(1, w.alpha * envelope * 0.7);
+      const alpha = localAlpha * visScale;
+      if (alpha <= 0.02) continue;
+      const sprite = this._getFxGlowSprite(
+        w.coreR, w.coreG, w.coreB, w.r, w.g, w.b, w.r, w.g, w.b, 'soft'
+      );
+      const radius = w.size * (0.72 + (1 - t) * 0.38);
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(sprite.canvas, sx - radius, sy - radius * 0.92, radius * 2, radius * 1.84);
+    }
+
+    // Pass 3: expanding blast rings from the impact center
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (let i = 0; i < this.bombBlastShells.length; i++) {
+      const shell = this.bombBlastShells[i];
+      if (shell.age < 0) continue;
+      const base = this._hexScreenCached(shell.hexQ, shell.hexR, hexCache);
+      const sx = base.x;
+      const sy = base.y;
+      if (!this.isHexInViewport(sx, sy)) continue;
+      const u = Math.min(1, shell.age / shell.duration);
+      const ease = 1 - (1 - u) * (1 - u);
+      const radius = Math.max(4, shell.maxRadius * ease);
+      const fade = u < 0.5 ? 1 : Math.pow(1 - (u - 0.5) / 0.5, 1.5);
+      const localAlpha = Math.min(1, shell.alpha * fade);
+      const alpha = localAlpha * visScale;
+      if (alpha <= 0.02) continue;
+      const lineW = Math.max(3, shell.lineWidth * (1.1 - u * 0.55));
+      ctx.globalAlpha = alpha * 0.45;
+      ctx.strokeStyle = `rgba(${shell.coreR},${shell.coreG},${shell.coreB},0.95)`;
+      ctx.lineWidth = lineW * 1.65;
+      ctx.beginPath();
+      ctx.arc(sx, sy, radius, shell.startAngle, shell.endAngle);
+      ctx.stroke();
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = `rgba(${shell.r},${shell.g},${shell.b},0.95)`;
+      ctx.lineWidth = lineW;
+      ctx.beginPath();
+      ctx.arc(sx, sy, radius, shell.startAngle, shell.endAngle);
+      ctx.stroke();
+      ctx.globalAlpha = alpha * 0.7;
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+      ctx.lineWidth = Math.max(1.4, lineW * 0.28);
+      ctx.beginPath();
+      ctx.arc(sx, sy, radius, shell.startAngle, shell.endAngle);
+      ctx.stroke();
+    }
+
+    // Pass 4: a few large mist blobs (whole blast, not per hex)
+    for (let i = 0; i < this.bombBlastDroplets.length; i++) {
+      const p = this.bombBlastDroplets[i];
+      const base = this._hexScreenCached(p.hexQ, p.hexR, hexCache);
+      const sx = base.x + p.ox;
+      const sy = base.y + p.oy;
+      if (!this.isHexInViewport(sx, sy)) continue;
+      const lifeRatio = Math.max(0, Math.min(1, p.life / p.maxLife));
+      const envelope = Math.sin(lifeRatio * Math.PI);
+      const localAlpha = Math.min(1, envelope * p.alphaScale);
+      const alpha = localAlpha * visScale;
+      if (alpha <= 0.03) continue;
+      const sprite = this._getFxGlowSprite(
+        p.coreR, p.coreG, p.coreB, p.r, p.g, p.b, p.r, p.g, p.b, 'mist'
+      );
+      const size = Math.max(6, p.size);
+      const stretch = p.stretch || 1.3;
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.rotate(p.rotation || 0);
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(sprite.canvas, -size * stretch * 0.55, -size * 0.5, size * stretch * 1.1, size);
+      ctx.restore();
+    }
+
+    ctx.restore();
+  }
+
+  /**
    * @deprecated Kept as a shim — pulsing FX now use spawnPulseBurst / drawPulseBursts.
    */
   generatePulsingParticles(tower) {
@@ -3604,6 +4145,7 @@ export class Renderer {
     // All beams call this function with the same tower object, so this should be identical
     const isSpreadTower = tower.type === CONFIG.TOWER_TYPE_SPREAD;
     const isJetTower = tower.type === CONFIG.TOWER_TYPE_JET;
+    const organic = !!CONFIG.ORGANIC_WATER_STREAMS;
     
     // For jet and spread towers: consistent particle count per hex per range level, power only affects size
     if (isJetTower || isSpreadTower) {
@@ -3611,7 +4153,7 @@ export class Renderer {
       // Key by tower + beam so spread's 5 fan beams each get their own cadence —
       // a shared tower-only key made beams 2–5 skip spray particles every tick.
       const now = performance.now();
-      const particleGenInterval = 50; // milliseconds between particle generations
+      const particleGenInterval = organic ? 42 : 50; // organic: slightly denser spawn of smaller droplets
       const genKey = `${tower.id}:${beamIndex >= 0 ? beamIndex : 0}`;
       const lastGenTime = this.lastParticleGenTime.get(genKey) || 0;
       
@@ -3632,6 +4174,8 @@ export class Renderer {
         case 4: densityDivisor = 50; break;
         default: densityDivisor = 50; break;
     }
+    // Organic: a few more particles, but average size drops — overdraw stays in budget
+    if (organic) densityDivisor *= 0.85;
     
     const baseParticleCount = Math.floor(distance / densityDivisor);
       // Stream floor keeps spray particles coming under global budget pressure
@@ -3653,9 +4197,9 @@ export class Renderer {
           // Add random offset to progress (more variation for better water effect)
           // Use a much larger random range to create natural, random distribution
           // Increase randomness for power level 1 since particles are smaller and need more variation
-          let progressRandomness = 0.8; // Base 80% variation in spacing
+          let progressRandomness = organic ? 0.95 : 0.8; // Base variation in spacing
           if (powerLevel === 1) {
-            progressRandomness = 1.2; // 120% variation for power level 1 (more noticeable with smaller particles)
+            progressRandomness = organic ? 1.35 : 1.2;
           }
           progress += (Math.random() - 0.5) * progressRandomness;
           // Clamp progress to valid range [0, 1] - allow full range for smooth water flow
@@ -3665,9 +4209,9 @@ export class Renderer {
         // For all jet and spread towers: add additional randomness to particle spacing
         // This creates more natural, less evenly-spaced distribution
         // Increase randomness for power level 1 since particles are smaller and need more variation
-        let spacingRandomness = 0.3; // Base 30% additional random variation
+        let spacingRandomness = organic ? 0.38 : 0.3;
         if (powerLevel === 1) {
-          spacingRandomness = 0.5; // 50% variation for power level 1 (more noticeable with smaller particles)
+          spacingRandomness = organic ? 0.58 : 0.5;
         }
         progress += (Math.random() - 0.5) * spacingRandomness;
         // Power-1 spread: keep spawns off the tip so droplets don't pool into end-blobs
@@ -3677,22 +4221,25 @@ export class Renderer {
       const particleX = screenStartX + deltaX * progress;
       const particleY = screenStartY + deltaY * progress;
       
-        // Add some randomness to make it look more natural
-        let randomnessScale = 0.3;
+        // Lateral jitter stays inside the stream corridor (hit hexes only).
+        // Organic uses slightly tighter offsets — soft sprites already read wider.
+        let randomnessScale = organic ? 0.24 : 0.3;
         if (powerLevel >= 3) randomnessScale *= 0.85; // tighten level 3-4
         // For spread towers: increase position randomness for more variation
         if (isSpreadTower) {
-          randomnessScale *= 1.5; // 50% more position randomness
+          randomnessScale *= organic ? 1.25 : 1.5;
         }
       const randomOffsetX = (Math.random() - 0.5) * 4 * randomnessScale;
       const randomOffsetY = (Math.random() - 0.5) * 4 * randomnessScale;
       
         // Calculate velocity - reduce speed for smoother, more uniform jets
         // Base speed is lower and doesn't scale as much with power level
-        const baseSpeed = (40 + Math.random() * 20); // Reduced from 60-90 to 40-60
+        const baseSpeed = organic
+          ? (36 + Math.random() * 28) // slightly more speed variety for organic churn
+          : (40 + Math.random() * 20);
         // Power level affects speed more subtly
         const speedMultiplier = 1.0 + (powerLevel - 1) * 0.15; // Level 1: 1.0x, Level 4: 1.45x (much less than before)
-        let velocityRandomness = 0.25; // Fixed, lower randomness for more uniform streams
+        let velocityRandomness = organic ? 0.3 : 0.25;
         
         // Power level adjustments for fan spread
         if (powerLevel === 2) {
@@ -3701,7 +4248,9 @@ export class Renderer {
           velocityRandomness *= 0.94;
         } else if (powerLevel === 4) {
           velocityRandomness *= 0.86;
-      }
+        } else if (powerLevel >= 5) {
+          velocityRandomness *= 0.79;
+        }
       
       // Reduce fan spread progressively as range level increases
       if (rangeLevel >= 2) {
@@ -3731,58 +4280,73 @@ export class Renderer {
         tower.r
       );
       
-        // Particle size - more uniform sizes to prevent large clusters
-        // Use consistent base size with minimal variation
-        // CRITICAL: All 5 beams (center + 4 flanking) must use identical base size calculation
-        // regardless of distance to ensure visual consistency
-        const baseSizeMin = 1.5;
-        const baseSizeMax = 2.0; // Reduced variation
-        const baseSize = baseSizeMin + Math.random() * (baseSizeMax - baseSizeMin);
-        
-        // Much smaller size variation along the beam for uniformity
-        // CRITICAL: This must be identical for all beams to prevent center beam from appearing larger
-        let sizeMultiplier = 0.9 + Math.random() * 0.1; // 0.9-1.0 (very tight range)
-        
-        // Apply power level size scaling (reduced multipliers for more uniform appearance)
-        // Power level 3 gets a slight increase
-        let jetSizeMultiplier = 1.8; // Reduced from 2.25
+        // Apply power level size scaling
+        let jetSizeMultiplier = 1.8;
         if (powerLevel === 1) {
-          jetSizeMultiplier = 1.5; // Power level 1: 50% larger
+          jetSizeMultiplier = 1.5;
         } else if (powerLevel === 2) {
-          jetSizeMultiplier = 1.3; // Power level 2: 30% larger
+          jetSizeMultiplier = 1.3;
         } else if (powerLevel === 3) {
-          jetSizeMultiplier = 2.0; // Reduced from 2.8125
+          jetSizeMultiplier = 2.0;
         } else if (powerLevel === 4) {
-          jetSizeMultiplier = 2.2; // Slightly larger for level 4
+          jetSizeMultiplier = 2.2;
+        } else if (powerLevel >= 5) {
+          jetSizeMultiplier = 2.4;
         }
-        // Spread towers: 25% larger particles
-        // IMPORTANT: This applies to ALL spread tower beams, not just the center beam
         const spreadSizeMultiplier = isSpreadTower ? 1.25 : 1.0;
-        
-        // Additional size increases for spread towers at power levels 1 and 2
         let spreadPowerSizeMultiplier = 1.0;
         if (isSpreadTower && powerLevel === 1) {
-          // Uniform modest size on all 5 beams — old flanking boost (1.6875) + tip freeze
-          // made power-1 sprays end in large circular boluses.
           spreadPowerSizeMultiplier = 1.15;
         } else if (isSpreadTower && powerLevel === 2) {
           spreadPowerSizeMultiplier = 1.2;
         }
-        
-        // Calculate particle size - ensure all beams use identical calculation regardless of distance
-        // For spread towers, all 5 beams (center + 4 flanking) must have identical particle sizes
-        particle.size = baseSize * sizeMultiplier * particleSizeMultiplier * jetSizeMultiplier * spreadSizeMultiplier * spreadPowerSizeMultiplier;
-        particle.sizeMultiplier = 1.0;
+
+        if (organic) {
+          // Power-law-ish mix: many micro/aerosol, some mid droplets, rare larger cores.
+          // Soft sprite + lower average size keeps overdraw similar while reading watery.
+          const roll = Math.random();
+          let baseSize;
+          if (roll < 0.5) {
+            baseSize = 0.32 + Math.random() * 0.7; // micro mist 0.32–1.02
+          } else if (roll < 0.82) {
+            baseSize = 1.0 + Math.random() * 1.15; // mid 1.0–2.15
+          } else if (roll < 0.95) {
+            baseSize = 2.0 + Math.random() * 1.35; // droplet 2.0–3.35
+          } else {
+            baseSize = 3.0 + Math.random() * 1.6; // rare larger 3.0–4.6
+          }
+          // Soft sprites already bloom — damp power scale a bit vs classic hard blobs
+          const organicPowerScale = 0.72 + (jetSizeMultiplier - 1.3) * 0.35;
+          particle.size = baseSize * organicPowerScale * spreadSizeMultiplier * spreadPowerSizeMultiplier;
+          particle.sizeMultiplier = 0.85 + Math.random() * 0.35;
+          particle.spriteVariant = 'soft';
+          // Micros read better a touch brighter; large ones a touch softer
+          particle.alphaScale = baseSize < 1.1 ? 0.95 + Math.random() * 0.25 : 0.7 + Math.random() * 0.25;
+        } else {
+          // Particle size - more uniform sizes to prevent large clusters
+          const baseSizeMin = 1.5;
+          const baseSizeMax = 2.0;
+          const baseSize = baseSizeMin + Math.random() * (baseSizeMax - baseSizeMin);
+          const sizeMultiplier = 0.9 + Math.random() * 0.1;
+          particle.size = baseSize * sizeMultiplier * particleSizeMultiplier * jetSizeMultiplier * spreadSizeMultiplier * spreadPowerSizeMultiplier;
+          particle.sizeMultiplier = 1.0;
+        }
+        if (isJetTower || isSpreadTower) {
+          const look = this._getJetSpreadStreamPowerLook(powerLevel);
+          particle.size *= look.size;
+          particle.alphaScale = (particle.alphaScale ?? 1) * look.alpha;
+        }
         
         // Distance constraint — jet towers get a slight overshoot for fade; spread endpoints
         // already match hit hexes in hexMath, so 10% extra reads as ~1 hex past damage range.
-        const targetTerminationDistance = distance * (isSpreadTower ? 1.0 : 1.1);
+        // Organic jet: no overshoot (soft aura already fades past the tip visually).
+        const targetTerminationDistance = distance * (isSpreadTower || organic ? 1.0 : 1.1);
         const currentDistanceFromStart = distance * progress;
         const remainingDistance = targetTerminationDistance - currentDistanceFromStart;
 
         particle.maxDistance = Math.max(0, remainingDistance);
-        // Power-1 spread: dissolve at the tip instead of stacking into end-blobs
-        if (isSpreadTower && powerLevel === 1) {
+        // Dissolve at tip instead of stacking into end-blobs
+        if ((isSpreadTower && powerLevel === 1) || organic) {
           particle.expireAtMaxDistance = true;
         }
       particle.startOffsetX = particle.offsetX;
@@ -3847,6 +4411,7 @@ export class Renderer {
     particle.friction = 0.98; // Air resistance
     particle.color = color; // Store particle color
     particle.alphaScale = undefined;
+    particle.spriteVariant = undefined; // 'soft' = nebulous radial sprite (jet/spread organic)
     particle.expireAtMaxDistance = false;
     particle.maxDistance = undefined;
     
@@ -3858,6 +4423,68 @@ export class Renderer {
     }
     
     return particle;
+  }
+
+  /**
+   * Shared organic droplet look for rain / explosions / collection / gas (not pulsing).
+   * Soft nebulous sprite + wide size mix; average size stays modest so overdraw stays in budget.
+   * @param {Object} particle
+   * @param {'rain'|'burst'|'sparkle'|'gas'} kind
+   * @param {{ level?: number, sizeScale?: number, alphaScale?: number }} [opts]
+   */
+  _styleOrganicWaterParticle(particle, kind, opts = {}) {
+    particle.spriteVariant = 'soft';
+    const level = Math.max(1, Math.min(5, Math.floor(opts.level || 1)));
+    const sizeScale = opts.sizeScale != null ? opts.sizeScale : 1;
+    const roll = Math.random();
+
+    if (kind === 'rain') {
+      // Falling mist: mostly small/mid, occasional larger droplets.
+      // Floor raised ~3× vs old micro mist; top end only ~15% larger.
+      if (roll < 0.50) particle.size = 1.35 + Math.random() * 0.75; // was ~0.45–1.3
+      else if (roll < 0.85) particle.size = 2.0 + Math.random() * 1.2;  // was ~1.2–2.7
+      else particle.size = 2.95 + Math.random() * 1.9; // was ~2.5–4.2 → top ~4.85
+      const levelSize = 1.08 + (level - 1) * 0.1; // L1: 1.08 … L5: 1.48
+      particle.size *= levelSize;
+      particle.sizeMultiplier = 0.75 + Math.random() * 0.4;
+      const baseA = opts.alphaScale != null ? opts.alphaScale : 1.55;
+      particle.alphaScale = baseA * (0.95 + (level - 1) * 0.06) * (0.9 + Math.random() * 0.25);
+      return;
+    }
+
+    if (kind === 'sparkle') {
+      // Bonus / tank pickup — soft pale motes, wider size spread
+      if (roll < 0.5) particle.size = 0.4 + Math.random() * 0.7;
+      else if (roll < 0.85) particle.size = 1.0 + Math.random() * 1.1;
+      else particle.size = 2.0 + Math.random() * 1.2;
+      particle.size *= sizeScale;
+      particle.sizeMultiplier = 0.85 + Math.random() * 0.35;
+      if (opts.alphaScale != null) particle.alphaScale = opts.alphaScale;
+      return;
+    }
+
+    if (kind === 'gas') {
+      // Suppression: soft white aerosol — more mist blobs, fewer hard dots
+      if (roll < 0.45) particle.size = 0.6 + Math.random() * 1.1;
+      else if (roll < 0.8) particle.size = 1.6 + Math.random() * 1.8;
+      else particle.size = 3.0 + Math.random() * 2.2;
+      particle.size *= (1.0 + (level - 1) * 0.12) * sizeScale;
+      particle.sizeMultiplier = 0.9 + Math.random() * 0.35;
+      particle.alphaScale = (opts.alphaScale != null ? opts.alphaScale : 0.85) * (0.85 + Math.random() * 0.3);
+      return;
+    }
+
+    // burst — bomber / sentinel / perimeter / charge / power-up cyan splash
+    // Soft sprites bloom visually; core sizes stay below the old hard-blob averages.
+    if (roll < 0.42) particle.size = 0.45 + Math.random() * 0.9;
+    else if (roll < 0.78) particle.size = 1.3 + Math.random() * 1.6;
+    else if (roll < 0.93) particle.size = 2.6 + Math.random() * 1.8;
+    else particle.size = 4.0 + Math.random() * 2.2;
+    particle.size *= (1.05 + (level - 1) * 0.16) * sizeScale;
+    particle.sizeMultiplier = 0.85 + Math.random() * 0.4;
+    const baseA = opts.alphaScale != null ? opts.alphaScale : 1;
+    // Micros a touch brighter; large soft blobs a touch softer (less overdraw washout)
+    particle.alphaScale = baseA * (particle.size < 1.4 ? 1.05 + Math.random() * 0.25 : 0.75 + Math.random() * 0.25);
   }
 
   /**
@@ -4710,7 +5337,10 @@ export class Renderer {
       return { hintVelocity: 0 };
     }
     const max = Math.max(1, Number(tower.maxHealth) || 1);
-    return this._mapHealthBarHintOpts(tower.q, tower.r, max, { ignoreWater: true });
+    const base = this._mapHealthBarHintOpts(tower.q, tower.r, max, { ignoreWater: true });
+    const zap = this.gameState?.burningVaultSystem?.getZapDpsOnTower?.(tower.id) || 0;
+    if (zap <= 0) return base;
+    return { hintVelocity: (Number(base.hintVelocity) || 0) - zap / max };
   }
 
   /**
@@ -4722,7 +5352,10 @@ export class Renderer {
     const sh = tower?.shield;
     if (!sh || !(sh.health > 0)) return { hintVelocity: 0 };
     const max = Math.max(1, Number(sh.maxHealth) || 1);
-    return this._mapHealthBarHintOpts(tower.q, tower.r, max, { ignoreWater: true });
+    const base = this._mapHealthBarHintOpts(tower.q, tower.r, max, { ignoreWater: true });
+    const zap = this.gameState?.burningVaultSystem?.getZapDpsOnTower?.(tower.id) || 0;
+    if (zap <= 0) return base;
+    return { hintVelocity: (Number(base.hintVelocity) || 0) - zap / max };
   }
 
   /**
@@ -5022,28 +5655,45 @@ export class Renderer {
     // Draw is only in drawAllWaterParticles(). updateWaterParticles is allowed to delete
     // its own entry from the Map when empty; per JS spec, deleting the current entry
     // during Map iteration is safe (already-visited).
-    let liveWaterParticles = 0;
-    for (const towerId of this.waterParticles.keys()) {
-      liveWaterParticles += this.updateWaterParticles(towerId, deltaTime);
-    }
-    // Cache total live count for the global spawn budget (_particleBudgetScale).
-    this._liveWaterParticleCount = liveWaterParticles;
-    
-    // Update all fire particles
-    this.updateAllFireParticles(deltaTime);
+    const gs = this.gameState;
+    // Upgrade/sellback/etc. only — not dungeon flood/reward (geyser spray must keep animating).
+    const selectionOverlay =
+      gs?.isUpgradeSelectionMode ||
+      gs?.isTowerSellbackMode ||
+      gs?.isRepairSelectionMode ||
+      gs?.isPartsRecycleMode;
 
-    // Continuous vortex ember / spark FX
-    this.updateVortexEmbers(deltaTime);
-    // Light sparks on ordinary burning hexes (full fire visuals only)
-    this.updateFireHexSparks(deltaTime);
-    // Smoulder sparks on burning vaults + dungeon entrances
-    this.updateSmoulderSparks(deltaTime);
-    // Soft bubbles rising from water buckets / tanks / vats
-    this.updateWaterTankBubbles(deltaTime);
-    // Soft mist / shear spray on jet & spread streams (full visuals only)
-    this.updateJetMist(deltaTime);
-    // Pulsing tower radial blasts (dedicated FX; consumes pendingPulseBurst)
-    this.updatePulseBursts(deltaTime);
+    // Map-selection modes pause combat and hide FX draws — skip particle simulation too.
+    // Dungeon flood geysers always advance (even under an overlay) so burst spray stays alive.
+    if (!selectionOverlay) {
+      let liveWaterParticles = 0;
+      for (const towerId of this.waterParticles.keys()) {
+        liveWaterParticles += this.updateWaterParticles(towerId, deltaTime);
+      }
+      // Cache total live count for the global spawn budget (_particleBudgetScale).
+      this._liveWaterParticleCount = liveWaterParticles;
+      
+      // Update all fire particles
+      this.updateAllFireParticles(deltaTime);
+
+      // Continuous vortex ember / spark FX
+      this.updateVortexEmbers(deltaTime);
+      // Light sparks on ordinary burning hexes (full fire visuals only)
+      this.updateFireHexSparks(deltaTime);
+      // Smoulder sparks on burning vaults + dungeon entrances
+      this.updateSmoulderSparks(deltaTime);
+      // Volatile vent jets / flame tongues on fire spawners
+      this.updateSpawnerEmbers(deltaTime);
+      // Soft bubbles rising from water buckets / tanks / vats
+      this.updateWaterTankBubbles(deltaTime);
+      // Soft mist / shear spray on jet & spread streams (full visuals only)
+      this.updateJetMist(deltaTime);
+      // Pulsing tower radial blasts (dedicated FX; consumes pendingPulseBurst)
+      this.updatePulseBursts(deltaTime);
+      // Bomber / sentinel / perimeter / charge impact sheets (dedicated FX)
+      this.updateBomberBlasts(deltaTime);
+    }
+    this.updateDungeonFloodGeysers(deltaTime);
     
     // Note: Hex flash effects are now drawn in gameLoop.js for proper z-index
   }
@@ -6339,8 +6989,12 @@ export class Renderer {
       p.maxDistance = hexRadiusPx * 0.85;
       p.startOffsetX = p.offsetX;
       p.startOffsetY = p.offsetY;
-      p.size = 2.8 + Math.random() * 2.4;
-      p.sizeMultiplier = 1.3;
+      if (CONFIG.ORGANIC_WATER_STREAMS) {
+        this._styleOrganicWaterParticle(p, 'burst', { level: 2, sizeScale: 1.05 });
+      } else {
+        p.size = 2.8 + Math.random() * 2.4;
+        p.sizeMultiplier = 1.3;
+      }
       
       if (!this.waterParticles.has(explosionId)) {
         this.waterParticles.set(explosionId, []);
@@ -6402,8 +7056,12 @@ export class Renderer {
       p.maxDistance = maxDist;
       p.startOffsetX = p.offsetX;
       p.startOffsetY = p.offsetY;
-      p.size = 1.0 + Math.random() * 1.0;
-      p.sizeMultiplier = 0.9;
+      if (CONFIG.ORGANIC_WATER_STREAMS) {
+        this._styleOrganicWaterParticle(p, 'sparkle', { sizeScale: 1.05 });
+      } else {
+        p.size = 1.0 + Math.random() * 1.0;
+        p.sizeMultiplier = 0.9;
+      }
       p.gravity = 0.08;
       p.friction = 0.96;
       
@@ -6412,6 +7070,470 @@ export class Renderer {
       }
       this.waterParticles.get(explosionId).push(p);
     }
+  }
+
+  /**
+   * Upward geyser of flood-water when a dungeon entrance bursts.
+   * Hex-relative so the column follows the camera pan.
+   * @param {number} q
+   * @param {number} r
+   */
+  spawnDungeonFloodGeyser(q, r) {
+    if (CONFIG.DISABLE_ALL_WATER_EFFECTS) return;
+
+    const hexKey = `${q},${r}`;
+    this.hexFlashes.set(hexKey, {
+      startTime: performance.now(),
+      duration: 1100,
+      color: 'cyan',
+    });
+
+    const particleId = `dungeon_geyser_${q}_${r}_${Date.now()}`;
+    if (!this.waterParticles.has(particleId)) {
+      this.waterParticles.set(particleId, []);
+    }
+
+    const geyser = {
+      hexQ: q,
+      hexR: r,
+      age: 0,
+      duration: 1.7,
+      emitUntil: 0.9,
+      particleId,
+      emitAcc: 0,
+      mists: [],
+      sparkles: [],
+    };
+    this.dungeonGeysers.push(geyser);
+    this._emitDungeonGeyserBurst(geyser, true);
+    this._emitDungeonGeyserMists(geyser, true);
+    this._emitDungeonGeyserSparkles(geyser, true);
+  }
+
+  _emitDungeonGeyserBurst(geyser, initial) {
+    if (!geyser || CONFIG.DISABLE_ALL_WATER_EFFECTS || !CONFIG.USE_WATER_PARTICLES) return;
+    const { x, y } = axialToPixel(geyser.hexQ, geyser.hexR);
+    const centerX = x + this.offsetX;
+    const centerY = y + this.offsetY;
+    const hexR = CONFIG.HEX_RADIUS;
+    const simplified = this.isSimplifiedWaterVisualsEnabled();
+    const list = this.waterParticles.get(geyser.particleId);
+    if (!list) return;
+
+    const fx = this.dungeonGeyserFxScale;
+    const count = initial
+      ? (simplified ? Math.round(32 * fx) : Math.round(58 * fx))
+      : (simplified ? Math.round(3 * fx) : Math.round(5 * fx));
+    const colors = [
+      'rgba(255, 255, 255, 0.96)',
+      'rgba(150, 255, 210, 0.95)',
+      'rgba(20, 130, 150, 0.94)',
+      'rgba(255, 230, 170, 0.95)',
+      'rgba(70, 110, 210, 0.94)',
+      'rgba(200, 250, 255, 0.94)',
+    ];
+
+    for (let i = 0; i < count; i++) {
+      const crown = initial ? i < count * 0.38 : Math.random() < 0.28;
+      const foam = !crown && Math.random() < 0.18;
+      const angle = (Math.random() - 0.5) * (crown ? 1.55 : foam ? 2.2 : 0.48);
+      const speed = foam
+        ? (4 + Math.random() * 4) * fx
+        : crown
+          ? (8 + Math.random() * 7) * fx
+          : (10 + Math.random() * 6) * fx;
+      const spawnX = centerX + (Math.random() - 0.5) * hexR * 0.42 * fx;
+      const spawnY = centerY + hexR * 0.1 + (Math.random() - 0.5) * 5 * fx;
+      const roll = Math.random();
+      let geyserTint;
+      if (foam) geyserTint = roll < 0.55 ? 0 : 3;
+      else if (crown) geyserTint = roll < 0.35 ? 0 : roll < 0.6 ? 1 : roll < 0.8 ? 3 : 5;
+      else geyserTint = roll < 0.22 ? 2 : roll < 0.44 ? 1 : roll < 0.64 ? 4 : roll < 0.82 ? 5 : 3;
+      const p = this.createWaterParticle(
+        spawnX,
+        spawnY,
+        Math.sin(angle) * speed,
+        -Math.cos(angle * 0.35) * speed,
+        foam ? 0.55 + Math.random() * 0.45 : 0.75 + Math.random() * 0.85,
+        colors[geyserTint],
+        geyser.hexQ,
+        geyser.hexR
+      );
+      p.gravity = foam ? 0.18 + Math.random() * 0.1 : 0.24 + Math.random() * 0.12;
+      p.friction = 0.986;
+      p.startOffsetX = p.offsetX;
+      p.startOffsetY = p.offsetY;
+      if (CONFIG.ORGANIC_WATER_STREAMS) {
+        this._styleOrganicWaterParticle(p, foam ? 'sparkle' : 'burst', {
+          level: 3,
+          sizeScale: (crown ? 1.75 : foam ? 1.3 : 1.5) * fx,
+          alphaScale: 1.5,
+        });
+      } else {
+        p.size = ((crown ? 4.2 : 2.8) + Math.random() * 3.0) * fx;
+        p.sizeMultiplier = 1.5 * fx;
+      }
+      p.isDungeonGeyser = true;
+      p.geyserTint = geyserTint;
+      list.push(p);
+    }
+  }
+
+  _emitDungeonGeyserMists(geyser, initial) {
+    if (!geyser || CONFIG.DISABLE_ALL_WATER_EFFECTS) return;
+    const simplified = this.isSimplifiedWaterVisualsEnabled();
+    const fx = this.dungeonGeyserFxScale;
+    const count = initial ? (simplified ? Math.round(10 * fx) : Math.round(18 * fx)) : (simplified ? Math.max(1, Math.round(1 * fx)) : Math.round(2 * fx));
+    const hexR = CONFIG.HEX_RADIUS;
+    for (let i = 0; i < count; i++) {
+      const up = initial ? i < count * 0.55 : Math.random() < 0.7;
+      const ink = Math.random() < 0.28;
+      const roll = Math.random();
+      const angle = (Math.random() - 0.5) * (up ? 0.7 : 1.8);
+      const speed = up ? hexR * (3.2 + Math.random() * 2.4) * fx : hexR * (1.4 + Math.random() * 1.6) * fx;
+      const life = up ? 0.9 + Math.random() * 0.55 : 0.55 + Math.random() * 0.4;
+      geyser.mists.push({
+        ox: (Math.random() - 0.5) * hexR * 0.35 * fx,
+        oy: hexR * 0.08,
+        vx: Math.sin(angle) * speed,
+        vy: -Math.cos(angle * 0.25) * speed,
+        life,
+        maxLife: life,
+        size: ((up ? 14 : 10) + Math.random() * 16) * fx,
+        stretch: 1.15 + Math.random() * 0.55,
+        rotation: (Math.random() - 0.5) * 0.7,
+        alphaScale: ink ? 0.72 + Math.random() * 0.18 : 0.55 + Math.random() * 0.3,
+        gravity: up ? 260 : 180,
+        friction: 0.975,
+        ink,
+        tint: ink ? -1 : (roll < 0.3 ? 0 : roll < 0.55 ? 1 : roll < 0.75 ? 2 : 3),
+      });
+    }
+  }
+
+  _emitDungeonGeyserSparkles(geyser, initial) {
+    if (!geyser || CONFIG.DISABLE_ALL_WATER_EFFECTS) return;
+    const simplified = this.isSimplifiedWaterVisualsEnabled();
+    const fx = this.dungeonGeyserFxScale;
+    const count = initial ? (simplified ? Math.round(8 * fx) : Math.round(16 * fx)) : (simplified ? Math.max(1, Math.round(1 * fx)) : Math.round(3 * fx));
+    const hexR = CONFIG.HEX_RADIUS;
+    for (let i = 0; i < count; i++) {
+      const angle = (Math.random() - 0.5) * 1.4;
+      const speed = hexR * (2.4 + Math.random() * 4.2) * fx;
+      const life = 0.4 + Math.random() * 0.55;
+      geyser.sparkles.push({
+        ox: (Math.random() - 0.5) * hexR * 0.3 * fx,
+        oy: hexR * 0.05,
+        vx: Math.sin(angle) * speed,
+        vy: -Math.abs(Math.cos(angle * 0.3)) * speed,
+        life,
+        maxLife: life,
+        size: (1.6 + Math.random() * 2.8) * fx,
+        gravity: 140 + Math.random() * 80,
+        friction: 0.978,
+        tint: Math.random() < 0.45 ? 0 : Math.random() < 0.5 ? 1 : 2,
+      });
+    }
+  }
+
+  updateDungeonFloodGeysers(deltaTime) {
+    if (this.dungeonGeysers.length === 0) return;
+    const dt = Math.max(0, Math.min(0.05, Number(deltaTime) || 0));
+    for (let i = this.dungeonGeysers.length - 1; i >= 0; i--) {
+      const g = this.dungeonGeysers[i];
+      g.age += dt;
+      if (g.age < g.emitUntil) {
+        g.emitAcc += dt;
+        while (g.emitAcc >= 0.03) {
+          g.emitAcc -= 0.03;
+          this._emitDungeonGeyserBurst(g, false);
+          this._emitDungeonGeyserMists(g, false);
+          this._emitDungeonGeyserSparkles(g, false);
+        }
+      }
+      const mists = g.mists;
+      for (let m = mists.length - 1; m >= 0; m--) {
+        const p = mists[m];
+        p.ox += p.vx * dt;
+        p.oy += p.vy * dt;
+        p.vy += p.gravity * dt;
+        p.vx *= p.friction;
+        p.vy *= p.friction;
+        p.life -= dt;
+        p.size += 10 * this.dungeonGeyserFxScale * dt;
+        if (p.life <= 0) {
+          mists.splice(m, 1);
+        }
+      }
+      const sparkles = g.sparkles;
+      if (sparkles) {
+        for (let s = sparkles.length - 1; s >= 0; s--) {
+          const p = sparkles[s];
+          p.ox += p.vx * dt;
+          p.oy += p.vy * dt;
+          p.vy += p.gravity * dt;
+          p.vx *= p.friction;
+          p.vy *= p.friction;
+          p.life -= dt;
+          if (p.life <= 0) {
+            sparkles.splice(s, 1);
+          }
+        }
+      }
+      if (g.age >= g.duration) {
+        this.dungeonGeysers.splice(i, 1);
+      }
+    }
+  }
+
+  drawDungeonFloodGeysers() {
+    if (this.dungeonGeysers.length === 0) return;
+    if (CONFIG.DISABLE_ALL_WATER_EFFECTS) return;
+    const ctx = this.ctx;
+    const wVis = this.getWaterVisualAlphaScale();
+    if (wVis <= 0.001) return;
+    const visScale = ctx.globalAlpha * wVis;
+    const offsetX = this.offsetX;
+    const offsetY = this.offsetY;
+    const shadowPlume = this._getFxGlowSprite(16, 32, 56, 10, 22, 42, 6, 14, 28, 'flame');
+    const shadowBloom = this._getFxGlowSprite(18, 28, 48, 12, 22, 40, 8, 14, 28, 'soft');
+    const inkMist = this._getFxGlowSprite(18, 30, 52, 12, 24, 44, 8, 16, 30, 'mist');
+    const jetWhite = this._getFxGlowSprite(255, 255, 255, 210, 245, 240, 140, 220, 230, 'flame');
+    const jetTeal = this._getFxGlowSprite(40, 160, 170, 20, 110, 140, 10, 70, 110, 'flame');
+    const jetGold = this._getFxGlowSprite(255, 230, 170, 220, 180, 90, 160, 120, 40, 'flame');
+    const bloom = this._getFxGlowSprite(255, 255, 255, 200, 250, 245, 120, 220, 230, 'soft');
+    const mistSprites = [
+      this._getFxGlowSprite(255, 255, 255, 220, 245, 240, 160, 220, 220, 'mist'),
+      this._getFxGlowSprite(140, 255, 210, 40, 170, 150, 20, 110, 120, 'mist'),
+      this._getFxGlowSprite(255, 220, 150, 220, 160, 70, 160, 100, 30, 'mist'),
+      this._getFxGlowSprite(80, 120, 220, 40, 80, 170, 20, 50, 120, 'mist'),
+    ];
+
+    for (let i = 0; i < this.dungeonGeysers.length; i++) {
+      const g = this.dungeonGeysers[i];
+      const { x, y } = axialToPixel(g.hexQ, g.hexR);
+      const sx = x + offsetX;
+      const sy = y + offsetY;
+      if (!this.isHexInViewport(sx, sy)) continue;
+
+      const t = Math.min(1, g.age / g.duration);
+      const rise = t < 0.16 ? t / 0.16 : 1;
+      const fade = t < 0.58 ? 1 : Math.pow(1 - (t - 0.58) / 0.42, 1.4);
+      const alpha = visScale * fade;
+      if (alpha <= 0.02) continue;
+
+      const hexR = CONFIG.HEX_RADIUS;
+      const fx = this.dungeonGeyserFxScale;
+      const colH = hexR * (2.4 + rise * 1.85) * fx;
+      const colW = hexR * (0.78 + (1 - t) * 0.42) * fx;
+      const pop = t < 0.22 ? (1 - t / 0.22) : 0;
+      const mouth = hexR * (1.05 + Math.sin(g.age * 16) * 0.1 + pop * 0.45) * (0.9 + rise * 0.28) * fx;
+      const shadowW = colW * 1.55;
+      const shadowH = colH * 1.18;
+
+      // Darken overlapping tower streams so the burst has a silhouette.
+      ctx.save();
+      ctx.globalCompositeOperation = 'multiply';
+      ctx.globalAlpha = alpha * 0.82;
+      ctx.drawImage(shadowPlume.canvas, sx - shadowW * 0.5 + 3, sy - shadowH * 0.9 + 8, shadowW, shadowH);
+      ctx.globalAlpha = alpha * 0.7;
+      ctx.drawImage(shadowBloom.canvas, sx - mouth * 1.35 + 2, sy - mouth * 0.15 + 6, mouth * 2.7, mouth * 1.7);
+      ctx.restore();
+
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = alpha * 0.55;
+      ctx.drawImage(shadowPlume.canvas, sx - colW * 0.72 + 4, sy - colH * 0.9 + 10, colW * 1.35, colH * 1.08);
+      ctx.globalAlpha = alpha * 0.72;
+      ctx.drawImage(jetTeal.canvas, sx - colW * 0.58, sy - colH * 0.93, colW * 1.12, colH);
+      ctx.globalAlpha = alpha * 0.55;
+      ctx.drawImage(jetGold.canvas, sx - colW * 0.28, sy - colH * 0.88, colW * 0.62, colH * 0.92);
+      ctx.globalAlpha = alpha * 0.88;
+      ctx.drawImage(jetWhite.canvas, sx - colW * 0.46, sy - colH * 0.95, colW * 0.92, colH);
+      ctx.restore();
+
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = alpha * 0.7;
+      ctx.drawImage(jetWhite.canvas, sx - colW * 0.5, sy - colH * 0.94, colW, colH);
+      ctx.globalAlpha = alpha * 0.42;
+      ctx.drawImage(jetTeal.canvas, sx - colW * 0.82, sy - colH * 0.8, colW * 0.55, colH * 0.86);
+      ctx.drawImage(jetGold.canvas, sx + colW * 0.18, sy - colH * 0.78, colW * 0.5, colH * 0.82);
+
+      ctx.globalAlpha = alpha * (0.7 + pop * 0.45);
+      ctx.drawImage(bloom.canvas, sx - mouth, sy - mouth * 0.32, mouth * 2, mouth * 1.2);
+
+      if (pop > 0.05) {
+        const flash = this._getFxGlowSprite(255, 255, 255, 255, 240, 200, 180, 210, 160, 'soft');
+        const flashR = hexR * (1.4 + pop * 1.1) * fx;
+        ctx.globalAlpha = visScale * pop * 0.95;
+        ctx.drawImage(flash.canvas, sx - flashR, sy - flashR * 0.7, flashR * 2, flashR * 1.5);
+      }
+
+      ctx.globalAlpha = alpha * 0.78;
+      ctx.strokeStyle = 'rgba(255, 255, 255, 1)';
+      ctx.lineWidth = 3.8 * (1.12 - t * 0.5) * fx;
+      const ringR = hexR * (0.5 + t * 1.35) * fx;
+      ctx.beginPath();
+      ctx.ellipse(sx, sy + hexR * 0.1, ringR, ringR * 0.36, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = alpha * 0.5;
+      ctx.strokeStyle = 'rgba(255, 210, 120, 1)';
+      ctx.lineWidth = 2.4 * fx;
+      const ringR2 = hexR * (0.72 + t * 1.7) * fx;
+      ctx.beginPath();
+      ctx.ellipse(sx, sy + hexR * 0.12, ringR2, ringR2 * 0.34, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = alpha * 0.38;
+      ctx.strokeStyle = 'rgba(60, 200, 180, 1)';
+      ctx.lineWidth = 2 * fx;
+      const ringR3 = hexR * (0.4 + t * 1.05) * fx;
+      ctx.beginPath();
+      ctx.ellipse(sx, sy + hexR * 0.08, ringR3, ringR3 * 0.38, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-over';
+      for (let m = 0; m < g.mists.length; m++) {
+        const p = g.mists[m];
+        const lifeRatio = Math.max(0, Math.min(1, p.life / p.maxLife));
+        const envelope = Math.sin(lifeRatio * Math.PI);
+        const mistAlpha = visScale * envelope * Math.min(1, p.alphaScale * 1.3) * fade;
+        if (mistAlpha <= 0.03) continue;
+        const size = Math.max(8, p.size);
+        const sprite = p.ink ? inkMist : (mistSprites[p.tint] || mistSprites[0]);
+        ctx.save();
+        ctx.translate(sx + p.ox, sy + p.oy);
+        ctx.rotate(p.rotation || 0);
+        if (p.ink) {
+          ctx.globalCompositeOperation = 'multiply';
+          ctx.globalAlpha = Math.min(1, mistAlpha * 1.15);
+        } else {
+          ctx.globalAlpha = mistAlpha;
+        }
+        ctx.drawImage(
+          sprite.canvas,
+          -size * p.stretch * 0.55,
+          -size * 0.5,
+          size * p.stretch * 1.1,
+          size
+        );
+        ctx.restore();
+      }
+      ctx.restore();
+
+      this._drawDungeonGeyserDroplets(g, visScale * fade);
+
+      const sparkles = g.sparkles;
+      if (sparkles && sparkles.length) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        for (let s = 0; s < sparkles.length; s++) {
+          const p = sparkles[s];
+          const lifeRatio = Math.max(0, Math.min(1, p.life / p.maxLife));
+          const twinkle = 0.55 + 0.45 * Math.sin((g.age + s) * 22);
+          const sparkAlpha = visScale * fade * lifeRatio * twinkle;
+          if (sparkAlpha <= 0.04) continue;
+          ctx.globalAlpha = sparkAlpha;
+          ctx.fillStyle = p.tint === 1
+            ? 'rgba(255, 220, 130, 1)'
+            : p.tint === 2
+              ? 'rgba(120, 255, 210, 1)'
+              : 'rgba(255, 255, 255, 1)';
+          const sz = p.size * (0.7 + lifeRatio * 0.5);
+          const px = sx + p.ox;
+          const py = sy + p.oy;
+          ctx.beginPath();
+          ctx.arc(px, py, sz, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.globalAlpha = sparkAlpha * 0.9;
+          ctx.fillRect(px - sz * 2.2, py - 0.6, sz * 4.4, 1.2);
+          ctx.fillRect(px - 0.6, py - sz * 2.2, 1.2, sz * 4.4);
+        }
+        ctx.restore();
+      }
+    }
+  }
+
+  /**
+   * Foam / ice droplets for a flood geyser — drawn above tower streams.
+   * @param {{ particleId: string, hexQ: number, hexR: number }} geyser
+   * @param {number} visScale
+   */
+  _drawDungeonGeyserDroplets(geyser, visScale) {
+    if (!geyser || visScale <= 0.02 || !CONFIG.USE_WATER_PARTICLES) return;
+    const particles = this.waterParticles.get(geyser.particleId);
+    if (!particles || particles.length === 0) return;
+
+    const ctx = this.ctx;
+    const offsetX = this.offsetX;
+    const offsetY = this.offsetY;
+    const { x, y } = axialToPixel(geyser.hexQ, geyser.hexR);
+    const baseX = x + offsetX;
+    const baseY = y + offsetY;
+    const shadowSprite = this._getWaterParticleSprite('rgba(16, 28, 48, ', 'soft');
+    const tintSprites = [
+      this._getWaterParticleSprite('rgba(255, 255, 255, ', 'soft'),
+      this._getWaterParticleSprite('rgba(130, 255, 205, ', 'soft'),
+      this._getWaterParticleSprite('rgba(20, 130, 150, ', 'soft'),
+      this._getWaterParticleSprite('rgba(255, 220, 150, ', 'soft'),
+      this._getWaterParticleSprite('rgba(70, 110, 210, ', 'soft'),
+      this._getWaterParticleSprite('rgba(190, 245, 255, ', 'soft'),
+    ];
+    const whiteSprite = tintSprites[0];
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    for (let p = 0; p < particles.length; p++) {
+      const particle = particles[p];
+      const hasHex = particle.offsetX !== null && particle.offsetY !== null;
+      const screenX = hasHex ? baseX + particle.offsetX : particle.x;
+      const screenY = hasHex ? baseY + particle.offsetY : particle.y;
+      const lifeAlpha = particle.life / particle.maxLife;
+      const sizeMult = particle.sizeMultiplier || 1;
+      const finalSize = particle.size * lifeAlpha * sizeMult * 1.2;
+      if (finalSize <= 0) continue;
+      const alpha = visScale * lifeAlpha * (particle.alphaScale ?? 1);
+      if (alpha <= 0.03) continue;
+
+      const tint = Math.max(0, Math.min(5, particle.geyserTint | 0));
+      const bodySprite = tintSprites[tint] || tintSprites[0];
+
+      const shadowScale = (finalSize * 1.55) / shadowSprite.refRadius;
+      const shadowDraw = shadowSprite.size * shadowScale;
+      ctx.globalAlpha = Math.min(1, alpha * 0.55);
+      ctx.drawImage(
+        shadowSprite.canvas,
+        screenX - shadowDraw * 0.5 + 1.6,
+        screenY - shadowDraw * 0.5 + 2.8,
+        shadowDraw,
+        shadowDraw
+      );
+
+      const bodyScale = finalSize / bodySprite.refRadius;
+      const bodyDraw = bodySprite.size * bodyScale;
+      ctx.globalAlpha = Math.min(1, alpha);
+      ctx.drawImage(
+        bodySprite.canvas,
+        screenX - bodyDraw * 0.5,
+        screenY - bodyDraw * 0.5,
+        bodyDraw,
+        bodyDraw
+      );
+
+      const coreScale = (finalSize * 0.48) / whiteSprite.refRadius;
+      const coreDraw = whiteSprite.size * coreScale;
+      ctx.globalAlpha = Math.min(1, alpha * 1.2);
+      ctx.drawImage(
+        whiteSprite.canvas,
+        screenX - coreDraw * 0.5,
+        screenY - coreDraw * 0.5,
+        coreDraw,
+        coreDraw
+      );
+    }
+    ctx.restore();
   }
 
   /**
@@ -6554,7 +7676,7 @@ export class Renderer {
    * @returns {number} Snapped zoom scale
    */
   setMapZoom(zoom) {
-    const levels = CONFIG.MAP_ZOOM_LEVELS || [0.75, 1, 1.25];
+    const levels = CONFIG.MAP_ZOOM_LEVELS || [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
     let bestIdx = 0;
     let bestDist = Infinity;
     for (let i = 0; i < levels.length; i++) {
@@ -6576,7 +7698,7 @@ export class Renderer {
    * @returns {number} New zoom scale
    */
   cycleMapZoom(direction) {
-    const levels = CONFIG.MAP_ZOOM_LEVELS || [0.75, 1, 1.25];
+    const levels = CONFIG.MAP_ZOOM_LEVELS || [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
     const idx = Math.max(0, Math.min(levels.length - 1, (this._mapZoomLevelIndex || 0) + Math.sign(direction || 0)));
     this._mapZoomLevelIndex = idx;
     this.scale = levels[idx];
@@ -6694,7 +7816,7 @@ export class Renderer {
       // Draw image with fixed width and auto height (preserves aspect ratio)
       this.ctx.drawImage(backgroundImage, imageX, imageY, imageWidth, imageHeight);
 
-      // Per-path hue shift (board tint colors) — only over the hex tile body
+      // Light per-path wash: identity comes from silhouette outlines, not a heavy tint.
       if (tintColor) {
         this.ctx.save();
         this.ctx.beginPath();
@@ -6704,9 +7826,8 @@ export class Renderer {
         }
         this.ctx.closePath();
         this.ctx.clip();
-        // Keep sprite luminance; pull hue/sat toward this path's board tint
-        this.ctx.globalCompositeOperation = 'color';
-        this.ctx.globalAlpha = 0.96;
+        this.ctx.globalCompositeOperation = 'soft-light';
+        this.ctx.globalAlpha = 0.28;
         this.ctx.fillStyle = tintColor;
         this.ctx.fill();
         this.ctx.restore();
@@ -6739,12 +7860,264 @@ export class Renderer {
   }
 
   /**
+   * Live path index lookup from pathSystem (not baked hex.pathColor).
+   * @returns {Map<string, number>}
+   */
+  _getPathIndexByHex() {
+    const pathIndexByHex = new Map();
+    const currentPaths = this.gameState?.pathSystem?.currentPaths;
+    if (currentPaths && this.gameState.pathSystem?.getPathColor) {
+      currentPaths.forEach((path, pathIndex) => {
+        path.forEach(({ q, r }) => {
+          pathIndexByHex.set(`${q},${r}`, pathIndex);
+        });
+      });
+    }
+    return pathIndexByHex;
+  }
+
+  /**
+   * Sequential neighbors along each path (previous/next hex only).
+   * Non-sequential same-path adjacency is a self-touch / loop and should keep a border.
+   * @returns {Map<string, Set<string>>}
+   */
+  _getPathSequentialNeighborKeys() {
+    const sequential = new Map();
+    const currentPaths = this.gameState?.pathSystem?.currentPaths;
+    if (!Array.isArray(currentPaths)) return sequential;
+    for (let p = 0; p < currentPaths.length; p++) {
+      const path = currentPaths[p];
+      if (!Array.isArray(path) || path.length === 0) continue;
+      for (let i = 0; i < path.length; i++) {
+        const key = `${path[i].q},${path[i].r}`;
+        let neighbors = sequential.get(key);
+        if (!neighbors) {
+          neighbors = new Set();
+          sequential.set(key, neighbors);
+        }
+        if (i > 0) neighbors.add(`${path[i - 1].q},${path[i - 1].r}`);
+        if (i < path.length - 1) neighbors.add(`${path[i + 1].q},${path[i + 1].r}`);
+      }
+    }
+    return sequential;
+  }
+
+  /**
+   * Stroke a cluster of hexes as one continuous outline. `skipNeighbor` returns
+   * true for edges that should stay open (sequential path steps, grove, map edge, etc.).
+   * Vertex 0 of getHexVertices faces east; neighbor order is E, NE, NW, W, SW, SE.
+   * @param {GridSystem} gridSystem
+   * @param {string[]} hexKeys
+   * @param {(nq: number, nr: number, q: number, r: number) => boolean} skipNeighbor
+   * @param {string} color
+   */
+  _strokeHexClusterOutline(gridSystem, hexKeys, skipNeighbor, color) {
+    if (!gridSystem || !hexKeys || hexKeys.length === 0 || !color) return;
+
+    const edgeToNeighbor = [0, 5, 4, 3, 2, 1];
+    const radius = CONFIG.HEX_RADIUS;
+    const vertexKey = (x, y) => `${Math.round(x * 20)},${Math.round(y * 20)}`;
+    const edgeId = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+
+    const adj = new Map();
+    const pos = new Map();
+    const seenEdges = new Set();
+
+    const addEdge = (x1, y1, x2, y2) => {
+      const k1 = vertexKey(x1, y1);
+      const k2 = vertexKey(x2, y2);
+      if (k1 === k2) return;
+      const id = edgeId(k1, k2);
+      if (seenEdges.has(id)) return;
+      seenEdges.add(id);
+      if (!pos.has(k1)) pos.set(k1, { x: x1, y: y1 });
+      if (!pos.has(k2)) pos.set(k2, { x: x2, y: y2 });
+      if (!adj.has(k1)) adj.set(k1, []);
+      if (!adj.has(k2)) adj.set(k2, []);
+      adj.get(k1).push(k2);
+      adj.get(k2).push(k1);
+    };
+
+    for (let h = 0; h < hexKeys.length; h++) {
+      const [q, r] = hexKeys[h].split(',').map(Number);
+      const hex = gridSystem.getHex(q, r);
+      if (!hex) continue;
+      const { x, y } = axialToPixel(q, r);
+      const cx = x + this.offsetX;
+      const cy = y + this.offsetY;
+      const verts = getHexVertices(cx, cy, radius);
+      const neighbors = getNeighbors(q, r);
+      for (let e = 0; e < 6; e++) {
+        const n = neighbors[edgeToNeighbor[e]];
+        if (skipNeighbor(n.q, n.r, q, r)) continue;
+        const a = verts[e];
+        const b = verts[(e + 1) % 6];
+        addEdge(a.x, a.y, b.x, b.y);
+      }
+    }
+
+    const used = new Set();
+    const pickUnused = (k, notK) => {
+      const list = adj.get(k);
+      if (!list) return null;
+      for (let i = 0; i < list.length; i++) {
+        const other = list[i];
+        if (other === notK) continue;
+        if (used.has(edgeId(k, other))) continue;
+        return other;
+      }
+      return null;
+    };
+
+    this.ctx.strokeStyle = color;
+    this.ctx.lineWidth = 2.5;
+
+    adj.forEach((list, startK) => {
+      for (let i = 0; i < list.length; i++) {
+        const first = list[i];
+        const firstId = edgeId(startK, first);
+        if (used.has(firstId)) continue;
+        used.add(firstId);
+
+        const start = pos.get(startK);
+        const pts = [start];
+        let prevK = startK;
+        let currK = first;
+        pts.push(pos.get(currK));
+
+        while (true) {
+          const nextK = pickUnused(currK, prevK);
+          if (!nextK) break;
+          used.add(edgeId(currK, nextK));
+          pts.push(pos.get(nextK));
+          prevK = currK;
+          currK = nextK;
+          if (currK === startK) break;
+        }
+
+        if (pts.length < 2) continue;
+        this.ctx.beginPath();
+        this.ctx.moveTo(pts[0].x, pts[0].y);
+        for (let p = 1; p < pts.length; p++) {
+          this.ctx.lineTo(pts[p].x, pts[p].y);
+        }
+        if (currK === startK) {
+          this.ctx.closePath();
+        }
+        this.ctx.stroke();
+      }
+    });
+  }
+
+  /**
+   * Stroke each path as one continuous outline in that path's minimap color,
+   * plus a matching outline around the grove. Sequential same-path edges, grove
+   * joins, and map-edge edges stay open so routes read as connected. When a path
+   * later touches itself (loop / terminus against an earlier hex), that shared
+   * edge is stroked so the true end of the path is visible.
+   * @param {GridSystem} gridSystem
+   * @param {Map<string, number>} pathIndexByHex
+   */
+  drawPathSilhouetteOutlines(gridSystem, pathIndexByHex) {
+    if (!gridSystem) return;
+
+    const hexesByPath = [];
+    if (pathIndexByHex) {
+      pathIndexByHex.forEach((pathIndex, hexKey) => {
+        if (!hexesByPath[pathIndex]) hexesByPath[pathIndex] = [];
+        hexesByPath[pathIndex].push(hexKey);
+      });
+    }
+
+    const sequentialNeighbors = this._getPathSequentialNeighborKeys();
+
+    this.ctx.save();
+    this.ctx.lineCap = 'round';
+    this.ctx.lineJoin = 'round';
+
+    for (let pathIndex = 0; pathIndex < hexesByPath.length; pathIndex++) {
+      const hexKeys = hexesByPath[pathIndex];
+      if (!hexKeys || hexKeys.length === 0) continue;
+      const color = this.gameState?.pathSystem?.getPathColor(pathIndex);
+      if (!color) continue;
+
+      this._strokeHexClusterOutline(
+        gridSystem,
+        hexKeys,
+        (nq, nr, q, r) => {
+          if (pathIndexByHex.get(`${nq},${nr}`) === pathIndex) {
+            return sequentialNeighbors.get(`${q},${r}`)?.has(`${nq},${nr}`) === true;
+          }
+          const nHex = gridSystem.getHex(nq, nr);
+          if (nHex?.isTown) return true;
+          if (!nHex || !isInBounds(nq, nr)) return true;
+          return false;
+        },
+        color
+      );
+    }
+
+    const townHexes = gridSystem.getAllTownHexes?.() || [];
+    if (townHexes.length > 0) {
+      const groveColor = this.gameState?.pathSystem?.getPathColor(0) || 'hsl(145, 100.00%, 50.00%)';
+      const groveKeys = townHexes.map((hex) => `${hex.q},${hex.r}`);
+      this._strokeHexClusterOutline(
+        gridSystem,
+        groveKeys,
+        (nq, nr) => {
+          const nHex = gridSystem.getHex(nq, nr);
+          if (nHex?.isTown) return true;
+          if (pathIndexByHex?.has(`${nq},${nr}`) || nHex?.isPath) return true;
+          return false;
+        },
+        groveColor
+      );
+    }
+
+    this.ctx.restore();
+  }
+
+  /**
+   * Idle faint-white restroke for non-path hexes, plus spray/burn flashes that
+   * must draw even on path tiles so they sit above the path silhouette.
+   * Occupied burning hexes use {@link drawBurningOccupiedHexBorders} instead.
+   */
+  _strokeMapHexBorder(screenX, screenY, hex, idleWidth = 1, options = {}) {
+    const isPath = !!(hex && hex.isPath);
+    const isSprayed = !!(hex && hex.isBeingSprayed && this.isWaveActiveForSprayHitVisuals());
+    const burnFlash = !!(hex && hex.isBurning && !hexQualifiesForDrainingFireBorder(hex) && !options.skipBurn);
+
+    if (burnFlash) {
+      this.drawHex(screenX, screenY, null, this.getFlashingColor('#FFFFFF', '#FF0000', 3.0), 5);
+      return;
+    }
+    if (isSprayed) {
+      this.drawHex(screenX, screenY, null, this.getFlashingColor('#FFFFFF', CONFIG.COLOR_TOWER, 3.0), 5);
+      return;
+    }
+    if (!isPath) {
+      this.drawHex(screenX, screenY, null, 'rgba(255, 255, 255, 0.125)', idleWidth);
+    }
+  }
+
+  /**
    * Draw the entire grid
    * @param {GridSystem} gridSystem - The grid system
    */
   drawGrid(gridSystem) {
     if (!this.isBuildingGridCache) {
-      // Failsafe: every 2s when town is not burning, invalidate cache if it still thinks town was burning
+      // Failsafe: if the static cache was built while the grove was burning, red fire
+      // borders can be baked into it. When burning ends, drop the cache so the next
+      // frame rebuilds a clean (non-red) backdrop. Tab-away often cleared this via
+      // context restore — this makes recovery immediate without that refresh.
+      const townBurningNow = !!(
+        gridSystem?.isAnyTownHexBurning?.(this.gameState?.vortexSystem)
+      );
+      if (this._staticCacheHadTownBurning && !townBurningNow) {
+        this.gridStaticCache = null;
+      }
+      this._staticCacheHadTownBurning = townBurningNow;
+
       const needsRenderCache =
         !this.gridRenderCache ||
         this.gridRenderCache.hexRadius !== CONFIG.HEX_RADIUS ||
@@ -6760,8 +8133,9 @@ export class Renderer {
       const mapZoom = this.getMapZoom();
       const canUseStaticCache = mapZoom === 1;
       // Town/grove burning is drawn dynamically (borders + center flash) after the blit —
-      // do NOT invalidate the full-map static cache when grove ignites/clears (provoked-burn
-      // used to force a complete rebuild every time the grove caught fire).
+      // do NOT invalidate the full-map static cache when grove ignites (provoked-burn
+      // used to force a complete rebuild every time the grove caught fire). Clearing
+      // fire still invalidates above so baked red borders cannot linger.
       const needsStaticCache =
         canUseStaticCache && (
         !cache ||
@@ -6801,6 +8175,8 @@ export class Renderer {
           }
         });
 
+        this.drawPathSilhouetteOutlines(gridSystem, this._getPathIndexByHex());
+
         // Dynamic town center overlay (sprite + draining hex; HP bar is drawn after particles)
         this.drawTownCenterHex(gridSystem);
         
@@ -6823,12 +8199,15 @@ export class Renderer {
     // Live path colors from pathSystem (not baked hex.pathColor) so palette tweaks apply
     // immediately on cache rebuild / reload, including saves with stale pathColor strings.
     const pathColorByHex = new Map();
+    const pathIndexByHex = new Map();
     const currentPaths = this.gameState?.pathSystem?.currentPaths;
     if (currentPaths && this.gameState.pathSystem?.getPathColor) {
       currentPaths.forEach((path, pathIndex) => {
         const color = this.gameState.pathSystem.getPathColor(pathIndex);
         path.forEach(({ q, r }) => {
-          pathColorByHex.set(`${q},${r}`, color);
+          const key = `${q},${r}`;
+          pathColorByHex.set(key, color);
+          pathIndexByHex.set(key, pathIndex);
         });
       });
     }
@@ -6839,11 +8218,6 @@ export class Renderer {
       const screenY = worldY + this.offsetY;
       // Skip hexes that are completely outside the viewport
       if (!this.isHexInViewport(screenX, screenY)) {
-        return;
-      }
-
-      // Skip town center during cache builds; it's drawn dynamically
-      if (this.isBuildingGridCache && q === 0 && r === 0) {
         return;
       }
 
@@ -6863,7 +8237,8 @@ export class Renderer {
       
       if (hex.isPath) {
         fillColor = livePathColor;
-        strokeColor = 'rgba(255, 255, 255, 0.125)'; // White with 50% opacity for path hexes
+        // Path identity is the silhouette outline drawn after all hex fills, not a full hex stroke.
+        strokeColor = null;
       }
       
       // Tower hexes drawn separately - draw background with appropriate color/image
@@ -6881,84 +8256,38 @@ export class Renderer {
         if (hex.isPath) {
           hexType = 'path';
           maxVariations = 10; // Path hexes have 10 variations
-        } else {
-          // Check if this hex is one of the 6 neighbors directly surrounding the center (0,0)
-          // These are the town ring hexes (the 6 town hexes that aren't the center)
-          const townCenterNeighbors = getNeighbors(0, 0);
-          const isTownRingHex = townCenterNeighbors.some(neighbor => neighbor.q === hex.q && neighbor.r === hex.r);
-          if (isTownRingHex) {
-            hexType = 'town_ring';
-            maxVariations = 5; // Town ring hexes have 5 variations
-          }
+        } else if (hex.isTown) {
+          // Center grove hex and the 6 ring hexes all use town_ring tiles
+          hexType = 'town_ring';
+          maxVariations = 5;
         }
         const variation = this.getHexVariation(hex.q, hex.r, maxVariations);
         const backgroundImage = this.getHexBackgroundSprite(hexType, variation);
         
         // Draw the hex background with the appropriate color/image (path, normal, or town_ring)
-        // Use the correct border color and width (path border if path or town, normal border otherwise)
-        const borderWidth = (hex.isPath || hex.isTown) ? 2 : 1; // Path and town hexes need thicker borders
+        // Same border treatment as unoccupied hexes (faint white; width 2)
+        const borderWidth = 2;
         const pathTint = livePathColor;
+        if (hex.isTown && hex.q === 0 && hex.r === 0) {
+          this.drawHex(screenX, screenY, fillColor, null, 0);
+        }
         this.drawHex(screenX, screenY, fillColor, strokeColor, borderWidth, backgroundImage, pathTint);
         // Tower icon will be drawn on top in drawTower()
         return;
       }
       
       if (hex.isTown) {
-        // Check if this is the center hex (0,0) or one of the 6 town ring hexes
-        const townCenterNeighbors = getNeighbors(0, 0);
-        const isTownRingHex = townCenterNeighbors.some(neighbor => neighbor.q === hex.q && neighbor.r === hex.r);
-        const isCenterHex = hex.q === 0 && hex.r === 0;
-        
-        // Town ring hexes (6 neighbors of center) use town_ring background graphics
-        if (isTownRingHex) {
-          // Get town_ring background graphic (5 variations)
-          const variation = this.getHexVariation(hex.q, hex.r, 5);
-          const backgroundImage = this.getHexBackgroundSprite('town_ring', variation);
-          
-          // Use town color as fallback, but background graphic will be drawn
-          const townColor = CONFIG.COLOR_TOWN;
-          const borderColor = 'rgba(255, 255, 255, 0.125)'; // White with 50% opacity for town ring hexes
-          
-          // Draw hex with town_ring background graphic
-          this.drawHex(screenX, screenY, townColor, borderColor, 2, backgroundImage);
-          
-          // Note: If this hex is burning, the fire will be drawn on top by drawFires()
-          return; // Skip drawing normal hex
+        // Grove hexes (center + 6 ring) use town_ring tiles so map rocks never show
+        // through the transparent town.png sprite on the center hex.
+        const variation = this.getHexVariation(hex.q, hex.r, 5);
+        const backgroundImage = this.getHexBackgroundSprite('town_ring', variation);
+        const townColor = CONFIG.COLOR_TOWN;
+        const borderColor = 'rgba(255, 255, 255, 0.125)';
+        if (hex.q === 0 && hex.r === 0) {
+          this.drawHex(screenX, screenY, townColor, null, 0);
         }
-        
-        // Center hex (0,0) uses the draining fire effect to show health
-        if (isCenterHex) {
-        // Check if any town hexes are actually burning. Use the 7-hex town cluster cache
-        // (gridSystem.isAnyTownHexBurning) instead of scanning the (potentially huge) burning hex list.
-        let isAnyTownHexBurning = false;
-        if (this.gameState?.gridSystem) {
-          isAnyTownHexBurning = this.gameState.gridSystem.isAnyTownHexBurning(
-            this.gameState.vortexSystem
-          );
-        }
-        
-        // Always draw the green town background (fire will be drawn on top by drawFires)
-        // If town is taking damage (any town hex burning), flash between green and red
-          let townColor = CONFIG.COLOR_TOWN;
-        if (isAnyTownHexBurning) {
-          // Flash entire town between green and red whenever any town hex is burning
-            const baseColor = CONFIG.COLOR_TOWN;
-          townColor = this.getFlashingColor(baseColor, '#FF0000', 3.0);
-        }
-        
-          // Center hex shows health draining to represent overall town health
-          const fillLevel = Math.max(0, Math.min(1, (hex.townHealth || 0) / (hex.maxTownHealth || 1)));
-        
-        const townAnimationKey = `town-bg-${hex.q},${hex.r}`;
-          this.drawDrainingFireHexWithKey(screenX, screenY, townColor, fillLevel, townAnimationKey, 0, 1.0);
-        
-        // Note: If this hex is burning, the fire will be drawn on top by drawFires() which is called after drawGrid()
-        // The fire color will tick down as it's extinguished, but the green background stays full
-
-        // Town border and graphic will be drawn after all borders are redrawn
-        // to ensure the graphic is always on top of borders
-        return; // Skip drawing normal hex
-        }
+        this.drawHex(screenX, screenY, townColor, borderColor, 2, backgroundImage);
+        return;
       }
       
       // Ring visualization removed for better path visibility
@@ -6970,9 +8299,9 @@ export class Renderer {
         lineWidth = 3;
       }
       
-      // Ensure path hexes always use white with 50% opacity
+      // Path hexes skip the faint white grid stroke; silhouette outlines are drawn after fills.
       if (hex.isPath) {
-        strokeColor = 'rgba(255, 255, 255, 0.125)'; // White with 50% opacity for path hexes
+        strokeColor = null;
       }
       
       // Determine hex type and get background image
@@ -7002,63 +8331,13 @@ export class Renderer {
       // to ensure they're not covered by borders or other elements
     });
     
-    // Redraw path and town hex borders after all hexes to ensure they're always visible
+    // Redraw town hex borders after all hexes to ensure they're always visible
     // This prevents adjacent non-path/non-town hexes from overwriting borders on shared edges
-    // Also redraw path hexes adjacent to towers/water tanks
-    const pathHexesToRedraw = new Set();
     const townHexesToRedraw = new Set();
-    
-    const pathHexes = gridSystem.getPathHexes();
-    pathHexes.forEach(hex => {
-      if (!hex.isTown) {
-        pathHexesToRedraw.add(`${hex.q},${hex.r}`);
-      }
-    });
       
     const townHexes = gridSystem.getAllTownHexes();
     townHexes.forEach(hex => {
         townHexesToRedraw.add(`${hex.q},${hex.r}`);
-    });
-
-    // Redraw path hexes adjacent to towers
-    if (this.gameState?.towerSystem) {
-      const towers = this.gameState.towerSystem.getAllTowers();
-      towers.forEach(tower => {
-        const neighbors = getNeighbors(tower.q, tower.r);
-        neighbors.forEach(neighbor => {
-          const neighborHex = gridSystem.getHex(neighbor.q, neighbor.r);
-          if (neighborHex && neighborHex.isPath && !neighborHex.isTown) {
-            pathHexesToRedraw.add(`${neighbor.q},${neighbor.r}`);
-          }
-        });
-      });
-    }
-
-    // Redraw path hexes adjacent to water tanks
-    if (this.gameState?.waterTankSystem) {
-      const tanks = this.gameState.waterTankSystem.getAllWaterTanks();
-      tanks.forEach(tank => {
-        const neighbors = getNeighbors(tank.q, tank.r);
-        neighbors.forEach(neighbor => {
-          const neighborHex = gridSystem.getHex(neighbor.q, neighbor.r);
-          if (neighborHex && neighborHex.isPath && !neighborHex.isTown) {
-            pathHexesToRedraw.add(`${neighbor.q},${neighbor.r}`);
-          }
-        });
-    });
-    }
-    
-    // Redraw all collected path hex borders
-    pathHexesToRedraw.forEach(hexKey => {
-      const [q, r] = hexKey.split(',').map(Number);
-      const hex = gridSystem.getHex(q, r);
-      if (hex && hex.isPath) {
-        const { x, y } = axialToPixel(q, r);
-        const screenX = x + this.offsetX;
-        const screenY = y + this.offsetY;
-        // Redraw border with white 50% opacity and proper width to ensure it's on top
-        this.drawHex(screenX, screenY, null, 'rgba(255, 255, 255, 0.125)', 2);
-      }
     });
     
     // Redraw all collected town hex borders (except center hex which has its own animated border)
@@ -7066,7 +8345,7 @@ export class Renderer {
       const [q, r] = hexKey.split(',').map(Number);
       const hex = gridSystem.getHex(q, r);
       if (hex && hex.isTown) {
-        // Skip center hex (0,0) - it uses drawDrainingFireHexWithKey which has its own animated border
+        // Skip center hex (0,0) — drawTownCenterHex redraws its tile + graphic on top
         if (q === 0 && r === 0) {
           return;
         }
@@ -7077,9 +8356,15 @@ export class Renderer {
         this.drawHex(screenX, screenY, null, 'rgba(255, 255, 255, 0.125)', 2);
       }
     });
+
+    // Path + grove silhouettes after town whites so the green outline is the outer edge.
+    this.drawPathSilhouetteOutlines(gridSystem, pathIndexByHex);
     
-    // Draw thick red flashing borders on all edges of all town hexes when on fire
-    this.drawTownHexFireBorders(gridSystem);
+    // Dynamic only — never bake red fire borders into the static grid cache (they linger
+    // as faint "half red" outlines after the grove stops taking damage).
+    if (!this.isBuildingGridCache) {
+      this.drawTownHexFireBorders(gridSystem);
+    }
     
     // Draw town graphic on center hex AFTER all borders are redrawn (HP bar after particles)
     // This ensures the graphic is always above hex borders
@@ -7145,9 +8430,9 @@ export class Renderer {
         const pulseSpeed = 10.125; // Increased by 50% from 6.75 (6.75 * 1.5 = 10.125)
         const pulseOffset = (hex.q * 0.3 + hex.r * 0.5) * 100;
         const pulsePhase = (this.flashAnimationTime * pulseSpeed + pulseOffset) % (Math.PI * 2);
-        // Pulse from 1.1 to 1.15
-        const minSize = 1.1; // Minimum size 110%
-        const maxSize = 1.15; // Maximum size 115%
+        // Tiny breathe so the hex barely changes size
+        const minSize = 1.015;
+        const maxSize = 1.03;
         const normalizedPulse = Math.sin(pulsePhase) * 0.5 + 0.5; // Maps sin from -1..1 to 0..1
         const pulseFactor = minSize + (maxSize - minSize) * normalizedPulse;
         
@@ -7542,7 +8827,16 @@ export class Renderer {
         animatedValues.set(fireAnimationKey, 0);
       }
 
-      this.drawDrainingFireHexWithKey(screenX, screenY, fireColor, fillLevel, fireAnimationKey, fireInset);
+      this.drawDrainingFireHexWithKey(
+        screenX,
+        screenY,
+        fireColor,
+        fillLevel,
+        fireAnimationKey,
+        fireInset,
+        0.75,
+        hex.fireType === CONFIG.FIRE_TYPE_BLACKFYRE ? 0.5 : 1
+      );
 
       // Subtle outline on open ground fires; occupied hexes use the late-pass draining red border.
       if (!hexQualifiesForDrainingFireBorder(hex)) {
@@ -7638,8 +8932,9 @@ export class Renderer {
    * @param {string} animationKey - Unique animation key to prevent interference
    * @param {number} inset - Optional inset in pixels to show underlying hex border (default: 0)
    * @param {number} [opacity=0.75]
+   * @param {number} [hotCoreAlphaMult=1] — scales white-hot core opacity (blackfyre uses 0.5)
    */
-  drawDrainingFireHexWithKey(x, y, color, fillLevel, animationKey, inset = 0, opacity = 0.75) {
+  drawDrainingFireHexWithKey(x, y, color, fillLevel, animationKey, inset = 0, opacity = 0.75, hotCoreAlphaMult = 1) {
     // Use inset to show underlying hex border and color
     const fireRadius = CONFIG.HEX_RADIUS - inset;
 
@@ -7695,7 +8990,7 @@ export class Renderer {
 
     // Soft hot core on top of the fill (full organic visuals only)
     if (useOrganic) {
-      this._drawFireHotCore(x, y, fireRadius, animationKey, color, opacity);
+      this._drawFireHotCore(x, y, fireRadius, animationKey, color, opacity, hotCoreAlphaMult);
     }
 
     if (!isFull) {
@@ -7779,7 +9074,17 @@ export class Renderer {
    * @param {string} color
    * @param {number} opacity
    */
-  _drawFireHotCore(x, y, radius, animationKey, color, opacity) {
+  /**
+   * Soft radial hot-core glow — white-hot center fading into the fire color (no hard circles).
+   * @param {number} x
+   * @param {number} y
+   * @param {number} radius
+   * @param {string} animationKey
+   * @param {string} color
+   * @param {number} opacity
+   * @param {number} [hotCoreAlphaMult=1] — scales hot-core draw opacity (e.g. 0.5 for blackfyre)
+   */
+  _drawFireHotCore(x, y, radius, animationKey, color, opacity, hotCoreAlphaMult = 1) {
     const phase = this._firePhaseFromKey(animationKey);
     const time = this.flashAnimationTime || 0;
     const bob = Math.sin(time * 7.5 + phase) * radius * 0.04;
@@ -7787,15 +9092,16 @@ export class Renderer {
     const cx = x;
     const cy = y + bob * 0.55 - radius * 0.04;
     const op = Math.max(0.35, Math.min(1, opacity));
-    // Prior 0.55 → +50% to 0.825 → +25% again to ~1.031
-    const glowR = radius * 1.03125 * pulse;
+    // Prior 0.55 → +50% to 0.825 → +25% to ~1.031 → +25% to ~1.289 → +50% to ~1.934
+    const glowR = radius * 1.93359375 * pulse;
 
     const sprite = this._getFireHotCoreSprite(color);
     const ctx = this.ctx;
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     // Sprite is baked at peak stop alphas (~1.0 / 0.67 / …); modulate to match prior 0.72*op*pulse peak.
-    ctx.globalAlpha = Math.min(1, 0.72 * op * pulse);
+    const mult = Number.isFinite(hotCoreAlphaMult) ? Math.max(0, hotCoreAlphaMult) : 1;
+    ctx.globalAlpha = Math.min(1, 0.72 * op * pulse * mult);
     const drawW = glowR * 0.92 * 2;
     const drawH = glowR * 2;
     ctx.drawImage(sprite.canvas, cx - drawW * 0.5, cy - drawH * 0.5, drawW, drawH);
@@ -7906,7 +9212,7 @@ export class Renderer {
 
     for (let i = 0; i < burning.length; i++) {
       const hex = burning[i];
-      if (!hex || hex.hasVortex) continue; // vortexes have their own ember system
+      if (!hex || hex.hasVortex || hex.hasFireSpawner) continue; // vortexes / spawners have their own FX
 
       const { x, y } = axialToPixel(hex.q, hex.r);
       const screenX = x + this.offsetX;
@@ -8277,17 +9583,18 @@ export class Renderer {
       );
     }
 
-    let townColor = CONFIG.COLOR_TOWN;
+    // Solid fill first so transparent pixels in the grove tile don't show map rocks.
+    this.drawHex(screenX, screenY, CONFIG.COLOR_TOWN, null, 0);
+    const variation = this.getHexVariation(0, 0, 5);
+    const backgroundImage = this.getHexBackgroundSprite('town_ring', variation);
+    this.drawHex(screenX, screenY, CONFIG.COLOR_TOWN, 'rgba(255, 255, 255, 0.125)', 2, backgroundImage);
+
     if (isAnyTownHexBurning) {
-      townColor = this.getFlashingColor(CONFIG.COLOR_TOWN, '#FF0000', 3.0);
+      this.ctx.save();
+      this.ctx.globalAlpha = 0.35;
+      this.drawHex(screenX, screenY, this.getFlashingColor(CONFIG.COLOR_TOWN, '#FF0000', 3.0), null, 0);
+      this.ctx.restore();
     }
-
-    const fillLevel = Math.max(0, Math.min(1, (townCenter.townHealth || 0) / (townCenter.maxTownHealth || 1)));
-    const townAnimationKey = `town-bg-${townCenter.q},${townCenter.r}`;
-    this.drawDrainingFireHexWithKey(screenX, screenY, townColor, fillLevel, townAnimationKey, 0, 1.0);
-
-    // Restore the crisp town border so the center hex doesn't look dimmed
-    this.drawHex(screenX, screenY, null, 'rgba(255, 255, 255, 0.125)', 2);
 
     this.drawTownCenterGraphic(townCenter, screenX, screenY);
   }
@@ -8390,93 +9697,75 @@ export class Renderer {
     };
   }
 
-  getDarkenedTowerSprite(baseSprite, size, brightnessMultiplier) {
-    const roundedSize = Math.max(1, Math.round(size));
-    const brightnessKey = brightnessMultiplier.toFixed(2);
-    const cacheKey = `${baseSprite.src}|${roundedSize}|${brightnessKey}`;
-    const cached = this.darkenedTowerSpriteCache.get(cacheKey);
-    if (cached) {
-      return cached;
-    }
-
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = roundedSize;
-    tempCanvas.height = roundedSize;
-    const tempCtx = tempCanvas.getContext('2d');
-    if (!tempCtx) {
-      return null;
-    }
-
-    tempCtx.drawImage(baseSprite, 0, 0, roundedSize, roundedSize);
-    const imageData = tempCtx.getImageData(0, 0, roundedSize, roundedSize);
-    const data = imageData.data;
-    for (let i = 0; i < data.length; i += 4) {
-      if (data[i + 3] > 0) {
-        data[i] = data[i] * brightnessMultiplier;
-        data[i + 1] = data[i + 1] * brightnessMultiplier;
-        data[i + 2] = data[i + 2] * brightnessMultiplier;
-      }
-    }
-    tempCtx.putImageData(imageData, 0, 0);
-    this.darkenedTowerSpriteCache.set(cacheKey, tempCanvas);
-    return tempCanvas;
-  }
-
   /**
-   * Cached brightened turret sprite — same constant-brightness transform as the old
-   * inline code in drawAllTowerTurrets, but executed once per sprite/size/brightness.
-   * Returns an offscreen <canvas> the caller draws via ctx.drawImage(... -w/2, -h/2 ...).
-   *
-   * Without this, late-game runs with 30+ towers spent ~all of their frame budget in
-   * getImageData/putImageData per turret per frame, dropping FPS into single digits.
-   * @param {HTMLImageElement} baseSprite
-   * @param {number} width
-   * @param {number} height
-   * @param {number} brightnessMultiplier
-   * @returns {HTMLCanvasElement|null}
+   * Opaque-pixel bounding-box center relative to the PNG's geometric center (source pixels).
+   * Auto-rotating turrets pivot around this so art that isn't padded evenly doesn't wobble.
+   * @returns {{ dx: number, dy: number }}
    */
-  getBrightenedTurretSprite(baseSprite, width, height, brightnessMultiplier) {
-    const w = Math.max(1, Math.round(width));
-    const h = Math.max(1, Math.round(height));
-    const brightnessKey = brightnessMultiplier.toFixed(2);
-    const src = baseSprite?.src || '';
-    const cacheKey = `${src}|${w}x${h}|${brightnessKey}`;
-    const cached = this.brightenedTurretSpriteCache.get(cacheKey);
+  getSpriteOpaqueCenterOffset(sprite) {
+    const src = sprite?.src || '';
+    const cached = this._spriteOpaqueCenterCache.get(src);
     if (cached) return cached;
-
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = w;
-    tempCanvas.height = h;
-    const tempCtx = tempCanvas.getContext('2d');
-    if (!tempCtx) return null;
-
-    tempCtx.drawImage(baseSprite, 0, 0, w, h);
-    const imageData = tempCtx.getImageData(0, 0, w, h);
-    const data = imageData.data;
-    for (let i = 0; i < data.length; i += 4) {
-      if (data[i + 3] > 0) {
-        const r = data[i] * brightnessMultiplier;
-        const g = data[i + 1] * brightnessMultiplier;
-        const b = data[i + 2] * brightnessMultiplier;
-        data[i] = r < 255 ? r : 255;
-        data[i + 1] = g < 255 ? g : 255;
-        data[i + 2] = b < 255 ? b : 255;
+    const w = sprite?.naturalWidth || 0;
+    const h = sprite?.naturalHeight || 0;
+    const zero = { dx: 0, dy: 0 };
+    if (!w || !h) return zero;
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) {
+        this._spriteOpaqueCenterCache.set(src, zero);
+        return zero;
       }
+      ctx.drawImage(sprite, 0, 0);
+      const data = ctx.getImageData(0, 0, w, h).data;
+      let minX = w;
+      let minY = h;
+      let maxX = 0;
+      let maxY = 0;
+      for (let y = 0; y < h; y++) {
+        const row = y * w;
+        for (let x = 0; x < w; x++) {
+          if (data[(row + x) * 4 + 3] > 8) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+      const offset =
+        maxX < minX
+          ? zero
+          : {
+              dx: (minX + maxX) / 2 - (w - 1) / 2,
+              dy: (minY + maxY) / 2 - (h - 1) / 2,
+            };
+      this._spriteOpaqueCenterCache.set(src, offset);
+      return offset;
+    } catch {
+      this._spriteOpaqueCenterCache.set(src, zero);
+      return zero;
     }
-    tempCtx.putImageData(imageData, 0, 0);
-    this.brightenedTurretSpriteCache.set(cacheKey, tempCanvas);
-    return tempCanvas;
   }
 
   /**
    * Pre-render a tower sprite downscaled with high-quality bilinear filtering (and optional
-   * brightness) into a cached offscreen canvas sized exactly to the draw target. The expensive
-   * smoothing pass runs once per (sprite, size, brightness) instead of every frame per tower.
+   * brightness) into a cached offscreen canvas. Sized in *device* pixels (DPR × map zoom) so
+   * the blit onto the Retina-backed game canvas is 1:1 instead of upscaling a CSS-sized bitmap
+   * (that upsample is what made map towers look soft next to dungeon/item art).
    * @returns {HTMLCanvasElement|null}
    */
   getSmoothScaledTowerSprite(sprite, width, height, brightness = 1) {
-    const w = Math.max(1, Math.round(width));
-    const h = Math.max(1, Math.round(height));
+    const cssW = Math.max(1, Math.round(width));
+    const cssH = Math.max(1, Math.round(height));
+    const dpr = this.dpr || window.devicePixelRatio || 1;
+    const zoom = this.getMapZoom?.() || 1;
+    const pixelScale = Math.max(1, dpr * (Number.isFinite(zoom) && zoom > 0 ? zoom : 1));
+    const w = Math.max(1, Math.round(cssW * pixelScale));
+    const h = Math.max(1, Math.round(cssH * pixelScale));
     const brightnessKey = brightness.toFixed(2);
     const src = sprite?.src || '';
     const cacheKey = `${src}|${w}x${h}|${brightnessKey}`;
@@ -8500,8 +9789,9 @@ export class Renderer {
 
   /**
    * Draw tower sprite with bilinear scaling (main canvas keeps smoothing off for pixel-art items).
-   * Used for high-detail sentinel art, especially while the turret rotates. The smooth downscale
-   * is cached (see getSmoothScaledTowerSprite) so the per-frame cost is just a 1:1 blit.
+   * Used for high-detail tower art, especially while turrets rotate. The smooth downscale
+   * is cached at device resolution (see getSmoothScaledTowerSprite) so the per-frame blit
+   * matches the backing-store pixel grid.
    */
   _drawSmoothTowerSprite(sprite, dx, dy, w, h, brightness = 1) {
     if (!sprite) return;
@@ -8510,8 +9800,7 @@ export class Renderer {
     this.ctx.imageSmoothingEnabled = true;
     this.ctx.imageSmoothingQuality = 'high';
     if (cached) {
-      // Cached canvas is already sized to (w, h); blit 1:1 (cheap even under rotation).
-      this.ctx.drawImage(cached, dx, dy, Math.round(w), Math.round(h));
+      this.ctx.drawImage(cached, dx, dy, w, h);
     } else {
       if (brightness !== 1) {
         this.ctx.filter = `brightness(${brightness})`;
@@ -8522,17 +9811,48 @@ export class Renderer {
   }
 
   /**
+   * True when this tower's sprites are following the cursor (or hidden for a DOM ghost).
+   * @param {Object} tower
+   * @returns {boolean}
+   */
+  _isTowerSpritePickedUp(tower) {
+    const ih = this.gameState?.inputHandler;
+    return !!(ih?.isDragging && ih.dragType === 'tower-existing' && ih.dragData?.towerId === tower?.id);
+  }
+
+  /**
+   * World-transform draw origin for a tower's base/turret sprites.
+   * Returns null when the tower is picked up and a DOM ghost is showing instead.
+   * @param {Object} tower
+   * @returns {{x: number, y: number, pickedUp: boolean}|null}
+   */
+  _resolveTowerSpriteOrigin(tower) {
+    if (!tower) return null;
+    if (this._isTowerSpritePickedUp(tower)) {
+      const ih = this.gameState.inputHandler;
+      if (ih.isTowerDragUsingDomGhost()) return null;
+      const vis = ih.getTowerDragVisualCanvasPos();
+      if (!vis) return null;
+      const world = this.screenToWorld(vis.x, vis.y);
+      return { x: world.x + this.offsetX, y: world.y + this.offsetY, pickedUp: true };
+    }
+    const { x, y } = axialToPixel(tower.q, tower.r);
+    return { x: x + this.offsetX, y: y + this.offsetY, pickedUp: false };
+  }
+
+  /**
    * Draw a tower's power-level base sprite (no turret).
    * @param {Object} tower
    * @param {boolean} [isSelected=false]
    */
   drawTowerBase(tower, isSelected = false) {
     if (!tower) return;
-    const { x, y } = axialToPixel(tower.q, tower.r);
-    const screenX = x + this.offsetX;
-    const screenY = y + this.offsetY;
+    const origin = this._resolveTowerSpriteOrigin(tower);
+    if (!origin) return;
+    const screenX = origin.x;
+    const screenY = origin.y;
 
-    if (!isSelected && !this.isHexInViewport(screenX, screenY)) {
+    if (!isSelected && !origin.pickedUp && !this.isHexInViewport(screenX, screenY)) {
       return;
     }
 
@@ -8576,77 +9896,19 @@ export class Renderer {
         tower.type === CONFIG.TOWER_TYPE_PERIMETER) &&
       powerLevel === 1
         ? -3
-        : 0;
+        : (tower.type === CONFIG.TOWER_TYPE_CHARGE ||
+            tower.type === CONFIG.TOWER_TYPE_PERIMETER) &&
+          powerLevel === 4
+          ? 1
+          : 0;
 
-    const isRainOrPulsing =
-      tower.type === CONFIG.TOWER_TYPE_RAIN ||
-      tower.type === CONFIG.TOWER_TYPE_PULSING ||
-      tower.type === CONFIG.TOWER_TYPE_SENTINEL ||
-      tower.type === CONFIG.TOWER_TYPE_PERIMETER;
-    const shouldDarkenBase =
-      tower.type === CONFIG.TOWER_TYPE_JET ||
-      tower.type === CONFIG.TOWER_TYPE_SPREAD ||
-      tower.type === CONFIG.TOWER_TYPE_BOMBER ||
-      tower.type === CONFIG.TOWER_TYPE_CHARGE ||
-      isRainOrPulsing;
-
-    if (shouldDarkenBase) {
-      let brightnessMultiplier = 0.6;
-      if (tower.type === CONFIG.TOWER_TYPE_RAIN) {
-        brightnessMultiplier = 0.8;
-      } else if (tower.type === CONFIG.TOWER_TYPE_PULSING) {
-        brightnessMultiplier = 0.9;
-      } else if (tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER) {
-        brightnessMultiplier = 0.8;
-      }
-
-      if (tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER) {
-        this._drawSmoothTowerSprite(
-          baseSprite,
-          -baseDrawSize / 2,
-          -baseDrawSize / 2 + baseOffsetY,
-          baseDrawSize,
-          baseDrawSize,
-          brightnessMultiplier
-        );
-      } else {
-        const darkenedSprite = this.getDarkenedTowerSprite(baseSprite, baseDrawSize, brightnessMultiplier);
-        if (darkenedSprite) {
-          this.ctx.drawImage(
-            darkenedSprite,
-            -baseDrawSize / 2,
-            -baseDrawSize / 2 + baseOffsetY,
-            baseDrawSize,
-            baseDrawSize
-          );
-        } else {
-          this.ctx.drawImage(
-            baseSprite,
-            -baseDrawSize / 2,
-            -baseDrawSize / 2 + baseOffsetY,
-            baseDrawSize,
-            baseDrawSize
-          );
-        }
-      }
-    } else if (tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER) {
-      this._drawSmoothTowerSprite(
-        baseSprite,
-        -baseDrawSize / 2,
-        -baseDrawSize / 2 + baseOffsetY,
-        baseDrawSize,
-        baseDrawSize,
-        0.8
-      );
-    } else {
-      this.ctx.drawImage(
-        baseSprite,
-        -baseDrawSize / 2,
-        -baseDrawSize / 2 + baseOffsetY,
-        baseDrawSize,
-        baseDrawSize
-      );
-    }
+    this._drawSmoothTowerSprite(
+      baseSprite,
+      -baseDrawSize / 2,
+      -baseDrawSize / 2 + baseOffsetY,
+      baseDrawSize,
+      baseDrawSize
+    );
 
     this.ctx.restore();
   }
@@ -8658,10 +9920,19 @@ export class Renderer {
   drawAllTowerBases(towerSystem) {
     if (!towerSystem?.getAllTowers) return;
     const towers = towerSystem.getAllTowers();
-    for (let i = 0; i < towers.length; i++) {
-      const tower = towers[i];
-      const isSelected = tower.id === this.gameState?.selectedTowerId;
-      this.drawTowerBase(tower, isSelected);
+    const dragId = this.gameState?.inputHandler?.isDragging &&
+      this.gameState.inputHandler.dragType === 'tower-existing'
+      ? this.gameState.inputHandler.dragData?.towerId
+      : null;
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < towers.length; i++) {
+        const tower = towers[i];
+        const isDragged = dragId && tower.id === dragId;
+        if (pass === 0 && isDragged) continue;
+        if (pass === 1 && !isDragged) continue;
+        const isSelected = tower.id === this.gameState?.selectedTowerId;
+        this.drawTowerBase(tower, isSelected);
+      }
     }
   }
 
@@ -8681,8 +9952,10 @@ export class Renderer {
     }
     
     // Viewport culling: skip towers that are completely outside the viewport
-    // (but always draw selected towers so they're visible when selected)
-    if (!isSelected && !this.isHexInViewport(screenX, screenY)) {
+    // (but always draw selected towers so they're visible when selected).
+    // Picked-up (dragged) towers still need their base pass even if the home hex is offscreen.
+    const pickedUp = this._isTowerSpritePickedUp(tower);
+    if (!isSelected && !pickedUp && !this.isHexInViewport(screenX, screenY)) {
       return;
     }
     
@@ -8690,19 +9963,12 @@ export class Renderer {
     const towerHex = this.gameState?.gridSystem?.getHex(tower.q, tower.r);
     const isOnFire = towerHex && towerHex.isBurning;
     
-    // Draw hex background with appropriate color based on hex type
-    // The background was already drawn in drawGrid(), but we need to ensure the border is correct
-    let baseBorderColor = CONFIG.COLOR_HEX_NORMAL_BORDER;
-    let borderWidth = 1;
-    if (towerHex) {
-      if (towerHex.isPath) {
-        baseBorderColor = CONFIG.COLOR_PATH_BORDER;
-        borderWidth = 2; // Path hexes need thicker borders
-      } else if (towerHex.isTown) {
-        baseBorderColor = CONFIG.COLOR_HEX_NORMAL_BORDER; // Town uses normal border
-      }
-    }
-    
+    // Background already drawn in drawGrid(). Re-stroke with the same faint white used
+    // on every other hex — COLOR_HEX_NORMAL_BORDER is a dark fill leftover that made
+    // occupied tiles look inset.
+    const baseBorderColor = 'rgba(255, 255, 255, 0.125)';
+    const borderWidth = 2;
+
     // Flash border color if tower is on fire
     // For path hexes, don't draw border here - let redrawPathHexBorders() handle it to ensure all 6 edges flash
     // For town hexes, don't draw border here - let redrawTownHexBorders() handle it to keep town border style
@@ -8711,7 +9977,7 @@ export class Renderer {
       let borderColor = baseBorderColor;
       let finalBorderWidth = borderWidth;
       if (isOnFire && (!towerHex || !hexQualifiesForDrainingFireBorder(towerHex))) {
-        borderColor = this.getFlashingColor(baseBorderColor, '#FF0000', 3.0);
+        borderColor = this.getFlashingColor('#FFFFFF', '#FF0000', 3.0);
         finalBorderWidth = 5; // Use same thickness as path hex flashing borders
       }
       // Draw border to ensure it's visible (background already drawn in drawGrid)
@@ -8739,8 +10005,7 @@ export class Renderer {
     if (this.gameState?.isTowerSellbackMode) {
       this.updateUpgradeRings(tower.id, screenX, screenY);
     } else if (this.gameState?.isUpgradeSelectionMode) {
-      const canBeUpgraded = tower.rangeLevel < 4 || tower.powerLevel < 4;
-      if (canBeUpgraded) {
+      if (this._isTowerUpgradeableCached(tower)) {
         this.updateUpgradeRings(tower.id, screenX, screenY);
       } else {
         // Clean up rings if tower is fully upgraded
@@ -8748,7 +10013,7 @@ export class Renderer {
       }
     } else if (
       this.gameState?.isMovementTokenMode &&
-      this.gameState?.movementTokenTargetTowerId === tower.id
+      this.gameState?.isMovementTokenTowerDisplaced?.(tower.id)
     ) {
       this.updateUpgradeRings(tower.id, screenX, screenY);
     } else {
@@ -8758,11 +10023,60 @@ export class Renderer {
   }
 
   /**
-   * Draw expanding rings for upgradeable towers
-   * @param {string} towerId - Tower ID
-   * @param {number} screenX - Screen X coordinate
-   * @param {number} screenY - Screen Y coordinate
+   * Per-frame cache of upgradeable tower IDs (avoids N× canTowerBeUpgraded in drawTower).
+   * @param {object} tower
+   * @returns {boolean}
    */
+  _isTowerUpgradeableCached(tower) {
+    if (!tower) return false;
+    if (this._upgradeableCacheFrame !== this._fxFrameId) {
+      this._upgradeableCacheFrame = this._fxFrameId;
+      const ids = this._upgradeableTowerIds || (this._upgradeableTowerIds = new Set());
+      ids.clear();
+      const towers = this.gameState?.towerSystem?.getAllTowers?.() || [];
+      const gs = this.gameState;
+      for (let i = 0; i < towers.length; i++) {
+        const t = towers[i];
+        if (canTowerBeUpgraded(gs, t)) ids.add(t.id);
+      }
+    }
+    return this._upgradeableTowerIds.has(tower.id);
+  }
+
+  /**
+   * Stroke a hex ring without canvas shadowBlur (very expensive when N towers × M rings).
+   * Uses a wide translucent outer stroke + thinner core for a cheap glow look.
+   * @param {number} screenX
+   * @param {number} screenY
+   * @param {number} hexRadius
+   * @param {string} ringColor
+   * @param {number} alpha
+   */
+  _strokeUpgradeHexRing(screenX, screenY, hexRadius, ringColor, alpha) {
+    const vertices = getHexVertices(screenX, screenY, hexRadius);
+    const ctx = this.ctx;
+    ctx.beginPath();
+    ctx.moveTo(vertices[0].x, vertices[0].y);
+    for (let i = 1; i < vertices.length; i++) {
+      ctx.lineTo(vertices[i].x, vertices[i].y);
+    }
+    ctx.closePath();
+
+    ctx.strokeStyle = ringColor;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    // Soft outer halo
+    ctx.globalAlpha = alpha * 0.32;
+    ctx.lineWidth = 10;
+    ctx.stroke();
+
+    // Bright core
+    ctx.globalAlpha = alpha;
+    ctx.lineWidth = 4;
+    ctx.stroke();
+  }
+
   /**
    * Update upgrade rings (spawn and update, but don't draw)
    * Called from drawTower to ensure rings are updated every frame
@@ -8776,6 +10090,9 @@ export class Renderer {
     const RING_SPAWN_INTERVAL = 1171.875; // Spawn new ring every ~1.172 seconds (reduced speed by 25%: 937.5 * 1.25 = 1171.875)
     const FADE_IN_DURATION = 350; // 350ms fade-in duration
     const MAX_SCALE = 1.75; // Rings expand to 1.75x the hex size
+    // Dense boards: cap overlapping rings so 40 towers don't mean ~80 blurred strokes/frame.
+    const manyTowers = this.upgradeRings.size >= 12;
+    const maxConcurrentRings = manyTowers ? 1 : 2;
     
     // Initialize rings array if it doesn't exist
     if (!this.upgradeRings.has(towerId)) {
@@ -8793,7 +10110,10 @@ export class Renderer {
     const rings = ringData.rings;
     
     // Spawn new ring if enough time has passed
-    if ((now - ringData.lastSpawnTime) >= RING_SPAWN_INTERVAL) {
+    if (
+      rings.length < maxConcurrentRings &&
+      (now - ringData.lastSpawnTime) >= RING_SPAWN_INTERVAL
+    ) {
       rings.push({
         startTime: now,
         scale: 1.0,
@@ -8840,57 +10160,38 @@ export class Renderer {
    */
   drawAllUpgradeRings(towerSystem) {
     const gs = this.gameState;
-    const movementTargetId =
-      gs?.isMovementTokenMode && gs?.movementTokenTargetTowerId
-        ? gs.movementTokenTargetTowerId
-        : null;
+    const movementMode = !!gs?.isMovementTokenMode;
     if (
       !towerSystem ||
-      (!gs?.isUpgradeSelectionMode && !gs?.isTowerSellbackMode && !movementTargetId)
+      (!gs?.isUpgradeSelectionMode && !gs?.isTowerSellbackMode && !movementMode)
     ) {
       return;
     }
     let ringColor = '#ff67e7';
     if (gs?.isTowerSellbackMode) ringColor = '#ff2d2d';
-    else if (movementTargetId) ringColor = '#4FC3F7';
+    else if (movementMode) ringColor = '#4FC3F7';
     
-    this.ctx.save();
+    const ctx = this.ctx;
+    ctx.save();
+    // No shadowBlur — GPU blur per stroke wrecks FPS with dozens of rings.
     
-    for (const [towerId, ringData] of this.upgradeRings.entries()) {
+    for (const [, ringData] of this.upgradeRings.entries()) {
       const rings = ringData.rings;
       const screenX = ringData.screenX;
       const screenY = ringData.screenY;
+      if (!this.isHexInViewport(screenX, screenY, CONFIG.HEX_RADIUS * 2)) {
+        continue;
+      }
       
       for (const ring of rings) {
-        // Only draw if ring is still visible
         if (ring.alpha > 0.01) {
-          // Draw the ring
-          this.ctx.save();
-          this.ctx.globalAlpha = ring.alpha;
-          this.ctx.strokeStyle = ringColor;
-          this.ctx.lineWidth = 5; // Thicker line for more visibility
-          this.ctx.lineCap = 'round';
-          this.ctx.lineJoin = 'round';
-          this.ctx.shadowBlur = 20; // More glow
-          this.ctx.shadowColor = ringColor;
-          
-          // Draw expanding hex ring
           const hexRadius = CONFIG.HEX_RADIUS * ring.scale;
-          const vertices = getHexVertices(screenX, screenY, hexRadius);
-          this.ctx.beginPath();
-          this.ctx.moveTo(vertices[0].x, vertices[0].y);
-          for (let i = 1; i < vertices.length; i++) {
-            this.ctx.lineTo(vertices[i].x, vertices[i].y);
-          }
-          this.ctx.closePath();
-          this.ctx.stroke();
-          
-          this.ctx.restore();
+          this._strokeUpgradeHexRing(screenX, screenY, hexRadius, ringColor, ring.alpha);
         }
       }
     }
     
-    this.ctx.restore();
+    ctx.restore();
   }
 
   /**
@@ -9042,29 +10343,14 @@ export class Renderer {
       const rings = ringData.rings;
       const sx = ringData.screenX;
       const sy = ringData.screenY;
+      if (!this.isHexInViewport(sx, sy, CONFIG.HEX_RADIUS * 2)) {
+        continue;
+      }
 
       for (const ring of rings) {
         if (ring.alpha > 0.01) {
-          this.ctx.save();
-          this.ctx.globalAlpha = ring.alpha;
-          this.ctx.strokeStyle = ringColor;
-          this.ctx.lineWidth = 5;
-          this.ctx.lineCap = 'round';
-          this.ctx.lineJoin = 'round';
-          this.ctx.shadowBlur = 20;
-          this.ctx.shadowColor = ringColor;
-
           const hexRadius = CONFIG.HEX_RADIUS * ring.scale;
-          const vertices = getHexVertices(sx, sy, hexRadius);
-          this.ctx.beginPath();
-          this.ctx.moveTo(vertices[0].x, vertices[0].y);
-          for (let i = 1; i < vertices.length; i++) {
-            this.ctx.lineTo(vertices[i].x, vertices[i].y);
-          }
-          this.ctx.closePath();
-          this.ctx.stroke();
-
-          this.ctx.restore();
+          this._strokeUpgradeHexRing(sx, sy, hexRadius, ringColor, ring.alpha);
         }
       }
     }
@@ -9082,9 +10368,9 @@ export class Renderer {
    */
   drawSpawnerRings(spawnerKey, screenX, screenY, spawnerColor) {
     const now = performance.now();
-    const RING_DURATION = 533.33; // ~0.533 seconds per ring (50% faster: 800 / 1.5 = 533.33)
-    const RING_SPAWN_INTERVAL = 266.67; // Spawn new ring every ~0.267 seconds (50% faster: 400 / 1.5 = 266.67)
-    const MAX_SCALE = 1.75; // Rings expand to 1.75x the hex size
+    const RING_DURATION = 1600; // Slow crawl (~3× previous duration)
+    const RING_SPAWN_INTERVAL = 800; // Keep ~2 rings visible at once
+    const MAX_SCALE = 1.36; // +50% of the 1.24 expansion (24% grow → 36%)
     
     // Initialize rings array if it doesn't exist
     if (!this.spawnerRings.has(spawnerKey)) {
@@ -9129,10 +10415,10 @@ export class Renderer {
         this.ctx.save();
         this.ctx.globalAlpha = ring.alpha;
         this.ctx.strokeStyle = spawnerColor; // Use spawner's fire type color
-        this.ctx.lineWidth = 4; // Thick line for visibility
-        this.ctx.lineJoin = 'round'; // Smooth corners
-        this.ctx.lineCap = 'round'; // Smooth line caps
-        this.ctx.shadowBlur = 15; // Glow effect
+        this.ctx.lineWidth = 2;
+        this.ctx.lineJoin = 'round';
+        this.ctx.lineCap = 'round';
+        this.ctx.shadowBlur = 8;
         this.ctx.shadowColor = spawnerColor; // Match the spawner color
         
         // Draw expanding hex ring
@@ -9194,11 +10480,17 @@ export class Renderer {
    * @param {number} endY - Ending Y position
    */
   drawWaterBeam(tower, startX, startY, endX, endY) {
+    if (CONFIG.ORGANIC_WATER_STREAMS) {
+      this._drawOrganicWaterBeam(tower, startX, startY, endX, endY);
+      return;
+    }
+
     const powerLevel = tower.powerLevel || 1;
+    const visualBoost = this._getJetSpreadPowerVisualBoost(powerLevel);
     
-    // Beam thickness: 3px base + 3px per power level
+    // Beam thickness: 3px base + 3px per power level (L3 +10% / L4 +20%)
     const baseThickness = 3;
-    const lineWidth = baseThickness + (powerLevel - 1) * 3; // Level 1: 3px, Level 2: 6px, Level 3: 9px, Level 4: 12px
+    const lineWidth = (baseThickness + (powerLevel - 1) * 3) * visualBoost; // Level 1: 3px, Level 2: 6px, Level 3: 9.9px, Level 4: 14.4px
     
     // Animated gradient for flowing water effect
     const time = performance.now() * 0.002; // Slower animation
@@ -9209,8 +10501,8 @@ export class Renderer {
     const distance = Math.sqrt((endX - startX) ** 2 + (endY - startY) ** 2);
     const gradient = this.ctx.createLinearGradient(startX, startY, endX, endY);
     
-    // Water colors (blue to white spectrum) with 0.7 opacity
-    const opacity = 0.7;
+    // Water colors (blue to white spectrum) with 0.7 opacity (L3 +10% / L4 +20%)
+    const opacity = 0.7 * visualBoost;
     const darkBlue = `rgba(50, 150, 255, ${opacity})`;
     const blueColor = `rgba(100, 200, 255, ${opacity})`;
     const brightBlue = `rgba(150, 230, 255, ${opacity})`;
@@ -9254,6 +10546,55 @@ export class Renderer {
   }
 
   /**
+   * Soft ribbon core for organic jet/spread streams.
+   * Same endpoints as gameplay targeting — no lateral wanders onto unused hexes.
+   * Cost: 2 strokes (sheath + bright core), no particles.
+   */
+  _drawOrganicWaterBeam(tower, startX, startY, endX, endY) {
+    const powerLevel = tower.powerLevel || 1;
+    const visualBoost = this._getJetSpreadPowerVisualBoost(powerLevel);
+    const coreWidth = (2.2 + (powerLevel - 1) * 2.1) * visualBoost; // slightly thinner than classic hard beam
+    const time = performance.now() * 0.0018;
+    const flow = (time % 1);
+    const gradient = this.ctx.createLinearGradient(startX, startY, endX, endY);
+
+    // Soft flowing ribbon — lower peak alpha so soft sprites + mist carry the look
+    for (let i = 0; i <= 8; i++) {
+      const pos = i / 8;
+      const pulse = Math.max(0, 1 - Math.abs(pos - flow) / 0.28);
+      const a = (0.22 + pulse * 0.38) * visualBoost;
+      if (pos < 0.15 || pos > 0.9) {
+        gradient.addColorStop(pos, `rgba(70, 170, 255, ${a * 0.65})`);
+      } else if (pulse > 0.35) {
+        gradient.addColorStop(pos, `rgba(210, 245, 255, ${a})`);
+      } else {
+        gradient.addColorStop(pos, `rgba(120, 210, 255, ${a * 0.85})`);
+      }
+    }
+
+    this.ctx.save();
+    this.ctx.lineCap = 'round';
+    this.ctx.lineJoin = 'round';
+
+    // Soft mid sheath (source-over — reads as volume without additive blowout)
+    this.ctx.strokeStyle = `rgba(100, 195, 255, ${0.18 * visualBoost})`;
+    this.ctx.lineWidth = coreWidth * 2.35;
+    this.ctx.beginPath();
+    this.ctx.moveTo(startX, startY);
+    this.ctx.lineTo(endX, endY);
+    this.ctx.stroke();
+
+    // Bright animated core
+    this.ctx.strokeStyle = gradient;
+    this.ctx.lineWidth = coreWidth;
+    this.ctx.beginPath();
+    this.ctx.moveTo(startX, startY);
+    this.ctx.lineTo(endX, endY);
+    this.ctx.stroke();
+    this.ctx.restore();
+  }
+
+  /**
    * Soft additive halo around a water beam — cheap depth for full visuals only.
    * Drawn once per stream axis (not stacked per hex).
    * Caller should already be inside the water-visuals alpha scale when applicable.
@@ -9265,7 +10606,9 @@ export class Renderer {
     if (dx * dx + dy * dy < 4) return;
 
     const powerLevel = tower.powerLevel || 1;
-    const coreWidth = 3 + (powerLevel - 1) * 3;
+    const visualBoost = this._getJetSpreadPowerVisualBoost(powerLevel);
+    const coreWidth = (3 + (powerLevel - 1) * 3) * visualBoost;
+    const organic = !!CONFIG.ORGANIC_WATER_STREAMS;
 
     this.ctx.save();
     this.ctx.globalCompositeOperation = 'lighter';
@@ -9274,13 +10617,27 @@ export class Renderer {
     this.ctx.moveTo(startX, startY);
     this.ctx.lineTo(endX, endY);
 
-    this.ctx.strokeStyle = 'rgba(110, 190, 255, 0.16)';
-    this.ctx.lineWidth = coreWidth * 3.2;
-    this.ctx.stroke();
+    if (organic) {
+      // Wider, fainter nebulous aura — stays on the stream axis (no hex spill).
+      // Three cheap strokes beat hundreds of large glow particles for the same look.
+      this.ctx.strokeStyle = `rgba(80, 170, 255, ${0.10 * visualBoost})`;
+      this.ctx.lineWidth = coreWidth * 4.6;
+      this.ctx.stroke();
+      this.ctx.strokeStyle = `rgba(140, 210, 255, ${0.14 * visualBoost})`;
+      this.ctx.lineWidth = coreWidth * 2.6;
+      this.ctx.stroke();
+      this.ctx.strokeStyle = `rgba(210, 240, 255, ${0.12 * visualBoost})`;
+      this.ctx.lineWidth = coreWidth * 1.25;
+      this.ctx.stroke();
+    } else {
+      this.ctx.strokeStyle = `rgba(110, 190, 255, ${0.16 * visualBoost})`;
+      this.ctx.lineWidth = coreWidth * 3.2;
+      this.ctx.stroke();
 
-    this.ctx.strokeStyle = 'rgba(190, 235, 255, 0.1)';
-    this.ctx.lineWidth = coreWidth * 1.55;
-    this.ctx.stroke();
+      this.ctx.strokeStyle = `rgba(190, 235, 255, ${0.1 * visualBoost})`;
+      this.ctx.lineWidth = coreWidth * 1.55;
+      this.ctx.stroke();
+    }
     this.ctx.restore();
   }
 
@@ -9299,12 +10656,25 @@ export class Renderer {
     // Bomber / charge aim markers are drawn later in drawAllBomberTrajectoryOverlays / drawAllChargeTrajectoryOverlays
     if (tower.type === CONFIG.TOWER_TYPE_BOMBER || tower.type === CONFIG.TOWER_TYPE_CHARGE) return;
 
+    // Upgrade/sellback/etc. overlays pause combat visuals; keep continuous water FX off so
+    // dozens of jet/spread towers don't keep spawning beams/particles under the modal.
+    // Dungeon flood/reward stays enabled so geyser spray remains visible.
+    const gs = this.gameState;
+    if (
+      gs?.isUpgradeSelectionMode ||
+      gs?.isTowerSellbackMode ||
+      gs?.isRepairSelectionMode ||
+      gs?.isPartsRecycleMode
+    ) {
+      return;
+    }
+
     const wVis = this.getWaterVisualAlphaScale();
 
     const rangeHexBonus = getTowerRangeHexBonusForGameState(
       this.gameState,
       typeof window !== 'undefined' ? window.gameLoop : null
-    );
+    ) + getTowerSuperchargeRangeBonus(this.gameState, tower.type);
 
     // Rain/pulsing AOE tint: placement phase only (not during active waves, including with Range Extender).
     // Hovered tower is skipped here and redrawn later (2× opacity, above other AOE fills).
@@ -9362,9 +10732,21 @@ export class Renderer {
     this.ctx.save();
     this.ctx.globalAlpha *= wVis;
 
+    // Continuous jet/spread streams while fighting or placing. Selection overlays
+    // already returned above; between-wave idle with no placement flag skips spawn.
+    const waveActive = !!this.gameState?.wave?.isActive;
+    const allowContinuousSpray =
+      waveActive ||
+      !!this.gameState?.wave?.isPlacementPhase ||
+      isSelected ||
+      isDragging;
+    const showRangePreview =
+      !allowContinuousSpray &&
+      (isSelected || isDragging || this.gameState?.wave?.isPlacementPhase);
+
     if (tower.type === CONFIG.TOWER_TYPE_SPREAD) {
       // Draw spread tower spray: 5 jets (main + 4 flanking at ±15° and ±30°)
-      if (CONFIG.USE_WATER_PARTICLES) {
+      if (CONFIG.USE_WATER_PARTICLES && allowContinuousSpray) {
       const range = getSpreadTowerRange(tower.rangeLevel) + rangeHexBonus;
       
       // Get spray endpoints (includes border termination points for even ranges)
@@ -9390,10 +10772,8 @@ export class Renderer {
         }
         
         // Particle updates are handled globally in Renderer.render() to avoid double-updating.
-      } else {
-        // Only draw fallback lines during placement phase (when player needs to see range)
-        const shouldShowRange = this.gameState?.wave?.isPlacementPhase;
-        if (shouldShowRange) {
+      } else if (showRangePreview || (!CONFIG.USE_WATER_PARTICLES && this.gameState?.wave?.isPlacementPhase)) {
+        // Range preview lines during placement / drag (no continuous particle spray)
           const range = getSpreadTowerRange(tower.rangeLevel) + rangeHexBonus;
           const endpoints = getSpreadTowerSprayEndpoints(tower.q, tower.r, tower.direction, range);
           
@@ -9418,12 +10798,10 @@ export class Renderer {
             this.ctx.fill();
           }
         });
-        }
-        // When particles disabled and wave is active, skip all rendering (no visual needed)
       }
     } else {
       // Draw water spray for Jet towers (single direction)
-      if (CONFIG.USE_WATER_PARTICLES) {
+      if (CONFIG.USE_WATER_PARTICLES && allowContinuousSpray) {
         // Generate water particles for jet tower spray
         if (affectedHexes.length > 0) {
           // Jet hexes sit on one straight axis — emit + draw once to the farthest
@@ -9460,11 +10838,8 @@ export class Renderer {
         }
         
         // Particle updates are handled globally in Renderer.render() to avoid double-updating.
-      } else {
-        // Only draw fallback lines during placement phase (when player needs to see range)
-        const shouldShowRange = this.gameState?.wave?.isPlacementPhase;
-        if (shouldShowRange) {
-          // Draw solid lines for jet towers (fallback when particles disabled)
+      } else if (showRangePreview || (!CONFIG.USE_WATER_PARTICLES && this.gameState?.wave?.isPlacementPhase)) {
+          // Draw solid lines for jet towers (range preview / particles-disabled fallback)
         affectedHexes.forEach(hex => {
           const { x, y } = axialToPixel(hex.q, hex.r);
           const screenX = x + this.offsetX;
@@ -9478,8 +10853,6 @@ export class Renderer {
           this.ctx.lineWidth = 4;
           this.ctx.stroke();
         });
-        }
-        // When particles disabled and wave is active, skip all rendering (no visual needed)
       }
     }
 
@@ -9946,7 +11319,9 @@ export class Renderer {
    */
   _drawBomberWaterProjectile(screenX, screenY, opts = {}) {
     const idSalt = opts.idSalt ?? 0;
-    const impactLevel = Math.min(4, Math.max(1, Math.floor(opts.impactLevel ?? 3)));
+    const rawImpact = Math.floor(opts.impactLevel ?? 3);
+    const allowPower5 = opts.sentinelTint === true || opts.perimeterTint === true || opts.chargeTint === true;
+    const impactLevel = Math.min(allowPower5 ? 5 : 4, Math.max(1, rawImpact));
     const sizeScale = opts.sizeScale ?? 1;
     const useJitter = opts.jitter !== false;
     const timeOffset = opts.timeOffset ?? 0;
@@ -9975,7 +11350,7 @@ export class Renderer {
           0.14 * Math.sin(t * 2.6 * d + 1.1) +
           0.08 * Math.sin(t * 5.5 * d + sizeScale * 0.5));
     const BASE_RADIUS_AT_IMPACT_3 = 12.5 * (1 + 0.28 * (3 - 1));
-    const impactSizeMult = { 1: 0.6, 2: 0.8, 3: 1, 4: 1.2 }[impactLevel] ?? 1;
+    const impactSizeMult = { 1: 0.6, 2: 0.8, 3: 1, 4: 1.2, 5: 1.4 }[impactLevel] ?? 1;
     const baseRadius = BASE_RADIUS_AT_IMPACT_3 * impactSizeMult * sizeScale;
     const r = baseRadius * wobble;
 
@@ -10028,6 +11403,23 @@ export class Renderer {
     }
 
     const bombColor = `rgb(${br}, ${bg}, ${bb})`;
+    const organic = !!CONFIG.ORGANIC_WATER_STREAMS;
+
+    if (organic) {
+      // Soft nebulous aura (additive) — cheap 1–2 fills, no per-frame radial gradients.
+      // Keeps the tower-tint identity while reading more like a wet glowing droplet.
+      this.ctx.save();
+      this.ctx.globalCompositeOperation = 'lighter';
+      this.ctx.beginPath();
+      this.ctx.arc(drawX, drawY, r * 2.15, 0, 2 * Math.PI);
+      this.ctx.fillStyle = `rgba(${br}, ${bg}, ${bb}, ${useJitter ? 0.16 : 0.12})`;
+      this.ctx.fill();
+      this.ctx.beginPath();
+      this.ctx.arc(drawX, drawY, r * 1.55, 0, 2 * Math.PI);
+      this.ctx.fillStyle = `rgba(${br}, ${bg}, ${bb}, ${useJitter ? 0.28 : 0.22})`;
+      this.ctx.fill();
+      this.ctx.restore();
+    }
 
     const glowA = perimeterTint
       ? (useJitter ? 0.68 : 0.58)
@@ -10037,17 +11429,17 @@ export class Renderer {
       ? (useJitter ? 0.68 : 0.58)
       : (useJitter ? 0.78 : 0.68);
     this.ctx.beginPath();
-    this.ctx.arc(drawX, drawY, r * 1.42, 0, 2 * Math.PI);
-    this.ctx.fillStyle = `rgba(${br}, ${bg}, ${bb}, ${glowA})`;
+    this.ctx.arc(drawX, drawY, r * (organic ? 1.28 : 1.42), 0, 2 * Math.PI);
+    this.ctx.fillStyle = `rgba(${br}, ${bg}, ${bb}, ${organic ? glowA * 0.72 : glowA})`;
     this.ctx.fill();
 
     this.ctx.beginPath();
-    this.ctx.arc(drawX, drawY, r, 0, 2 * Math.PI);
+    this.ctx.arc(drawX, drawY, r * (organic ? 0.92 : 1), 0, 2 * Math.PI);
     this.ctx.fillStyle = bombColor;
     this.ctx.fill();
 
     this.ctx.beginPath();
-    this.ctx.arc(drawX, drawY, r * 0.38, 0, 2 * Math.PI);
+    this.ctx.arc(drawX, drawY, r * (organic ? 0.32 : 0.38), 0, 2 * Math.PI);
     if (perimeterTint) {
       const [ir, ig, ib] = this._boostWaterBombSaturation(130 + colorPhase * 90, 235 + colorPhase * 20, 255, 1.35);
       this.ctx.fillStyle = `rgba(${ir}, ${ig}, ${ib}, ${0.54 + 0.32 * colorPhase})`;
@@ -10069,7 +11461,7 @@ export class Renderer {
     }
     this.ctx.fill();
 
-    const rimR = r * (1.18 + d * 0.07 * Math.sin(t * 2.1 * d));
+    const rimR = r * ((organic ? 1.08 : 1.18) + d * 0.07 * Math.sin(t * 2.1 * d));
     this.ctx.beginPath();
     this.ctx.arc(drawX, drawY, rimR, 0, 2 * Math.PI);
     if (perimeterTint) {
@@ -10085,11 +11477,11 @@ export class Renderer {
       const [rr, rg, rb] = this._toneBomberWaterColor(255, 75, 210, 1.35);
       this.ctx.strokeStyle = `rgba(${rr}, ${rg}, ${rb}, ${0.9 + 0.12 * useJitter})`;
     }
-    this.ctx.lineWidth = Math.max(0.9, 2.5 * sizeScale);
+    this.ctx.lineWidth = Math.max(0.9, (organic ? 2.1 : 2.5) * sizeScale);
     this.ctx.stroke();
 
     this.ctx.beginPath();
-    this.ctx.arc(drawX, drawY, r * 0.72, 0, 2 * Math.PI);
+    this.ctx.arc(drawX, drawY, r * (organic ? 0.62 : 0.72), 0, 2 * Math.PI);
     if (perimeterTint) {
       const [er, eg, eb] = this._boostWaterBombSaturation(30, 175, 255, 1.35);
       this.ctx.strokeStyle = `rgba(${er}, ${eg}, ${eb}, ${0.5 + d * 0.26 * Math.sin(t * 3 * d)})`;
@@ -10243,9 +11635,13 @@ export class Renderer {
         // Store start position as relative offset for distance constraint (use the calculated offset)
         p.startOffsetX = p.offsetX;
         p.startOffsetY = p.offsetY;
-        // Moderate size for suppression gas particles
-        const baseSize = 1.8 + Math.random() * 1.5; // 1.8-3.3
-        p.size = baseSize * (1.0 + (level - 1) * 0.15);
+        if (CONFIG.ORGANIC_WATER_STREAMS) {
+          this._styleOrganicWaterParticle(p, 'gas', { level });
+        } else {
+          // Moderate size for suppression gas particles
+          const baseSize = 1.8 + Math.random() * 1.5; // 1.8-3.3
+          p.size = baseSize * (1.0 + (level - 1) * 0.15);
+        }
         
         if (!this.waterParticles.has(explosionId)) this.waterParticles.set(explosionId, []);
         this.waterParticles.get(explosionId).push(p);
@@ -10254,97 +11650,13 @@ export class Renderer {
   }
 
   /**
-   * Spawn explosion water particles for bomber impact zone
+   * Spawn explosion FX for bomber / sentinel / perimeter / charge impact zone.
+   * Uses a hex-sheet blast (see _spawnBomberBlast) instead of a per-hex particle storm.
    * @param {Object} bomb - Bomb data (includes id, impactLevel, targetQ/targetR)
    * @param {Array} impactHexes - Array of hexes in impact zone
    */
   spawnBomberExplosionParticles(bomb, impactHexes) {
-    if (CONFIG.DISABLE_ALL_WATER_EFFECTS) return; // Diagnostic: no explosion splashes/flashes
-    if (!bomb || !impactHexes || impactHexes.length === 0) return;
-    const explosionAlphaScale = CONFIG.BOMBER_WATER_EXPLOSION_ALPHA_SCALE ?? 0.5;
-    const isSentinel = bomb.isSentinel === true;
-    const isPerimeter = bomb.isPerimeter === true;
-    const isCharge = bomb.isCharge === true;
-    const pickExplosionColor = isCharge
-      ? () => this.getRandomChargeExplosionColor()
-      : isPerimeter
-      ? () => this.getRandomPerimeterExplosionColor()
-      : isSentinel
-      ? () => this.getRandomSentinelExplosionColor()
-      : () => this.getRandomBomberExplosionColor();
-    const centerFlashColor = isCharge
-      ? 'charge-green'
-      : isPerimeter
-      ? 'perimeter-blue'
-      : isSentinel
-      ? 'sentinel-chartreuse'
-      : 'bomber-fuchsia';
-    const explosionId = `explosion_${bomb.id}`;
-    // Mark group in explosionParticles so updater renders it
-    if (!this.explosionParticles.has(explosionId)) {
-      this.explosionParticles.set(explosionId, []);
-    }
-    
-    // Particles per hex scales with impact size
-    const level = bomb.impactLevel || 1;
-    const particlesPerHexBase = 40; // drastically bigger baseline for bomb effect
-    // 20, 35, 50, 65 (50% reduction). Skip scaledParticleCount — its hard budget returns 0
-    // and was wiping out impact explosions while continuous jet spray kept the cap full.
-    const basePerHex = Math.floor((particlesPerHexBase + (level - 1) * 30) * 0.5);
-    const simplifiedScale = this.getWaterParticleCountScale();
-    const particlesPerHex = simplifiedScale >= 1
-      ? basePerHex
-      : Math.max(1, Math.round(basePerHex * simplifiedScale));
-    const hexRadiusPx = CONFIG.HEX_RADIUS;
-    
-    // Generate particles within each impact hex area
-    impactHexes.forEach(hex => {
-      // Flash the center hex (target) with blue/white explosion effect
-      if (hex.q === bomb.targetQ && hex.r === bomb.targetR) {
-        const hexKey = `${hex.q},${hex.r}`;
-        this.hexFlashes.set(hexKey, {
-          startTime: performance.now(),
-          duration: 800, // 800ms flash (longer)
-          color: centerFlashColor,
-          opacityScale: explosionAlphaScale,
-        });
-      }
-      
-      const { x, y } = axialToPixel(hex.q, hex.r);
-      const centerX = x + this.offsetX;
-      const centerY = y + this.offsetY;
-      for (let i = 0; i < particlesPerHex; i++) {
-        // Spawn within hex radius with random polar coords
-        const angle = Math.random() * Math.PI * 2;
-        const radius = (Math.random() ** 0.5) * hexRadiusPx * 0.7; // bias toward center
-        // Calculate relative position from hex center (will be recalculated on scroll)
-        const relativePx = Math.cos(angle) * radius;
-        const relativePy = Math.sin(angle) * radius;
-        const px = centerX + relativePx;
-        const py = centerY + relativePy;
-        
-        // Stronger outward burst for bomb impact
-        const speed = 140 + Math.random() * 180;
-        const vx = Math.cos(angle) * speed * 0.55 + (Math.random() - 0.5) * 40;
-        const vy = Math.sin(angle) * speed * 0.55 + (Math.random() - 0.5) * 40;
-        
-        // Wider size variation and slightly longer lifetime with random color
-        // Pass hex coordinates so particles are anchored to the hex
-        const p = this.createWaterParticle(px, py, vx, vy, 0.55 + Math.random() * 0.35, pickExplosionColor(), hex.q, hex.r);
-        // Clamp to within hex area using maxDistance from start point
-        p.maxDistance = hexRadiusPx * 0.75;
-        // Store start position as relative offset for distance constraint (use the calculated offset)
-        p.startOffsetX = p.offsetX;
-        p.startOffsetY = p.offsetY;
-        // Larger droplets with broader variance scaling with level
-        const baseSize = (2.4 + Math.random() * 2.2) * 1.5; // 3.6..6.9 (50% increase)
-        p.size = baseSize * (1.2 + (level - 1) * 0.2);
-        p.alphaScale = explosionAlphaScale;
-        
-        if (!this.waterParticles.has(explosionId)) this.waterParticles.set(explosionId, []);
-        this.waterParticles.get(explosionId).push(p);
-      }
-    });
+    this._spawnBomberBlast(bomb, impactHexes);
   }
 
   /**
@@ -10400,8 +11712,12 @@ export class Renderer {
         p.maxDistance = maxDist;
         p.startOffsetX = p.offsetX;
         p.startOffsetY = p.offsetY;
-        p.size = 1.0 + Math.random() * 1.0;
-        p.sizeMultiplier = 0.9;
+        if (CONFIG.ORGANIC_WATER_STREAMS) {
+          this._styleOrganicWaterParticle(p, 'sparkle', { sizeScale: 1.1 });
+        } else {
+          p.size = 1.0 + Math.random() * 1.0;
+          p.sizeMultiplier = 0.9;
+        }
         p.gravity = 0.08;
         p.friction = 0.96;
         
@@ -10496,6 +11812,13 @@ export class Renderer {
       const pulse = 0.5 + 0.5 * Math.sin(elapsed * 0.015); // Slower, more noticeable pulse
       
       // Draw flash overlay
+      const isTowerExplosionFlash = flash.color === 'bomber-violet'
+        || flash.color === 'bomber-fuchsia'
+        || flash.color === 'sentinel-chartreuse'
+        || flash.color === 'perimeter-blue'
+        || flash.color === 'charge-green';
+      const explosionDim = isTowerExplosionFlash ? this._getWaterExplosionDimScale() : 1;
+
       if (flash.color === 'blue') {
         const opacityScale = flash.opacityScale ?? 1;
         // Blue explosion flash
@@ -10506,7 +11829,7 @@ export class Renderer {
         const whiteAlpha = intensity * pulse * 0.6 * opacityScale;
         this.drawHex(screenX, screenY, `rgba(255, 255, 255, ${whiteAlpha})`, null);
       } else if (flash.color === 'bomber-violet' || flash.color === 'bomber-fuchsia') {
-        const opacityScale = flash.opacityScale ?? 1;
+        const opacityScale = (flash.opacityScale ?? 1) * explosionDim;
         const [or, og, ob] = this._toneBomberWaterColor(255, 50, 210, 1);
         const alpha = intensity * pulse * 0.9 * opacityScale;
         this.drawHex(screenX, screenY, `rgba(${or}, ${og}, ${ob}, ${alpha})`, null);
@@ -10516,19 +11839,19 @@ export class Renderer {
         const whiteAlpha = intensity * pulse * 0.48 * opacityScale;
         this.drawHex(screenX, screenY, `rgba(255, 255, 255, ${whiteAlpha})`, null);
       } else if (flash.color === 'sentinel-chartreuse') {
-        const opacityScale = flash.opacityScale ?? 1;
+        const opacityScale = (flash.opacityScale ?? 1) * explosionDim;
         const alpha = intensity * pulse * 0.82 * opacityScale;
         this.drawHex(screenX, screenY, `rgba(200, 255, 160, ${alpha})`, null);
         const centerAlpha = intensity * pulse * 0.62 * opacityScale;
         this.drawHex(screenX, screenY, `rgba(235, 255, 200, ${centerAlpha})`, null);
       } else if (flash.color === 'perimeter-blue') {
-        const opacityScale = flash.opacityScale ?? 1;
+        const opacityScale = (flash.opacityScale ?? 1) * explosionDim;
         const alpha = intensity * pulse * 0.86 * opacityScale;
         this.drawHex(screenX, screenY, `rgba(15, 160, 255, ${alpha})`, null);
         const centerAlpha = intensity * pulse * 0.66 * opacityScale;
         this.drawHex(screenX, screenY, `rgba(100, 220, 255, ${centerAlpha})`, null);
       } else if (flash.color === 'charge-green') {
-        const opacityScale = flash.opacityScale ?? 1;
+        const opacityScale = (flash.opacityScale ?? 1) * explosionDim;
         const alpha = intensity * pulse * 0.86 * opacityScale;
         this.drawHex(screenX, screenY, `rgba(60, 255, 80, ${alpha})`, null);
         const centerAlpha = intensity * pulse * 0.66 * opacityScale;
@@ -10654,14 +11977,21 @@ export class Renderer {
       
       // Use pale blue-white colors for steam effect
       // Pass hex coordinates so particles are anchored to the hex
-      const p = this.createWaterParticle(absolutePx, absolutePy, vx, vy, 0.6 + Math.random() * 0.4, null, q, r);
+      const steamA = (0.4 + Math.random() * 0.4).toFixed(2);
+      const steamColor = `rgba(200, 240, 255, ${steamA})`;
+      const p = this.createWaterParticle(absolutePx, absolutePy, vx, vy, 0.6 + Math.random() * 0.4, steamColor, q, r);
       p.maxDistance = hexRadiusPx * 1.2;
       // Store start position as relative offset for distance constraint (use the calculated offset)
       p.startOffsetX = p.offsetX;
       p.startOffsetY = p.offsetY;
-      p.size = 2 + Math.random() * 2.5;
-      // Custom soft blue-white steam color
-      p.color = `rgba(200, 240, 255, ${0.4 + Math.random() * 0.4})`;
+      if (CONFIG.ORGANIC_WATER_STREAMS) {
+        this._styleOrganicWaterParticle(p, 'sparkle', {
+          sizeScale: 1.35,
+          alphaScale: 0.9 + Math.random() * 0.35,
+        });
+      } else {
+        p.size = 2 + Math.random() * 2.5;
+      }
       
       this.waterParticles.get(effectId).push(p);
     }
@@ -11317,15 +12647,13 @@ export class Renderer {
       towerTypeFromDrag === CONFIG.TOWER_TYPE_PULSING;
 
     let placementFill = isValid ? CONFIG.COLOR_VALID_PLACEMENT : CONFIG.COLOR_INVALID_PLACEMENT;
-    let placementStroke = null;
-    let placementStrokeW = 1;
+    const placementStroke = isValid ? CONFIG.COLOR_VALID_PLACEMENT_AOE_CENTER_STROKE : null;
+    const placementStrokeW = isValid ? 2.5 : 1;
     if (isValid && isAoeTowerDrag) {
       placementFill =
         towerTypeFromDrag === CONFIG.TOWER_TYPE_RAIN
           ? CONFIG.AOE_HEX_OVERLAY_RAIN
           : CONFIG.AOE_HEX_OVERLAY_PULSING;
-      placementStroke = CONFIG.COLOR_VALID_PLACEMENT_AOE_CENTER_STROKE;
-      placementStrokeW = 2.5;
     }
     this.drawHex(screenX, screenY, placementFill, placementStroke, placementStrokeW);
     
@@ -11391,7 +12719,7 @@ export class Renderer {
           const rangeHexBonus = getTowerRangeHexBonusForGameState(
             this.gameState,
             typeof window !== 'undefined' ? window.gameLoop : null
-          );
+          ) + getTowerSuperchargeRangeBonus(this.gameState, towerType);
           const rainRange = getRainRange(rangeLevel) + rangeHexBonus;
           affectedHexes = getHexesInRadius(q, r, rainRange);
           // Filter out hexes that don't exist in the grid
@@ -11415,7 +12743,7 @@ export class Renderer {
           const rangeHexBonus = getTowerRangeHexBonusForGameState(
             this.gameState,
             typeof window !== 'undefined' ? window.gameLoop : null
-          );
+          ) + getTowerSuperchargeRangeBonus(this.gameState, towerType);
           const pulseRadius = 1 + rangeHexBonus;
           affectedHexes = getHexesInRadius(q, r, pulseRadius);
           affectedHexes = affectedHexes.filter(hex => {
@@ -11617,12 +12945,19 @@ export class Renderer {
       if (isSpriteFloat) {
         const isArtifacts = notif.spriteCategory === 'artifacts';
         const isPowerUp = notif.spriteCategory === 'power_ups';
+        const isTowers = notif.spriteCategory === 'towers';
         const baseUrl = isArtifacts
           ? 'assets/images/artifacts/'
           : isPowerUp
             ? 'assets/images/power_ups/'
-            : 'assets/images/items/';
-        const cacheKey = isArtifacts ? `artifact-float:${notif.spriteFilename}` : notif.spriteFilename;
+            : isTowers
+              ? 'assets/images/towers/'
+              : 'assets/images/items/';
+        const cacheKey = isArtifacts
+          ? `artifact-float:${notif.spriteFilename}`
+          : isTowers
+            ? `tower-float:${notif.spriteFilename}`
+            : notif.spriteFilename;
 
         let img;
         if (isArtifacts) {
@@ -11637,6 +12972,12 @@ export class Renderer {
             notif.spriteFilename,
             `${baseUrl}${notif.spriteFilename}`,
           );
+        } else if (isTowers) {
+          img = this._getCachedImage(
+            this.itemSprites,
+            cacheKey,
+            `${baseUrl}${notif.spriteFilename}`,
+          );
         } else {
           img = this.getItemSprite(notif.spriteFilename);
         }
@@ -11649,7 +12990,9 @@ export class Renderer {
           ? getWaterTankMapSpriteSize()
           : isArtifactSpriteFilename(notif.spriteFilename) || isArtifacts
             ? getArtifactMapSpriteSize()
-            : getMapCollectibleSpriteBaseSize();
+            : notif.spriteFilename === (CONFIG.BURNING_VAULT?.sprite || 'burning_vault.png')
+              ? getBurningVaultMapSpriteSize()
+              : getMapCollectibleSpriteBaseSize();
         const spriteWidth = spriteSize;
         let spriteHeight =
           img.complete && img.naturalWidth > 0
@@ -11957,19 +13300,7 @@ export class Renderer {
       // Check if water tank is being hit by water (health ticking down)
       const isBeingHitByWater = tankHex && tankHex.isBeingSprayed && this.isWaveActiveForSprayHitVisuals();
       
-      // Draw hex border with flashing effect if being hit by water (similar to temp power-ups)
-      // For path hexes, don't draw border here - let redrawPathHexBorders() handle it
-      // For non-path hexes, draw the border here
-      if (!tankHex || !tankHex.isPath) {
-        let borderColor = 'rgba(255, 255, 255, 0.125)';
-        let finalBorderWidth = 1;
-
-        if (isBeingHitByWater) {
-          borderColor = this.getFlashingColor('#FFFFFF', CONFIG.COLOR_TOWER, 3.0);
-          finalBorderWidth = 5;
-        }
-        this.drawHex(screenX, screenY, null, borderColor, finalBorderWidth);
-      }
+      this._strokeMapHexBorder(screenX, screenY, tankHex, 1);
       
       const waterTankSprite = this.getItemSprite(getWaterTankTypeConfig(tank.typeId).sprite);
       
@@ -12015,24 +13346,13 @@ export class Renderer {
 
   /**
    * Dig sites and burning vaults: red flashing hex outline when the hex is burning, else tower-color flash when sprayed.
-   * Skips custom border on path hexes (path border comes from the grid). Same as former inline dig-site border block.
+   * Path hexes keep the silhouette unless a status flash is active. Occupied burns use the late draining pass.
    * @returns {{ isBurning: boolean, isSprayed: boolean }}
    */
   _drawHexBorderDigSiteStyle(screenX, screenY, hex) {
     const isBurning = !!(hex && hex.isBurning);
     const isSprayed = !!(hex && hex.isBeingSprayed && this.isWaveActiveForSprayHitVisuals());
-    if (!hex || !hex.isPath) {
-      let borderColor = 'rgba(255, 255, 255, 0.125)';
-      let finalBorderWidth = 1;
-      if (isBurning && !hexQualifiesForDrainingFireBorder(hex)) {
-        borderColor = this.getFlashingColor('#FFFFFF', '#FF0000', 3.0);
-        finalBorderWidth = 5;
-      } else if (isSprayed) {
-        borderColor = this.getFlashingColor('#FFFFFF', CONFIG.COLOR_TOWER, 3.0);
-        finalBorderWidth = 5;
-      }
-      this.drawHex(screenX, screenY, null, borderColor, finalBorderWidth);
-    }
+    this._strokeMapHexBorder(screenX, screenY, hex, 1);
     return { isBurning, isSprayed };
   }
 
@@ -12226,26 +13546,28 @@ export class Renderer {
   /**
    * Lazily build / fetch a pre-rendered water particle sprite for a given color base.
    *
-   * The sprite bakes the original two-pass look (main blob @ alpha 0.8 + glow @ alpha 0.5
-   * drawn on top) into a single offscreen canvas. Center pixel alpha-composites to
-   * 1 − (1 − 0.8) × (1 − 0.5) = 0.9 and the outer ring is 0.5 — matching the original
-   * visual at sizeMult=1. The hot draw path then becomes a single drawImage per
-   * particle instead of two beginPath/arc/fillStyle/fill ops + two rgba string allocs.
+   * Default: hard two-pass look (main blob @ alpha 0.8 + glow @ alpha 0.5) baked into
+   * one offscreen canvas — matches the original visual at sizeMult=1.
    *
-   * Reference geometry (CSS px): main radius 16, glow radius 32, 2px margin so the
-   * anti-aliased edge of the glow doesn't clip when scaled.
+   * Soft (`variant === 'soft'`): single radial-gradient nebulous droplet (bright core →
+   * soft aura). Used by organic jet/spread streams. Still one drawImage per particle;
+   * gradients are baked once per color, never per frame.
    *
-   * @param {string} colorBase - rgba prefix like "rgba(100, 200, 255, " (alpha appended later was the old pattern)
+   * @param {string} colorBase - rgba prefix like "rgba(100, 200, 255, "
+   * @param {'default'|'soft'} [variant='default']
    * @returns {{ canvas: HTMLCanvasElement, refRadius: number, halfSize: number, size: number }}
    */
-  _getWaterParticleSprite(colorBase) {
-    let entry = this._waterParticleSpriteCache.get(colorBase);
+  _getWaterParticleSprite(colorBase, variant = 'default') {
+    const cacheKey = variant === 'soft' ? `${colorBase}|soft` : colorBase;
+    let entry = this._waterParticleSpriteCache.get(cacheKey);
     if (entry) return entry;
 
     const REF_RADIUS = 16;
-    const GLOW_RADIUS = REF_RADIUS * 2; // glow is 2x main radius in original code
+    // Soft aura extends a bit further; still modest — overdraw is dominated by live size,
+    // and organic streams bias toward micro particles.
+    const GLOW_RADIUS = variant === 'soft' ? REF_RADIUS * 2.45 : REF_RADIUS * 2;
     const MARGIN = 2;
-    const size = GLOW_RADIUS * 2 + MARGIN * 2; // 68
+    const size = Math.ceil(GLOW_RADIUS * 2 + MARGIN * 2);
 
     const off = document.createElement('canvas');
     off.width = size;
@@ -12254,17 +13576,48 @@ export class Renderer {
     const cx = size * 0.5;
     const cy = size * 0.5;
 
-    // Main blob first (alpha 0.8), then glow on top (alpha 0.5) — same compositing
-    // order as the original two-pass renderer.
-    octx.fillStyle = colorBase + '0.8)';
-    octx.beginPath();
-    octx.arc(cx, cy, REF_RADIUS, 0, Math.PI * 2);
-    octx.fill();
+    if (variant === 'soft') {
+      // Parse RGB from "rgba(r, g, b, " — quantized colors keep cache entries bounded.
+      let r = 100;
+      let g = 200;
+      let b = 255;
+      const m = typeof colorBase === 'string' ? colorBase.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i) : null;
+      if (m) {
+        r = Number(m[1]);
+        g = Number(m[2]);
+        b = Number(m[3]);
+      }
+      const cr = Math.min(255, r + 70);
+      const cg = Math.min(255, g + 35);
+      const cb = 255;
+      const grad = octx.createRadialGradient(cx, cy, 0, cx, cy, GLOW_RADIUS);
+      grad.addColorStop(0, `rgba(${cr},${cg},${cb},0.95)`);
+      grad.addColorStop(0.16, `rgba(${r},${g},${b},0.72)`);
+      grad.addColorStop(0.4, `rgba(${r},${g},${b},0.32)`);
+      grad.addColorStop(0.7, `rgba(${Math.max(0, r - 10)},${Math.max(0, g - 20)},${b},0.1)`);
+      grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
+      octx.fillStyle = grad;
+      octx.beginPath();
+      octx.arc(cx, cy, GLOW_RADIUS, 0, Math.PI * 2);
+      octx.fill();
+      // Tiny specular core — reads as wet droplet without a second drawImage at runtime
+      octx.fillStyle = 'rgba(255,255,255,0.55)';
+      octx.beginPath();
+      octx.arc(cx - REF_RADIUS * 0.18, cy - REF_RADIUS * 0.2, REF_RADIUS * 0.22, 0, Math.PI * 2);
+      octx.fill();
+    } else {
+      // Main blob first (alpha 0.8), then glow on top (alpha 0.5) — same compositing
+      // order as the original two-pass renderer.
+      octx.fillStyle = colorBase + '0.8)';
+      octx.beginPath();
+      octx.arc(cx, cy, REF_RADIUS, 0, Math.PI * 2);
+      octx.fill();
 
-    octx.fillStyle = colorBase + '0.5)';
-    octx.beginPath();
-    octx.arc(cx, cy, GLOW_RADIUS, 0, Math.PI * 2);
-    octx.fill();
+      octx.fillStyle = colorBase + '0.5)';
+      octx.beginPath();
+      octx.arc(cx, cy, GLOW_RADIUS, 0, Math.PI * 2);
+      octx.fill();
+    }
 
     entry = { canvas: off, refRadius: REF_RADIUS, halfSize: size * 0.5, size };
     // Safety net: bound the cache so no color source (current or future) can ever leak
@@ -12273,7 +13626,7 @@ export class Renderer {
     if (this._waterParticleSpriteCache.size >= this._waterParticleSpriteCacheMax) {
       this._waterParticleSpriteCache.clear();
     }
-    this._waterParticleSpriteCache.set(colorBase, entry);
+    this._waterParticleSpriteCache.set(cacheKey, entry);
     return entry;
   }
 
@@ -12317,14 +13670,17 @@ export class Renderer {
     // hexScreenCache is allocated once and cleared per group to avoid GC churn.
     const hexScreenCache = this._waterHexScreenCache || (this._waterHexScreenCache = new Map());
     // Per-call sprite cache shortcut: avoid a Map.get for every particle by remembering
-    // the last colorBase we resolved (spray towers spawn a single color per group).
+    // the last colorBase+variant we resolved (spray towers spawn a single color per group).
     let lastColorBase = null;
+    let lastVariant = null;
     let lastSprite = null;
     let lastSpriteCanvas = null;
     let lastSpriteRefRadius = 0;
     let lastSpriteSize = 0;
 
-    for (const particles of this.waterParticles.values()) {
+    for (const [groupId, particles] of this.waterParticles) {
+      // Geyser droplets draw later (drawDungeonFloodGeysers) so they sit above tower streams.
+      if (typeof groupId === 'string' && groupId.startsWith('dungeon_geyser_')) continue;
       const len = particles ? particles.length : 0;
       if (len === 0) continue;
 
@@ -12367,9 +13723,11 @@ export class Renderer {
         if (finalSize <= 0) continue;
 
         const colorBase = particle.cachedColorBase || 'rgba(100, 200, 255, ';
-        if (colorBase !== lastColorBase) {
-          lastSprite = this._getWaterParticleSprite(colorBase);
+        const variant = particle.spriteVariant === 'soft' ? 'soft' : 'default';
+        if (colorBase !== lastColorBase || variant !== lastVariant) {
+          lastSprite = this._getWaterParticleSprite(colorBase, variant);
           lastColorBase = colorBase;
+          lastVariant = variant;
           lastSpriteCanvas = lastSprite.canvas;
           lastSpriteRefRadius = lastSprite.refRadius;
           lastSpriteSize = lastSprite.size;
@@ -12389,6 +13747,69 @@ export class Renderer {
   }
 
   /**
+   * Shortest signed delta from `fromRad` to `toRad` (wraps at ±π).
+   * @param {number} fromRad
+   * @param {number} toRad
+   * @returns {number}
+   */
+  _shortestAngleDelta(fromRad, toRad) {
+    let d = toRad - fromRad;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    return d;
+  }
+
+  /**
+   * Cosine ease-in-out, t in [0, 1].
+   * @param {number} t
+   * @returns {number}
+   */
+  _easeInOutCosine(t) {
+    const x = Math.max(0, Math.min(1, t));
+    return (1 - Math.cos(x * Math.PI)) / 2;
+  }
+
+  /**
+   * Visual facing angle for rotatable turrets. Gameplay still uses `tower.direction`.
+   * @param {{ id: string, direction: number }} tower
+   * @returns {number} radians
+   */
+  _getRotatableTurretVisualAngle(tower) {
+    const targetAngle = getDirectionAngle(((tower.direction % 6) + 6) % 6);
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const durationMs = 125;
+    let st = this._rotatableTurretVisual.get(tower.id);
+
+    if (!st) {
+      st = { angle: targetAngle, from: targetAngle, to: targetAngle, startMs: now, durMs: 0 };
+      this._rotatableTurretVisual.set(tower.id, st);
+      return targetAngle;
+    }
+
+    if (Math.abs(this._shortestAngleDelta(st.to, targetAngle)) > 1e-4) {
+      st.from = st.angle;
+      st.to = targetAngle;
+      st.startMs = now;
+      st.durMs = durationMs;
+    }
+
+    if (st.durMs <= 0) {
+      st.angle = st.to;
+      return st.angle;
+    }
+
+    const t = Math.min(1, (now - st.startMs) / st.durMs);
+    const delta = this._shortestAngleDelta(st.from, st.to);
+    st.angle = st.from + delta * this._easeInOutCosine(t);
+    if (t >= 1) {
+      st.angle = st.to;
+      st.from = st.to;
+      st.durMs = 0;
+    }
+    return st.angle;
+  }
+
+  /**
    * Draw all tower turrets (after water particles for proper z-index)
    * @param {TowerSystem} towerSystem - Tower system to get all towers from
    */
@@ -12396,12 +13817,25 @@ export class Renderer {
     if (!towerSystem) return;
     
     const towers = towerSystem.getAllTowers();
-    towers.forEach(tower => {
+    const ih = this.gameState?.inputHandler;
+    const dragId = (ih?.isDragging && ih.dragType === 'tower-existing') ? ih.dragData?.towerId : null;
+    let orderedTowers = towers;
+    if (dragId) {
+      const rest = [];
+      const picked = [];
+      for (let i = 0; i < towers.length; i++) {
+        if (towers[i].id === dragId) picked.push(towers[i]);
+        else rest.push(towers[i]);
+      }
+      orderedTowers = rest.concat(picked);
+    }
+    orderedTowers.forEach(tower => {
       // Draw turrets for all tower types that use sprites
       if (tower.type === CONFIG.TOWER_TYPE_JET || tower.type === CONFIG.TOWER_TYPE_SPREAD || tower.type === CONFIG.TOWER_TYPE_BOMBER || tower.type === CONFIG.TOWER_TYPE_CHARGE || tower.type === CONFIG.TOWER_TYPE_RAIN || tower.type === CONFIG.TOWER_TYPE_PULSING || tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER) {
-        const { x, y } = axialToPixel(tower.q, tower.r);
-        const screenX = x + this.offsetX;
-        const screenY = y + this.offsetY;
+        const origin = this._resolveTowerSpriteOrigin(tower);
+        if (!origin) return;
+        const screenX = origin.x;
+        const screenY = origin.y;
         
         const rangeLevel = tower.rangeLevel || 1;
         // Load sprite using naming convention: [type]_[upgrade]_[level].png
@@ -12412,6 +13846,16 @@ export class Renderer {
         if (turretSprite && turretSprite.complete && turretSprite.naturalWidth > 0 && turretSprite.naturalHeight > 0) {
           this.ctx.save();
           this.ctx.translate(screenX, screenY);
+          // Hub sits slightly low/right in the art vs the pad; nudge in screen space
+          // so the turret centers on the base at any facing.
+          const turretNudgeX = 0;
+          const turretNudgeY =
+            tower.type === CONFIG.TOWER_TYPE_BOMBER ||
+            tower.type === CONFIG.TOWER_TYPE_JET ||
+            tower.type === CONFIG.TOWER_TYPE_PULSING
+              ? -2
+              : -1;
+          this.ctx.translate(turretNudgeX, turretNudgeY);
           
           // Check if tower is rotatable (jet, spread, bomber) or non-rotatable (rain, pulsing)
           const isRotatable = tower.type === CONFIG.TOWER_TYPE_JET || tower.type === CONFIG.TOWER_TYPE_SPREAD || tower.type === CONFIG.TOWER_TYPE_BOMBER || tower.type === CONFIG.TOWER_TYPE_CHARGE;
@@ -12419,9 +13863,8 @@ export class Renderer {
           let turretHeightMultiplier;
           
           if (isRotatable) {
-            // Rotatable towers: rotate turret with shift forward
-            const smoothDirection = tower.direction;
-            const angle = getDirectionAngle(smoothDirection);
+            // Rotatable towers: rotate turret with shift forward (angle eases; gameplay facing is instant)
+            const angle = this._getRotatableTurretVisualAngle(tower);
             
             // Base turret size multiplier: equal for all tower types (100% scale, reset to baseline)
             let baseTurretMultiplier = 1.84797223453125;
@@ -12441,14 +13884,17 @@ export class Renderer {
                 baseTurretMultiplier *= 0.95; // Decrease by 5%
                 baseTurretMultiplier *= 0.9; // Decrease by 10%
               }
-              // Spread range level 3: increase by 10%, then increase by 5%
+              // Spread range level 3: increase by 10%, then increase by 5%, then decrease by 25%, then increase by 10%
               else if (rangeLevel === 3) {
                 baseTurretMultiplier *= 1.1; // Increase by 10%
                 baseTurretMultiplier *= 1.05; // Increase by 5%
+                baseTurretMultiplier *= 0.75; // Decrease by 25%
+                baseTurretMultiplier *= 1.1; // Increase by 10%
               }
-              // Spread range level 4: increase by 3%
+              // Spread range level 4: increase by 3%, then increase by 25%
               else if (rangeLevel === 4) {
                 baseTurretMultiplier *= 1.03; // Increase by 3%
+                baseTurretMultiplier *= 1.25; // Increase by 25%
               }
             }
             
@@ -12471,11 +13917,17 @@ export class Renderer {
               baseTurretMultiplier *= 0.9; // Reduce by 10%
               baseTurretMultiplier *= 1.05; // Increase by 5% from current size
             }
+            if (tower.type === CONFIG.TOWER_TYPE_BOMBER && (rangeLevel === 1 || rangeLevel === 2)) {
+              baseTurretMultiplier *= 1.1; // Bomber levels 1–2: increase by 10%
+            }
+            if (tower.type === CONFIG.TOWER_TYPE_BOMBER && rangeLevel === 1) {
+              baseTurretMultiplier *= 1.05; // Bomber level 1: another 5%
+            }
             // Bomber range levels 3 and 4: keep as is (no change)
 
             // Charge: fixed height for all speed levels; width follows sprite aspect ratio below
             turretHeightMultiplier = tower.type === CONFIG.TOWER_TYPE_CHARGE
-              ? getChargeTurretHeightMultiplier()
+              ? getChargeTurretHeightMultiplier(rangeLevel)
               : baseTurretMultiplier;
             
             // Shift turret forward in the direction the tower is facing (before rotation)
@@ -12543,6 +13995,20 @@ export class Renderer {
                 baseTurretMultiplier *= 1.12; // Increase by 12%
                 baseTurretMultiplier *= 0.95; // Decrease by 5%
               }
+              if (tower.type === CONFIG.TOWER_TYPE_RAIN && rangeLevel >= 1 && rangeLevel <= 3) {
+                baseTurretMultiplier *= 1.1; // Rain levels 1–3: increase by 10%
+                if (rangeLevel === 1) {
+                  baseTurretMultiplier *= 1.1; // Rain level 1: another 10%
+                }
+              }
+              if (tower.type === CONFIG.TOWER_TYPE_PULSING) {
+                if (rangeLevel === 1 || rangeLevel === 2) {
+                  baseTurretMultiplier *= 1.1; // Pulsing levels 1–2: increase by 10%
+                  baseTurretMultiplier *= 1.1; // Pulsing levels 1–2: another 10%
+                } else if (rangeLevel === 3) {
+                  baseTurretMultiplier *= 1.05; // Pulsing level 3: increase by 5%
+                }
+              }
             }
             
             // No range level size adjustments for other towers (reset to baseline)
@@ -12582,33 +14048,67 @@ export class Renderer {
           turretHeight = Math.round(turretHeight);
           turretWidth = Math.round(turretWidth);
 
-          if (tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER) {
-            this._drawSmoothTowerSprite(
-              turretSprite,
-              -turretWidth / 2,
-              -turretHeight / 2,
-              turretWidth,
-              turretHeight,
-              1
-            );
-          } else {
-            const brightenedTurret = this.getBrightenedTurretSprite(
-              turretSprite,
-              turretWidth,
-              turretHeight,
-              1.35
-            );
-            if (brightenedTurret) {
-              this.ctx.drawImage(brightenedTurret, -turretWidth / 2, -turretHeight / 2, turretWidth, turretHeight);
-            } else {
-              this.ctx.drawImage(turretSprite, -turretWidth / 2, -turretHeight / 2, turretWidth, turretHeight);
-            }
+          const turretBrightness =
+            tower.type === CONFIG.TOWER_TYPE_SENTINEL || tower.type === CONFIG.TOWER_TYPE_PERIMETER
+              ? 1
+              : 1.35;
+          let drawX = -turretWidth / 2;
+          let drawY = -turretHeight / 2;
+          // Rain/pulsing/sentinel spin around the PNG geometric center. Rain art's opaque
+          // content is not centered in the canvas, which looks like a wobbly pivot — offset
+          // the blit so rotation is around the visual hub.
+          if (
+            !isRotatable &&
+            tower.type !== CONFIG.TOWER_TYPE_PERIMETER &&
+            turretSprite.naturalWidth > 0 &&
+            turretSprite.naturalHeight > 0
+          ) {
+            const vis = this.getSpriteOpaqueCenterOffset(turretSprite);
+            drawX -= vis.dx * (turretWidth / turretSprite.naturalWidth);
+            drawY -= vis.dy * (turretHeight / turretSprite.naturalHeight);
           }
+          this._drawSmoothTowerSprite(
+            turretSprite,
+            drawX,
+            drawY,
+            turretWidth,
+            turretHeight,
+            turretBrightness
+          );
 
           this.ctx.restore();
         }
       }
     });
+
+    orderedTowers.forEach((tower) => {
+      const level5Attrs = getTowerReachedSuperchargeLevelAttrs(this.gameState, tower);
+      if (!level5Attrs.length) return;
+      const overlaySprite = this.getItemSprite(CONFIG.TOWER_SUPERCHARGE?.overlaySprite || 'supercharged.png');
+      if (!overlaySprite.complete || overlaySprite.naturalWidth <= 0) return;
+      const origin = this._resolveTowerSpriteOrigin(tower);
+      if (!origin) return;
+      const screenX = origin.x;
+      const screenY = origin.y;
+      const overlaySize = Math.round(CONFIG.HEX_RADIUS * 0.55);
+      const overlayX = screenX + CONFIG.HEX_RADIUS * 0.28;
+      const overlayY = screenY - CONFIG.HEX_RADIUS * 0.78;
+      // Match picker: 22px bolts with -13px margin → 9px step, right-most drawn last (on top).
+      const step = overlaySize * (9 / 22);
+      this.ctx.save();
+      this.ctx.imageSmoothingEnabled = false;
+      for (let i = level5Attrs.length - 1; i >= 0; i--) {
+        this.ctx.drawImage(overlaySprite, overlayX - i * step, overlayY, overlaySize, overlaySize);
+      }
+      this.ctx.restore();
+    });
+
+    if (this._rotatableTurretVisual.size > 0) {
+      const liveIds = new Set(towers.map((t) => t.id));
+      for (const id of this._rotatableTurretVisual.keys()) {
+        if (!liveIds.has(id)) this._rotatableTurretVisual.delete(id);
+      }
+    }
   }
 
   /**
@@ -12628,6 +14128,7 @@ export class Renderer {
     const towers = towerSystem.getAllTowers();
     for (let i = 0; i < towers.length; i++) {
       const tower = towers[i];
+      if (this._isTowerSpritePickedUp(tower)) continue;
       const rawHealth = tower.health || 0;
       const rawMax = tower.maxHealth || getTowerBaseHealth(tower.type);
       const sh = tower.shield;
@@ -13088,20 +14589,7 @@ export class Renderer {
       // Check if item is being hit by water (health ticking down)
       const isBeingHitByWater = itemHex && itemHex.isBeingSprayed && this.isWaveActiveForSprayHitVisuals();
       
-      // Draw hex border with appropriate color and width based on hex type
-      if (!itemHex || !itemHex.isPath) {
-        let borderWidth = 1;
-        
-        // Default border is white with 50% opacity, flash if being hit by water
-        let borderColor = 'rgba(255, 255, 255, 0.125)'; // White with 50% opacity for default
-        let finalBorderWidth = borderWidth;
-        if (isBeingHitByWater) {
-          // Flash between white and tower color (animated effect preserved)
-          borderColor = this.getFlashingColor('#FFFFFF', CONFIG.COLOR_TOWER, 3.0);
-          finalBorderWidth = 5;
-        }
-        this.drawHex(screenX, screenY, null, borderColor, finalBorderWidth);
-      }
+      this._strokeMapHexBorder(screenX, screenY, itemHex, 1);
       
       // Draw power-up item icon
       this.ctx.save();
@@ -13204,10 +14692,6 @@ export class Renderer {
   }
 
   /**
-   * Draw mystery items on the map
-   * @param {MysteryItemSystem} mysteryItemSystem - The mystery item system
-   */
-  /**
    * Slow shimmer aura drawn behind valuable map pickups (gifts / artifacts).
    * Soft radial bloom + rotating light rays + rim sparkles.
    * @param {number} spriteW
@@ -13216,156 +14700,13 @@ export class Renderer {
    * @param {{ palette?: 'gold'|'fuchsia', scale?: number }} [options]
    */
   drawTreasureShimmerAura(spriteW, spriteH, seedKey = '', options = {}) {
-    const palette =
-      options.palette === 'fuchsia' ||
-      options.palette === 'blue' ||
-      options.palette === 'green' ||
-      options.palette === 'gold'
-        ? options.palette
-        : 'gold';
-    const scale = Number.isFinite(options.scale) ? Math.max(0.1, options.scale) : 1;
-    // Gifts of the Grove: +25% brightness (lerp toward white + higher alphas)
-    const intensity = palette === 'gold' ? 1.25 : 1;
-    const brighten = (rgb) =>
-      rgb.map((c) => Math.min(255, Math.round(c + (255 - c) * (intensity - 1))));
-    const paletteColors =
-      palette === 'fuchsia'
-        ? {
-            // Bright electric pink / fuchsia
-            bloom0: [255, 190, 255],
-            bloom1: [255, 60, 210],
-            bloom2: [255, 20, 180],
-            bloom3: [200, 0, 160],
-            ray0: [255, 210, 255],
-            ray1: [255, 80, 230],
-            ray2: [255, 0, 200],
-            spark0: [255, 230, 255],
-            spark1: [255, 100, 240],
-            spark2: [255, 40, 200],
-          }
-        : palette === 'blue'
-          ? {
-              // Electric / bright blue (power-ups)
-              bloom0: [200, 235, 255],
-              bloom1: [80, 180, 255],
-              bloom2: [40, 140, 255],
-              bloom3: [20, 90, 220],
-              ray0: [220, 245, 255],
-              ray1: [90, 190, 255],
-              ray2: [40, 140, 255],
-              spark0: [235, 250, 255],
-              spark1: [120, 210, 255],
-              spark2: [50, 160, 255],
-            }
-          : palette === 'green'
-            ? {
-                // Neon / electric green (gift drops)
-                bloom0: [200, 255, 210],
-                bloom1: [60, 255, 120],
-                bloom2: [20, 230, 80],
-                bloom3: [0, 180, 50],
-                ray0: [220, 255, 230],
-                ray1: [80, 255, 140],
-                ray2: [20, 230, 90],
-                spark0: [235, 255, 240],
-                spark1: [100, 255, 150],
-                spark2: [30, 230, 90],
-              }
-            : {
-                // Gold (Gifts of the Grove) — base hues; intensity applied below
-                bloom0: [255, 236, 150],
-                bloom1: [255, 200, 70],
-                bloom2: [255, 170, 40],
-                bloom3: [255, 140, 20],
-                ray0: [255, 245, 180],
-                ray1: [255, 210, 80],
-                ray2: [255, 180, 40],
-                spark0: [255, 250, 210],
-                spark1: [255, 215, 90],
-                spark2: [255, 180, 40],
-              };
-    const colors = {
-      bloom0: brighten(paletteColors.bloom0),
-      bloom1: brighten(paletteColors.bloom1),
-      bloom2: brighten(paletteColors.bloom2),
-      bloom3: brighten(paletteColors.bloom3),
-      ray0: brighten(paletteColors.ray0),
-      ray1: brighten(paletteColors.ray1),
-      ray2: brighten(paletteColors.ray2),
-      spark0: brighten(paletteColors.spark0),
-      spark1: brighten(paletteColors.spark1),
-      spark2: brighten(paletteColors.spark2),
-    };
-
-    const ctx = this.ctx;
-    const nowSec = (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
-    let phase = 0;
-    if (seedKey) {
-      let h = 0;
-      for (let i = 0; i < seedKey.length; i++) h = (h * 31 + seedKey.charCodeAt(i)) | 0;
-      phase = ((h >>> 0) % 1000) / 1000 * Math.PI * 2;
-    }
-    const t = nowSec * 0.13125 + phase;
-    const pulse = 0.82 + Math.sin(nowSec * 0.9 + phase) * 0.18;
-    const radius = Math.max(spriteW, spriteH) * (1.05 + pulse * 0.12) * 0.6 * scale;
-
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-
-    const bloom = ctx.createRadialGradient(0, 0, 0, 0, 0, radius);
-    bloom.addColorStop(0, `rgba(${colors.bloom0.join(',')},${Math.min(1, 0.58 * pulse * intensity)})`);
-    bloom.addColorStop(0.35, `rgba(${colors.bloom1.join(',')},${Math.min(1, 0.4 * pulse * intensity)})`);
-    bloom.addColorStop(0.7, `rgba(${colors.bloom2.join(',')},${Math.min(1, 0.2 * pulse * intensity)})`);
-    bloom.addColorStop(1, `rgba(${colors.bloom3.join(',')},0)`);
-    ctx.fillStyle = bloom;
-    ctx.beginPath();
-    ctx.ellipse(0, 0, radius * 0.98, radius * 0.86, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    const rayCount = 7;
-    for (let i = 0; i < rayCount; i++) {
-      const angle = t + (i / rayCount) * Math.PI * 2;
-      const rayPhase = phase + i * 1.73;
-      const fade = 0.35 + Math.sin(nowSec * 1.15 + rayPhase) * 0.35;
-      const lengthPulse = 0.88 + Math.sin(nowSec * 0.95 + rayPhase * 1.3) * 0.14;
-      if (fade < 0.08) continue;
-      const rayLen = radius * (1.05 + Math.sin(nowSec * 0.7 + i + phase) * 0.06) * lengthPulse * 1.4;
-      ctx.save();
-      ctx.rotate(angle);
-      const ray = ctx.createLinearGradient(0, 0, rayLen, 0);
-      ray.addColorStop(0, `rgba(${colors.ray0.join(',')},${Math.min(1, 0.5 * pulse * fade * intensity)})`);
-      ray.addColorStop(0.35, `rgba(${colors.ray1.join(',')},${Math.min(1, 0.28 * pulse * fade * intensity)})`);
-      ray.addColorStop(1, `rgba(${colors.ray2.join(',')},0)`);
-      ctx.fillStyle = ray;
-      ctx.beginPath();
-      ctx.moveTo(0, 0);
-      ctx.ellipse(rayLen * 0.48, 0, rayLen * 0.55, radius * 0.13 * 1.4, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
-
-    const sparkleCount = 10;
-    for (let i = 0; i < sparkleCount; i++) {
-      const a = t * 0.7 + (i / sparkleCount) * Math.PI * 2 + phase;
-      const orbit = radius * (0.62 + (i % 3) * 0.14);
-      const twinkle = 0.45 + Math.sin(nowSec * 2.0 + i * 1.7 + phase) * 0.4;
-      if (twinkle < 0.25) continue;
-      const sx = Math.cos(a) * orbit;
-      const sy = Math.sin(a) * orbit * 0.85;
-      const sz = (1.5 + twinkle * 2.6) * 0.6 * 0.5;
-      const spark = ctx.createRadialGradient(sx, sy, 0, sx, sy, sz * 2.4);
-      spark.addColorStop(0, `rgba(${colors.spark0.join(',')},${Math.min(1, twinkle * 1.15 * intensity)})`);
-      spark.addColorStop(0.45, `rgba(${colors.spark1.join(',')},${Math.min(1, twinkle * 0.75 * intensity)})`);
-      spark.addColorStop(1, `rgba(${colors.spark2.join(',')},0)`);
-      ctx.fillStyle = spark;
-      ctx.beginPath();
-      ctx.arc(sx, sy, sz * 2.4, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    ctx.restore();
+    paintTreasureShimmerAura(this.ctx, spriteW, spriteH, seedKey, options);
   }
 
+  /**
+   * Draw mystery items on the map
+   * @param {MysteryItemSystem} mysteryItemSystem - The mystery item system
+   */
   drawMysteryItems(mysteryItemSystem) {
     if (!mysteryItemSystem) return;
     
@@ -13385,20 +14726,7 @@ export class Renderer {
       // Check if item is being hit by water (health ticking down)
       const isBeingHitByWater = itemHex && itemHex.isBeingSprayed && this.isWaveActiveForSprayHitVisuals();
       
-      // Draw hex border with appropriate color and width based on hex type
-      if (!itemHex || !itemHex.isPath) {
-        let borderWidth = 1;
-        
-        // Default border is white with 50% opacity, flash if being hit by water
-        let borderColor = 'rgba(255, 255, 255, 0.125)'; // White with 50% opacity for default
-        let finalBorderWidth = borderWidth;
-        if (isBeingHitByWater) {
-          // Flash between white and tower color (animated effect preserved)
-          borderColor = this.getFlashingColor('#FFFFFF', CONFIG.COLOR_TOWER, 3.0);
-          finalBorderWidth = 5;
-        }
-        this.drawHex(screenX, screenY, null, borderColor, finalBorderWidth);
-      }
+      this._strokeMapHexBorder(screenX, screenY, itemHex, 1);
       
       // Draw mystery item sprite
       this.ctx.save();
@@ -13476,16 +14804,7 @@ export class Renderer {
       const itemHex = this.gameState?.gridSystem?.getHex(item.q, item.r);
       const isBeingHitByWater = itemHex && itemHex.isBeingSprayed && this.isWaveActiveForSprayHitVisuals();
 
-      if (!itemHex || !itemHex.isPath) {
-        let borderWidth = 1;
-        let borderColor = 'rgba(255, 255, 255, 0.125)';
-        let finalBorderWidth = borderWidth;
-        if (isBeingHitByWater) {
-          borderColor = this.getFlashingColor('#FFFFFF', CONFIG.COLOR_TOWER, 3.0);
-          finalBorderWidth = 5;
-        }
-        this.drawHex(screenX, screenY, null, borderColor, finalBorderWidth);
-      }
+      this._strokeMapHexBorder(screenX, screenY, itemHex, 1);
 
       const def = getArtifactById(item.artifactId);
       if (!def) return;
@@ -13593,7 +14912,7 @@ export class Renderer {
 
         this._setCtxGlobalAlphaDigSiteStyleItemPulse(this.ctx, isVaultOnFire, isBeingHitByWater);
 
-        const spriteSize = CONFIG.HEX_RADIUS * 1.55;
+        const spriteSize = getBurningVaultMapSpriteSize();
         const spriteWidth = spriteSize;
         const spriteHeight = (vaultSprite.naturalHeight / vaultSprite.naturalWidth) * spriteWidth;
 
@@ -13619,6 +14938,273 @@ export class Renderer {
   }
 
   /**
+   * Tesla / static discharge from burning vaults to towers currently spraying them.
+   * Distinct from sky lightning: point-to-point streamers, pink-red, persistent jitter.
+   * Technique: dual-rate noise filaments (classic 2D tesla / Clash-style zap) with an
+   * additive glow ribbon, jagged cores, forks, endpoint coronas, and traveling sparks.
+   * Geometry is generated into reused Float32Arrays — no per-frame allocations.
+   */
+  drawBurningVaultZaps() {
+    const links = this.gameState?.burningVaultSystem?.getActiveZapLinks?.();
+    if (!links || links.length === 0) return;
+    if ((CONFIG.BURNING_VAULT?.targetingTowerDps || 0) <= 0) return;
+
+    const ctx = this.ctx;
+    const hexR = CONFIG.HEX_RADIUS || 40;
+    const simplified = this.isSimplifiedFireVisualsEnabled();
+    const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const coarseBucket = Math.floor(nowMs / 36);
+    const fineBucket = Math.floor(nowMs / 14);
+    const nowSec = nowMs * 0.001;
+    const vaultSys = this.gameState.burningVaultSystem;
+
+    const glowSprite = this._getFxGlowSprite(255, 245, 252, 255, 72, 150, 255, 28, 82, 'soft');
+    const sparkSprite = this._getMapFxSparkSprite(255, 92, 148);
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.miterLimit = 2;
+
+    for (let li = 0; li < links.length; li++) {
+      const link = links[li];
+      const vaultItem = vaultSys?.getItem?.(link.vaultId);
+      const vaultLandY = vaultItem
+        ? this.getMapSpawnLandDropYOffsetMs(vaultItem.mysteryLandDropAtMs)
+        : 0;
+
+      const vPix = axialToPixel(link.vaultQ, link.vaultR);
+      const tPix = axialToPixel(link.towerQ, link.towerR);
+      const x0 = vPix.x + this.offsetX;
+      const y0 = vPix.y + this.offsetY + vaultLandY - hexR * 0.12;
+      const x1 = tPix.x + this.offsetX;
+      const y1 = tPix.y + this.offsetY - 4;
+
+      if (!this.isHexInViewport(x0, y0, hexR * 3) && !this.isHexInViewport(x1, y1, hexR * 3)) {
+        continue;
+      }
+
+      const dx = x1 - x0;
+      const dy = y1 - y0;
+      const len = Math.hypot(dx, dy);
+      if (len < 8) continue;
+
+      const inv = 1 / len;
+      const px = -dy * inv;
+      const py = dx * inv;
+      const linkSeed = zapMix(
+        (link.vaultQ * 73 + link.vaultR) | 0,
+        (link.towerQ * 73 + link.towerR) | 0,
+        0x5a17
+      );
+      const phase = (linkSeed % 1024) / 1024 * Math.PI * 2;
+      const flickerRng = zapMulberry(zapMix(linkSeed, fineBucket, 0x11));
+      let flicker = 0.68 + flickerRng() * 0.42;
+      if (flickerRng() < 0.1) flicker *= 1.45;
+
+      const bow = Math.sin(nowSec * 7.4 + phase) * Math.min(16, len * 0.07);
+      const mx = (x0 + x1) * 0.5 + px * bow;
+      const my = (y0 + y1) * 0.5 + py * bow;
+
+      ctx.globalAlpha = Math.min(1, 0.85 * flicker);
+
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.quadraticCurveTo(mx, my, x1, y1);
+      ctx.strokeStyle = VAULT_ZAP_RIBBON;
+      ctx.lineWidth = simplified ? 8 : 14;
+      ctx.stroke();
+
+      const filamentCount = simplified ? 1 : 3;
+      const basePts = simplified
+        ? 6
+        : Math.max(7, Math.min(10, 6 + Math.round(len / (hexR * 2.2))));
+
+      for (let f = 0; f < filamentCount; f++) {
+        const coarseRng = zapMulberry(zapMix(linkSeed, coarseBucket, f + 1));
+        const fineRng = zapMulberry(zapMix(linkSeed, fineBucket, (f + 1) * 17));
+        const amp = (f === 0 ? 11 : f === 1 ? 16 : 7) * (0.75 + coarseRng() * 0.5);
+        const crackle = f === 2 ? 5.5 : 3.2;
+        const filBow = bow * (f === 1 ? -0.85 : 0.55 + f * 0.2);
+        const count = this._fillZapFilament(
+          x0, y0, x1, y1, basePts + (f === 1 ? 1 : 0),
+          amp, crackle, filBow, coarseRng, fineRng
+        );
+
+        const widthScale = f === 0 ? 1 : f === 1 ? 0.72 : 0.48;
+        if (!simplified) {
+          this._strokeZapPoly(ctx, this._zapPtX, this._zapPtY, count, 9 * widthScale, VAULT_ZAP_GLOW);
+        }
+        this._strokeZapPoly(ctx, this._zapPtX, this._zapPtY, count, 4.2 * widthScale, VAULT_ZAP_MID);
+        this._strokeZapPoly(ctx, this._zapPtX, this._zapPtY, count, 2.15 * widthScale, VAULT_ZAP_HOT);
+        this._strokeZapPoly(ctx, this._zapPtX, this._zapPtY, count, 1.05 * widthScale, VAULT_ZAP_CORE);
+
+        if (!simplified && f < 2 && coarseRng() > 0.38) {
+          const forkCount = this._fillZapFork(
+            this._zapPtX, this._zapPtY, count, px, py, coarseRng, fineRng
+          );
+          if (forkCount > 1) {
+            this._strokeZapPoly(ctx, this._zapForkX, this._zapForkY, forkCount, 2.4, VAULT_ZAP_MID);
+            this._strokeZapPoly(ctx, this._zapForkX, this._zapForkY, forkCount, 1.05, VAULT_ZAP_FORK);
+          }
+        }
+      }
+
+      const coronaPulse = 0.82 + Math.sin(nowSec * 16 + phase) * 0.18;
+      const srcR = hexR * (0.72 + coronaPulse * 0.22) * flicker;
+      ctx.globalAlpha = Math.min(1, 0.7 * flicker);
+      ctx.drawImage(
+        glowSprite.canvas,
+        x0 - srcR, y0 - srcR, srcR * 2, srcR * 2
+      );
+      const hitR = hexR * (0.42 + coronaPulse * 0.16) * flicker;
+      ctx.globalAlpha = Math.min(1, 0.85 * flicker);
+      ctx.drawImage(
+        glowSprite.canvas,
+        x1 - hitR, y1 - hitR, hitR * 2, hitR * 2
+      );
+
+      const sparkR = hexR * 0.22;
+      ctx.globalAlpha = Math.min(1, 0.95 * flicker);
+      ctx.drawImage(
+        sparkSprite.canvas,
+        x0 - sparkR * 0.7, y0 - sparkR * 0.7, sparkR * 1.4, sparkR * 1.4
+      );
+      ctx.drawImage(
+        sparkSprite.canvas,
+        x1 - sparkR * 0.55, y1 - sparkR * 0.55, sparkR * 1.1, sparkR * 1.1
+      );
+
+      if (!simplified) {
+        const impactSparks = 3;
+        const impactRng = zapMulberry(zapMix(linkSeed, Math.floor(nowMs / 48), 0xC0));
+        for (let s = 0; s < impactSparks; s++) {
+          const ang = impactRng() * Math.PI * 2;
+          const dist = 4 + impactRng() * hexR * 0.42;
+          const sx = x1 + Math.cos(ang) * dist;
+          const sy = y1 + Math.sin(ang) * dist;
+          const sr = sparkR * (0.45 + impactRng() * 0.4);
+          ctx.globalAlpha = Math.min(1, (0.45 + impactRng() * 0.5) * flicker);
+          ctx.drawImage(sparkSprite.canvas, sx - sr, sy - sr, sr * 2, sr * 2);
+        }
+
+        const travelT = (nowSec * 2.35 + (linkSeed % 1000) / 1000) % 1;
+        const travelEnv = Math.sin(travelT * Math.PI);
+        const tx = x0 + dx * travelT + px * bow * Math.sin(travelT * Math.PI);
+        const ty = y0 + dy * travelT + py * bow * Math.sin(travelT * Math.PI);
+        const tr = sparkR * (0.7 + travelEnv * 0.5);
+        ctx.globalAlpha = Math.min(1, (0.55 + travelEnv * 0.4) * flicker);
+        ctx.drawImage(sparkSprite.canvas, tx - tr, ty - tr, tr * 2, tr * 2);
+
+        ctx.globalAlpha = Math.min(1, 0.9 * flicker);
+        ctx.strokeStyle = VAULT_ZAP_CORE;
+        ctx.lineWidth = 1.35;
+        const star = 5 + flickerRng() * 4;
+        const starJ = (flickerRng() - 0.5) * 3;
+        ctx.beginPath();
+        ctx.moveTo(x1 - star, y1 + starJ);
+        ctx.lineTo(x1 + star, y1 - starJ);
+        ctx.moveTo(x1 + starJ, y1 - star);
+        ctx.lineTo(x1 - starJ, y1 + star);
+        ctx.stroke();
+      }
+    }
+
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+  }
+
+  /**
+   * Fill `_zapPtX/Y` with a tesla filament from (x0,y0) to (x1,y1).
+   * Dual-rate: coarse kinks (shape) + fine crackle (static). Ends stay pinned.
+   * @returns {number} point count
+   */
+  _fillZapFilament(x0, y0, x1, y1, pointCount, amplitude, crackle, bow, rngCoarse, rngFine) {
+    const xs = this._zapPtX;
+    const ys = this._zapPtY;
+    const n = Math.max(4, Math.min(xs.length, pointCount | 0));
+    const last = n - 1;
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const len = Math.hypot(dx, dy) || 1;
+    const inv = 1 / len;
+    const px = -dy * inv;
+    const py = dx * inv;
+    const ax = dx * inv;
+    const ay = dy * inv;
+    const kinkA = 2 + Math.floor(rngCoarse() * Math.max(1, last - 3));
+    const kinkB = 2 + Math.floor(rngCoarse() * Math.max(1, last - 3));
+
+    xs[0] = x0;
+    ys[0] = y0;
+    for (let i = 1; i < last; i++) {
+      const t = i / last;
+      const env = Math.sin(t * Math.PI);
+      const env2 = env * env;
+      let disp = (rngCoarse() - 0.5) * 2 * amplitude * env2
+        + (rngFine() - 0.5) * 2 * crackle * env
+        + bow * env2;
+      if (i === kinkA || i === kinkB) disp *= 1.65;
+      const along = (rngFine() - 0.5) * 6 * env;
+      xs[i] = x0 + dx * t + px * disp + ax * along;
+      ys[i] = y0 + dy * t + py * disp + ay * along;
+    }
+    xs[last] = x1;
+    ys[last] = y1;
+    return n;
+  }
+
+  /**
+   * Short side-fork off a main filament (into `_zapForkX/Y`).
+   * @returns {number} fork point count
+   */
+  _fillZapFork(srcX, srcY, srcCount, px, py, rngCoarse, rngFine) {
+    const last = srcCount - 1;
+    if (last < 3) return 0;
+    const from = 2 + Math.floor(rngCoarse() * Math.max(1, last - 3));
+    const sx = srcX[from];
+    const sy = srcY[from];
+    const side = rngCoarse() < 0.5 ? 1 : -1;
+    const forkLen = 16 + rngCoarse() * 28;
+    const angJitter = (rngCoarse() - 0.5) * 0.7;
+    const dirX = px * side * Math.cos(angJitter) - py * Math.sin(angJitter);
+    const dirY = py * side * Math.cos(angJitter) + px * Math.sin(angJitter);
+    const n = 4;
+    const xs = this._zapForkX;
+    const ys = this._zapForkY;
+    xs[0] = sx;
+    ys[0] = sy;
+    for (let i = 1; i < n; i++) {
+      const t = i / (n - 1);
+      const wobble = (rngFine() - 0.5) * 7;
+      xs[i] = sx + dirX * forkLen * t + px * wobble;
+      ys[i] = sy + dirY * forkLen * t + py * wobble;
+    }
+    return n;
+  }
+
+  /**
+   * Stroke a zap polyline from reused float buffers.
+   * @param {CanvasRenderingContext2D} ctx
+   * @param {Float32Array} xs
+   * @param {Float32Array} ys
+   * @param {number} count
+   * @param {number} lineWidth
+   * @param {string} strokeStyle
+   */
+  _strokeZapPoly(ctx, xs, ys, count, lineWidth, strokeStyle) {
+    if (count < 2) return;
+    ctx.beginPath();
+    ctx.moveTo(xs[0], ys[0]);
+    for (let i = 1; i < count; i++) ctx.lineTo(xs[i], ys[i]);
+    ctx.lineWidth = lineWidth;
+    ctx.strokeStyle = strokeStyle;
+    ctx.stroke();
+  }
+
+  /**
    * Draw Dungeon Entrance map objects (water floods; fire does not affect the entrance).
    * @param {import('../systems/dungeonEntranceSystem.js').DungeonEntranceSystem} dungeonEntranceSystem
    */
@@ -13638,16 +15224,8 @@ export class Renderer {
       const itemHex = this.gameState?.gridSystem?.getHex(item.q, item.r);
       const isSprayed = !!(itemHex && itemHex.isBeingSprayed && this.isWaveActiveForSprayHitVisuals());
 
-      // Border: spray flash only — fire on the hex is allowed but does not affect the entrance.
-      if (!itemHex || !itemHex.isPath) {
-        let borderColor = 'rgba(255, 255, 255, 0.125)';
-        let finalBorderWidth = 1;
-        if (isSprayed) {
-          borderColor = this.getFlashingColor('#FFFFFF', CONFIG.COLOR_TOWER, 3.0);
-          finalBorderWidth = 5;
-        }
-        this.drawHex(screenX, screenY, null, borderColor, finalBorderWidth);
-      }
+      // Spray flash sits above the path silhouette; fire on the hex does not restyle the entrance.
+      this._strokeMapHexBorder(screenX, screenY, itemHex, 1, { skipBurn: true });
 
       const level = Math.max(1, Math.floor(Number(item.level) || 1));
       const levelCfg = CONFIG.DUNGEON_ENTRANCE?.levels?.[level];
@@ -13779,7 +15357,23 @@ export class Renderer {
           for (let i = 0; i < item.id.length; i++) h = (h * 31 + item.id.charCodeAt(i)) | 0;
           phase = ((h >>> 0) % 1000) / 1000 * Math.PI * 2;
         }
-        this.ctx.rotate(nowSec * spinRps * Math.PI * 2 + phase);
+        // Fast vortexes only: slight screen-space jitter so the spin reads chaotic.
+        // Standard vortexes stay a clean spin. Fast shake is 25% calmer than the original.
+        const jitterScale = isFast ? 1.22 * 0.75 : 0;
+        const jitterAmp = (CONFIG.MAP_VORTEX_JITTER_PX ?? 2.4) * jitterScale;
+        const jitterRot = (CONFIG.MAP_VORTEX_JITTER_ROT ?? 0.042) * jitterScale;
+        const jx =
+          Math.sin(nowSec * 138.2 + phase) * jitterAmp +
+          Math.sin(nowSec * 197.7 + phase * 1.9) * jitterAmp * 0.42;
+        const jy =
+          Math.cos(nowSec * 121.4 + phase * 1.3) * jitterAmp +
+          Math.sin(nowSec * 211.6 + phase * 2.1) * jitterAmp * 0.42;
+        this.ctx.translate(jx, jy);
+        this.ctx.rotate(
+          nowSec * spinRps * Math.PI * 2 +
+          phase +
+          Math.sin(nowSec * 164.8 + phase * 0.7) * jitterRot
+        );
 
         this._setCtxGlobalAlphaDigSiteStyleItemPulse(this.ctx, false, isSprayed);
 
@@ -14452,6 +16046,380 @@ export class Renderer {
   }
 
   /**
+   * @returns {object}
+   */
+  _acquireSpawnerEmber() {
+    return this.spawnerEmberPool.pop() || {};
+  }
+
+  _clearSpawnerEmbers() {
+    const particles = this.spawnerEmbers;
+    for (let i = 0; i < particles.length; i++) {
+      this.spawnerEmberPool.push(particles[i]);
+    }
+    particles.length = 0;
+    this._spawnerEmberSpawnAcc.clear();
+    this._spawnerVentState.clear();
+  }
+
+  /**
+   * Volatile fire FX unique to spawners: 6-axis vent jets (fire forced out along hex
+   * neighbors), snapping flame tongues, and rim crackle. Reads hotter / more unstable
+   * than dungeon smoulder without copying vortex spin or quiet burning-hex sparks.
+   * @param {number} deltaTime
+   */
+  updateSpawnerEmbers(deltaTime) {
+    if (this.isSimplifiedFireVisualsEnabled()) {
+      if (this.spawnerEmbers.length || this._spawnerEmberSpawnAcc.size || this._spawnerVentState.size) {
+        this._clearSpawnerEmbers();
+      }
+      return;
+    }
+
+    const dt = Math.max(0, Math.min(0.05, Number(deltaTime) || 0));
+    const particles = this.spawnerEmbers;
+    const nowSec = (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.life -= dt;
+      if (p.life <= 0) {
+        this._swapRemoveParticle(particles, i, this.spawnerEmberPool);
+        continue;
+      }
+
+      if (p.kind === 'tongue') {
+        // Lick up then collapse — snappier than dungeon heat-glow
+        p.vx += Math.sin(nowSec * 14 + (p.phase || 0)) * 28 * dt;
+        p.vx += (p.ax || 0) * dt;
+        p.vy += p.ay * dt;
+        p.vx *= 0.94;
+        p.vy *= 0.985;
+        p.ox += p.vx * dt;
+        p.oy += p.vy * dt;
+        p.size = Math.max(1.2, p.size - dt * 7);
+      } else {
+        p.vx += p.ax * dt;
+        p.vy += p.ay * dt;
+        p.vx *= p.friction;
+        p.vy *= p.friction;
+        p.ox += p.vx * dt;
+        p.oy += p.vy * dt;
+        if (p.kind === 'crack') {
+          p.size = Math.max(0.5, p.size - dt * 1.8);
+        }
+      }
+    }
+
+    if (dt <= 0) return;
+
+    const spawners = this.gameState?.fireSpawnerSystem?.getAllSpawners?.() || [];
+    if (!spawners.length) {
+      if (this.spawnerEmbers.length || this._spawnerEmberSpawnAcc.size || this._spawnerVentState.size) {
+        this._clearSpawnerEmbers();
+      }
+      return;
+    }
+
+    const activeIds = this._scratchActiveIds;
+    activeIds.clear();
+    const MAX_EMBERS = 320;
+    const hexR = CONFIG.HEX_RADIUS || 40;
+
+    for (let i = 0; i < spawners.length; i++) {
+      const sp = spawners[i];
+      if (!sp) continue;
+      const id = `spawner_${sp.q},${sp.r}`;
+      activeIds.add(id);
+
+      const { x, y } = axialToPixel(sp.q, sp.r);
+      const screenX = x + this.offsetX;
+      const screenY = y + this.offsetY;
+      if (!this.isHexInViewport(screenX, screenY)) continue;
+
+      const intensity = spawnerFxIntensity(sp.spawnerType);
+      const ventRate = 16 * intensity;
+      const tongueRate = 10 * intensity;
+      const crackRate = 20 * intensity;
+      const totalRate = ventRate + tongueRate + crackRate;
+
+      let credit = this._spawnerEmberSpawnAcc.get(id) || 0;
+      credit += totalRate * dt;
+      const toSpawn = Math.min(Math.floor(credit), 18);
+      credit -= toSpawn;
+      this._spawnerEmberSpawnAcc.set(id, credit);
+
+      let vent = this._spawnerVentState.get(id);
+      if (!vent) {
+        vent = { dir: Math.floor(Math.random() * 6), hold: 0.12 };
+        this._spawnerVentState.set(id, vent);
+      }
+      vent.hold -= dt;
+      if (vent.hold <= 0) {
+        vent.dir = (vent.dir + 1 + (Math.random() < 0.18 ? 1 : 0)) % 6;
+        vent.hold = 0.12 + Math.random() * 0.1;
+      }
+
+      if (toSpawn <= 0 || particles.length >= MAX_EMBERS) continue;
+
+      const fillColor = getFireTypeDisplayColor(sp.spawnerType);
+      const pal = this._fireSparkPaletteFromColor(fillColor);
+      const speedScale = 0.92 + intensity * 0.18;
+      const sizeScale = 0.95 + intensity * 0.12;
+
+      for (let s = 0; s < toSpawn && particles.length < MAX_EMBERS; s++) {
+        const roll = Math.random();
+        const kind =
+          roll < ventRate / totalRate
+            ? 'vent'
+            : roll < (ventRate + tongueRate) / totalRate
+              ? 'tongue'
+              : 'crack';
+
+        const p = this._acquireSpawnerEmber();
+        p.hexQ = sp.q;
+        p.hexR = sp.r;
+        p.sourceId = id;
+        p.kind = kind;
+        p.phase = Math.random() * Math.PI * 2;
+        p.r = pal.r;
+        p.g = pal.g;
+        p.b = pal.b;
+        p.coreR = pal.coreR;
+        p.coreG = pal.coreG;
+        p.coreB = pal.coreB;
+
+        if (kind === 'vent') {
+          // Signature: fire forced out along a hex neighbor axis (rotating jets)
+          const angle = getDirectionAngle(vent.dir) + (Math.random() - 0.5) * 0.22;
+          const birthR = hexR * (0.12 + Math.random() * 0.22);
+          p.ox = Math.cos(angle) * birthR;
+          p.oy = Math.sin(angle) * birthR * 0.88;
+          const outward = (95 + Math.random() * 70) * speedScale;
+          p.vx = Math.cos(angle) * outward + (Math.random() - 0.5) * 18;
+          p.vy = Math.sin(angle) * outward * 0.88 - 12;
+          p.ax = (Math.random() - 0.5) * 12;
+          p.ay = 55 + Math.random() * 40;
+          p.friction = 0.955;
+          p.life = 0.22 + Math.random() * 0.18;
+          p.maxLife = p.life;
+          p.size = (2.6 + Math.random() * 3.2) * sizeScale;
+          p.stretch = 1.9 + Math.random() * 0.8;
+          p.ventAngle = angle;
+        } else if (kind === 'tongue') {
+          // Aggressive lick-up from the body, then snap back
+          p.ox = (Math.random() - 0.5) * hexR * 0.38;
+          p.oy = hexR * (0.12 + Math.random() * 0.16);
+          p.vx = (Math.random() - 0.5) * 16 * speedScale;
+          p.vy = -(85 + Math.random() * 55) * speedScale;
+          p.ax = (Math.random() - 0.5) * 20;
+          p.ay = 110 + Math.random() * 50;
+          p.friction = 1;
+          p.life = 0.32 + Math.random() * 0.22;
+          p.maxLife = p.life;
+          p.size = (6.5 + Math.random() * 5.5) * sizeScale;
+          p.stretch = 1.85 + Math.random() * 0.7;
+          p.ventAngle = 0;
+        } else {
+          // Rim crackle — pops off the edge and falls (hotter / wilder than hex sparks)
+          const angle = Math.random() * Math.PI * 2;
+          const birthR = hexR * (0.28 + Math.random() * 0.38);
+          p.ox = Math.cos(angle) * birthR * 0.9;
+          p.oy = Math.sin(angle) * birthR * 0.72 + hexR * 0.06;
+          const pop = (40 + Math.random() * 70) * speedScale;
+          p.vx = Math.cos(angle) * pop * 0.75 + (Math.random() - 0.5) * 28;
+          p.vy = Math.sin(angle) * pop * 0.4 - (50 + Math.random() * 45) * speedScale;
+          p.ax = (Math.random() - 0.5) * 16;
+          p.ay = 95 + Math.random() * 55;
+          p.friction = 0.978;
+          p.life = 0.28 + Math.random() * 0.28;
+          p.maxLife = p.life;
+          p.size = (1.4 + Math.random() * 3.4) * sizeScale;
+          p.stretch = 1.6 + Math.random() * 0.7;
+          p.ventAngle = angle;
+        }
+
+        particles.push(p);
+      }
+    }
+
+    for (const id of this._spawnerEmberSpawnAcc.keys()) {
+      if (!activeIds.has(id)) this._spawnerEmberSpawnAcc.delete(id);
+    }
+    for (const id of this._spawnerVentState.keys()) {
+      if (!activeIds.has(id)) this._spawnerVentState.delete(id);
+    }
+  }
+
+  /**
+   * Draw spawner FX: unstable pressure halo, snapping flame tongues, 6-axis vent jets, rim crackle.
+   */
+  drawSpawnerEmbers() {
+    if (this.isSimplifiedFireVisualsEnabled()) return;
+    const particles = this.spawnerEmbers;
+    const spawners = this.gameState?.fireSpawnerSystem?.getAllSpawners?.() || [];
+    if (!particles.length && !spawners.length) return;
+
+    const ctx = this.ctx;
+    const hexR = CONFIG.HEX_RADIUS || 40;
+    const nowSec = (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+    const hexCache = this._particleHexScreenCache;
+    hexCache.clear();
+
+    // Pass 0: unstable double-pulse pressure halo (faster / more erratic than dungeon smoulder)
+    if (spawners.length) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < spawners.length; i++) {
+        const sp = spawners[i];
+        if (!sp) continue;
+        const base = this._hexScreenCached(sp.q, sp.r, hexCache);
+        const screenX = base.x;
+        const screenY = base.y + hexR * 0.08;
+        if (!this.isHexInViewport(screenX, screenY)) continue;
+
+        const pal = this._fireSparkPaletteFromColor(getFireTypeDisplayColor(sp.spawnerType));
+        const haloSprite = this._getFxGlowSprite(
+          pal.coreR, pal.coreG, pal.coreB, pal.r, pal.g, pal.b, pal.r, pal.g, pal.b, 'soft'
+        );
+        const intensity = spawnerFxIntensity(sp.spawnerType);
+        const pulse = 0.58 + Math.sin(nowSec * 3.9 + sp.q * 0.85 + sp.r * 1.25) * 0.2;
+        const flicker = 0.72 + Math.sin(nowSec * 12.5 + sp.q * 2.4 + sp.r * 1.7) * 0.28;
+        const radius = hexR * (1.08 + pulse * 0.16) * (1.05 + intensity * 0.08);
+        ctx.globalAlpha = Math.min(1, 0.38 * pulse * flicker * (0.95 + intensity * 0.12));
+        ctx.drawImage(
+          haloSprite.canvas,
+          screenX - radius * 0.88,
+          screenY - radius * 0.72,
+          radius * 1.76,
+          radius * 1.44
+        );
+        const innerR = radius * 0.42;
+        ctx.globalAlpha = Math.min(1, 0.28 * flicker);
+        ctx.drawImage(
+          haloSprite.canvas,
+          screenX - innerR,
+          screenY - innerR * 0.85,
+          innerR * 2,
+          innerR * 1.7
+        );
+      }
+      ctx.restore();
+    }
+
+    if (!particles.length) return;
+
+    // Pass 1: snapping flame tongues (upright)
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      if (p.kind !== 'tongue') continue;
+
+      const base = this._hexScreenCached(p.hexQ, p.hexR, hexCache);
+      const screenX = base.x + p.ox;
+      const screenY = base.y + p.oy;
+      if (!this.isHexInViewport(screenX, screenY)) continue;
+
+      const lifeRatio = Math.max(0, Math.min(1, p.life / p.maxLife));
+      const alpha = Math.sin(lifeRatio * Math.PI) * 0.72;
+      if (alpha <= 0.02) continue;
+
+      const size = Math.max(1.4, p.size);
+      const stretch = p.stretch || 2;
+      const sprite = this._getFxGlowSprite(
+        p.coreR, p.coreG, p.coreB, p.r, p.g, p.b, p.r, p.g, p.b, 'flame'
+      );
+      ctx.globalAlpha = Math.min(1, alpha);
+      const drawW = size;
+      const drawH = size * 2.15 * stretch;
+      ctx.drawImage(sprite.canvas, screenX - drawW * 0.5, screenY - drawH * 0.62, drawW, drawH);
+    }
+    ctx.restore();
+
+    // Pass 2: directional vent jets (flame stretched along hex axis + spark streak)
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      if (p.kind !== 'vent') continue;
+
+      const base = this._hexScreenCached(p.hexQ, p.hexR, hexCache);
+      const screenX = base.x + p.ox;
+      const screenY = base.y + p.oy;
+      if (!this.isHexInViewport(screenX, screenY)) continue;
+
+      const alpha = Math.max(0, p.life / p.maxLife);
+      if (alpha <= 0.02) continue;
+      const size = Math.max(0.6, p.size * (0.55 + alpha * 0.55));
+      const angle = p.ventAngle ?? Math.atan2(p.vy, p.vx);
+      const stretch = p.stretch || 2;
+      const flame = this._getFxGlowSprite(
+        p.coreR, p.coreG, p.coreB, p.r, p.g, p.b, p.r, p.g, p.b, 'flame'
+      );
+      const streakSprite = this._getMapFxStreakSprite(p.r, p.g, p.b);
+      const coreSprite = this._getMapFxSparkSprite(p.coreR, p.coreG, p.coreB);
+      const speed = Math.hypot(p.vx, p.vy) || 1;
+      const streak = Math.min(14, 3.2 + speed * 0.05);
+
+      ctx.save();
+      ctx.translate(screenX, screenY);
+      ctx.rotate(angle - Math.PI / 2);
+      ctx.globalAlpha = Math.min(1, alpha * 0.7);
+      const drawW = size * 1.15;
+      const drawH = size * 2.4 * stretch;
+      ctx.drawImage(flame.canvas, -drawW * 0.5, -drawH * 0.15, drawW, drawH);
+      ctx.restore();
+
+      ctx.save();
+      ctx.translate(screenX, screenY);
+      ctx.rotate(angle);
+      const thick = Math.max(1.15, size * 0.95);
+      ctx.globalAlpha = Math.min(1, alpha * 0.95);
+      ctx.drawImage(streakSprite.canvas, -streak, -thick * 0.5, streak * 2, thick);
+      const coreSize = size * 1.65;
+      ctx.globalAlpha = Math.min(1, alpha);
+      ctx.drawImage(coreSprite.canvas, -coreSize * 0.5, -coreSize * 0.5, coreSize, coreSize);
+      ctx.restore();
+    }
+    ctx.restore();
+
+    // Pass 3: rim crackle sparks
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      if (p.kind !== 'crack') continue;
+
+      const base = this._hexScreenCached(p.hexQ, p.hexR, hexCache);
+      const screenX = base.x + p.ox;
+      const screenY = base.y + p.oy;
+      if (!this.isHexInViewport(screenX, screenY)) continue;
+
+      const alpha = Math.max(0, p.life / p.maxLife);
+      if (alpha <= 0.02) continue;
+      const size = Math.max(0.5, p.size * (0.5 + alpha * 0.6));
+      const speed = Math.hypot(p.vx, p.vy) || 1;
+      const angle = Math.atan2(p.vy, p.vx);
+      const streak = Math.min(11, 2.4 + speed * 0.042);
+      const thick = Math.max(1.05, size);
+      const streakSprite = this._getMapFxStreakSprite(p.r, p.g, p.b);
+      const coreSprite = this._getMapFxSparkSprite(p.coreR, p.coreG, p.coreB);
+
+      ctx.save();
+      ctx.translate(screenX, screenY);
+      ctx.rotate(angle);
+      ctx.globalAlpha = Math.min(1, alpha * 0.92);
+      ctx.drawImage(streakSprite.canvas, -streak, -thick * 0.5, streak * 2, thick);
+      const coreSize = size * 1.75;
+      ctx.globalAlpha = Math.min(1, alpha);
+      ctx.drawImage(coreSprite.canvas, -coreSize * 0.5, -coreSize * 0.5, coreSize, coreSize);
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  /**
    * Soft mist / shear spray peeling off jet & spread water streams.
    * Full-visuals only (skipped entirely when "Simple water" is on).
    * Pattern mirrors vault/dungeon smoulder sparks: credit spawn, pool, additive draw.
@@ -14514,7 +16482,7 @@ export class Renderer {
     const towers = this.gameState?.towerSystem?.getAllTowers?.() || [];
     if (!towers.length) return segments;
 
-    const rangeHexBonus = getTowerRangeHexBonusForGameState(
+    const tempRangeBonus = getTowerRangeHexBonusForGameState(
       this.gameState,
       typeof window !== 'undefined' ? window.gameLoop : null
     );
@@ -14531,7 +16499,8 @@ export class Renderer {
       const power = Math.max(1, tower.powerLevel || 1);
 
       if (tower.type === CONFIG.TOWER_TYPE_SPREAD) {
-        const range = getSpreadTowerRange(tower.rangeLevel) + rangeHexBonus;
+        const range = getSpreadTowerRange(tower.rangeLevel) + tempRangeBonus
+          + getTowerSuperchargeRangeBonus(this.gameState, tower.type);
         const endpoints = getSpreadTowerSprayEndpoints(tower.q, tower.r, tower.direction, range);
         for (let e = 0; e < endpoints.length; e++) {
           const ep = endpoints[e];
@@ -14615,6 +16584,9 @@ export class Renderer {
     const dt = Math.max(0, Math.min(0.05, Number(deltaTime) || 0));
     const particles = this.jetMist;
     const nowSec = (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+    const organic = !!CONFIG.ORGANIC_WATER_STREAMS;
+    // Corridor half-width (~0.28 hexR) keeps soft aura on hit-hex columns, not neighbors.
+    const corridorHalf = (CONFIG.HEX_RADIUS || 40) * (organic ? 0.28 : 0.42);
 
     for (let i = particles.length - 1; i >= 0; i--) {
       const p = particles[i];
@@ -14626,10 +16598,11 @@ export class Renderer {
 
       if (p.kind === 'mist') {
         // Soft aerosol — sway perpendicular to birth stream, slowly expand
-        p.vx += Math.sin(nowSec * 2.6 + (p.phase || 0)) * 14 * dt;
-        p.vy += Math.cos(nowSec * 2.1 + (p.phase || 0) * 0.7) * 10 * dt;
-        p.vx *= 0.96;
-        p.vy *= 0.97;
+        const sway = organic ? 8 : 14;
+        p.vx += Math.sin(nowSec * 2.6 + (p.phase || 0)) * sway * dt;
+        p.vy += Math.cos(nowSec * 2.1 + (p.phase || 0) * 0.7) * (organic ? 6 : 10) * dt;
+        p.vx *= organic ? 0.94 : 0.96;
+        p.vy *= organic ? 0.95 : 0.97;
         p.ox += p.vx * dt;
         p.oy += p.vy * dt;
         if (p.grow) p.size += p.grow * dt;
@@ -14648,6 +16621,22 @@ export class Renderer {
         p.ox += p.vx * dt;
         p.oy += p.vy * dt;
       }
+
+      // Keep organic mist/flecks inside the stream corridor so they don't visually
+      // overlap hexes the tower isn't actually hitting.
+      if (organic && p.ux != null && p.uy != null && p.streamLen > 0) {
+        const along = p.ox * p.ux + p.oy * p.uy;
+        const side = p.ox * (-p.uy) + p.oy * p.ux;
+        if (along < -4 || along > p.streamLen + 6 || Math.abs(side) > corridorHalf) {
+          p.life = 0;
+        } else if (p.kind === 'mist' && Math.abs(side) > corridorHalf * 0.85) {
+          // Soft pull back toward axis instead of hard kill (avoids edge flicker)
+          const pull = (Math.abs(side) - corridorHalf * 0.7) * 0.35;
+          const sign = side > 0 ? 1 : -1;
+          p.ox -= (-p.uy) * sign * pull;
+          p.oy -= p.ux * sign * pull;
+        }
+      }
     }
 
     if (dt <= 0) return;
@@ -14655,6 +16644,7 @@ export class Renderer {
     const segments = this._getJetMistStreamSegments();
     const activeIds = this._scratchActiveIds;
     activeIds.clear();
+    // Same hard cap — organic shifts mix toward mist, not higher total count
     const MAX_MIST = 320;
     const hexR = CONFIG.HEX_RADIUS || 40;
 
@@ -14672,11 +16662,12 @@ export class Renderer {
       const px = -uy; // perpendicular
       const py = ux;
 
-      // Base rates; power levels thicken the jet visually a bit
+      // Base rates; power levels thicken the jet visually a bit.
+      // Organic: more soft mist / fewer shear flecks (nebulous aura without extra particles).
       const powerBoost = 1 + (seg.power - 1) * 0.18;
-      const mistRate = 14 * seg.rateScale * powerBoost;
-      const fleckRate = 22 * seg.rateScale * powerBoost;
-      const glintRate = 6 * seg.rateScale * powerBoost;
+      const mistRate = (organic ? 22 : 14) * seg.rateScale * powerBoost;
+      const fleckRate = (organic ? 12 : 22) * seg.rateScale * powerBoost;
+      const glintRate = (organic ? 8 : 6) * seg.rateScale * powerBoost;
       const totalRate = mistRate + fleckRate + glintRate;
 
       let credit = this._jetMistSpawnAcc.get(seg.id) || 0;
@@ -14702,6 +16693,7 @@ export class Renderer {
         p.phase = Math.random() * Math.PI * 2;
         p.ux = ux;
         p.uy = uy;
+        p.streamLen = len;
 
         // Bias spawn toward tip (impact spray) + a little near nozzle
         let t;
@@ -14711,39 +16703,46 @@ export class Renderer {
         else t = 0.15 + Math.random() * 0.7; // along stream
 
         const along = t * len;
-        const side = (Math.random() - 0.5) * hexR * (kind === 'mist' ? 0.35 : 0.18);
+        // Organic: tighter lateral spawn so soft blobs stay on hit hexes
+        const sideScale = organic
+          ? (kind === 'mist' ? 0.2 : 0.12)
+          : (kind === 'mist' ? 0.35 : 0.18);
+        const side = (Math.random() - 0.5) * hexR * sideScale;
         // Offset from tower hex center along the stream axis
         p.ox = ux * along + px * side;
         p.oy = uy * along + py * side;
 
         if (kind === 'mist') {
-          const peel = (Math.random() < 0.5 ? -1 : 1) * (18 + Math.random() * 36);
-          const drift = 10 + Math.random() * 28;
+          const peel = (Math.random() < 0.5 ? -1 : 1) * (organic ? (8 + Math.random() * 18) : (18 + Math.random() * 36));
+          const drift = organic ? (8 + Math.random() * 18) : (10 + Math.random() * 28);
           p.vx = px * peel + ux * drift * 0.35;
           p.vy = py * peel + uy * drift * 0.35 - (4 + Math.random() * 10);
           p.ax = 0;
           p.ay = -6;
           p.friction = 1;
-          p.life = 0.45 + Math.random() * 0.55;
+          p.life = organic ? (0.5 + Math.random() * 0.65) : (0.45 + Math.random() * 0.55);
           p.maxLife = p.life;
-          p.size = 7 + Math.random() * 11 + (seg.power - 1) * 1.5;
-          p.grow = 6 + Math.random() * 10;
-          p.stretch = 1.15 + Math.random() * 0.45;
+          // Organic mist: slightly larger soft blobs, slower grow (aura without runaway overdraw)
+          p.size = organic
+            ? (9 + Math.random() * 14 + (seg.power - 1) * 1.8)
+            : (7 + Math.random() * 11 + (seg.power - 1) * 1.5);
+          p.grow = organic ? (3 + Math.random() * 6) : (6 + Math.random() * 10);
+          p.stretch = organic ? (1.25 + Math.random() * 0.55) : (1.15 + Math.random() * 0.45);
         } else if (kind === 'glint') {
           const speed = 40 + Math.random() * 70;
-          p.vx = ux * speed + px * (Math.random() - 0.5) * 18;
-          p.vy = uy * speed + py * (Math.random() - 0.5) * 18;
+          p.vx = ux * speed + px * (Math.random() - 0.5) * (organic ? 12 : 18);
+          p.vy = uy * speed + py * (Math.random() - 0.5) * (organic ? 12 : 18);
           p.ax = 0;
           p.ay = 0;
           p.friction = 0.99;
           p.life = 0.12 + Math.random() * 0.18;
           p.maxLife = p.life;
-          p.size = 1.2 + Math.random() * 1.8;
+          p.size = organic ? (0.7 + Math.random() * 1.4) : (1.2 + Math.random() * 1.8);
           p.grow = 0;
           p.stretch = 1;
         } else {
           // fleck
-          const peel = (Math.random() < 0.5 ? -1 : 1) * (30 + Math.random() * 70);
+          const peel = (Math.random() < 0.5 ? -1 : 1) * (organic ? (16 + Math.random() * 36) : (30 + Math.random() * 70));
           const forward = 50 + Math.random() * 90;
           p.vx = ux * forward + px * peel;
           p.vy = uy * forward + py * peel - (Math.random() * 20);
@@ -14752,7 +16751,7 @@ export class Renderer {
           p.friction = 0.975;
           p.life = 0.22 + Math.random() * 0.32;
           p.maxLife = p.life;
-          p.size = 1.4 + Math.random() * 2.2;
+          p.size = organic ? (0.8 + Math.random() * 1.6) : (1.4 + Math.random() * 2.2);
           p.grow = 0;
           p.stretch = 2 + Math.random() * 1.4;
         }
@@ -14791,6 +16790,8 @@ export class Renderer {
 
     const ctx = this.ctx;
     const wVis = this.getWaterVisualAlphaScale();
+    const organic = !!CONFIG.ORGANIC_WATER_STREAMS;
+    const mistAlphaPeak = organic ? 0.38 : 0.28;
     const hexCache = this._particleHexScreenCache;
     hexCache.clear();
 
@@ -14807,7 +16808,7 @@ export class Renderer {
       if (!this.isHexInViewport(screenX, screenY)) continue;
 
       const lifeRatio = Math.max(0, Math.min(1, p.life / p.maxLife));
-      const alpha = Math.sin(lifeRatio * Math.PI) * 0.28 * wVis;
+      const alpha = Math.sin(lifeRatio * Math.PI) * mistAlphaPeak * wVis;
       if (alpha <= 0.015) continue;
 
       const size = Math.max(1, p.size);
@@ -14821,8 +16822,8 @@ export class Renderer {
       ctx.translate(screenX, screenY);
       ctx.rotate(angle);
       ctx.globalAlpha = Math.min(1, alpha);
-      const drawW = size * 1.1;
-      const drawH = size * 1.7 * stretch;
+      const drawW = size * (organic ? 1.25 : 1.1);
+      const drawH = size * (organic ? 1.85 : 1.7) * stretch;
       ctx.drawImage(sprite.canvas, -drawW * 0.5, -drawH * 0.5, drawW, drawH);
       ctx.restore();
     }
@@ -14898,8 +16899,8 @@ export class Renderer {
   }
 
   /**
-   * Soft white/blue bubbles rising from active water buckets / tanks / vats.
-   * Subtle + irregular so containers read as filled with water.
+   * Clear glass bubbles rising from active water buckets / tanks / vats.
+   * Hollow rims (not additive glow) so they read as water, not steam.
    * @param {number} deltaTime
    */
   updateWaterTankBubbles(deltaTime) {
@@ -14979,23 +16980,7 @@ export class Renderer {
         // Longer life so they keep rising further before fading
         p.maxLife = (0.7 + Math.random() * 1.1) * riseScale;
         p.life = p.maxLife;
-
-        // Mostly white, occasional soft blue
-        const useBlue = Math.random() < 0.28;
-        if (useBlue) {
-          p.r = 170 + Math.floor(Math.random() * 50);
-          p.g = 210 + Math.floor(Math.random() * 35);
-          p.b = 245 + Math.floor(Math.random() * 10);
-          p.strokeA = 0.55;
-          p.fillA = 0.18;
-        } else {
-          p.r = 235 + Math.floor(Math.random() * 20);
-          p.g = 245 + Math.floor(Math.random() * 10);
-          p.b = 255;
-          p.strokeA = 0.5;
-          p.fillA = 0.14;
-        }
-        p.highlight = Math.random() < 0.7;
+        p.highlight = Math.random() < 0.78;
 
         particles.push(p);
       }
@@ -15017,6 +17002,10 @@ export class Renderer {
 
     ctx.save();
     ctx.globalCompositeOperation = 'source-over';
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
     for (let i = 0; i < particles.length; i++) {
       const p = particles[i];
       const base = this._hexScreenCached(p.hexQ, p.hexR, hexCache);
@@ -15025,40 +17014,75 @@ export class Renderer {
       if (!this.isHexInViewport(screenX, screenY)) continue;
 
       const t = Math.max(0, Math.min(1, p.life / p.maxLife));
-      // Fade in briefly, then fade out
       const fade = t > 0.75 ? (1 - t) / 0.25 : Math.min(1, t / 0.2);
       const alpha = fade * fade;
       if (alpha <= 0.01) continue;
-      const size = Math.max(0.5, p.size);
+
+      // Hollow ring at 25% of the prior draw size; keep the clear-bubble look.
+      const radius = Math.max(0.85, p.size * 0.675);
+      const rimW = Math.max(0.35, Math.min(0.5, radius * 0.14));
 
       ctx.save();
       ctx.translate(screenX, screenY);
       ctx.globalAlpha = alpha;
 
-      // Soft fill
       ctx.beginPath();
-      ctx.arc(0, 0, size, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(${p.r},${p.g},${p.b},${p.fillA})`;
-      ctx.fill();
-
-      // Bubble rim
-      ctx.beginPath();
-      ctx.arc(0, 0, size, 0, Math.PI * 2);
-      ctx.strokeStyle = `rgba(${p.r},${p.g},${p.b},${p.strokeA})`;
-      ctx.lineWidth = Math.max(0.6, size * 0.22);
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.92)';
+      ctx.lineWidth = rimW;
       ctx.stroke();
 
-      // Tiny highlight speck (classic soap-bubble cue)
       if (p.highlight) {
+        // Specular tick on the NW rim only — never a filled core
+        const hx = -radius * 0.62;
+        const hy = -radius * 0.62;
         ctx.beginPath();
-        ctx.arc(-size * 0.28, -size * 0.32, Math.max(0.35, size * 0.22), 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(255,255,255,${0.55 * alpha})`;
+        ctx.arc(hx, hy, Math.max(0.22, rimW * 0.55), 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
         ctx.fill();
       }
 
       ctx.restore();
     }
     ctx.restore();
+  }
+
+  /**
+   * Compact tower pickup (vault reward): base + turret sprites at collectible scale.
+   * Caller has already translated to the hex center.
+   */
+  _drawCurrencyTowerPickupSprites(item, isBeingHitByWater) {
+    const towerType = item.towerType || 'jet';
+    const rangeLevel = Math.min(4, Math.max(1, Math.floor(Number(item.rangeLevel) || 1)));
+    const powerLevel = Math.min(4, Math.max(1, Math.floor(Number(item.powerLevel) || 1)));
+    const turretSprite = this.loadTowerSprite(towerType, 'range', rangeLevel);
+    const baseSprite = powerLevel > 1 ? this.loadTowerSprite(towerType, 'power', powerLevel) : null;
+    const spriteSize = CONFIG.HEX_RADIUS * 0.8 * 1.5 * 0.85;
+
+    this.drawTreasureShimmerAura(spriteSize, spriteSize, item.id || 'tower', {
+      palette: 'green',
+      scale: 1.15 * 0.75 * 1.25,
+    });
+
+    if (isBeingHitByWater) {
+      const flashTime = (performance.now() / 1000) * 3.0;
+      const flashValue = (Math.sin(flashTime) + 1) / 2;
+      this.ctx.globalAlpha = 0.5 + flashValue * 0.5;
+    }
+
+    this.ctx.imageSmoothingEnabled = true;
+    this.ctx.imageSmoothingQuality = 'high';
+    if (baseSprite && baseSprite.complete && baseSprite.naturalWidth > 0) {
+      this.ctx.drawImage(baseSprite, -spriteSize / 2, -spriteSize / 2, spriteSize, spriteSize);
+    }
+    if (turretSprite && turretSprite.complete && turretSprite.naturalWidth > 0) {
+      this.ctx.drawImage(turretSprite, -spriteSize / 2, -spriteSize / 2, spriteSize, spriteSize);
+    }
+    this.ctx.imageSmoothingEnabled = false;
+    this.ctx.imageSmoothingQuality = 'low';
+    if (isBeingHitByWater) {
+      this.ctx.globalAlpha = 1.0;
+    }
   }
 
   /**
@@ -15084,25 +17108,18 @@ export class Renderer {
       // Check if item is being hit by water (health ticking down)
       const isBeingHitByWater = itemHex && itemHex.isBeingSprayed && this.isWaveActiveForSprayHitVisuals();
       
-      // Draw hex border with appropriate color and width based on hex type
-      if (!itemHex || !itemHex.isPath) {
-        let borderWidth = 1;
-        
-        // Default border is white with 50% opacity, flash if being hit by water
-        let borderColor = 'rgba(255, 255, 255, 0.125)'; // White with 50% opacity for default
-        let finalBorderWidth = borderWidth;
-        if (isBeingHitByWater) {
-          // Flash between white and tower color (animated effect preserved)
-          borderColor = this.getFlashingColor('#FFFFFF', CONFIG.COLOR_TOWER, 3.0);
-          finalBorderWidth = 5;
-        }
-        this.drawHex(screenX, screenY, null, borderColor, finalBorderWidth);
-      }
+      this._strokeMapHexBorder(screenX, screenY, itemHex, 1);
       
       // Draw bonus item sprite (currency / xp / token / consumables)
       this.ctx.save();
       const landY = this.getMapSpawnLandDropYOffsetMs(item.mysteryLandDropAtMs);
       this.ctx.translate(screenX, screenY + landY);
+
+      if (item.itemType === 'tower') {
+        this._drawCurrencyTowerPickupSprites(item, isBeingHitByWater);
+        this.ctx.restore();
+        return;
+      }
       
       // Determine sprite filename based on item type
       let spriteFilename = 'currency.png';
@@ -15120,6 +17137,8 @@ export class Renderer {
         spriteFilename = 'upgrade_token.png';
       } else if (item.itemType === 'specialty_plans') {
         spriteFilename = 'special.png';
+      } else if (item.itemType === 'supercharger') {
+        spriteFilename = CONFIG.TOWER_SUPERCHARGE?.sprite || 'supercharger.png';
       } else if (item.itemType === 'tree_juice') {
         spriteFilename = 'town_defense.png';
       }

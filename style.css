@@ -1266,6 +1266,51 @@ body.placing-item #inventoryGrid .inventory-item.shield-mode-blocked {
     background-image: url('assets/images/ui/frame-blue.png');
 }
 
+.inventory-item.tower .tower-frame-supercharger-tokens {
+    position: absolute;
+    bottom: 8px;
+    right: 8px;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 0;
+    pointer-events: none;
+    z-index: 30;
+}
+
+.inventory-item.tower .tower-frame-supercharger-token {
+    width: 22px;
+    height: 27px;
+    object-fit: contain;
+    image-rendering: pixelated;
+}
+
+.inventory-item.tower .tower-frame-supercharger-token + .tower-frame-supercharger-token {
+    margin-left: -8px;
+}
+
+.inventory-item.tower .tower-frame-supercharge-badges {
+    position: absolute;
+    top: 14px;
+    right: 9px;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 0;
+    pointer-events: none;
+    z-index: 30;
+}
+
+.inventory-item.tower .tower-frame-supercharge-badges .tower-frame-supercharge-badge {
+    width: 22px;
+    height: 22px;
+    image-rendering: pixelated;
+}
+
+.inventory-item.tower .tower-frame-supercharge-badges .tower-frame-supercharge-badge + .tower-frame-supercharge-badge {
+    margin-left: -13px;
+}
+
 .inventory-item#tower-repair-inventory .icon, .inventory-item#tower-sellback-inventory .icon, .inventory-item#parts-voucher-inventory .icon {
     margin-top:8px;
 }
@@ -1507,7 +1552,7 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
 }
 
 /* Inventory tab only: shift upgrade plan scroll art down (shop unchanged) */
-#upgrade-plan-inventory > .icon, #movement-token-inventory > .icon, #specialty-plan-inventory > .icon {
+#upgrade-plan-inventory > .icon, #movement-token-inventory > .icon, #specialty-plan-inventory > .icon, #tree-juice-inventory > .icon {
     margin-top: 10px;
 }
 
@@ -1656,14 +1701,711 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
     z-index: 2;
 }
 
-#waveCompleteModal.artifact-trader-modal .modal {
+/* 3-star rating cluster (wave complete + realms map) */
+.star-rating {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-end;
+    justify-content: center;
+    pointer-events: none;
+    user-select: none;
+}
+.star-rating-slot {
+    position: relative;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.star-rating-slot--left {
+    z-index: 1;
+}
+.star-rating-slot--right {
+    z-index: 2;
+}
+.star-rating-slot--mid {
+    z-index: 3;
+}
+.star-rating-empty,
+.star-rating-fill {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    image-rendering: auto;
+    pointer-events: none;
+}
+.star-rating-fill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    z-index: 1;
+    transform-origin: 50% 60%;
+}
+.star-rating-fill--pop {
+    animation: starRatingPopIn 0.58s cubic-bezier(0.22, 1.55, 0.32, 1) both;
+}
+.star-rating-fill--perfect {
+    z-index: 2;
+}
+
+.star-rating--modal .star-rating-slot--left,
+.star-rating--modal .star-rating-slot--right {
+    width: 60px;
+    height: 59px;
+    margin: 0 -16px;
+}
+.star-rating--modal .star-rating-slot--mid {
+    width: 78px;
+    height: 77px;
+    margin: 0 -13px;
+    transform: translateY(-10px);
+}
+.wave-complete-star-rating {
+    position: absolute;
+    left: 50%;
+    top: 14%;
+    transform: translate(-50%, calc(-20% - 20px));
+    z-index: 4;
+    width: max-content;
+}
+.wave-complete-star-rating.is-cinematic-pending {
+    visibility: hidden;
+}
+
+.wave-complete-header-container {
+    overflow: visible;
+    padding-top: 30px;
+}
+.wave-complete-header-container > div:not(.wave-complete-star-rating) {
+    top: calc(50% + 15px) !important;
+}
+
+/* Stars sit above the title; don't clip them at the modal content box. */
+#waveCompleteModal:not(.placement-phase) .modal-frame-content {
+    overflow: visible;
+}
+
+/* Clash-style wave-complete star showcase (center pops, then fly to the title) */
+.star-cinematic {
+    --rays-on-opacity: 0.42;
+    --glow-on-opacity: 0.5;
+    --mask-on-opacity: 1;
+    --ray-spin-dur: 18s;
+    --mote-max: 0.55;
+    position: fixed;
+    inset: 0;
+    z-index: 1400;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    contain: layout style;
+}
+.star-cinematic-ray-canvas,
+.star-cinematic-fx-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+.star-cinematic-ray-canvas {
+    z-index: 1;
+    mix-blend-mode: screen;
+}
+.star-cinematic-fx-canvas {
+    z-index: 2;
+}
+.star-cinematic[data-flourish="1"] {
+    --rays-on-opacity: 0.16;
+    --glow-on-opacity: 0.22;
+    --mask-on-opacity: 0.72;
+    --mote-max: 0.28;
+}
+.star-cinematic[data-flourish="2"] {
+    --rays-on-opacity: 0.4;
+    --glow-on-opacity: 0.48;
+    --mask-on-opacity: 0.88;
+    --mote-max: 0.45;
+}
+.star-cinematic[data-flourish="3"] {
+    --rays-on-opacity: 0.72;
+    --glow-on-opacity: 0.82;
+    --mask-on-opacity: 1;
+    --mote-max: 0.65;
+}
+.star-cinematic[data-flourish="4"] {
+    --rays-on-opacity: 1;
+    --glow-on-opacity: 1;
+    --mask-on-opacity: 1;
+    --mote-max: 0.9;
+}
+.star-cinematic-mask {
+    position: absolute;
+    inset: 0;
+    background:
+        radial-gradient(ellipse at 50% 46%, rgba(40, 70, 110, 0.28) 0%, rgba(0, 0, 0, 0.55) 42%, rgba(0, 0, 0, 0.88) 100%);
+    opacity: 0;
+    transition: opacity 0.42s ease;
+    pointer-events: auto;
+}
+.star-cinematic.is-on .star-cinematic-mask {
+    opacity: var(--mask-on-opacity, 1);
+}
+.star-cinematic.is-outro .star-cinematic-mask {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.62s ease;
+}
+.star-cinematic-rays {
+    position: absolute;
+    width: 140vmax;
+    height: 140vmax;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%) scale(0.92);
+    opacity: 0;
+    pointer-events: none;
+    border-radius: 50%;
+    filter: blur(0.6px);
+    mix-blend-mode: screen;
+    transition: opacity 0.35s ease, transform 0.55s ease, filter 0.35s ease;
+}
+.star-cinematic-rays-spin {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: repeating-conic-gradient(
+        from 0deg,
+        rgba(255, 215, 0, 0.0) 0deg 9deg,
+        rgba(255, 215, 0, 0.16) 10deg 13deg,
+        rgba(125, 211, 252, 0.08) 14deg 16deg,
+        rgba(255, 215, 0, 0.0) 17deg 24deg
+    );
+    -webkit-mask-image: radial-gradient(circle, #000 12%, rgba(0, 0, 0, 0.65) 38%, transparent 70%);
+    mask-image: radial-gradient(circle, #000 12%, rgba(0, 0, 0, 0.65) 38%, transparent 70%);
+    animation: starCinematicRaySpin var(--ray-spin-dur, 18s) linear infinite;
+}
+.star-cinematic-rays--alt .star-cinematic-rays-spin {
+    animation-direction: reverse;
+    animation-duration: calc(var(--ray-spin-dur, 18s) * 1.4);
+    opacity: 0.55;
+    background: repeating-conic-gradient(
+        from 8deg,
+        rgba(255, 215, 0, 0.0) 0deg 11deg,
+        rgba(255, 236, 170, 0.2) 12deg 14deg,
+        rgba(255, 120, 60, 0.1) 15deg 17deg,
+        rgba(255, 215, 0, 0.0) 18deg 28deg
+    );
+}
+.star-cinematic.is-on .star-cinematic-rays {
+    opacity: var(--rays-on-opacity, 0.72);
+    transform: translate(-50%, -50%) scale(1);
+}
+.star-cinematic.is-perfect-surge .star-cinematic-rays {
+    opacity: 1;
+    filter: blur(0.35px) saturate(1.35) brightness(1.28);
+}
+.star-cinematic.is-outro .star-cinematic-rays {
+    opacity: 0;
+    transition: opacity 0.5s ease, filter 0.5s ease;
+}
+.star-cinematic-glow {
+    position: absolute;
+    width: min(90vmin, 720px);
+    height: min(90vmin, 720px);
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(255, 215, 0, 0.28) 0%, rgba(125, 211, 252, 0.1) 38%, transparent 70%);
+    opacity: 0;
+    pointer-events: none;
+    filter: blur(8px);
+    transition: opacity 0.4s ease;
+}
+.star-cinematic.is-on .star-cinematic-glow,
+.star-cinematic.is-perfect-surge .star-cinematic-glow {
+    opacity: 0;
+}
+.star-cinematic.is-outro .star-cinematic-glow {
+    opacity: 0;
+}
+
+.star-cinematic-fx {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1;
+    overflow: hidden;
+}
+.star-cinematic-mote {
+    position: absolute;
+    left: 50%;
+    top: 48%;
+    width: var(--size, 8px);
+    height: var(--size, 8px);
+    margin: calc(var(--size, 8px) / -2);
+    border-radius: 50%;
+    background: radial-gradient(circle, #fff 0 35%, #ffd24a 40% 100%);
+    box-shadow: 0 0 10px rgba(255, 215, 0, 0.85);
+    opacity: 0;
+    animation: starCinematicMote var(--dur, 3s) ease-in-out var(--delay, 0s) infinite;
+}
+.star-cinematic[data-flourish="1"] .star-cinematic-mote {
+    filter: blur(0.4px);
+}
+
+.star-rating--cinematic {
+    position: relative;
+    z-index: 3;
+    transform: scale(0.86);
+    opacity: 0;
+    transition: opacity 0.28s ease, transform 0.4s cubic-bezier(0.22, 1.2, 0.32, 1);
+}
+.star-cinematic.is-on .star-rating--cinematic {
+    opacity: 1;
+    transform: scale(1);
+}
+.star-rating--cinematic .star-rating-empty {
+    opacity: 0.58;
+    filter: brightness(0.9) drop-shadow(0 10px 18px rgba(0, 0, 0, 0.55));
+}
+.star-cinematic.is-outro .star-rating--cinematic .star-rating-empty,
+.star-cinematic.is-outro .star-rating--cinematic .star-rating-fill {
+    filter: none;
+}
+.star-rating--cinematic .star-rating-slot {
+    will-change: transform;
+    overflow: visible;
+}
+.star-rating--cinematic .star-rating-slot--left,
+.star-rating--cinematic .star-rating-slot--right {
+    width: min(28vw, 220px);
+    height: min(27.6vw, 217px);
+    margin: 0 calc(min(28vw, 220px) * -0.27);
+}
+.star-rating--cinematic .star-rating-slot--mid {
+    width: min(36vw, 286px);
+    height: min(35.6vw, 283px);
+    margin: 0 calc(min(36vw, 286px) * -0.17);
+    transform: translateY(-11%);
+}
+.star-rating--cinematic .star-rating-fill {
+    opacity: 0;
+    transform: scale(0.12) rotate(var(--spin-from, -110deg));
+    filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.55));
+}
+.star-rating--cinematic .star-rating-fill--perfect {
+    transform: scale(0.08);
+}
+.star-rating--cinematic .star-rating-fill.is-popped {
+    animation: starCinematicPop 0.56s cubic-bezier(0.18, 1.62, 0.32, 1) both;
+}
+.star-rating--cinematic .star-rating-fill--perfect.is-popped {
+    animation: starCinematicPopPerfect 0.56s cubic-bezier(0.18, 1.62, 0.32, 1) both;
+}
+
+.star-cinematic-perfect-word {
+    position: absolute;
+    z-index: 6;
+    margin: 0;
+    padding: 0;
+    pointer-events: none;
+    white-space: nowrap;
+    font-family: "Luckiest Guy", "Lilita One", Impact, sans-serif;
+    font-size: clamp(44px, 7.4vw, 92px);
+    font-weight: 400;
+    letter-spacing: 0.08em;
+    line-height: 0.9;
+    color: #ffe566;
+    text-shadow:
+        0 0 10px rgba(255, 220, 80, 0.95),
+        0 0 28px rgba(255, 180, 40, 0.55),
+        0 3px 0 #c47a00,
+        0 6px 0 #7a3e00,
+        0 10px 18px rgba(0, 0, 0, 0.55);
+    opacity: 0;
+    transform: translate(-50%, -40%) scale(0.35);
+    transform-origin: 50% 100%;
+}
+.star-cinematic-perfect-word.is-on {
+    animation: starPerfectWordIn 0.62s cubic-bezier(0.16, 1.55, 0.32, 1) forwards;
+}
+.star-cinematic.is-outro .star-cinematic-perfect-word {
+    animation: starPerfectWordOut 0.64s ease forwards;
+}
+@keyframes starPerfectWordIn {
+    0% {
+        opacity: 0;
+        transform: translate(-50%, -36%) scale(0.28);
+    }
+    58% {
+        opacity: 1;
+        transform: translate(-50%, -112%) scale(1.16);
+    }
+    100% {
+        opacity: 1;
+        transform: translate(-50%, -104%) scale(1);
+    }
+}
+@keyframes starPerfectWordOut {
+    from {
+        opacity: 1;
+        transform: translate(-50%, -104%) scale(1);
+    }
+    to {
+        opacity: 0;
+        transform: translate(-50%, -168%) scale(0.86);
+    }
+}
+
+.star-cinematic-burst {
+    position: absolute;
+    inset: -35%;
+    pointer-events: none;
+    z-index: 4;
+    overflow: visible;
+}
+.star-cinematic-spark {
+    position: absolute;
+    left: 50%;
+    top: 42%;
+    width: 9px;
+    height: 9px;
+    margin: -4.5px;
+    border-radius: 50%;
+    background: radial-gradient(circle, #ffffff 0 38%, #ffd700 40% 100%);
+    box-shadow: 0 0 8px rgba(255, 215, 0, 0.9);
+    opacity: 0;
+    transform: rotate(var(--a)) translateY(0) scale(0.15);
+}
+.star-rating-slot.is-popped .star-cinematic-spark {
+    animation: starCinematicSpark 0.62s ease-out forwards;
+}
+.star-cinematic-ring {
+    position: absolute;
+    left: 50%;
+    top: 48%;
+    width: 42%;
+    height: 42%;
+    margin: -21% 0 0 -21%;
+    border: 2px solid rgba(255, 224, 140, 0.85);
+    border-radius: 50%;
+    box-shadow: 0 0 12px rgba(255, 215, 0, 0.45);
+    opacity: 0;
+    pointer-events: none;
+}
+.star-rating-slot.is-popped .star-cinematic-ring {
+    animation: starCinematicRing 0.68s ease-out forwards;
+}
+.star-cinematic-shard {
+    position: absolute;
+    left: 50%;
+    top: 42%;
+    width: 3px;
+    height: 16px;
+    margin-left: -1.5px;
+    border-radius: 1px;
+    background: linear-gradient(#fff, #ffd24a);
+    box-shadow: 0 0 6px rgba(255, 215, 0, 0.8);
+    opacity: 0;
+    pointer-events: none;
+}
+.star-rating-slot.is-popped .star-cinematic-shard {
+    animation: starCinematicShard 0.72s ease-out forwards;
+}
+.star-cinematic-orbit {
+    position: absolute;
+    inset: 8%;
+    pointer-events: none;
+    animation: starCinematicOrbitSpin 3.6s linear infinite;
+    opacity: 0;
+}
+.star-rating-slot.is-popped .star-cinematic-orbit {
+    opacity: 0.9;
+}
+.star-cinematic-orbit em {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 7px;
+    height: 7px;
+    margin: -3.5px;
+    border-radius: 50%;
+    background: #fff6c2;
+    box-shadow: 0 0 8px rgba(255, 230, 140, 0.95);
+    transform: rotate(var(--a)) translateY(-118%);
+    display: block;
+}
+
+.star-cinematic-perfect-boom {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 2;
+    overflow: hidden;
+}
+.star-cinematic-perfect-flash {
+    position: absolute;
+    left: 50%;
+    top: 48%;
+    width: 28vmax;
+    height: 28vmax;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(255, 255, 230, 0.95) 0%, rgba(255, 210, 70, 0.45) 32%, transparent 70%);
+    mix-blend-mode: screen;
+    animation: starPerfectFlash 0.7s ease-out forwards;
+}
+.star-cinematic-perfect-ring {
+    position: absolute;
+    left: 50%;
+    top: 48%;
+    width: 12vmax;
+    height: 12vmax;
+    margin: -6vmax 0 0 -6vmax;
+    border: 3px solid rgba(255, 236, 170, 0.9);
+    border-radius: 50%;
+    animation: starPerfectRing 0.85s cubic-bezier(0.12, 0.7, 0.2, 1) forwards;
+}
+.star-cinematic-perfect-flare {
+    position: absolute;
+    left: 50%;
+    top: 48%;
+    width: 90vmax;
+    height: 4px;
+    margin: -2px 0 0 -45vmax;
+    background: linear-gradient(90deg, transparent, rgba(255, 240, 180, 0.95), #fff, rgba(255, 240, 180, 0.95), transparent);
+    mix-blend-mode: screen;
+    animation: starPerfectFlare 0.65s ease-out forwards;
+    filter: blur(0.6px);
+}
+.star-cinematic-confetti {
+    position: absolute;
+    left: 50%;
+    top: 48%;
+    width: 8px;
+    height: 8px;
+    margin: -4px;
+    border-radius: 1px;
+    opacity: 0;
+    animation: starCinematicConfetti 0.95s cubic-bezier(0.12, 0.72, 0.28, 1) forwards;
+    animation-delay: var(--delay, 0ms);
+    box-shadow: 0 0 8px currentColor;
+}
+.star-rating-slot.is-perfect-finale {
+    z-index: 5;
+}
+
+@keyframes starCinematicRaySpin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+@keyframes starCinematicPop {
+    0% {
+        opacity: 0;
+        transform: scale(0.12) rotate(var(--spin-from, -110deg));
+    }
+    58% {
+        opacity: 1;
+        transform: scale(1.22) rotate(var(--spin-mid, 14deg));
+    }
+    78% {
+        transform: scale(0.9) rotate(var(--spin-back, -4deg));
+    }
+    100% {
+        opacity: 1;
+        transform: scale(1) rotate(0deg);
+    }
+}
+@keyframes starCinematicPopPerfect {
+    0% {
+        opacity: 0;
+        transform: scale(0.08);
+    }
+    55% {
+        opacity: 1;
+        transform: scale(1.38);
+    }
+    78% {
+        transform: scale(0.9);
+    }
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+@keyframes starCinematicSpark {
+    0% {
+        opacity: 1;
+        transform: rotate(var(--a)) translateY(8px) scale(0.45);
+    }
+    100% {
+        opacity: 0;
+        transform: rotate(var(--a)) translateY(calc(-1 * var(--d, 78px))) scale(0.05);
+    }
+}
+@keyframes starCinematicRing {
+    0% {
+        opacity: 0.85;
+        transform: scale(0.2);
+    }
+    100% {
+        opacity: 0;
+        transform: scale(2.35);
+    }
+}
+@keyframes starCinematicShard {
+    0% {
+        opacity: 1;
+        transform: rotate(var(--a)) translateY(6px) scale(1);
+    }
+    100% {
+        opacity: 0;
+        transform: rotate(var(--a)) translateY(-108px) scale(0.35);
+    }
+}
+@keyframes starCinematicOrbitSpin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+@keyframes starCinematicMote {
+    0%, 100% {
+        opacity: 0;
+        transform: translate(var(--x), var(--y)) scale(0.4);
+    }
+    20% {
+        opacity: var(--mote-max, 0.55);
+    }
+    50% {
+        opacity: calc(var(--mote-max, 0.55) * 0.7);
+        transform: translate(calc(var(--x) * 0.7), calc(var(--y) - 6vh)) scale(1);
+    }
+    80% {
+        opacity: 0.25;
+    }
+}
+@keyframes starPerfectFlash {
+    0% {
+        opacity: 0.95;
+        transform: translate(-50%, -50%) scale(0.2);
+    }
+    100% {
+        opacity: 0;
+        transform: translate(-50%, -50%) scale(2.4);
+    }
+}
+@keyframes starPerfectRing {
+    0% {
+        opacity: 0.95;
+        transform: scale(0.15);
+    }
+    100% {
+        opacity: 0;
+        transform: scale(6.2);
+    }
+}
+@keyframes starPerfectFlare {
+    0% {
+        opacity: 0;
+        transform: scaleX(0.15);
+    }
+    24% {
+        opacity: 1;
+        transform: scaleX(1);
+    }
+    100% {
+        opacity: 0;
+        transform: scaleX(1.05);
+    }
+}
+@keyframes starCinematicConfetti {
+    0% {
+        opacity: 1;
+        transform: rotate(var(--a)) translateY(8px) rotate(0deg) scale(1);
+    }
+    100% {
+        opacity: 0;
+        transform: rotate(var(--a)) translateY(calc(-1 * var(--d, 160px))) rotate(var(--rot, 180deg)) scale(0.4);
+    }
+}
+
+.star-rating--map .star-rating-slot--left,
+.star-rating--map .star-rating-slot--right {
+    width: 58px;
+    height: 57px;
+    margin: 0 -14px;
+}
+.star-rating--map .star-rating-slot--mid {
+    width: 76px;
+    height: 75px;
+    margin: 0 -11px;
+    transform: translateY(-11px);
+}
+.map-progression-stars {
+    position: absolute;
+    left: 50%;
+    top: calc(26% - 15px);
+    transform: translate(-50%, -50%);
+    z-index: 5;
+    width: max-content;
+}
+
+@keyframes starRatingPopIn {
+    0% {
+        opacity: 0;
+        transform: scale(0.18);
+    }
+    58% {
+        opacity: 1;
+        transform: scale(1.38);
+    }
+    78% {
+        transform: scale(0.88);
+    }
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .star-rating-fill--pop {
+        animation: none;
+        opacity: 1;
+        transform: none;
+    }
+    .star-cinematic,
+    .star-cinematic-rays,
+    .star-cinematic-rays-spin,
+    .star-rating--cinematic .star-rating-fill.is-popped,
+    .star-rating-slot.is-popped .star-cinematic-spark,
+    .star-rating-slot.is-popped .star-cinematic-ring,
+    .star-rating-slot.is-popped .star-cinematic-shard,
+    .star-cinematic-orbit,
+    .star-cinematic-mote,
+    .star-cinematic-perfect-flash,
+    .star-cinematic-perfect-ring,
+    .star-cinematic-perfect-flare,
+    .star-cinematic-confetti,
+    .star-cinematic-perfect-word {
+        animation: none !important;
+        transition: none !important;
+    }
+}
+
+.modal-overlay.artifact-trader-modal .modal {
     z-index: 3;
     max-width: calc(100vw - 48px);
     width: 100%;
 }
 
 /* Trader portrait — scoped to artifact-trader modal + portrait class only (campaign heroes unchanged) */
-#waveCompleteModal.artifact-trader-modal > .wave-complete-hero-graphic.artifact-trader-portrait {
+.modal-overlay.artifact-trader-modal > .wave-complete-hero-graphic.artifact-trader-portrait {
     z-index: 4;
     left: 0;
     width: 260px !important;
@@ -1677,12 +2419,12 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
     opacity: 0;
 }
 
-#waveCompleteModal.artifact-trader-modal > .wave-complete-hero-graphic.artifact-trader-portrait.shifted-in {
+.modal-overlay.artifact-trader-modal > .wave-complete-hero-graphic.artifact-trader-portrait.shifted-in {
     opacity: 1;
     transform: translateX(0) scale(1);
 }
 
-#waveCompleteModal.artifact-trader-modal > .wave-complete-hero-graphic.artifact-trader-portrait img {
+.modal-overlay.artifact-trader-modal > .wave-complete-hero-graphic.artifact-trader-portrait img {
     width: 240px !important;
     max-height: calc(100% - 52px);
     height: auto;
@@ -1695,7 +2437,7 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
     transform-origin: center bottom;
 }
 
-#waveCompleteModal.artifact-trader-modal > .wave-complete-hero-graphic.artifact-trader-portrait img.pulsing {
+.modal-overlay.artifact-trader-modal > .wave-complete-hero-graphic.artifact-trader-portrait img.pulsing {
     animation: waveCompleteHeroPulseArtifactTrader 2s ease-in-out infinite;
 }
 
@@ -1708,11 +2450,11 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
     }
 }
 
-#waveCompleteModal.artifact-trader-modal > .wave-complete-hero-graphic.artifact-trader-portrait .wave-complete-hero-pill {
+.modal-overlay.artifact-trader-modal > .wave-complete-hero-graphic.artifact-trader-portrait .wave-complete-hero-pill {
     left: 28px;
 }
 
-#waveCompleteModal.artifact-trader-modal .character-speech-bubble.character-speech-bubble-hero,
+.modal-overlay.artifact-trader-modal .character-speech-bubble.character-speech-bubble-hero,
 #waveCompleteModal.placement-phase .character-speech-bubble.character-speech-bubble-hero {
     z-index: 5;
 }
@@ -1778,6 +2520,23 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
 .wave-complete-stat-celebrate {
     animation: waveCompleteStatCelebratePulse 1.15s ease-in-out infinite;
     transform-origin: center center;
+}
+
+.wave-complete-high-score {
+    position: absolute;
+    top: 10px;
+    right: -22px;
+    font-size: 13px;
+    line-height: 13px;
+    width: 60px;
+    text-align: center;
+    font-weight: bold;
+    color: #FFD700;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+    z-index: 2;
+    pointer-events: none;
+    letter-spacing: 0;
+    font-family: "Exo 2", sans-serif;
 }
 
 .wave-complete-hero-graphic img {
@@ -2733,7 +3492,7 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
 #splashLoadGameBtn {
     margin-right:-15px;
 }
-#splashSettingsBtn {
+#splashDailyChallengeBtn {
     margin-right:-7.5px;
 }
 #splashLeaderboardBtn {
@@ -2748,6 +3507,11 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
     vertical-align: middle;
     image-rendering: crisp-edges;
     margin-right: 8px;
+}
+
+.splash-btn .splash-btn-icon-daily {
+    image-rendering: auto;
+    object-fit: contain;
 }
 
 /* Settings modal (inner) should appear above splash screen */
@@ -2839,7 +3603,7 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
 
 .meta-progression-gallery-lock {
     position: absolute;
-    width: 34px;
+    width: 68px;
     height: auto;
     image-rendering: pixelated;
     left: 50%;
@@ -2993,6 +3757,19 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
     font-weight: 700;
     color: #fff;
     margin-bottom: 4px;
+}
+
+.run-history-debug-asterisk {
+    color: #ffb347;
+    font-weight: 800;
+    margin-left: 2px;
+}
+
+.run-history-debug-note {
+    margin: 0 0 14px;
+    font-size: 0.85rem;
+    line-height: 1.4;
+    color: #ffb347;
 }
 
 .run-history-list-meta {
@@ -3170,6 +3947,12 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
     border-color: rgba(255, 193, 7, 0.3);
 }
 
+.run-history-pill--debug {
+    background: rgba(255, 179, 71, 0.18);
+    border-color: rgba(255, 179, 71, 0.45);
+    color: #ffd59a;
+}
+
 .run-history-muted {
     font-size: 0.88rem;
     color: rgba(180, 190, 210, 0.65);
@@ -3329,6 +4112,34 @@ body.placing-item .side-panel .inventory-item:not(.locked) {
     z-index: 3000 !important; /* Higher than save/load modals (2000) */
 }
 
+/* Nested max-purchase confirm stacks above the shop quantity confirm */
+#confirmModalMax.modal-overlay {
+    z-index: 3100 !important;
+}
+
+#confirmModalMax.modal-overlay.confirm-modal-purchase.active {
+    align-items: center;
+    justify-content: center;
+    padding: 20px 50px 20px 20px;
+}
+
+#confirmModalMax.modal-overlay.confirm-modal-purchase.active > .modal.modal-frame-9patch {
+    margin-left: auto;
+    margin-right: 0;
+    margin-top: auto;
+    margin-bottom: auto;
+}
+
+#confirmModalMax .modal-choices {
+    display: flex;
+    gap: 12px;
+    width: 100%;
+}
+
+#confirmModalMax .modal-choices .choice-btn {
+    flex: 1 1 0;
+}
+
 /* Tutorial arrow above confirm modal (step 22 confirm purchase) - confirm modal is 3000 */
 body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     z-index: 10000 !important;
@@ -3385,6 +4196,24 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     min-width: 140px;
 }
 
+#renameModal .modal-choices.modal-choices-single {
+    justify-content: center;
+}
+
+#renameModal .modal-choices.modal-choices-single .choice-btn {
+    flex: 1 1 0;
+    min-width: 140px;
+}
+
+#confirmModal .modal-choices.modal-choices-triple {
+    flex-wrap: wrap;
+}
+
+#confirmModal .modal-choices.modal-choices-triple .choice-btn {
+    flex: 1 1 auto;
+    min-width: 140px;
+}
+
 /* Shop purchase confirm — item icon × quantity stepper */
 #confirmModal .modal-purchase-item-row {
     display: flex;
@@ -3401,6 +4230,43 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     justify-content: center;
     align-items: center;
     margin: 8px 0 16px;
+}
+
+#confirmModal .modal-item-icon--above-title {
+    margin: 18px auto 16px;
+    min-height: 76px;
+    overflow: visible;
+}
+
+#confirmModal .supercharge-confirm-tower-icon {
+    width: 76px;
+    height: 76px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transform: scale(0.86);
+    transform-origin: center center;
+    overflow: visible;
+    pointer-events: none;
+}
+
+#confirmModal .modal-item-icon .artifact-trader-reward-stack {
+    display: inline-flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+}
+
+#confirmModal .modal-item-icon .artifact-trader-reward-row {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+}
+
+#confirmModal .artifact-trader-reward-count {
+    font-size: 17px;
 }
 
 #confirmModal .modal-purchase-item-row .modal-item-icon,
@@ -3440,18 +4306,37 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 }
 
 #confirmModal .modal-quantity-btn {
-    width: 44px;
+    width: 48px;
     height: 28px;
-    padding: 0;
+    padding: 0 2px;
     border: 2px solid rgba(0, 220, 255, 0.75);
     border-radius: 4px;
     background: linear-gradient(180deg, rgba(40, 90, 140, 0.95) 0%, rgba(18, 48, 88, 0.98) 100%);
     color: #7FE9FF;
     font-size: 14px;
     line-height: 1;
-    cursor: var(--cursor-pointer, pointer);
+    cursor: var(--cursor-default);
     box-shadow: 0 0 10px rgba(0, 200, 255, 0.25);
     transition: background 0.12s ease, opacity 0.12s ease, border-color 0.12s ease;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    box-sizing: border-box;
+}
+
+#confirmModal .modal-quantity-btn.modal-quantity-btn-step5 {
+    width: 48px;
+    min-width: 48px;
+    padding: 0 2px;
+}
+
+#confirmModal .modal-quantity-btn-step-label {
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0;
+    line-height: 1;
+    opacity: 0.95;
 }
 
 #confirmModal .modal-quantity-btn:hover:not(:disabled):not(.is-disabled) {
@@ -3467,14 +4352,84 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 #confirmModal .modal-quantity-btn:disabled,
 #confirmModal .modal-quantity-btn.is-disabled {
     opacity: 0.35;
-    cursor: var(--cursor-default, default);
+    cursor: var(--cursor-default);
     box-shadow: none;
+}
+
+/* Purple CTA max button — same 3-patch family as other main buttons */
+#confirmModal .modal-quantity-max-btn.choice-btn.cta-button {
+    width: auto;
+    min-width: 0;
+    height: 53px;
+    margin-left: 6px;
+    margin-top: 0;
+    margin-bottom: 0;
+    padding-left: 26px;
+    padding-right: 26px;
+    flex-shrink: 0;
+    gap: 7px;
+    font-size: 16px;
+    letter-spacing: 0.04em;
+    align-self: center;
+}
+
+#confirmModal .modal-quantity-max-btn.cta-button::before,
+#confirmModal .modal-quantity-max-btn.cta-button::after {
+    width: 26px;
+    background-size: 26px 53px;
+}
+
+#confirmModal .modal-quantity-max-btn.cta-button {
+    background-size: 1px 53px;
+}
+
+#confirmModal .modal-quantity-max-btn:disabled,
+#confirmModal .modal-quantity-max-btn.is-disabled {
+    opacity: 0.45;
+    filter: brightness(0.7);
+    cursor: var(--cursor-default);
+}
+
+#confirmModal .modal-quantity-max-label {
+    font-size: 16px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    line-height: 1;
+    color: #FFFFFF;
+    text-transform: uppercase;
+}
+
+#confirmModal .modal-quantity-max-count {
+    font-size: 16px;
+    font-weight: 800;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+    color: #F4B8FF;
+    text-transform: none;
 }
 
 #confirmModal .modal-cost-amount {
     text-align: center;
     max-width: 100%;
     line-height: 1.15;
+}
+
+/* Leaderboard: keep a stable frame width across Today / Yesterday / All Time */
+#leaderboardModal .modal.modal-frame-9patch {
+    width: 640px;
+    max-width: min(640px, calc(100vw - 40px));
+    box-sizing: border-box;
+}
+
+#leaderboardModal .leaderboard-list p {
+    max-width: 100%;
+    text-align: center;
+}
+
+#leaderboardRefreshBtn .splash-btn-icon {
+    margin-right: 0;
+    margin-left: 8px;
 }
 
 /* Leaderboard: Reset + Close on one row */
@@ -3678,8 +4633,18 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 .modal-overlay.game-modal-enter > .splash-modal,
 .modal-overlay.game-modal-enter > .story-screen-container,
 .modal-overlay.game-modal-enter .map-progression-screen,
-.modal-overlay.game-modal-enter .specialty-screen {
+.modal-overlay.game-modal-enter .specialty-screen,
+.modal-overlay.game-modal-enter .supercharge-screen,
+.modal-overlay.game-modal-enter .supercharge-options-screen {
     animation: gameModalContentFadeIn 0.338s ease-out forwards;
+}
+
+/* Game over: match hex-map reveal (~3s ease-out) */
+#gameOverModal.game-over-slow-enter.game-modal-enter {
+    animation-duration: 3s;
+}
+#gameOverModal.game-over-slow-enter.game-modal-enter > .modal {
+    animation-duration: 3s;
 }
 
 .modal-overlay.game-modal-exit {
@@ -3691,7 +4656,9 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 .modal-overlay.game-modal-exit > .splash-modal,
 .modal-overlay.game-modal-exit > .story-screen-container,
 .modal-overlay.game-modal-exit .map-progression-screen,
-.modal-overlay.game-modal-exit .specialty-screen {
+.modal-overlay.game-modal-exit .specialty-screen,
+.modal-overlay.game-modal-exit .supercharge-screen,
+.modal-overlay.game-modal-exit .supercharge-options-screen {
     animation: gameModalContentFadeOut 0.263s ease-in forwards;
 }
 
@@ -3719,11 +4686,17 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     .modal-overlay.game-modal-enter > .story-screen-container,
     .modal-overlay.game-modal-enter .map-progression-screen,
     .modal-overlay.game-modal-enter .specialty-screen,
+    .modal-overlay.game-modal-enter .supercharge-screen,
+    .modal-overlay.game-modal-enter .supercharge-options-screen,
+    #gameOverModal.game-over-slow-enter.game-modal-enter,
+    #gameOverModal.game-over-slow-enter.game-modal-enter > .modal,
     .modal-overlay.game-modal-exit > .modal,
     .modal-overlay.game-modal-exit > .splash-modal,
     .modal-overlay.game-modal-exit > .story-screen-container,
     .modal-overlay.game-modal-exit .map-progression-screen,
     .modal-overlay.game-modal-exit .specialty-screen,
+    .modal-overlay.game-modal-exit .supercharge-screen,
+    .modal-overlay.game-modal-exit .supercharge-options-screen,
     .modal-overlay.game-modal-shell-swap-out > .modal,
     .modal-overlay.game-modal-shell-swap-out > .wave-complete-hero-graphic:not(.modal-shell-persist),
     .modal-overlay.game-modal-shell-swap-out > .character-speech-bubble:not(.modal-shell-persist),
@@ -3939,27 +4912,27 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 }
 
 /* Artifact trader: vertical scroll only; invisible scrollbars on the overlay */
-#waveCompleteModal.artifact-trader-modal.modal-overlay {
+.modal-overlay.artifact-trader-modal.modal-overlay {
     overflow-x: hidden;
     overflow-y: auto;
     scrollbar-width: none;
     -ms-overflow-style: none;
 }
 
-#waveCompleteModal.artifact-trader-modal.modal-overlay::-webkit-scrollbar {
+.modal-overlay.artifact-trader-modal.modal-overlay::-webkit-scrollbar {
     display: none;
     width: 0;
     height: 0;
 }
 
-#waveCompleteModal.artifact-trader-modal .modal-frame-content,
-#waveCompleteModal.artifact-trader-modal .wave-stats {
+.modal-overlay.artifact-trader-modal .modal-frame-content,
+.modal-overlay.artifact-trader-modal .wave-stats {
     max-width: 100%;
     overflow-x: visible;
     box-sizing: border-box;
 }
 
-#waveCompleteModal.artifact-trader-modal .artifact-trader-body {
+.modal-overlay.artifact-trader-modal .artifact-trader-body {
     width: 100%;
     max-width: 100%;
     margin: 0 auto;
@@ -3969,7 +4942,7 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 }
 
 /* Horizontal scroll only when trade columns exceed viewport; hidden scrollbar */
-#waveCompleteModal.artifact-trader-modal .artifact-trader-columns-scroll {
+.modal-overlay.artifact-trader-modal .artifact-trader-columns-scroll {
     width: 100%;
     max-width: 100%;
     overflow-x: auto;
@@ -3979,13 +4952,13 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     box-sizing: border-box;
 }
 
-#waveCompleteModal.artifact-trader-modal .artifact-trader-columns-scroll::-webkit-scrollbar {
+.modal-overlay.artifact-trader-modal .artifact-trader-columns-scroll::-webkit-scrollbar {
     display: none;
     width: 0;
     height: 0;
 }
 
-#waveCompleteModal.artifact-trader-modal .artifact-trader-columns {
+.modal-overlay.artifact-trader-modal .artifact-trader-columns {
     display: flex;
     flex-direction: row;
     flex-wrap: nowrap;
@@ -3998,7 +4971,7 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     box-sizing: border-box;
 }
 
-#waveCompleteModal.artifact-trader-modal .artifact-trader-continue-wrap {
+.modal-overlay.artifact-trader-modal .artifact-trader-continue-wrap {
     position: relative;
     width: 100%;
     margin: 16px 0 4px;
@@ -4008,42 +4981,62 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 }
 
 /* Artifact trader: match in-game default (white) cursor; set pluses read as white */
-#waveCompleteModal.artifact-trader-modal,
-#waveCompleteModal.artifact-trader-modal * {
+.modal-overlay.artifact-trader-modal,
+.modal-overlay.artifact-trader-modal * {
     cursor: var(--cursor-default) !important;
 }
 
-#waveCompleteModal.artifact-trader-modal .artifact-trader-set-plus {
+.modal-overlay.artifact-trader-modal .artifact-trader-set-plus {
     filter: brightness(0) invert(1);
     opacity: 0.92;
 }
 
 /* Reward icon(s) above Claim, centered */
-#waveCompleteModal.artifact-trader-modal .artifact-trader-reward-row {
+.modal-overlay.artifact-trader-modal .artifact-trader-reward-row {
     width: 100%;
     margin-bottom: 0;
 }
 
-/* All reward icons in one row — continuous overlap across types and counts */
-#waveCompleteModal.artifact-trader-modal .artifact-trader-reward-stack {
+/* Reward icons above Claim — one sprite per type, with an xN count */
+.modal-overlay.artifact-trader-modal .artifact-trader-reward-stack {
     display: inline-flex;
     flex-direction: row;
     align-items: center;
     justify-content: center;
+    gap: 10px;
     overflow: visible;
 }
 
-#waveCompleteModal.artifact-trader-modal .artifact-trader-reward-stack img {
+.modal-overlay.artifact-trader-modal .artifact-trader-reward-stack img {
     flex-shrink: 0;
 }
 
-#waveCompleteModal.artifact-trader-modal .artifact-trader-reward-part {
+.artifact-trader-reward-unit {
+    display: inline-flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 3px;
+    flex-shrink: 0;
+}
+
+.artifact-trader-reward-count {
+    color: #F1F5F9;
+    font-size: 17px;
+    font-weight: 800;
+    font-family: "Exo 2", sans-serif;
+    line-height: 1;
+    white-space: nowrap;
+    letter-spacing: 0.02em;
+    pointer-events: none;
+}
+
+.modal-overlay.artifact-trader-modal .artifact-trader-reward-part {
     display: inline-flex;
     align-items: center;
     justify-content: center;
 }
 
-#waveCompleteModal.artifact-trader-modal .artifact-trader-reward-currency-chip {
+.modal-overlay.artifact-trader-modal .artifact-trader-reward-currency-chip {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -4051,7 +5044,7 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     min-height: 34px;
 }
 
-#waveCompleteModal.artifact-trader-modal .artifact-trader-reward-currency-value {
+.modal-overlay.artifact-trader-modal .artifact-trader-reward-currency-value {
     color: #00FF88;
     font-size: 22px;
     font-weight: 800;
@@ -4061,43 +5054,43 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 }
 
 /* Align completed checkmark with reward column (scroll) center line */
-#waveCompleteModal.artifact-trader-modal .artifact-trader-reward-col .artifact-trader-completed-check {
+.modal-overlay.artifact-trader-modal .artifact-trader-reward-col .artifact-trader-completed-check {
     margin-left: 0;
 }
 
 /* Want box borders: can claim = dark green, missing items = dark red, claimed = black + very dim grey edge */
-#waveCompleteModal.artifact-trader-modal .artifact-trader-want-box.artifact-trader-want-box--available {
+.modal-overlay.artifact-trader-modal .artifact-trader-want-box.artifact-trader-want-box--available {
     background: #000000 !important;
     border-color: rgba(96, 230, 140, 0.99) !important;
     box-shadow: none !important;
 }
 
-#waveCompleteModal.artifact-trader-modal .artifact-trader-want-box.artifact-trader-want-box--available .artifact-trader-want-box-inner {
+.modal-overlay.artifact-trader-modal .artifact-trader-want-box.artifact-trader-want-box--available .artifact-trader-want-box-inner {
     background: #000000 !important;
 }
 
-#waveCompleteModal.artifact-trader-modal .artifact-trader-want-box.artifact-trader-want-box--locked {
+.modal-overlay.artifact-trader-modal .artifact-trader-want-box.artifact-trader-want-box--locked {
     background: #000000 !important;
     border-color: rgba(182, 52, 58, 0.98) !important;
     box-shadow: none !important;
 }
 
-#waveCompleteModal.artifact-trader-modal .artifact-trader-want-box.artifact-trader-want-box--locked .artifact-trader-want-box-inner {
+.modal-overlay.artifact-trader-modal .artifact-trader-want-box.artifact-trader-want-box--locked .artifact-trader-want-box-inner {
     background: #000000 !important;
 }
 
-#waveCompleteModal.artifact-trader-modal .artifact-trader-want-box.artifact-trader-want-box--traded {
+.modal-overlay.artifact-trader-modal .artifact-trader-want-box.artifact-trader-want-box--traded {
     background: #000000 !important;
     border-color: rgba(120, 130, 145, 0.32) !important;
     box-shadow: none !important;
 }
 
-#waveCompleteModal.artifact-trader-modal .artifact-trader-want-box.artifact-trader-want-box--traded .artifact-trader-want-box-inner {
+.modal-overlay.artifact-trader-modal .artifact-trader-want-box.artifact-trader-want-box--traded .artifact-trader-want-box-inner {
     background: #000000 !important;
 }
 
 /* Claim uses shared .cta-button.cta-yellow (3-patch); avoid choice-btn 100% width in reward column */
-#waveCompleteModal.artifact-trader-modal .artifact-trader-reward-col .artifact-trader-trade-btn.choice-btn.cta-button {
+.modal-overlay.artifact-trader-modal .artifact-trader-reward-col .artifact-trader-trade-btn.choice-btn.cta-button {
     width: auto;
     min-width: min-content;
     align-self: center;
@@ -4105,7 +5098,7 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 }
 
 /* Always show Claim; when disabled, match row/column dimness (avoid global CTA :disabled double-dim) */
-#waveCompleteModal.artifact-trader-modal .artifact-trader-reward-col .artifact-trader-trade-btn.cta-button:disabled {
+.modal-overlay.artifact-trader-modal .artifact-trader-reward-col .artifact-trader-trade-btn.cta-button:disabled {
     opacity: 1 !important;
     filter: none !important;
     pointer-events: none;
@@ -4543,6 +5536,7 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     background: rgba(0, 0, 0, 0.85); /* same as #waveCompleteModal / artifact trader */
     pointer-events: auto;
     cursor: var(--cursor-default);
+    animation: gameModalBackdropFadeIn 0.3s ease-out forwards;
 }
 
 .dungeon-reward-overlay,
@@ -4679,22 +5673,24 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-start;
     gap: 10px;
     width: auto;
     min-width: 240px;
     height: 246px;
-    padding-left: 42px;
-    padding-right: 42px;
+    padding: 28px 42px 22px;
     box-sizing: border-box;
     color: #fff;
     flex-shrink: 0;
+    overflow: visible;
+    isolation: isolate;
     transition: transform 0.15s ease;
     cursor: var(--cursor-default);
 }
 
 .dungeon-reward-choice-frame .dungeon-reward-claim-btn {
     pointer-events: none; /* clicks go to the frame */
+    margin-top: auto;
 }
 
 /* Frame art only — icons / Claim stay full color */
@@ -4725,9 +5721,38 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 
 .dungeon-reward-stack-wrap {
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: 6px;
+    flex: 1 1 auto;
+    width: 100%;
     min-height: 48px;
+}
+
+.dungeon-reward-shop-value {
+    color: #00FF88;
+    font-size: 13px;
+    font-weight: 400;
+    font-family: "Exo 2", sans-serif;
+    line-height: 1.2;
+    text-shadow: 0 0 8px rgba(0, 255, 136, 0.35);
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+.dungeon-reward-shop-value-amount {
+    font-weight: 700;
+}
+
+.dungeon-reward-stack-wrap .artifact-trader-reward-stack {
+    display: inline-flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    overflow: visible;
+    position: relative;
 }
 
 .dungeon-reward-claim-btn.choice-btn.cta-button {
@@ -4756,11 +5781,23 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 }
 
 .token-voucher-sellback-title {
-    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 20px;
     font-weight: 700;
     color: #fff;
     margin-bottom: 10px;
     letter-spacing: 0.02em;
+}
+
+.auto-shields-panel-title-icon {
+    width: 48px;
+    height: auto;
+    flex-shrink: 0;
+    image-rendering: pixelated;
+    object-fit: contain;
+    pointer-events: none;
 }
 
 .token-voucher-sellback-buttons {
@@ -5635,9 +6672,37 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     font-weight: bold;
     flex: 1;
 }
-.leaderboard-date {
+.leaderboard-tabs {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    justify-content: center;
+    align-items: stretch;
+    gap: 8px;
+    width: 100%;
+    margin: 8px 0 12px;
+}
+.leaderboard-tabs .leaderboard-tab {
+    flex: 1 1 0;
+    min-width: 0;
+    width: auto !important;
+}
+.leaderboard-entry.is-you {
+    background: rgba(255, 215, 0, 0.12);
+}
+.leaderboard-name {
+    color: #eee;
+    flex: 1;
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.leaderboard-wave {
     color: #aaa;
     font-size: 12px;
+    min-width: 72px;
+    text-align: right;
 }
 
 .modal-choices {
@@ -5651,6 +6716,69 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     z-index: 1;
 }
 
+/* Settings: pin footer buttons; settings grid scrolls with bottom fade */
+#settingsModalInner .modal-frame-content {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    max-height: 100%;
+    overflow: hidden;
+}
+
+#settingsModalInner .modal-frame-content::after {
+    display: none;
+}
+
+#settingsModalInner .modal-frame-content > h2,
+#settingsModalInner .modal-frame-content > .modal-choices-settings-footer {
+    flex-shrink: 0;
+}
+
+#settingsModalInner .settings-scroll-wrap {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+#settingsModalInner .settings-scroll-wrap::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 36px;
+    background: linear-gradient(to bottom, transparent 0%, #071025 100%);
+    pointer-events: none;
+    z-index: 2;
+}
+
+#settingsModalInner #settingsContent.settings-grid {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    margin: 0px;
+    padding-bottom:26px;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(34, 45, 75, 0.8) rgba(22, 33, 62, 0.3);
+}
+
+#settingsModalInner #settingsContent.settings-grid::-webkit-scrollbar {
+    width: 10px;
+}
+
+#settingsModalInner #settingsContent.settings-grid::-webkit-scrollbar-track {
+    background: rgba(22, 33, 62, 0.3);
+    border-radius: 5px;
+}
+
+#settingsModalInner #settingsContent.settings-grid::-webkit-scrollbar-thumb {
+    background: rgba(34, 45, 75, 0.8);
+    border-radius: 5px;
+}
+
 /* Settings: two footer rows (utility links, then Done / Advanced) */
 #settingsModalInner .modal-choices-settings-footer {
     flex-direction: column;
@@ -5659,6 +6787,9 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     max-width: 100%;
     box-sizing: border-box;
     gap: 8px;
+    margin-top: 8px;
+    position: relative;
+    z-index: 3;
 }
 
 #settingsModalInner .modal-choices-settings-footer-row {
@@ -5681,6 +6812,7 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     width: 100%;
     max-width: 100%;
     box-sizing: border-box;
+    margin-top:20px;
 }
 
 #advancedSettingsModal .modal-choices-advanced-footer .choice-btn {
@@ -5693,8 +6825,8 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 .settings-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 20px;
-    margin: 20px 0;
+    gap: 8px;
+    margin: 0px;
 }
 
 .setting-item {
@@ -5702,6 +6834,35 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 8px;
+}
+
+.setting-item.setting-item-display-name {
+    grid-column: 1 / -1;
+}
+
+.setting-display-name-heading {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+}
+
+.setting-item-display-name label {
+    color: #fff;
+    font-weight: bold;
+    margin: 0;
+}
+
+.setting-item-display-name .setting-display-name-hint {
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 13px;
+    margin: 0;
+    line-height: 1.4;
+}
+
+.setting-item-display-name .rename-input {
+    margin-bottom: 0;
 }
 
 /* Label left + toggle right: keep ≥10px gap so the knob never crowds the text */
@@ -5754,18 +6915,6 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
 .setting-slider::-moz-range-thumb:hover {
     background: #66BB6A;
     transform: scale(1.1);
-}
-
-/* Discrete 3-stop slider (map zoom): labels under track ends + center */
-.setting-slider-labels {
-    display: flex;
-    justify-content: space-between;
-    margin-top: 6px;
-    color: rgba(255, 255, 255, 0.7);
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    user-select: none;
 }
 
 /* Toggle Switch */
@@ -6003,6 +7152,26 @@ body.tutorial-mode:has(#confirmModal.active) .tutorial-arrow {
     font-weight: bold;
 }
 
+#gameOverModal .game-over-stat-value-icons {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    vertical-align: middle;
+}
+
+#gameOverModal .game-over-stat-icon {
+    width: 28px;
+    height: 28px;
+    object-fit: contain;
+    image-rendering: auto;
+    flex-shrink: 0;
+}
+
+#gameOverModal .game-over-stat-icon--perfect {
+    width: 26px;
+    height: 26px;
+}
+
 /* Same button layout for one- and two-column game over: VIEW MAP | RUN HISTORY, then MAIN MENU full width */
 #gameOverModal .game-over-stats-actions {
     display: flex;
@@ -6099,17 +7268,43 @@ body.game-over-map-locked #sidePanelToggle {
 /* Scenario Dropdown */
 .scenario-dropdown-container {
     position: relative;
-    z-index: 10;
-    /* Create stacking context for dropdown menu */
-    isolation: isolate;
+    z-index: 1;
     /* Override modal > * opacity to prevent it from affecting dropdown menu */
     opacity: 1 !important;
+}
+
+.scenario-dropdown-container.is-open {
+    z-index: 20;
 }
 
 .scenario-dropdown {
     position: relative;
     width: 100%;
-    z-index: 1;
+}
+
+.scenario-dropdown-menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    margin-top: 4px;
+    background: rgba(22, 33, 62, 0.98) !important; /* More opaque for better readability */
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    backdrop-filter: blur(20px) saturate(180%);
+    border: 2px solid #2a2a4a;
+    border-radius: 8px;
+    max-height: 300px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    display: none;
+    z-index: 4000;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+    opacity: 1 !important;
+    min-height: 40px;
+}
+
+.scenario-dropdown-menu.active {
+    display: block !important;
 }
 
 .scenario-dropdown-selected {
@@ -6145,38 +7340,6 @@ body.game-over-map-locked #sidePanelToggle {
 
 .scenario-dropdown-selected.active .scenario-dropdown-arrow {
     transform: rotate(180deg);
-}
-
-.scenario-dropdown-menu {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    right: 0;
-    margin-top: 4px;
-    background: rgba(22, 33, 62, 0.95) !important; /* More opaque for better readability */
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
-    backdrop-filter: blur(20px) saturate(180%);
-    border: 2px solid #2a2a4a;
-    border-radius: 8px;
-    max-height: 300px;
-    overflow-y: auto;
-    overflow-x: hidden;
-    display: none;
-    z-index: 3000 !important;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-    /* Override modal > * opacity - backdrop-filter needs proper opacity control */
-    opacity: 1 !important;
-    /* Force hardware acceleration for blur */
-    transform: translateZ(0);
-    will-change: backdrop-filter;
-    /* Create a new stacking context */
-    isolation: isolate;
-    /* Ensure it actually covers content */
-    min-height: 40px;
-}
-
-.scenario-dropdown-menu.active {
-    display: block !important;
 }
 
 .scenario-dropdown-option {
@@ -6225,6 +7388,35 @@ body.game-over-map-locked #sidePanelToggle {
     pointer-events: none;
     opacity: 0.8;
     z-index: 999;
+}
+
+/* Tower sprite that follows the cursor while placing / moving */
+.tower-drag-ghost {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 48px;
+    height: 48px;
+    pointer-events: none;
+    z-index: 10000;
+    overflow: visible;
+    display: none;
+    filter: drop-shadow(0 10px 14px rgba(0, 0, 0, 0.55));
+    will-change: transform;
+}
+
+.tower-drag-ghost.tower-drag-ghost--visible {
+    display: block;
+}
+
+.tower-drag-ghost img {
+    pointer-events: none;
+    -webkit-user-drag: none;
+    user-select: none;
+}
+
+.inventory-item.tower-drag-source .icon {
+    visibility: hidden;
 }
 
 /* Scrollbar Styling */
@@ -6956,7 +8148,7 @@ body.game-not-started .overlay-top-stats {
 
 /* Rotatable towers (jet/spread/bomber) extend turret to the right — bias crop toward base */
 .tower-status-icon-slot > div {
-    transform: scale(0.52);
+    transform: scale(0.42);
     transform-origin: 38% 50%;
 }
 
@@ -7247,7 +8439,7 @@ body.left-overlays-collapsed .overlay-debug-selector {
 .overlay-map-stat-icon-tower {
     width: 24px;
     height: 24px;
-    transform: rotate(90deg) translateY(-4px);
+    transform: rotate(90deg);
     transform-origin: center center;
 }
 .overlay-row-values-column {
@@ -7383,15 +8575,25 @@ body.left-overlays-collapsed .overlay-debug-selector {
 }
 
 /* Level + XP combined row: level hex with number overlay on left, XP bar on right */
+.overlay-level-xp-row {
+    position: relative; /* anchor for absolutely positioned hex badge */
+}
 .overlay-level-hex-wrap {
-    position: relative;
-    flex-shrink: 0;
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translate(-4px, calc(-50% + 2px));
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 38px; /* 30px * 1.25 ≈ 38px */
+    width: 38px;
     height: 38px;
-    transform:translate(-4px, 2px);
+    z-index: 2; /* sits above the bar fill */
+    pointer-events: none;
+}
+/* Give the XP bar a left indent so the text label clears the hex badge */
+.overlay-level-xp-row .overlay-progress-bar {
+    padding-left: 38px;
 }
 .overlay-level-hex {
     width: 44px;
@@ -7419,6 +8621,25 @@ body.left-overlays-collapsed .overlay-debug-selector {
     font-size: 15px;
     font-weight: bold;
     flex-shrink: 0;
+}
+
+/* HP container: same absolute-badge treatment as the XP row */
+.overlay-hp-container {
+    position: relative;
+}
+.overlay-hp-container .overlay-progress-label {
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 2;
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+}
+/* Give the HP bar a left indent so the text label clears the tree icon */
+.overlay-hp-container .overlay-progress-bar {
+    padding-left: 38px;
 }
 
 /* XP label - yellow to match fill */
@@ -7538,6 +8759,8 @@ body.left-overlays-collapsed .overlay-debug-selector {
     align-items: center;
     margin: 0;
     width: 100%;
+    flex-wrap: nowrap;
+    overflow: visible;
 }
 .overlay-row-score .overlay-label {
     min-width: 38px;
@@ -7547,9 +8770,52 @@ body.left-overlays-collapsed .overlay-debug-selector {
 .overlay-score-value {
     color: #FFFFFF;
     font-size: 21px;
+    letter-spacing:-1px;
     font-weight: bold;
     text-shadow: 0 0 1px black, 0 0 2px black, 0 0 10px black, 0 0 20px black;
     margin-left: 0;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.overlay-score-value.is-compact {
+    font-size: 15px;
+    letter-spacing: -1px;
+}
+
+.overlay-star-score-wrap {
+    position: relative;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    margin-left: 4px;
+}
+.overlay-star-score {
+    width: 42px;
+    height: 42px;
+    object-fit: contain;
+    image-rendering: auto;
+    display: block;
+    pointer-events: none;
+}
+.overlay-star-score-value {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -52%);
+    margin-top:1px;
+    font-size: 20px !important;
+    font-weight: 800;
+    font-family: "Exo 2", sans-serif;
+    color: white;
+    text-shadow: 0 0 2px rgba(0, 0, 0, 1), 0 0 5px rgba(0, 0, 0, .8), 0 0 10px rgba(0, 0, 0, .5) !important;
+    pointer-events: none;
+    text-align: center;
+    line-height: 1;
+    letter-spacing: -0.4px;
+    text-shadow: 0 0 2px rgba(255, 236, 170, 0.85);
 }
 
 /* Subtle dividers between overlay stat groups */
@@ -7787,6 +9053,81 @@ body.left-overlays-collapsed .toast-notification-container {
     overflow: hidden;
 }
 
+/* Map zoom: stacked + / − on the right of the minimap hex */
+.minimap-zoom {
+    position: absolute;
+    right: -5px;
+    top: -10px;
+    z-index: 55;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    pointer-events: auto;
+    text-align:center;
+    background:black;
+    border-radius:16px;
+    padding:8px 5px 12px;
+    width:32px;
+}
+
+.minimap-zoom-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    cursor: var(--cursor-default);
+    line-height: 0;
+}
+
+.minimap-zoom-btn img {
+    width: 20px;
+    height: 20px;
+    display: block;
+    pointer-events: none;
+    image-rendering: -webkit-optimize-contrast;
+    image-rendering: auto;
+}
+
+.minimap-zoom-btn:hover:not(.is-disabled) img {
+    filter: brightness(1.15);
+}
+
+.minimap-zoom-btn:active:not(.is-disabled) {
+    transform: translateY(1px);
+}
+
+.minimap-zoom-btn.is-disabled {
+    opacity: 0.35;
+    cursor: var(--cursor-x) !important;
+}
+
+.minimap-zoom-label {
+    color: #ffffff;
+    font-size: 8px;
+    text-transform:uppercase;
+    font-family: "Exo 2", sans-serif;
+    line-height: 1;
+    user-select: none;
+    pointer-events: none;
+    margin-bottom:5px;
+    margin-top:4px;
+}
+
+.minimap-zoom-value {
+    margin-top: 2px;
+    color: #FFD700;
+    font-size: 9px;
+    font-family: "Exo 2", sans-serif;
+    line-height: 1;
+    user-select: none;
+    pointer-events: none;
+}
+
 /* Tooltip Styles - match modal pattern exactly */
 #game-tooltip {
     position: fixed !important; /* Fixed positioning to appear above sidebar (which is also fixed) */
@@ -7986,6 +9327,68 @@ body.left-overlays-collapsed .toast-notification-container {
 
 .clear-all-items-btn:active {
     transform: translateY(0);
+}
+
+.clear-items-picker-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 12000;
+    pointer-events: none;
+}
+
+.clear-items-picker-panel {
+    position: fixed;
+    pointer-events: auto;
+    min-width: 168px;
+    padding: 10px 12px 12px;
+    border-radius: 10px;
+    background: rgba(12, 18, 36, 0.94);
+    border: 2px solid rgba(255, 215, 0, 0.55);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+    cursor: var(--cursor-default);
+}
+
+.clear-items-picker-title {
+    color: #fff;
+    font-size: 13px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    text-align: center;
+}
+
+.clear-items-picker-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.clear-items-picker-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    border: 2px solid rgba(255, 255, 255, 0.18);
+    border-radius: 6px;
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.92);
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1.2;
+    white-space: nowrap;
+    cursor: var(--cursor-default);
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+
+.clear-items-picker-btn:hover:not(:disabled) {
+    background: rgba(255, 196, 29, 0.2);
+    border-color: rgba(255, 215, 0, 0.5);
+    color: #fff;
+}
+
+.clear-items-picker-btn:disabled {
+    opacity: 0.38;
+    cursor: default;
 }
 
 .wave-countdown-display {
@@ -8257,8 +9660,9 @@ body.left-overlays-collapsed .toast-notification-container {
 .auto-saving-indicator {
     position: fixed;
     top: 20px;
-    left: 50%;
-    transform: translateX(-50%) translateY(-100px);
+    right: 20px;
+    left: auto;
+    transform: translateY(-100px);
     padding: 12px 24px;
     background: rgba(33, 150, 243, 0.9);
     border: 2px solid #2196F3;
@@ -8273,7 +9677,7 @@ body.left-overlays-collapsed .toast-notification-container {
 
 .auto-saving-indicator.active {
     opacity: 1;
-    transform: translateX(-50%) translateY(0);
+    transform: translateY(0);
 }
 
 .auto-saving-indicator .auto-saving-icon {
@@ -8436,14 +9840,40 @@ body.left-overlays-collapsed .toast-notification-container {
     overflow: visible;
 }
 
-#storyPanel2 .story-spawner-icon {
+#storyPanel2 .story-spawner-wrap {
     position: absolute;
     top: 20%;
     right: 18%;
     width: 9.1125rem; /* 10.125rem − 10% */
     max-width: 36%;
+    aspect-ratio: 1;
+    z-index: 1;
+    transform-origin: center center;
+    /* Scale-only pulse so canvas FX keeps additive blending (filter would flatten it) */
+    animation: storyVortexWrapPulse 2s ease-in-out infinite;
+}
+
+#storyPanel2 .story-spawner-fx {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 280%;
+    height: 280%;
+    pointer-events: none;
+    z-index: 2;
+}
+
+#storyPanel2 .story-spawner-icon {
+    position: relative;
+    display: block;
+    width: 100%;
+    height: auto;
     z-index: 1;
     margin: 0;
+    image-rendering: crisp-edges;
+    filter: drop-shadow(0 0 30px rgba(255, 107, 53, 0.6));
+    animation: storyVortexIconGlow 2s ease-in-out infinite;
 }
 
 #storyPanel2 .story-vortex-wrap {
@@ -8522,8 +9952,205 @@ body.left-overlays-collapsed .toast-notification-container {
     margin-bottom: 1rem; /* overlap each row a bit */
 }
 
-.story-towers-stagger .story-towers-col .story-tower-icon:last-child {
+.story-towers-stagger .story-towers-col .story-tower-icon:last-child,
+.story-towers-stagger .story-towers-col .story-tower-spin-wrap:last-child,
+.story-towers-stagger .story-towers-col .story-bomb-cycle:last-child {
     margin-bottom: 0;
+}
+
+/* Rain / pulsing: map-style continuous spin (base +25%, then +20% more) */
+.story-tower-spin-wrap {
+    position: relative;
+    width: 7.2rem;
+    height: 7.2rem;
+    margin-bottom: 1rem;
+    flex-shrink: 0;
+}
+
+.story-tower-spin-wrap--large {
+    width: 9rem;
+    height: 9rem;
+}
+
+.story-tower-spin-pivot {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 0;
+    height: 0;
+    animation: turretRotatePivot 8s linear infinite;
+}
+
+/* Jet / spread / bomber: 6 hex facings with a short ease-in-out between each */
+.story-tower-snap-pivot {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 0;
+    height: 0;
+    animation: storyTowerHexEase 4.8s ease-in-out infinite;
+}
+
+.story-tower-icon--spin {
+    position: absolute;
+    height: 9rem;
+    width: 9rem;
+    left: -4.5rem;
+    top: -4.5rem;
+    margin-bottom: 0;
+    object-fit: contain;
+}
+
+.story-tower-icon--snap {
+    position: absolute;
+    height: 7.2rem;
+    width: 7.2rem;
+    left: -3.6rem;
+    top: -3.6rem;
+    margin-bottom: 0;
+    object-fit: contain;
+}
+
+.story-tower-icon--snap-large {
+    height: 9rem;
+    width: 9rem;
+    left: -4.5rem;
+    top: -4.5rem;
+}
+
+.story-bomb-cycle {
+    position: relative;
+    width: 6rem;
+    height: 6rem;
+    margin-bottom: 1rem;
+    flex-shrink: 0;
+    transform: translateX(8px);
+}
+
+.story-bomb-cycle .story-tower-icon {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    margin-bottom: 0;
+    object-fit: contain;
+    opacity: 0;
+    animation: storyBombLevelFade 3.2s ease-in-out infinite;
+}
+
+.story-bomb-cycle .story-tower-icon:nth-child(1) { animation-delay: 0s; }
+.story-bomb-cycle .story-tower-icon:nth-child(2) { animation-delay: -2.4s; }
+.story-bomb-cycle .story-tower-icon:nth-child(3) { animation-delay: -1.6s; }
+.story-bomb-cycle .story-tower-icon:nth-child(4) { animation-delay: -0.8s; }
+
+/* Story panel 4: mystery / dungeon / power-up orbit */
+#storyPanel4 .story-image-collectibles {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: visible;
+}
+
+.story-collectibles-orbit {
+    position: relative;
+    width: min(85%, 20rem);
+    aspect-ratio: 1;
+    margin: 0 auto;
+    animation: storyCollectiblesOrbitSpin 28s linear infinite;
+}
+
+.story-orbit-planet {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 0;
+    height: 0;
+    /* Equilateral triangle vertices; undo arm angle so content starts upright */
+    transform: rotate(var(--a, 0deg)) translate(0, -6.75rem) rotate(calc(var(--a, 0deg) * -1));
+}
+
+.story-orbit-counter {
+    position: relative;
+    width: 5.75rem;
+    height: 5.75rem;
+    transform: translate(-50%, -50%);
+    animation: storyCollectiblesOrbitCounter 28s linear infinite;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.story-collectible-fx {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 240%;
+    height: 240%;
+    pointer-events: none;
+    z-index: 0;
+}
+
+/* Dungeon smoulder draws over the door sprite (map: drawSmoulderSparks after entrances) */
+.story-collectible-fx--over {
+    z-index: 2;
+    width: 280%;
+    height: 280%;
+}
+
+.story-collectible-icon {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    height: auto;
+    object-fit: contain;
+    image-rendering: -webkit-optimize-contrast;
+    image-rendering: auto;
+    filter: drop-shadow(0 0 10px rgba(255, 200, 80, 0.35));
+}
+
+/* Match map scale: power-ups draw smaller than mystery boxes (~hex × 1.02 vs × 1.6) */
+.story-collectible-icon--powerup {
+    width: 64%;
+    height: auto;
+}
+
+/* Dungeon map size ~hex × 1.26 vs mystery × 1.6 */
+.story-collectible-icon--dungeon {
+    width: 78%;
+    height: auto;
+}
+
+/* Artifacts are close to mystery/tank scale on the map */
+.story-collectible-icon--artifact {
+    width: 88%;
+    height: auto;
+}
+
+@keyframes storyCollectiblesOrbitSpin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+@keyframes storyCollectiblesOrbitCounter {
+    from { transform: translate(-50%, -50%) rotate(0deg); }
+    to { transform: translate(-50%, -50%) rotate(-360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .story-collectibles-orbit,
+    .story-orbit-counter,
+    .story-tower-spin-pivot,
+    .story-tower-snap-pivot,
+    .story-bomb-cycle .story-tower-icon {
+        animation: none;
+    }
+
+    .story-bomb-cycle .story-tower-icon:first-child {
+        opacity: 1;
+    }
 }
 
 /* Arrow icon in story panel Next/Back buttons */
@@ -8550,6 +10177,31 @@ body.left-overlays-collapsed .toast-notification-container {
   to {
     transform: translate(-50%, -50%) rotate(360deg);
   }
+}
+
+/* Rain/pulsing inventory spin: rotate the pivot wrapper, not the img box */
+@keyframes turretRotatePivot {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Hold each hex facing, then ease ~250ms into the next (clockwise) */
+@keyframes storyTowerHexEase {
+  0%, 11.5% { transform: rotate(0deg); }
+  16.666%, 28.166% { transform: rotate(60deg); }
+  33.333%, 44.833% { transform: rotate(120deg); }
+  50%, 61.5% { transform: rotate(180deg); }
+  66.666%, 78.166% { transform: rotate(240deg); }
+  83.333%, 94.833% { transform: rotate(300deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes storyBombLevelFade {
+  0% { opacity: 1; }
+  18.75% { opacity: 1; }
+  25% { opacity: 0; }
+  93.75% { opacity: 0; }
+  100% { opacity: 1; }
 }
 
 @keyframes towerHexSnapRotate {
@@ -8607,7 +10259,7 @@ body.left-overlays-collapsed .toast-notification-container {
     animation: storyIconPulseGreen 2s ease-in-out infinite;
 }
 
-#storyPanel4 .story-icon {
+#storyPanel5 .story-icon {
     width: 18.75rem; /* 25% larger than 15rem */
 }
 
@@ -9567,14 +11219,12 @@ body.left-overlays-collapsed .toast-notification-container {
     height: 48px;
 }
 
-.gift-grove-shimmer--tooltip::before {
-    inset: -39.1%;
-    filter: blur(5px);
-}
-
+/* Tooltips: icon only — map tiles keep the bloom/shimmer */
+.gift-grove-shimmer--tooltip::before,
 .gift-grove-shimmer--tooltip::after {
-    inset: -33.35%;
-    filter: blur(7px);
+    content: none;
+    display: none;
+    animation: none;
 }
 
 @keyframes giftGroveShimmerSpin {
@@ -9657,14 +11307,6 @@ body.left-overlays-collapsed .toast-notification-container {
     );
 }
 
-.artifact-shimmer.gift-grove-shimmer--tooltip::before {
-    inset: -41%;
-}
-
-.artifact-shimmer.gift-grove-shimmer--tooltip::after {
-    inset: -35%;
-}
-
 @supports not (background: conic-gradient(from var(--gift-shimmer-angle), red, blue)) {
     .artifact-shimmer::after {
         background: conic-gradient(
@@ -9684,8 +11326,8 @@ body.left-overlays-collapsed .toast-notification-container {
 }
 
 /*
- * Collectible sprites (shop items, power-ups, artifacts): smooth downscale in UI.
- * Matches map canvas (imageSmoothingEnabled). !important overrides inline pixelated/crisp-edges.
+ * High-res illustrated sprites (items, power-ups, artifacts, towers): smooth downscale in UI.
+ * Matches map canvas bilinear scaling. !important overrides leftover inline pixelated/crisp-edges.
  */
 .collectible-sprite-smooth,
 .artifact-sprite-smooth,
@@ -9693,6 +11335,8 @@ body.left-overlays-collapsed .toast-notification-container {
 .inventory-item.item .icon .icon-inner img,
 .inventory-item.powerup .icon .icon-inner img,
 .inventory-item.artifact .icon .icon-inner img,
+.inventory-item.tower .icon .icon-inner img,
+.meta-progression-tower-icon img,
 .inventory-item.shop-bundle-discount .shop-discount-badge,
 .bottom-edge-power-ups .power-up-indicator img,
 #game-tooltip img[src*="assets/images/items/"],
@@ -9703,7 +11347,7 @@ body.left-overlays-collapsed .toast-notification-container {
 #modalOverlay img[src*="assets/images/power_ups/"],
 #waveCompleteModal img[src*="assets/images/items/"],
 #waveCompleteModal img[src*="assets/images/power_ups/"],
-#waveCompleteModal.artifact-trader-modal img[data-artifact-id],
+.modal-overlay.artifact-trader-modal img[data-artifact-id],
 .placement-scenario-modal img[src*="assets/images/items/"],
 .placement-scenario-modal img[src*="assets/images/power_ups/"],
 #overlayLevelXpRow img[src*="assets/images/items/"] {
@@ -10303,11 +11947,23 @@ body.left-overlays-collapsed .toast-notification-container {
     transform: translateY(-4px);
 }
 
+#inventoryGridArtifacts .collection-artifact-trader-btn {
+    justify-self: stretch;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+#inventoryGridArtifacts .collection-artifact-trader-btn:disabled {
+    opacity: 0.55;
+    cursor: var(--cursor-default, default);
+}
+
 .map-progression-intro {
     flex-shrink: 0;
     margin: 0 0 12px;
     padding: 0 24px;
     max-width: 640px;
+    width: 100%;
     align-self: center;
     color: rgba(203, 213, 225, 0.92);
     font-family: "Exo 2", sans-serif;
@@ -10315,6 +11971,7 @@ body.left-overlays-collapsed .toast-notification-container {
     font-weight: 400;
     line-height: 1.45;
     text-align: center;
+    text-wrap: balance;
 }
 
 .map-progression-mode-gate .map-progression-footer {
@@ -10394,12 +12051,15 @@ body.left-overlays-collapsed .toast-notification-container {
     transform: translateY(-5px);
 }
 
-.map-progression-cell--beaten .map-progression-hex-wrap {
+.map-progression-cell--beaten .map-progression-hex,
+.map-progression-cell--beaten .map-progression-characters {
     filter: saturate(0.5) brightness(0.5);
 }
 
-.map-progression-cell--beaten.is-hovered .map-progression-hex-wrap,
-.map-progression-cell--beaten:hover .map-progression-hex-wrap {
+.map-progression-cell--beaten.is-hovered .map-progression-hex,
+.map-progression-cell--beaten:hover .map-progression-hex,
+.map-progression-cell--beaten.is-hovered .map-progression-characters,
+.map-progression-cell--beaten:hover .map-progression-characters {
     filter: saturate(1) brightness(1);
 }
 
@@ -10485,6 +12145,7 @@ body.left-overlays-collapsed .toast-notification-container {
     background: rgba(20, 24, 32, 0.95);
     box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
     z-index: 1;
+    transition: filter 0.28s ease;
 }
 
 .map-progression-bg {
@@ -10503,12 +12164,16 @@ body.left-overlays-collapsed .toast-notification-container {
     display: flex;
     align-items: center;
     justify-content: center;
-    font-family: "Exo 2", sans-serif;
-    font-size: 52px;
-    font-weight: 700;
-    color: rgba(255, 255, 255, 0.5);
     background: rgb(33 40 60);
     user-select: none;
+}
+
+.map-progression-mystery-icon {
+    width: 52px;
+    height: 52px;
+    object-fit: contain;
+    image-rendering: auto;
+    pointer-events: none;
 }
 
 .map-progression-characters {
@@ -10523,6 +12188,7 @@ body.left-overlays-collapsed .toast-notification-container {
     gap: 2px;
     z-index: 3;
     pointer-events: none;
+    transition: filter 0.28s ease;
 }
 
 .map-progression-hero,
@@ -10651,12 +12317,72 @@ body.left-overlays-collapsed .toast-notification-container {
     white-space: nowrap;
 }
 
+.map-progression-tooltip-row--stars {
+    align-items: center;
+}
+
+.map-progression-tooltip-star-icons {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 3px;
+    font-weight: 600;
+    color: #fff;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.map-progression-tooltip-perfect-icon {
+    width: 1.15em;
+    height: 1.15em;
+    object-fit: contain;
+    flex-shrink: 0;
+    image-rendering: auto;
+}
+
 .map-progression-tooltip-row span.map-progression-tooltip-stat--fires {
     color: #6ecfff;
 }
 
 .map-progression-tooltip-row span.map-progression-tooltip-stat--damage {
     color: #ff9999;
+}
+
+.map-progression-tooltip-row--sub span:last-child {
+    font-weight: 600;
+    color: #ffe566;
+}
+
+.map-progression-tooltip-star-note {
+    margin: 0 0 4px;
+    font-size: 10px;
+    line-height: 1.3;
+    color: rgba(148, 163, 184, 0.92);
+    font-style: italic;
+}
+
+.map-progression-tooltip-star-waves {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin: 2px 0 6px;
+    padding: 6px 0 6px 8px;
+    border-left: 2px solid rgba(255, 213, 74, 0.35);
+}
+
+.map-progression-tooltip-row--wave {
+    align-items: center;
+    font-size: 11px;
+    gap: 12px;
+}
+
+.map-progression-tooltip-row--wave .map-progression-tooltip-star-icons {
+    letter-spacing: 0.06em;
+}
+
+.map-progression-tooltip-row--perfect .map-progression-tooltip-star-icons,
+.map-progression-tooltip-row--perfect span:last-child {
+    color: #ffd54a;
 }
 
 .map-progression-tooltip-muted,
@@ -10689,6 +12415,11 @@ body.left-overlays-collapsed .toast-notification-container {
 /* Confirm unlock stays above specialty modal (confirm modal is z-index 3000) */
 body:has(#specialtyModal.active) #confirmModal.modal-overlay.active {
     z-index: 3100 !important;
+}
+
+/* Dungeon reward picker is z-index 26000 — claim confirm must sit above it */
+body:has(.dungeon-reward-overlay) #confirmModal.modal-overlay.active {
+    z-index: 26100 !important;
 }
 
 .specialty-screen {
@@ -11027,12 +12758,12 @@ body:has(#specialtyModal.active) #confirmModal.modal-overlay.active {
     align-items: center;
     justify-content: center;
     width: 100%;
-    height: 92px;
-    min-height: 92px;
+    height: auto;
+    min-height: 128px;
     box-sizing: border-box;
     border: 2px solid transparent;
     border-radius: 8px;
-    padding: 10px 6px;
+    padding: 10px 4px 8px;
     background: rgba(255, 255, 255, 0.03);
     cursor: var(--cursor-default);
 }
@@ -11070,8 +12801,10 @@ body:has(#specialtyModal.active) #confirmModal.modal-overlay.active {
 
 .specialty-milestone-preview {
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: 4px;
     width: 100%;
     height: 100%;
     min-height: 0;
@@ -11086,65 +12819,82 @@ body:has(#specialtyModal.active) #confirmModal.modal-overlay.active {
     flex-direction: row;
     align-items: center;
     justify-content: center;
+    gap: 0;
     overflow: visible;
 }
 
+#specialtyModal .artifact-trader-reward-stack:has(> .artifact-trader-reward-unit) {
+    gap: 8px;
+}
+
+#specialtyModal .artifact-trader-reward-row--overlap .artifact-trader-reward-stack,
+#specialtyModal .artifact-trader-reward-row--overlap .artifact-trader-reward-stack:has(> .artifact-trader-reward-unit) {
+    gap: 0 !important;
+}
+
+#specialtyModal .specialty-milestone-preview .artifact-trader-reward-unit {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 2px;
+}
+
+#specialtyModal .artifact-trader-reward-count {
+    font-size: 20px;
+}
+
 #specialtyModal .artifact-trader-reward-stack img {
-    height: 40px;
+    height: 60px !important;
     width: auto;
     flex-shrink: 0;
 }
 
-/* Time mastery: five power-ups — half the default trader stack overlap */
-.specialty-column--time .specialty-milestone-card .artifact-trader-reward-stack img:not(:first-child) {
-    margin-left: -7.5px !important;
+/* Time mastery: smaller icons, one row, xN under each power-up */
+.specialty-column--time .artifact-trader-reward-stack img {
+    height: 45px !important;
 }
 
-.specialty-milestone-staggered-grid {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
+.specialty-column--time .artifact-trader-reward-stack:has(> .artifact-trader-reward-unit) {
     gap: 0;
-    line-height: 0;
-}
-
-.specialty-milestone-staggered-inner {
-    display: inline-flex;
-    flex-direction: column;
     align-items: flex-start;
+    flex-wrap: nowrap;
 }
 
-.specialty-milestone-staggered-row {
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
+.specialty-column--time .artifact-trader-reward-row,
+.specialty-column--time .artifact-trader-reward-row--overlap {
+    flex-wrap: nowrap !important;
+    white-space: nowrap;
+    gap: 0;
+}
+
+.specialty-column--time .artifact-trader-reward-row--overlap .artifact-trader-reward-stack + .artifact-trader-reward-stack {
+    margin-top: 0;
+}
+
+.specialty-column--time .artifact-trader-reward-unit {
     position: relative;
 }
 
-.specialty-milestone-staggered-row--back {
-    z-index: 1;
-}
-
-.specialty-milestone-staggered-row--front {
-    z-index: 2;
-    margin-top: -12px;
-    margin-left: 14px;
-}
-
-#specialtyModal .specialty-milestone-staggered-grid .artifact-trader-reward-stack img:not(:first-child) {
-    margin-left: -7.5px !important;
+.specialty-column--time .artifact-trader-reward-count {
+    position: static;
+    font-size: 16px;
+    font-weight: 800;
+    line-height: 1;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
 }
 
 .specialty-milestone-money {
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
-    gap: 4px;
+    justify-content: flex-start;
+    gap: 2px;
+    flex-shrink: 0;
 }
 
 .specialty-milestone-money-icon {
-    height: 40px;
+    height: 60px;
     width: auto;
     image-rendering: pixelated;
 }
@@ -11152,10 +12902,11 @@ body:has(#specialtyModal.active) #confirmModal.modal-overlay.active {
 .specialty-milestone-money-amount {
     color: #00FF88;
     font-family: "Exo 2", sans-serif;
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 700;
     line-height: 1.1;
     text-align: center;
+    white-space: nowrap;
 }
 
 .specialty-footer {
@@ -11383,4 +13134,356 @@ button.tower-stats-header-trigger.label {
     flex-shrink: 0;
     margin-top: 8px;
 }
+
+/* Tower supercharger picker + options */
+#superchargeModal.supercharge-overlay {
+    z-index: 1750;
+    background: rgba(0, 0, 0, 0.85);
+    padding: 24px 20px 32px;
+    align-items: stretch;
+    justify-content: center;
+    overflow: hidden;
+}
+
+#superchargeModal.supercharge-overlay.active {
+    display: flex;
+}
+
+#superchargeOptionsModal.supercharge-options-overlay {
+    z-index: 1850;
+    background: rgba(0, 0, 0, 0.55);
+    padding: 24px 20px 32px;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+
+#superchargeOptionsModal.supercharge-options-overlay.active {
+    display: flex;
+}
+
+body:has(#superchargeModal.active) #confirmModal.modal-overlay.active,
+body:has(#superchargeOptionsModal.active) #confirmModal.modal-overlay.active {
+    z-index: 3100 !important;
+}
+
+.supercharge-screen {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    width: 100%;
+    max-width: 1120px;
+    height: 100%;
+    min-height: 0;
+    margin: 0 auto;
+}
+
+.supercharge-options-screen {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 18px 22px 16px;
+    border-radius: 10px;
+    background: rgba(10, 16, 26, 0.94);
+    border: 1px solid rgba(255, 210, 74, 0.22);
+}
+
+.supercharge-empty {
+    grid-column: 1 / -1;
+    color: rgba(220, 228, 240, 0.75);
+    font-family: "Exo 2", sans-serif;
+    font-size: 15px;
+    text-align: center;
+    padding: 32px 12px;
+}
+
+#superchargeModal.supercharge-overlay,
+#superchargeModal.supercharge-overlay *,
+#superchargeOptionsModal.supercharge-options-overlay,
+#superchargeOptionsModal.supercharge-options-overlay * {
+    cursor: var(--cursor-default);
+}
+
+#superchargeOptionsModal.supercharge-options-overlay .supercharge-option-card--used,
+#superchargeOptionsModal.supercharge-options-overlay .supercharge-option-card--used *,
+#superchargeOptionsModal.supercharge-options-overlay .supercharge-option-card--locked,
+#superchargeOptionsModal.supercharge-options-overlay .supercharge-option-card--locked * {
+    cursor: var(--cursor-x) !important;
+}
+
+.tower-stats-row.supercharge-tower-card {
+    cursor: var(--cursor-default);
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    appearance: none;
+    width: 100%;
+    position: relative;
+    display: block;
+    padding: 32px 36px 30px;
+    background: rgba(32, 42, 58, 0.79);
+    transition: border-color 0.15s ease, background 0.15s ease, filter 0.15s ease;
+}
+
+.supercharge-tower-card:hover,
+.supercharge-tower-card:focus-visible {
+    border-color: rgba(255, 210, 74, 0.45);
+    background: rgba(40, 52, 71, 0.90);
+    filter: brightness(1.06);
+}
+
+.supercharge-tower-card--active {
+    border-color: rgba(255, 255, 255, 0.92);
+}
+
+.supercharge-tower-card--active:hover,
+.supercharge-tower-card--active:focus-visible {
+    border-color: #ffffff;
+}
+
+.supercharge-tower-card--maxed,
+.supercharge-tower-card--maxed:hover,
+.supercharge-tower-card--maxed:focus-visible,
+.supercharge-tower-card--maxed.supercharge-tower-card--active,
+.supercharge-tower-card--maxed.supercharge-tower-card--active:hover,
+.supercharge-tower-card--maxed.supercharge-tower-card--active:focus-visible {
+    filter: none;
+    opacity: 1;
+    cursor: var(--cursor-default);
+    border-color: #FFD24A;
+    background: rgba(46, 42, 28, 0.84);
+}
+
+.supercharge-tower-vitals .supercharge-track-badge {
+    width: 25px;
+    height: 25px;
+    object-fit: contain;
+    image-rendering: pixelated;
+    margin-left: 0;
+    flex-shrink: 0;
+    transform: translateY(3px);
+}
+
+.supercharge-tower-vitals {
+    pointer-events: none;
+    width: 100%;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 16px;
+}
+
+.supercharge-tower-vitals > div:first-child {
+    display: flex !important;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    flex: 0 0 100px;
+    width: 100px;
+    min-width: 100px;
+    max-width: 100px;
+    gap: 10px !important;
+    padding-bottom: 0 !important;
+    margin-bottom: 0 !important;
+}
+
+.supercharge-tower-vitals > div:first-child > div {
+    flex: none !important;
+    width: 100%;
+    padding-left: 0 !important;
+    padding-top: 6px !important;
+    margin-top: 2px;
+    align-items: center !important;
+    gap: 0 !important;
+    position: relative;
+    z-index: 1;
+}
+
+.supercharge-tower-vitals > div:first-child > div > div {
+    color: #ffffff !important;
+    font-size: 13px;
+    text-align: center;
+    line-height: 1.2;
+}
+
+.supercharge-tower-vitals .tower-tooltip-name {
+    color: #ffffff !important;
+}
+
+.supercharge-tower-vitals .tower-tooltip-details {
+    flex: 1;
+    min-width: 0;
+    font-size: 1.125em;
+    line-height: 1.25;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.supercharge-tower-vitals .tower-tooltip-details .supercharge-track-slot {
+    margin-left:5px;
+}
+
+.supercharge-tower-vitals .tower-tooltip-details > div {
+    display: grid !important;
+    grid-template-columns: 3.6em minmax(0, 1fr);
+    align-items: center;
+    column-gap: 4px;
+    margin-bottom: 0 !important;
+}
+
+.supercharge-tower-vitals .supercharge-stat-label {
+    white-space: nowrap;
+}
+
+.supercharge-tower-vitals .supercharge-stat-metrics {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+}
+
+.supercharge-tower-vitals .supercharge-stat-bolts {
+    display: inline-flex !important;
+    align-items: center;
+    gap: 2px;
+    transform: translateY(4px);
+    flex-shrink: 0;
+}
+
+.supercharge-tower-vitals .supercharge-stat-value {
+    margin-left: 8px !important;
+    display: inline-flex !important;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.supercharge-tower-vitals .tower-tooltip-details img {
+    width: 18px !important;
+    height: 18px !important;
+}
+
+.supercharge-tower-vitals .supercharge-stat-bolts img {
+    width: 22px !important;
+    height: 22px !important;
+}
+
+.supercharge-tower-vitals .tower-tooltip-details .supercharge-track-badge {
+    width: 25px !important;
+    height: 25px !important;
+}
+
+.supercharge-tower-vitals .tooltip-tower-icon {
+    pointer-events: none;
+    transform: scale(0.86) !important;
+    transform-origin: top center !important;
+    width: 64px !important;
+    min-width: 64px !important;
+    height: 60px;
+    overflow: visible;
+}
+
+.supercharge-options-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 100%;
+    margin: 12px 0 8px;
+}
+
+.supercharge-option-card {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    width: 100%;
+    padding: 14px 16px;
+    border-radius: 8px;
+    background: rgba(12, 18, 28, 0.72);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    appearance: none;
+    cursor: var(--cursor-default);
+}
+
+.supercharge-option-card--available {
+    cursor: var(--cursor-default);
+    transition: border-color 0.15s ease, filter 0.15s ease;
+}
+
+.supercharge-option-card--available:hover,
+.supercharge-option-card--available:focus-visible {
+    border-color: rgba(255, 210, 74, 0.5);
+    filter: brightness(1.08);
+}
+
+.supercharge-option-card--used,
+.supercharge-option-card--used:hover,
+.supercharge-option-card--used:focus-visible {
+    filter: none;
+    opacity: 1;
+    cursor: var(--cursor-x) !important;
+    border-color: #FFD24A;
+    background: rgba(46, 42, 28, 0.84);
+}
+
+.supercharge-option-card--locked {
+    cursor: var(--cursor-x) !important;
+    filter: grayscale(0.85) brightness(0.72);
+    opacity: 0.72;
+}
+
+.supercharge-option-icon {
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
+    image-rendering: pixelated;
+}
+
+.supercharge-option-track-badge {
+    width: 31px;
+    height: 31px;
+    object-fit: contain;
+    image-rendering: pixelated;
+    flex-shrink: 0;
+    margin-left: auto;
+}
+
+.supercharge-option-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.supercharge-option-name {
+    font-family: "Exo 2", sans-serif;
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.supercharge-option-summary {
+    color: rgba(230, 236, 245, 0.92);
+    font-size: 13px;
+    line-height: 1.35;
+}
+
+.supercharge-option-values {
+    color: #FFD24A;
+    font-family: "Exo 2", sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.supercharge-option-arrow {
+    color: #FFFFFF;
+    margin: 0 6px;
+}
+
 

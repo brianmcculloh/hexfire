@@ -1,6 +1,7 @@
 // Game Loop - Manages rendering and game ticks
 
 import { CONFIG, formatActiveWaveTimerText, getTowerDisplayName } from './config.js';
+import { isStarCinematicActive } from './systems/starSystem.js';
 import { AudioManager } from './utils/audioManager.js';
 import { updateTowerStatusPanel } from './utils/towerStatusPanel.js';
 
@@ -193,11 +194,15 @@ export class GameLoop {
       }
       
       // Always render, even when paused (so player can see towers during placement).
+      // Skip the map while the star showcase is compositing — last frame stays on screen
+      // under the overlay, and we avoid fighting hundreds of FX draws for GPU time.
       // Guard the frame so a single thrown error can't break the requestAnimationFrame
       // chain — without this, one bad frame permanently freezes the game (FPS → 0) until
       // a manual refresh. We log (throttled) and keep the loop alive instead.
       try {
-        this.render();
+        if (!isStarCinematicActive()) {
+          this.render();
+        }
       } catch (err) {
         this._reportRenderError(err);
       }
@@ -641,7 +646,7 @@ export class GameLoop {
       this.gameState.towerSystem &&
       (this.gameState.isUpgradeSelectionMode ||
         this.gameState.isTowerSellbackMode ||
-        (this.gameState.isMovementTokenMode && this.gameState.movementTokenTargetTowerId))
+        this.gameState.isMovementTokenMode)
     ) {
       this.renderer.drawAllUpgradeRings(this.gameState.towerSystem);
     }
@@ -656,11 +661,23 @@ export class GameLoop {
     }
     
     // Draw all water particles (after spawners, before notifications so XP text appears on top)
-    this.renderer.drawAllWaterParticles();
-    // Soft mist / shear spray peeling off jet & spread streams (full visuals only)
-    this.renderer.drawJetMist();
-    // Pulsing tower radial water blasts (dedicated FX; under turrets so spray reads from the nozzle)
-    this.renderer.drawPulseBursts();
+    // Skip during upgrade/sellback/etc. — combat is paused and rings are the focus;
+    // avoiding N-tower spray draw calls keeps upgrade-mode FPS near the vsync cap.
+    // Do NOT skip for dungeon flood/reward — geyser spray must stay visible while paused.
+    const skipCombatFxForSelection =
+      this.gameState.isUpgradeSelectionMode ||
+      this.gameState.isTowerSellbackMode ||
+      this.gameState.isRepairSelectionMode ||
+      this.gameState.isPartsRecycleMode;
+    if (!skipCombatFxForSelection) {
+      this.renderer.drawAllWaterParticles();
+      // Soft mist / shear spray peeling off jet & spread streams (full visuals only)
+      this.renderer.drawJetMist();
+      // Pulsing tower radial water blasts (dedicated FX; under turrets so spray reads from the nozzle)
+      this.renderer.drawPulseBursts();
+      // Bomber-family impact sheets (hex wash + rings; dedicated FX, not the particle budget)
+      this.renderer.drawBomberBlasts();
+    }
     
     // Draw all tower turrets (after water particles for proper z-index)
     if (this.gameState.towerSystem) {
@@ -668,17 +685,22 @@ export class GameLoop {
     }
 
     // Draw all fire particles (after water particles, before notifications)
-    this.renderer.drawAllFireParticles();
+    if (!skipCombatFxForSelection) {
+      this.renderer.drawAllFireParticles();
 
-    // Light sparks rising from ordinary burning hexes (under vortex/dungeon drama)
-    this.renderer.drawFireHexSparks();
-    // Vortex sparks / flame wisps (on top of vortex sprites + fire FX)
-    this.renderer.drawVortexEmbers();
-    // Burning vault / dungeon entrance smoulder sparks
-    this.renderer.drawSmoulderSparks();
-    // Soft bubbles rising from water buckets / tanks / vats
-    this.renderer.drawWaterTankBubbles();
-
+      // Light sparks rising from ordinary burning hexes (under vortex/dungeon drama)
+      this.renderer.drawFireHexSparks();
+      // Vortex sparks / flame wisps (on top of vortex sprites + fire FX)
+      this.renderer.drawVortexEmbers();
+      // Burning vault / dungeon entrance smoulder sparks
+      this.renderer.drawSmoulderSparks();
+      // Burning vault tesla zaps (vault → targeting towers); above sprites/turrets, under HP bars
+      this.renderer.drawBurningVaultZaps();
+      // Fire spawner vent jets / flame tongues (volatile burn, after smoulder)
+      this.renderer.drawSpawnerEmbers();
+      // Soft bubbles rising from water buckets / tanks / vats
+      this.renderer.drawWaterTankBubbles();
+    }
     // Bomber/charge/perimeter aim overlays — late pass during waves (above turrets).
     // Placement already drew these under tower bases above.
     if (this.gameState.towerSystem && !isPlacementPhase) {
@@ -695,6 +717,9 @@ export class GameLoop {
     if (this.gameState.gridSystem) {
       this.renderer.drawBurningOccupiedHexBorders(this.gameState.gridSystem);
     }
+
+    // Dungeon flood geyser: above tower streams, turrets, fire, and HP bars so the burst reads
+    this.renderer.drawDungeonFloodGeysers();
 
     // Draw notifications (XP popups, etc) - after water particles so they appear on top
     if (this.gameState.notificationSystem) {
@@ -714,7 +739,11 @@ export class GameLoop {
     }
     
     // Draw rotation arrows for selected tower (high z-index)
-    if (this.gameState.towerSystem && this.gameState.selectedTowerId) {
+    if (
+      this.gameState.towerSystem &&
+      this.gameState.selectedTowerId &&
+      !this.gameState.inputHandler?.isPlacingTowerFromInventory?.()
+    ) {
       const selectedTowerAfterTanks = this.gameState.towerSystem.getTower(this.gameState.selectedTowerId);
       if (selectedTowerAfterTanks) {
         this.renderer.drawRotationArrows(

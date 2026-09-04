@@ -4,6 +4,7 @@ import { CONFIG, getFireTypeConfig, addPlayerScore, getPowerUpMultiplier, getPow
 import { isValidMysteryDropHex } from './currencyItemSystem.js';
 import { getNeighbors } from '../utils/hexMath.js';
 import { isMetaItemUnlocked } from '../utils/metaProgression.js';
+import { rngLoot, rngSim } from '../utils/rng.js';
 
 let tempPowerUpItemIdCounter = 0;
 
@@ -125,7 +126,7 @@ export class TempPowerUpItemSystem {
     });
     
     // Random roll
-    let roll = Math.random() * totalWeight;
+    let roll = rngLoot().nextFloat() * totalWeight;
     
     // Find which item this roll corresponds to
     for (const item of availableItems) {
@@ -193,12 +194,12 @@ export class TempPowerUpItemSystem {
       spawnCount = Math.floor(scaledChance);
       // Check fractional part for additional spawn
       const fractionalPart = scaledChance - spawnCount;
-      if (fractionalPart > 0 && Math.random() < fractionalPart) {
+      if (fractionalPart > 0 && rngSim().nextFloat() < fractionalPart) {
         spawnCount += 1;
       }
     } else {
       // Chance < 1.0, use probability check
-      if (Math.random() < scaledChance) {
+      if (rngSim().nextFloat() < scaledChance) {
         spawnCount = 1;
       }
     }
@@ -213,7 +214,7 @@ export class TempPowerUpItemSystem {
       if (locationsToUse.length === 0) break; // No more valid locations
       
       // Pick random location from remaining valid locations
-      const randomIndex = Math.floor(Math.random() * locationsToUse.length);
+      const randomIndex = rngSim().int(locationsToUse.length);
       const location = locationsToUse.splice(randomIndex, 1)[0]; // Remove used location
       
       // Get random booster ID based on rarity (only available boosters)

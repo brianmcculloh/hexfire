@@ -147,9 +147,10 @@ export function showPerimeterModeModal(gameState, tower, clientX, clientY) {
   document.body.appendChild(overlay);
 
   const margin = 12;
+  const arrowClearance = 50; // Leave room to click the upward rotation arrow
   const rect = panel.getBoundingClientRect();
   let left = clientX - rect.width / 2;
-  let top = clientY - rect.height - margin;
+  let top = clientY - rect.height - margin - arrowClearance;
   if (top < margin) top = clientY + margin;
   left = Math.max(margin, Math.min(left, window.innerWidth - rect.width - margin));
   top = Math.max(margin, Math.min(top, window.innerHeight - rect.height - margin));

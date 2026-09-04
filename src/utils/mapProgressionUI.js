@@ -8,7 +8,26 @@ import {
   getHeroPatternForWaveGroup,
 } from '../config.js';
 import { aggregateRunStatsForWaveGroup } from '../systems/runStatsSystem.js';
+import { createMapStarRatingElement, getGroupStarResult, getWaveStarResultsForGroup } from '../systems/starSystem.js';
+import { assetUrl } from './assetUrl.js';
 import { closeModalOverlay, crossfadeModalOverlays, playModalEnterAnimation } from './modal.js';
+
+const PERFECT_ICON_SRC = 'assets/images/misc/perfect.png';
+
+/**
+ * Compact star glyphs for realm-map tooltips, with the Perfect medal on the left when earned.
+ * @param {number} stars
+ * @param {boolean} [perfect]
+ * @returns {string}
+ */
+function buildTooltipStarIconsHtml(stars, perfect = false) {
+  const n = Math.max(0, Math.min(3, Math.floor(Number(stars) || 0)));
+  const glyphs = n > 0 ? '★'.repeat(n) : '—';
+  const badge = perfect
+    ? `<img class="map-progression-tooltip-perfect-icon" src="${assetUrl(PERFECT_ICON_SRC)}" alt="" />`
+    : '';
+  return `<span class="map-progression-tooltip-star-icons">${badge}${glyphs}</span>`;
+}
 
 /** Thumbnails for map progression only — see scripts/generate-map-progression-thumbs.sh */
 const MAP_PROGRESSION_BG_BASE = 'assets/images/map-progression/backgrounds/';
@@ -82,6 +101,39 @@ function buildMapProgressionStatusHtml(state) {
 }
 
 /**
+ * Per-wave star lines that explain the group rating shown on the realm hex.
+ * @param {import('../main.js').GameState | null | undefined} gameState
+ * @param {number} waveGroup
+ * @param {{ stars?: number, perfect?: boolean }} groupStars
+ */
+function buildGroupStarBreakdownHtml(gameState, waveGroup, groupStars) {
+  const rows = getWaveStarResultsForGroup(gameState, waveGroup)
+    .slice()
+    .sort((a, b) => (a.waveInGroup || 0) - (b.waveInGroup || 0));
+  if (!rows.length && groupStars.stars <= 0 && !groupStars.perfect) return '';
+
+  const parts = [
+    `<div class="map-progression-tooltip-row map-progression-tooltip-row--stars${groupStars.perfect ? ' map-progression-tooltip-row--perfect' : ''}"><span>Stars</span>${buildTooltipStarIconsHtml(groupStars.stars, groupStars.perfect)}</div>`,
+  ];
+  if (rows.length) {
+    const perfects = rows.reduce((n, row) => n + (row.perfect ? 1 : 0), 0);
+    parts.push(
+      `<div class="map-progression-tooltip-row map-progression-tooltip-row--sub"><span>Perfects</span><span>${perfects} / ${rows.length}</span></div>`,
+      '<p class="map-progression-tooltip-star-note">Group rating is the lowest wave</p>',
+      '<div class="map-progression-tooltip-star-waves">',
+    );
+    for (const row of rows) {
+      const cls = row.perfect ? ' map-progression-tooltip-row--perfect' : '';
+      parts.push(
+        `<div class="map-progression-tooltip-row map-progression-tooltip-row--wave${cls}"><span>Wave ${row.waveInGroup}</span>${buildTooltipStarIconsHtml(row.stars, row.perfect)}</div>`
+      );
+    }
+    parts.push('</div>');
+  }
+  return parts.join('');
+}
+
+/**
  * @param {number} waveGroup
  * @param {string} mapName
  * @param {'beaten'|'current'|'next'|'locked'} state
@@ -128,6 +180,10 @@ function buildMapProgressionTooltipHtml(waveGroup, mapName, state, gameState) {
     `<div class="map-progression-tooltip-row"><span>Towers lost</span><span>${stats.towersDestroyed}</span></div>`,
     `<div class="map-progression-tooltip-row"><span>Map pickups</span><span>${stats.mapItemsCollected}</span></div>`,
   ];
+
+  const groupStars = getGroupStarResult(gameState, waveGroup);
+  const starBlock = buildGroupStarBreakdownHtml(gameState, waveGroup, groupStars);
+  if (starBlock) lines.splice(1, 0, starBlock);
 
   if (stats.currencySpent > 0) {
     lines.push(
@@ -198,8 +254,9 @@ export function shouldShowMapProgressionGate(gameState) {
  * @param {HTMLElement} grid
  * @param {{ group: number, state: string }[]} maps
  * @param {MapProgressionMode} mode
+ * @param {import('../main.js').GameState | null | undefined} gameState
  */
-function buildMapCells(grid, maps, mode) {
+function buildMapCells(grid, maps, mode, gameState) {
   grid.innerHTML = '';
   const fragment = document.createDocumentFragment();
 
@@ -226,7 +283,11 @@ function buildMapCells(grid, maps, mode) {
       const mystery = document.createElement('div');
       mystery.className = 'map-progression-mystery';
       mystery.setAttribute('aria-hidden', 'true');
-      mystery.textContent = '?';
+      const mysteryImg = document.createElement('img');
+      mysteryImg.className = 'map-progression-mystery-icon';
+      mysteryImg.src = assetUrl('assets/images/ui/question-mark.png');
+      mysteryImg.alt = '';
+      mystery.appendChild(mysteryImg);
       hex.appendChild(mystery);
     } else {
       const bg = document.createElement('img');
@@ -277,6 +338,13 @@ function buildMapCells(grid, maps, mode) {
       };
       characters.appendChild(boss);
       hexWrap.appendChild(characters);
+    }
+
+    if (!isMystery) {
+      const groupStars = getGroupStarResult(gameState, group);
+      if (groupStars.stars > 0 || groupStars.perfect || state === 'beaten' || state === 'current') {
+        hexWrap.appendChild(createMapStarRatingElement(groupStars));
+      }
     }
 
     if (mode === 'gate' && state === 'current') {
@@ -484,7 +552,7 @@ export function renderMapProgression(gameState, mode = mapProgressionMode) {
   if (!grid || !svg || !wrap) return;
 
   const maps = getProgressionSlice(gameState);
-  buildMapCells(grid, maps, mode);
+  buildMapCells(grid, maps, mode, gameState);
 
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
@@ -690,6 +758,7 @@ export function wireMapProgressionModal(gameState, bindTooltip) {
       clickTarget.setAttribute('data-tooltip', tooltipText);
     }
     clickTarget.addEventListener('click', (e) => {
+      if (e.target.closest?.('#minimapZoomControls')) return;
       e.stopPropagation();
       const gs = gameState || window.gameState;
       if (!gs || gs.scenarioMode) return;

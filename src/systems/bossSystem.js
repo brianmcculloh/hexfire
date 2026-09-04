@@ -12,6 +12,7 @@ import {
 } from '../config.js';
 import { getHexesInRing, getHexInDirection, isInBounds, getNeighbors, hexKey } from '../utils/hexMath.js';
 import { triggerBossAbilityFx, cancelPendingScreenShakes } from '../utils/bossAbilityFx.js';
+import { rngSim } from '../utils/rng.js';
 
 /** Per-boss ability counters swapped when a summoned boss casts (keeps main + summoned state isolated). */
 const BOSS_ACTIVATION_COUNTER_KEYS = [
@@ -936,7 +937,7 @@ export class BossSystem {
     
     const countToSelect = Math.min(hexCount, availableHexes.length);
     for (let i = 0; i < countToSelect; i++) {
-      const randomIndex = Math.floor(Math.random() * availableHexes.length);
+      const randomIndex = rngSim().int(availableHexes.length);
       selectedHexes.push(availableHexes.splice(randomIndex, 1)[0]);
     }
 
@@ -1070,7 +1071,7 @@ export class BossSystem {
     // Pick multiple random centers (without replacement)
     const availableCenters = [...validCenters];
     for (let i = 0; i < clusterCount && availableCenters.length > 0; i++) {
-      const randomIndex = Math.floor(Math.random() * availableCenters.length);
+      const randomIndex = rngSim().int(availableCenters.length);
       const center = availableCenters.splice(randomIndex, 1)[0];
       this.spawnFireballCluster(center.q, center.r, staggerPerRing);
     }
@@ -1228,7 +1229,7 @@ export class BossSystem {
     const availableEdge = [...edgeHexes];
     const countToSelect = Math.min(edgeHexCount, availableEdge.length);
     for (let i = 0; i < countToSelect; i++) {
-      const randomIndex = Math.floor(Math.random() * availableEdge.length);
+      const randomIndex = rngSim().int(availableEdge.length);
       selectedEdgeHexes.push(availableEdge.splice(randomIndex, 1)[0]);
     }
 
@@ -1245,7 +1246,7 @@ export class BossSystem {
     // Step 2: Pick a random path and schedule its ignitions
     const paths = this.gameState?.pathSystem?.currentPaths || [];
     if (paths.length > 0) {
-      const randomPath = paths[Math.floor(Math.random() * paths.length)];
+      const randomPath = paths[rngSim().int(paths.length)];
       
       // Calculate when path strikes begin
       const edgeTotalTime = (countToSelect - 1) * edgeStagger; // Time for last edge hex
@@ -1291,7 +1292,7 @@ export class BossSystem {
     const minRing = params.minRing ?? 2;
     const maxRing = params.maxRing ?? halfSize;
 
-    const ring = minRing + Math.floor(Math.random() * (maxRing - minRing + 1));
+    const ring = minRing + rngSim().int((maxRing - minRing + 1));
     let ringHexes = getHexesInRing(0, 0, ring);
 
     // Rotate so we start at top-left (last hex in getHexesInRing order) and go clockwise
@@ -1364,7 +1365,7 @@ export class BossSystem {
     if (validRowIndices.length === 0) return;
 
     const napalmFireType = this.getAvailableFireTypesRanked()[0];
-    const chosenR = validRowIndices[Math.floor(Math.random() * validRowIndices.length)];
+    const chosenR = validRowIndices[rngSim().int(validRowIndices.length)];
     const row1 = getHexesInRow(chosenR).sort((a, b) => a.q - b.q); // Left to right (ascending q)
     const row2 = getHexesInRow(chosenR + 1).sort((a, b) => b.q - a.q); // Right to left (descending q)
 
@@ -1423,7 +1424,7 @@ export class BossSystem {
     }
 
     // Pick a random direction (0-5); each direction gives a unique line through center
-    const direction = Math.floor(Math.random() * 6);
+    const direction = rngSim().int(6);
     const oppositeDir = (direction + 3) % 6;
 
     // Build the 5-hex line: ring2_start -> ring1 -> center -> ring1_opposite -> ring2_end
@@ -1588,7 +1589,7 @@ export class BossSystem {
       const count = Math.min(5, validHexes.length);
       const available = [...validHexes];
       for (let i = 0; i < count; i++) {
-        const idx = Math.floor(Math.random() * available.length);
+        const idx = rngSim().int(available.length);
         hexesToStrike.push(available.splice(idx, 1)[0]);
       }
     }
@@ -1652,7 +1653,7 @@ export class BossSystem {
     // tower's underlying hex ignites along with the items, matching the description in patterns.js.
     const placedTowers = this.gameState?.towerSystem?.getAllTowers?.() || [];
     if (placedTowers.length > 0) {
-      const randomTower = placedTowers[Math.floor(Math.random() * placedTowers.length)];
+      const randomTower = placedTowers[rngSim().int(placedTowers.length)];
       const towerHex = this.gridSystem.getHex?.(randomTower.q, randomTower.r);
       if (towerHex) {
         targetHexes.push(towerHex);
@@ -1668,7 +1669,7 @@ export class BossSystem {
       const count = Math.min(4, validHexes.length);
       const available = [...validHexes];
       for (let i = 0; i < count; i++) {
-        const idx = Math.floor(Math.random() * available.length);
+        const idx = rngSim().int(available.length);
         hexesToStrike.push(available.splice(idx, 1)[0]);
       }
     }
@@ -1816,7 +1817,7 @@ export class BossSystem {
       const countToStrike = Math.min(hexCountPerStrike, available.length);
       const struckHexes = [];
       for (let i = 0; i < countToStrike; i++) {
-        const idx = Math.floor(Math.random() * available.length);
+        const idx = rngSim().int(available.length);
         struckHexes.push(available.splice(idx, 1)[0]);
       }
 
@@ -1865,7 +1866,7 @@ export class BossSystem {
     const fireType = this.getRandomFireTypeForWaveGroup();
 
     for (let clusterIndex = 0; clusterIndex < clusterRingCounts.length; clusterIndex++) {
-      const randomIdx = Math.floor(Math.random() * availableCenters.length);
+      const randomIdx = rngSim().int(availableCenters.length);
       const center = availableCenters.splice(randomIdx, 1)[0];
       const ringCount = clusterRingCounts[clusterIndex];
       const delay = clusterIndex * clusterOffsetMs;
@@ -1903,7 +1904,7 @@ export class BossSystem {
     const halfSize = Math.floor(CONFIG.MAP_SIZE / 2);
 
     // Pick random direction 0-5 (through grove center)
-    const direction = Math.floor(Math.random() * 6);
+    const direction = rngSim().int(6);
     const oppositeDir = (direction + 3) % 6;
 
     // Build center line by walking from center until out of bounds (handles rhombus shape for all 6 orientations)
@@ -1944,7 +1945,7 @@ export class BossSystem {
     }
 
     // Randomly start from either end of the slash (reverse ignition order 50% of the time)
-    if (groups.length > 1 && Math.random() < 0.5) {
+    if (groups.length > 1 && rngSim().nextFloat() < 0.5) {
       groups.reverse();
     }
 
@@ -2006,9 +2007,9 @@ export class BossSystem {
     if (resolved.length < 2) return;
 
     const available = [...resolved];
-    const idx1 = Math.floor(Math.random() * available.length);
+    const idx1 = rngSim().int(available.length);
     const ability1 = available.splice(idx1, 1)[0];
-    const idx2 = Math.floor(Math.random() * available.length);
+    const idx2 = rngSim().int(available.length);
     const ability2 = available.splice(idx2, 1)[0];
 
     this.castBossAbility(ability1, { caster });
@@ -2145,7 +2146,7 @@ export class BossSystem {
       const count = Math.min(fallbackHexCount, validHexes.length);
       const available = [...validHexes];
       for (let i = 0; i < count; i++) {
-        const idx = Math.floor(Math.random() * available.length);
+        const idx = rngSim().int(available.length);
         const hex = available.splice(idx, 1)[0];
         this.pendingIgnitions.push({
           q: hex.q,
@@ -2270,7 +2271,7 @@ export class BossSystem {
       return !!(gridHex && !gridHex.hasFireSpawner);
     };
 
-    const startHex = ignitableHexes[Math.floor(Math.random() * ignitableHexes.length)];
+    const startHex = ignitableHexes[rngSim().int(ignitableHexes.length)];
     const path = [{ q: startHex.q, r: startHex.r }];
     const visited = new Set([hexKey(startHex.q, startHex.r)]);
     let currentHex = { q: startHex.q, r: startHex.r };
@@ -2296,14 +2297,14 @@ export class BossSystem {
       }
 
       if (candidates.length === 0) {
-        const bridge = ignitableHexes[Math.floor(Math.random() * ignitableHexes.length)];
+        const bridge = ignitableHexes[rngSim().int(ignitableHexes.length)];
         path.push({ q: bridge.q, r: bridge.r });
         visited.add(hexKey(bridge.q, bridge.r));
         currentHex = { q: bridge.q, r: bridge.r };
         continue;
       }
 
-      const next = candidates[Math.floor(Math.random() * candidates.length)];
+      const next = candidates[rngSim().int(candidates.length)];
       path.push({ q: next.q, r: next.r });
       visited.add(hexKey(next.q, next.r));
       currentHex = { q: next.q, r: next.r };
@@ -2371,7 +2372,7 @@ export class BossSystem {
         CONFIG.FIRE_TYPE_INFERNO,
         CONFIG.FIRE_TYPE_CATACLYSM,
       ];
-      return pool[Math.floor(Math.random() * pool.length)];
+      return pool[rngSim().int(pool.length)];
     }
     const waveNumber = this.gameState?.wave?.number || 1;
     const probs = applyBossFireTypeProbabilityCap(

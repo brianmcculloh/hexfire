@@ -124,7 +124,7 @@ export function showMovementTokenSellbackModal(gameState) {
 
   const ownedTokens = gameState.player.movementTokens || 0;
   if (ownedTokens <= 0) {
-    gameState.notificationSystem?.showToast?.('No movement tokens to sell.', 3000, 'neutral');
+    gameState.notificationSystem?.showToast?.('No movement tokens to sell.', 3000, 'neutral', { critical: true });
     return;
   }
 
@@ -192,7 +192,7 @@ export function showMovementTokenSellbackModal(gameState) {
 
       const current = gameState.player.movementTokens || 0;
       if (current < tokens) {
-        gameState.notificationSystem?.showToast?.('Not enough movement tokens.', 3000, 'warning');
+        gameState.notificationSystem?.showToast?.('Not enough movement tokens.', 3000, 'warning', { critical: true });
         return;
       }
 

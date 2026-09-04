@@ -1,7 +1,13 @@
 // Run history modal: list + detailed stats (localStorage archive).
 
-import { CONFIG, formatClockMinutesSeconds, getComboHistoryLabel } from '../config.js';
+import {
+  CONFIG,
+  formatClockMinutesSeconds,
+  getComboHistoryLabel,
+  getVortexComboHistoryLabel,
+} from '../config.js';
 import { getRunHistoryFromStorage, clearRunHistoryFromStorage } from '../systems/runStatsSystem.js';
+import { countPerfectWaves, evaluateGroupStars, sumStarsEarned } from '../systems/starSystem.js';
 import { showConfirmModal, closeModalOverlay, openModalOverlay } from './modal.js';
 
 const FIRE_LABELS = {
@@ -42,6 +48,10 @@ function formatDate(ts) {
   } catch {
     return '—';
   }
+}
+
+function runHadDebug(entry) {
+  return !!(entry?.summary?.debugModeUsed || entry?.stats?.debugModeUsed);
 }
 
 function outcomeLabel(outcome) {
@@ -104,6 +114,15 @@ function formatHighestComboLabel(stats, summary) {
   return raw ? titleCaseComboPhrase(raw) : null;
 }
 
+function formatHighestVortexComboLabel(stats, summary) {
+  const count = Math.max(
+    0,
+    Math.floor(Number(stats?.highestVortexComboCount ?? summary?.highestVortexComboCount)) || 0,
+  );
+  const tierId = stats?.highestVortexComboTierId ?? summary?.highestVortexComboTierId;
+  return getVortexComboHistoryLabel(tierId, count);
+}
+
 function statCard(label, value, opts = {}) {
   const sub = opts.sub ? `<div class="run-history-stat-sub">${opts.sub}</div>` : '';
   return `
@@ -134,6 +153,31 @@ function cappedNote(total, shown) {
   return `<p class="run-history-muted">Showing ${shown} of ${total} rows.</p>`;
 }
 
+/** @param {Array<{ waveGroup?: number, waveInGroup?: number, stars?: number, perfect?: boolean }>} starsByWave */
+function starGroupTableRows(starsByWave) {
+  if (!Array.isArray(starsByWave) || starsByWave.length === 0) return [];
+  const groups = new Map();
+  for (const row of starsByWave) {
+    if (!row) continue;
+    const g = Math.max(1, Math.floor(Number(row.waveGroup)) || 1);
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(row);
+  }
+  return [...groups.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([g, waves]) => {
+      const sorted = [...waves].sort(
+        (a, b) => (a.waveInGroup || 0) - (b.waveInGroup || 0)
+      );
+      const group = evaluateGroupStars(sorted);
+      const groupLabel = group.perfect ? 'Perfect' : `${group.stars} / 3`;
+      const waveBits = sorted
+        .map((w) => (w.perfect ? 'P' : String(w.stars ?? 0)))
+        .join(' · ');
+      return [`Group ${g}`, groupLabel, waveBits];
+    });
+}
+
 function renderDetail(entry) {
   const el = document.getElementById('runHistoryDetail');
   if (!el) return;
@@ -160,6 +204,20 @@ function renderDetail(entry) {
     })
     .filter(Boolean);
 
+  const vortexCombosByTier = s.vortexCombosByTier || {};
+  const vortexComboCountTotal = Object.values(vortexCombosByTier).reduce(
+    (a, v) => a + (Number(v) || 0),
+    0,
+  );
+  const bestVortexComboLabel = formatHighestVortexComboLabel(s, sum);
+  const vortexComboTierRows = (CONFIG.VORTEX_COMBO_TIERS || [])
+    .map((tier) => {
+      const n = vortexCombosByTier[tier.id] || 0;
+      if (!n) return null;
+      return [String(tier.text || tier.id), String(n)];
+    })
+    .filter(Boolean);
+
   const outcomeClass = String(entry.outcome || 'unknown').replace(/[^a-z0-9_-]/gi, '');
   const outcomeBadge = `<span class="run-history-outcome run-history-outcome--${escapeHtml(outcomeClass)}">${outcomeLabel(entry.outcome)}</span>`;
 
@@ -170,6 +228,8 @@ function renderDetail(entry) {
     statCard('Wave groups', String(s.waveGroupsCompleted ?? 0)),
     statCard('Fires out', String(fireTotal)),
     statCard('Towers lost', String(Array.isArray(s.towersDestroyed) ? s.towersDestroyed.length : sum.towersDestroyed ?? 0)),
+    statCard('Stars earned', String(s.starsEarned ?? sum.starsEarned ?? sumStarsEarned(s.starsByWave))),
+    statCard('Perfect waves', String(s.perfectWaves ?? sum.perfectWaves ?? countPerfectWaves(s.starsByWave))),
   ];
   if (sum.reachedWaveGroup30 || s.reachedWaveGroup30) {
     const survivalSeconds = Math.max(
@@ -180,6 +240,9 @@ function renderDetail(entry) {
   }
 
   const flags = [];
+  if (runHadDebug(entry)) {
+    flags.push('<span class="run-history-pill run-history-pill--debug">Debugging used</span>');
+  }
   if (s.campaignVictory) flags.push('<span class="run-history-pill run-history-pill--gold">Campaign complete</span>');
   if ((s.scenariosCompleted || 0) > 0) {
     flags.push(`<span class="run-history-pill">${s.scenariosCompleted} scenario(s)</span>`);
@@ -289,15 +352,31 @@ function renderDetail(entry) {
       }
       <header class="run-history-detail-header">
         <div class="run-history-detail-headline">
-          <span class="run-history-detail-date">${escapeHtml(formatDate(entry.savedAt))}</span>
+          <span class="run-history-detail-date">${escapeHtml(formatDate(entry.savedAt))}${
+            runHadDebug(entry)
+              ? ' <span class="run-history-debug-asterisk" title="Debugging was used during this run">*</span>'
+              : ''
+          }</span>
           ${outcomeBadge}
         </div>
       </header>
+      ${
+        runHadDebug(entry)
+          ? '<p class="run-history-debug-note">Debugging mode was turned on at some point during this run.</p>'
+          : ''
+      }
 
       <div class="run-history-stat-grid">
         ${overviewCards.join('')}
       </div>
       ${flags.length ? `<div class="run-history-flag-row">${flags.join('')}</div>` : ''}
+
+      ${sectionTitle('Stars')}
+      ${
+        (s.starsByWave && s.starsByWave.length)
+          ? simpleTable(['Realm', 'Group', 'Waves'], starGroupTableRows(s.starsByWave))
+          : '<p class="run-history-muted">No stars recorded this run.</p>'
+      }
 
       ${sectionTitle('Currency & shop')}
       <div class="run-history-stat-grid run-history-stat-grid--small">
@@ -328,6 +407,18 @@ function renderDetail(entry) {
         comboTierRows.length
           ? simpleTable(['Tier', 'Count'], comboTierRows)
           : '<p class="run-history-muted">No combos recorded this run.</p>'
+      }
+
+      ${sectionTitle('Vortex combos')}
+      <div class="run-history-stat-grid run-history-stat-grid--small">
+        ${statCard('Best vortex combo', bestVortexComboLabel ? escapeHtml(bestVortexComboLabel) : '—')}
+        ${statCard('Vortex combo XP', (s.vortexComboXpTotal ?? 0).toLocaleString())}
+        ${statCard('Vortex combos', String(vortexComboCountTotal))}
+      </div>
+      ${
+        vortexComboTierRows.length
+          ? simpleTable(['Tier', 'Count'], vortexComboTierRows)
+          : '<p class="run-history-muted">No vortex combos recorded this run.</p>'
       }
 
       ${sectionTitle('Actions')}
@@ -413,11 +504,18 @@ function populateList() {
         : null;
       const wave30Meta = wave30Survival != null ? ` · 30-1 ${wave30Survival}` : '';
       const bestCombo = formatHighestComboLabel(entry.stats, entry.summary);
+      const bestVortex = formatHighestVortexComboLabel(entry.stats, entry.summary);
       const comboMeta = bestCombo ? ` · ${escapeHtml(bestCombo)}` : '';
+      const vortexMeta = bestVortex ? ` · ${escapeHtml(bestVortex)}` : '';
+      const starsEarned = entry.summary?.starsEarned ?? entry.stats?.starsEarned ?? sumStarsEarned(entry.stats?.starsByWave);
+      const starsMeta = starsEarned > 0 ? ` · ${starsEarned}★` : '';
+      const debugAsterisk = runHadDebug(entry)
+        ? ' <span class="run-history-debug-asterisk" title="Debugging was used during this run">*</span>'
+        : '';
       return `
       <button type="button" class="run-history-list-item" data-entry-index="${idx}">
-        <span class="run-history-list-date">${escapeHtml(date)}</span>
-        <span class="run-history-list-meta">${outcomeLabel(entry.outcome)} · Wave ${escapeHtml(String(wave))}${escapeHtml(wave30Meta)} · ${escapeHtml(score)} pts${comboMeta}</span>
+        <span class="run-history-list-date">${escapeHtml(date)}${debugAsterisk}</span>
+        <span class="run-history-list-meta">${outcomeLabel(entry.outcome)} · Wave ${escapeHtml(String(wave))}${escapeHtml(wave30Meta)} · ${escapeHtml(score)} pts${starsMeta}${comboMeta}${vortexMeta}</span>
       </button>`;
     })
     .join('');

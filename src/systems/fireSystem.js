@@ -2,6 +2,7 @@
 
 import { CONFIG, getFireTypeConfig, getFireSpawnProbabilities, getFireTypeStrengthRank, getBaseSpreadRate, getPowerUpMultiplier, getNextFireType, getFireSpreadScalingWaveInGroup, getEffectiveIgnitionChance, getHeroPowerPathFireSpreadMultiplier, getHeroPowerFireSpreadResistanceMultiplier, getHeroPowerFireRegrowMultiplier } from '../config.js';
 import { hexDistance, getHexesInRing } from '../utils/hexMath.js';
+import { rngSim } from '../utils/rng.js';
 
 function getLightningStrikeSfxVolume() {
   const base =
@@ -87,7 +88,7 @@ export class FireSystem {
         CONFIG.FIRE_TYPE_CATACLYSM,
         CONFIG.FIRE_TYPE_BLACKFYRE,
       ];
-      return allFireTypes[Math.floor(Math.random() * allFireTypes.length)];
+      return rngSim().pick(allFireTypes);
     }
 
     const waveNumber = this.gameState?.wave?.number || 1;
@@ -115,7 +116,7 @@ export class FireSystem {
     ];
     
     // Select fire type based on weighted probability
-    const rand = Math.random();
+    const rand = rngSim().nextFloat();
     let cumulative = 0;
     for (let i = 0; i < fireTypes.length; i++) {
       cumulative += probValues[i];
@@ -176,7 +177,7 @@ export class FireSystem {
       if (hex.isBurning || hex.hasFireSpawner) return;
       
       // Random ignition chance (dynamic per wave)
-      if (Math.random() < this.getCurrentIgnitionChance()) {
+      if (rngSim().nextFloat() < this.getCurrentIgnitionChance()) {
         const fireType = this.getRandomFireType();
         this.igniteHex(hex.q, hex.r, fireType, true); // isSpawn: true for random ignition
       }
@@ -325,6 +326,7 @@ export class FireSystem {
     const M_TO_PATH = CONFIG.FIRE_SPREAD_MULTIPLIER_TO_PATH;
     const M_PATH_TO_PATH = CONFIG.FIRE_SPREAD_MULTIPLIER_PATH_TO_PATH;
     const M_PATH_TO_TOWN = CONFIG.FIRE_SPREAD_MULTIPLIER_PATH_TO_TOWN;
+    const M_TOWN_TO_TOWN = CONFIG.FIRE_SPREAD_MULTIPLIER_TOWN_TO_TOWN ?? M_PATH_TO_PATH;
     const M_NORMAL = CONFIG.FIRE_SPREAD_MULTIPLIER_NORMAL;
     const SPAWNER_MULT = CONFIG.FIRE_SPREAD_MULTIPLIER_SPAWNER_TO_ADJACENT ?? (0.08 / 0.0015);
     const SPAWNER_RING_REDUCTION = CONFIG.FIRE_SPAWNER_RING_REDUCTION_FACTOR || 0.4;
@@ -436,7 +438,15 @@ export class FireSystem {
             spreadChance *= heroPathFireSpreadMultiplier;
           }
         } else if (neighborHex.isTown) {
-          const situationMultiplier = (sourceIsPath && pathInfo) ? M_PATH_TO_TOWN : M_NORMAL;
+          let situationMultiplier;
+          if (sourceIsPath && pathInfo) {
+            situationMultiplier = M_PATH_TO_TOWN;
+          } else if (hex.isTown) {
+            // Grove-to-grove must match path-to-path (not the slow normal-hex rate).
+            situationMultiplier = M_TOWN_TO_TOWN;
+          } else {
+            situationMultiplier = M_NORMAL;
+          }
           spreadChance = sourceCommon * situationMultiplier;
           if (sourceIsPath && pathInfo && heroPathFireSpreadMultiplier !== 1) {
             spreadChance *= heroPathFireSpreadMultiplier;
@@ -463,11 +473,11 @@ export class FireSystem {
         const targetIsBurning = !!neighborHex.isBurning;
         if (targetIsBurning && !this.isStrongerFireType(sourceFireType, neighborHex.fireType)) continue;
 
-        if (Math.random() >= spreadChance) continue;
+        if (rngSim().nextFloat() >= spreadChance) continue;
 
         let resultType;
         if (debugAllTypes) {
-          resultType = ALL_TYPES[Math.floor(Math.random() * ALL_TYPES.length)];
+          resultType = rngSim().pick(ALL_TYPES);
         } else {
           resultType = sourceFireType;
         }
@@ -480,7 +490,7 @@ export class FireSystem {
       }
     }
 
-    // Ignite collected hexes
+    // Ignite collected hexes (adjacent spread — not lightning/spawn)
     for (let i = 0; i < hexesToIgnite.length; i++) {
       const { q, r, fireType } = hexesToIgnite[i];
       this.igniteHex(q, r, fireType);
@@ -492,13 +502,19 @@ export class FireSystem {
       const { q, r, fireType } = hexesToOvertake[i];
       const fireConfig = getFireTypeConfig(fireType);
       if (!fireConfig) continue;
+      const targetHex = this.gridSystem.getHex(q, r);
       this.gridSystem.setHex(q, r, {
         isBurning: true,
         fireType,
         burnDuration: 0,
         extinguishProgress: fireConfig.extinguishTime,
         maxExtinguishTime: fireConfig.extinguishTime,
+        // Spread overtook this hex — no longer a direct-strike origin
+        fireIgnitedBySpawn: false,
       });
+      if (targetHex?.isTown) {
+        this.gridSystem.noteTownSpreadFireThisWave?.();
+      }
       overtookAny = true;
     }
     if (overtookAny && typeof window !== 'undefined') {
@@ -587,6 +603,10 @@ export class FireSystem {
         // Lightning / random ignition vs adjacent-hex spread (grove no-spread bonus ignores spawn damage)
         fireIgnitedBySpawn: !!isSpawn,
       });
+      // Spread onto/within the grove disqualifies the no-fire-spread bonus; direct strikes do not
+      if (!isSpawn && hex.isTown) {
+        this.gridSystem.noteTownSpreadFireThisWave?.();
+      }
     }
     
     // Spawn lightning effect for initial spawns (not spreads).

@@ -1,6 +1,6 @@
 // Wave System - Manages wave timing and progression
 
-import { CONFIG, getPulsingPower, getPulsingAttackInterval, getPathCountForWave, getFireSpawnProbabilities, getFireTypeConfig, getPowerUpMultiplier, getEffectiveDurationTowerAttackInterval, getPowerUpGraphicFilename, formatDisplayHundredths, formatWaterDamageRate, getSuppressionBombTotalUses, clampSuppressionBombLevel, getBossPatternForWaveGroup, getBossPatternForSpeech, getHeroPatternForWaveGroup, getHeroBossWaveSpeech, getSpeechBubblePatternGroup, getCampaignEndWaveGroup, getWaveGroupName, formatActiveWaveTimerText, isFinalSurvivalBossWaveGroup, getWaterTankTypeConfig, getWaterTankModalIconWidthPx, normalizeWaveGroupIndex, getHeroPortraitSpriteGroup, getPlacementBossAbilityDescription, getEffectiveIgnitionChance, applyCurrencyGainBonuses, getDungeonLevelConfig, getVortexLevelConfig, getTownNoFireSpreadBonusCurrency } from '../config.js';
+import { CONFIG, getPulsingPower, getPulsingAttackInterval, getPathCountForWave, getFireSpawnProbabilities, getFireTypeConfig, getPowerUpMultiplier, getEffectiveDurationTowerAttackInterval, getPowerUpGraphicFilename, formatDisplayHundredths, formatWaterDamageRate, getSuppressionBombTotalUses, clampSuppressionBombLevel, getBossPatternForWaveGroup, getBossPatternForSpeech, getHeroPatternForWaveGroup, getHeroBossWaveSpeech, getSpeechBubblePatternGroup, getCampaignEndWaveGroup, getWaveGroupName, formatActiveWaveTimerText, isFinalSurvivalBossWaveGroup, getWaterTankTypeConfig, getWaterTankModalIconWidthPx, normalizeWaveGroupIndex, getHeroPortraitSpriteGroup, getPlacementBossAbilityDescription, getEffectiveIgnitionChance, applyCurrencyGainBonuses, getDungeonLevelConfig, getVortexLevelConfig, getTownNoFireSpreadBonusCurrency, getArtifactById } from '../config.js';
 import { assetUrl } from '../utils/assetUrl.js';
 import { VICTORY_SPEECH_PLACEHOLDERS } from '../patterns.js';
 import { getScenarioByName } from '../scenarios.js';
@@ -12,7 +12,7 @@ import {
   normalizeMaxFiresExtinguishedByWave,
   normalizeMaxVortexesExtinguishedByWave,
 } from './waveGroupStatsBuilder.js';
-import { addScoreToLeaderboard } from '../utils/leaderboard.js';
+import { attachStarRatingToHeader, evaluateAndRecordWaveStars, getLastStarResult, teardownStarCinematic } from './starSystem.js';
 import {
   showConfirmModal,
   createModalFloatingText,
@@ -31,15 +31,23 @@ import {
   revealArtifactTraderWants,
 } from '../utils/artifactTrader.js';
 import {
+  CLEAR_ITEMS_SCOPES,
+  hideClearItemsPicker,
+  isClearItemsPickerOpen,
+  showClearItemsPicker,
+} from '../utils/clearItemsUI.js';
+import {
   buildMetaProgressionUnlocksHtml,
   isMetaItemUnlocked,
   unlockMetaProgressionForCompletedWaveGroup,
 } from '../utils/metaProgression.js';
 import { filterWeightedRewardPool } from '../utils/rewardPoolUnlocks.js';
+import { grantTreeJuice } from '../utils/treeJuiceUI.js';
 import {
   openMapProgressionGateBeforePlacement,
   shouldShowMapProgressionGate,
 } from '../utils/mapProgressionUI.js';
+import { rngLayout, rngLoot, bindWaveRng } from '../utils/rng.js';
 
 const HERO_PORTRAIT_SIZE_CLASS = {
   1: 'hero-size-110',
@@ -128,13 +136,31 @@ function isFireTypeFirstAppearanceAtWave(type, waveNumber, probsAtWave) {
   return true;
 }
 
+function reservedArtifactIdSet(reservedArtifactIds) {
+  return reservedArtifactIds instanceof Set ? reservedArtifactIds : new Set(reservedArtifactIds || []);
+}
+
+function getAvailableDigSiteArtifactDefs(gameState, reservedArtifactIds) {
+  const reserved = reservedArtifactIdSet(reservedArtifactIds);
+  const defs = gameState?.artifactSystem?.getSpawnableDefinitions?.() || [];
+  return defs.filter((d) => d?.id && !reserved.has(d.id));
+}
+
+function pickRandomDigSiteArtifactId(gameState, reservedArtifactIds) {
+  const available = getAvailableDigSiteArtifactDefs(gameState, reservedArtifactIds);
+  if (!available.length) return null;
+  return rngLoot().pick(available).id;
+}
+
 /**
  * Turn a weighted dig-site pool row into a rolled reward (supports optional `count`, default 1).
  * Currency `amount` is multiplied by `count` so the returned object stays a single currency line.
  * @param {object} e
- * @returns {{ type: string, amount?: number, level?: number, count?: number }|null}
+ * @param {object|null} [gameState]
+ * @param {Set<string>|string[]|null} [reservedArtifactIds]
+ * @returns {{ type: string, amount?: number, level?: number, count?: number, artifactId?: string }|null}
  */
-function digSitePoolEntryToReward(e) {
+function digSitePoolEntryToReward(e, gameState = null, reservedArtifactIds = null) {
   if (!e || !e.type) return null;
   const count = Math.max(1, Math.floor(Number(e.count) || 1));
   switch (e.type) {
@@ -150,6 +176,10 @@ function digSitePoolEntryToReward(e) {
       return { type: 'movement_token', count };
     case 'tree_juice':
       return { type: 'tree_juice', count };
+    case 'artifact_random': {
+      const artifactId = pickRandomDigSiteArtifactId(gameState, reservedArtifactIds);
+      return artifactId ? { type: 'artifact', artifactId } : null;
+    }
     default:
       return null;
   }
@@ -244,6 +274,8 @@ export class WaveSystem {
   startPlacementPhase(options = {}) {
     const skipDigSiteGeneration = options.skipDigSiteGeneration === true;
 
+    bindWaveRng(this.gameState, this.gameState.wave?.number || 1);
+
     this.gameState.wave.isPlacementPhase = true;
     this.gameState.wave.isActive = false;
 
@@ -266,9 +298,9 @@ export class WaveSystem {
       });
     }
     
-    // Dungeon first: an active entrance forever owns its hex until flooded. Spawn only if missing.
-    // Dig sites / other ambient rolls must yield to that hex — never steal or relocate it.
-    // Skip when restoring a save (dungeon restored from file) or during tutorial.
+    // Dungeon first: live entrances own their hex until flooded or the wave group ends.
+    // Dig sites / other ambient rolls must yield to those hexes — never steal or relocate them.
+    // Skip when restoring a save (dungeons restored from file) or during tutorial.
     if (
       this.gameState.dungeonEntranceSystem &&
       !this.gameState.tutorialMode &&
@@ -426,15 +458,17 @@ export class WaveSystem {
 
   /**
    * Update the visibility of the clear all items button.
-   * Only during placement phase when towers/bombs are on the map — never mid-wave.
+   * Only during placement phase when towers/bombs are on the map — never mid-wave
+   * (paused or not), and never while the upgrade-towers flow is open.
    */
   updateClearAllButtonVisibility() {
     const hasItems = this.hasItemsOnMap();
     const isPlacementPhase = !!this.gameState.wave.isPlacementPhase;
     const waveActive = !!this.gameState.wave.isActive;
+    const upgrading = !!this.gameState.isUpgradeSelectionMode;
 
-    // Placement only. Mid-wave (including mid-wave load / movement debug) must never show Clear All.
-    const shouldShow = hasItems && isPlacementPhase && !waveActive;
+    // Placement only. Mid-wave (including pause / level-up / upgrade modal) must never show Clear All.
+    const shouldShow = hasItems && isPlacementPhase && !waveActive && !upgrading;
     
     const clearAllBtn = document.getElementById('clearAllItemsBtn');
     
@@ -443,23 +477,35 @@ export class WaveSystem {
       newClearAllBtn.id = 'clearAllItemsBtn';
       newClearAllBtn.className = 'control-btn clear-all-items-btn cta-button cta-yellow';
       newClearAllBtn.innerHTML = '<img src="assets/images/ui/clear.png" alt="" class="clear-all-items-icon" /> Clear Items';
-      newClearAllBtn.onclick = async () => {
-        const confirmed = await showConfirmModal({
-          title: 'Clear All Items?',
-          message: 'This will move all items placed on the map back to your inventory.',
-          confirmText: 'Clear All',
-          cancelText: 'Cancel',
-          confirmButtonClass: 'cta-yellow',
-        });
-        
-        if (confirmed) {
-          this.clearAllItems();
+      newClearAllBtn.onclick = async (e) => {
+        e.stopPropagation();
+        if (isClearItemsPickerOpen()) {
+          hideClearItemsPicker();
+          return;
         }
+        showClearItemsPicker({
+          anchorEl: newClearAllBtn,
+          counts: this.getClearableItemCounts(),
+          onSelect: async (scopeId) => {
+            const copy = CLEAR_ITEMS_SCOPES[scopeId];
+            if (!copy) return;
+            const confirmed = await showConfirmModal({
+              title: copy.title,
+              message: copy.message,
+              confirmText: copy.confirmText,
+              cancelText: 'Cancel',
+              confirmButtonClass: 'cta-yellow',
+            });
+            if (confirmed) {
+              this.clearPlacedItems(scopeId);
+            }
+          },
+        });
       };
 
       this.insertPlacementControlButton(newClearAllBtn, 'clearAll');
     } else if (!shouldShow && clearAllBtn) {
-      // Button exists but shouldn't - remove it
+      hideClearItemsPicker();
       clearAllBtn.remove();
     }
 
@@ -469,36 +515,64 @@ export class WaveSystem {
   }
 
   /**
-   * Clear all towers and bombs from map and store them in inventory
+   * Counts of placed towers/bombs for the clear-items picker (0 = option disabled).
+   * @returns {{ all: number, towers: number, jet: number, nonJet: number, bombs: number }}
    */
-  clearAllItems() {
-    // Store all towers
+  getClearableItemCounts() {
     const towers = this.gameState.towerSystem?.getAllTowers() || [];
-    towers.forEach(tower => {
-      this.gameState.towerSystem?.storeTowerInInventory(tower.id);
-    });
-    
-    // Store all suppression bombs
     const bombs = this.gameState.suppressionBombSystem?.getAllSuppressionBombs() || [];
-    if (!this.gameState.player.inventory.purchasedSuppressionBombs) {
-      this.gameState.player.inventory.purchasedSuppressionBombs = [];
-    }
-    bombs.forEach(bomb => {
-      // Store bomb data (same format as purchased bombs)
-      this.gameState.player.inventory.purchasedSuppressionBombs.push({
-        level: bomb.level
+    const jetCount = towers.filter((tower) => tower.type === CONFIG.TOWER_TYPE_JET).length;
+    return {
+      all: towers.length + bombs.length,
+      towers: towers.length,
+      jet: jetCount,
+      nonJet: towers.length - jetCount,
+      bombs: bombs.length,
+    };
+  }
+
+  /**
+   * Move placed towers and/or bombs back to inventory.
+   * @param {'all'|'towers'|'jet'|'nonJet'|'bombs'} [scope='all']
+   */
+  clearPlacedItems(scope = 'all') {
+    const clearTowers = scope === 'all' || scope === 'towers' || scope === 'jet' || scope === 'nonJet';
+    const clearBombs = scope === 'all' || scope === 'bombs';
+
+    if (clearTowers) {
+      const towers = this.gameState.towerSystem?.getAllTowers() || [];
+      towers.forEach((tower) => {
+        if (scope === 'jet' && tower.type !== CONFIG.TOWER_TYPE_JET) return;
+        if (scope === 'nonJet' && tower.type === CONFIG.TOWER_TYPE_JET) return;
+        this.gameState.towerSystem?.storeTowerInInventory(tower.id);
       });
-      // Remove bomb from map
-      this.gameState.suppressionBombSystem?.removeSuppressionBomb(bomb.id);
-    });
-    
-    // Update inventory UI
+    }
+
+    if (clearBombs) {
+      const bombs = this.gameState.suppressionBombSystem?.getAllSuppressionBombs() || [];
+      if (!this.gameState.player.inventory.purchasedSuppressionBombs) {
+        this.gameState.player.inventory.purchasedSuppressionBombs = [];
+      }
+      bombs.forEach((bomb) => {
+        this.gameState.player.inventory.purchasedSuppressionBombs.push({
+          level: bomb.level
+        });
+        this.gameState.suppressionBombSystem?.removeSuppressionBomb(bomb.id);
+      });
+    }
+
     if (window.updateInventory) {
       window.updateInventory();
     }
-    
-    // Update button visibility (will hide it since items are now cleared)
+
     this.updateClearAllButtonVisibility();
+  }
+
+  /**
+   * Clear all towers and bombs from map and store them in inventory
+   */
+  clearAllItems() {
+    this.clearPlacedItems('all');
   }
 
   /**
@@ -532,6 +606,7 @@ export class WaveSystem {
     this.gameState.renderer?.resetMapReveal?.();
 
     // Remove clear all button if it exists
+    hideClearItemsPicker();
     const clearAllBtn = document.getElementById('clearAllItemsBtn');
     if (clearAllBtn) {
       clearAllBtn.remove();
@@ -630,6 +705,7 @@ export class WaveSystem {
   startActiveWave() {
     this.gameState.wave.isPlacementPhase = false;
     this.gameState.wave.isActive = true;
+    this.updateClearAllButtonVisibility();
     // Use scenario duration if in scenario mode, otherwise use normal duration (final survival wave: untimed)
     const waveDuration = this.gameState.wave.isScenario
       ? (this.gameState.wave.scenarioWaveDuration ?? CONFIG.SCENARIO_WAVE_DURATION)
@@ -665,6 +741,7 @@ export class WaveSystem {
       this.gameState.gridSystem.resetTownDamageThisWave();
     }
     this.gameState.runStats?.resetTowerDamageForNewWave?.();
+    this.gameState.runStats?.resetWaveStarTracking?.();
     const townCenter = this.gameState.gridSystem?.getTownCenter?.();
     // townBonusStart kept for compatibility; award is now percentage-based (see wave complete)
     this.gameState.wave.townBonusStart = townCenter ? Math.round(townCenter.maxTownHealth || CONFIG.TOWN_HEALTH_BASE) : CONFIG.TOWN_HEALTH_BASE;
@@ -1084,7 +1161,7 @@ export class WaveSystem {
               <img src="${spriteUrl}" alt="${typeConfig.name}" class="placement-new-item-icon placement-new-item-icon-water" style="width: ${waterIconWidth}px;" />
               <div class="placement-new-item-content">
                 <div class="placement-new-item-name">${typeConfig.name.toUpperCase()}</div>
-                <div class="placement-new-item-description">Can spawn on the map during waves. Hit with water to trigger a ${typeConfig.explosionRings}-ring blast (~${blastHexCount} hexes) that extinguishes nearby fires with ${power} HP.</div>
+                <div class="placement-new-item-description">Hit with water to trigger a ${typeConfig.explosionRings}-ring blast (~${blastHexCount} hexes) that extinguishes nearby fires.</div>
               </div>
             </div>
           `,
@@ -1222,7 +1299,7 @@ export class WaveSystem {
               <img src="assets/images/items/${bvSprite}" alt="${bvCfg.name || 'Burning Vault'}" class="placement-new-item-icon" style="width: 90px;" />
               <div class="placement-new-item-content">
                 <div class="placement-new-item-name">${(bvCfg.name || 'Burning Vault').toUpperCase()}</div>
-                <div class="placement-new-item-description">A suspicious chest. Water drains its power while fire restores it. Vanishes at the end of its wave group.</div>
+                <div class="placement-new-item-description">A suspicious chest. Water drains its power while fire restores it — but it zaps any tower currently extinguishing it. Vanishes at the end of its wave group.</div>
               </div>
             </div>
           `,
@@ -1253,7 +1330,7 @@ export class WaveSystem {
               <img src="assets/images/items/${dungeonSprite}" alt="${dungeonName}" class="placement-new-item-icon placement-new-item-icon-dungeon" style="width: 72px;" />
               <div class="placement-new-item-content">
                 <div class="placement-new-item-name">${dungeonName.toUpperCase()}</div>
-                <div class="placement-new-item-description">A dungeon entrance appears. Flood the dungeon with water to unlock its rewards.</div>
+                <div class="placement-new-item-description">Flood with water to discover the submerged treasures within. Each flood spawns two new entrances.</div>
               </div>
             </div>
           `,
@@ -1848,6 +1925,7 @@ export class WaveSystem {
       if (!this.gameState.survivalHeroSystem?.started) {
         this.gameState.survivalHeroSystem?.onEnterPlacement?.();
       }
+      this.gameState.renderer?.startHeroPlacementReveal?.();
     } else if (this.waveInGroup === this.wavesPerGroup) {
       this.gameState.renderer?.startBossPlacementReveal?.();
       this.gameState.renderer?.startHeroPlacementReveal?.();
@@ -2034,7 +2112,7 @@ export class WaveSystem {
     const pool = [...availableHexes];
     let toSpawn = Math.min(startingFires, pool.length);
     while (toSpawn > 0 && pool.length > 0) {
-      const idx = Math.floor(Math.random() * pool.length);
+      const idx = rngLayout().int(pool.length);
       const { q, r } = pool.splice(idx, 1)[0];
       // Use getRandomFireType() to get appropriate fire type for current wave group
       const fireType = this.gameState.fireSystem.getRandomFireType();
@@ -2085,8 +2163,8 @@ export class WaveSystem {
     const prevBest = map[waveKey];
     const hadPrior = typeof prevBest === 'number' && !Number.isNaN(prevBest);
     const isStrictNewHigh = hadPrior && safeCount > prevBest;
-    const equaledBest = hadPrior && safeCount === prevBest;
-    const firstRecord = !hadPrior;
+    const equaledBest = hadPrior && safeCount === prevBest && safeCount > 0;
+    const firstRecord = !hadPrior && safeCount > 0;
     map[waveKey] = hadPrior ? Math.max(prevBest, safeCount) : safeCount;
     this.gameState.meta.maxFiresExtinguishedByWave = map;
     const personalBestAfter = map[waveKey];
@@ -2117,8 +2195,8 @@ export class WaveSystem {
     const prevBest = map[waveKey];
     const hadPrior = typeof prevBest === 'number' && !Number.isNaN(prevBest);
     const isStrictNewHigh = hadPrior && safeCount > prevBest;
-    const equaledBest = hadPrior && safeCount === prevBest;
-    const firstRecord = !hadPrior;
+    const equaledBest = hadPrior && safeCount === prevBest && safeCount > 0;
+    const firstRecord = !hadPrior && safeCount > 0;
     map[waveKey] = hadPrior ? Math.max(prevBest, safeCount) : safeCount;
     this.gameState.meta.maxVortexesExtinguishedByWave = map;
     const personalBestAfter = map[waveKey];
@@ -2138,8 +2216,9 @@ export class WaveSystem {
 
   /**
    * Complete the current wave
+   * @param {{ forceStars?: number, forcePerfect?: boolean }} [options]
    */
-  completeWave() {
+  completeWave(options = {}) {
     const completedWave = this.gameState.wave?.number ?? 1;
     const completedWaveGroup = this.currentWaveGroup;
     const completedWaveInGroup = this.waveInGroup;
@@ -2158,12 +2237,10 @@ export class WaveSystem {
     const damageFraction = maxHealth > 0 ? Math.min(1, Math.max(0, damageTaken / maxHealth)) : 0;
     const fullBonus = CONFIG.TOWN_PROTECTION_BONUS_FULL ?? 300;
     const protectionBonus = Math.round((1 - damageFraction) * fullBonus);
-    // Extra flat bonus when no adjacent-spread fire damaged the grove (lightning/random spawns OK)
-    const noSpreadEps = 1e-4;
-    const spreadDamageTaken = this.gameState.gridSystem?.getTownSpreadDamageThisWave?.() ?? 0;
-    const noSpreadBonus = spreadDamageTaken <= noSpreadEps
-      ? getTownNoFireSpreadBonusCurrency(completedWaveGroup)
-      : 0;
+    // Extra flat bonus when no fire spread onto/within the grove (lightning/random strikes OK)
+    const noSpreadBonus = this.gameState.gridSystem?.hadTownSpreadFireThisWave?.()
+      ? 0
+      : getTownNoFireSpreadBonusCurrency(completedWaveGroup);
     this.gameState.wave.townBonusAward = protectionBonus;
     this.gameState.wave.townNoSpreadBonusAward = noSpreadBonus;
     // Currency + earn SFX applied when player taps Collect on the wave / group / victory modal
@@ -2210,6 +2287,18 @@ export class WaveSystem {
       this.gameState.vortexSystem?.getTotalVortexesExtinguishedThisWave?.() || 0;
     if (this.gameState.wave) {
       this.gameState.wave.vortexesExtinguishedCount = totalVortexesThisWave;
+    }
+
+    if (!this.gameState.tutorialMode || options.forceStars != null) {
+      evaluateAndRecordWaveStars(this.gameState, {
+        completedWave,
+        completedWaveGroup,
+        completedWaveInGroup,
+        groveDamage,
+        vortexesExtinguished: totalVortexesThisWave,
+        forceStars: options.forceStars,
+        forcePerfect: options.forcePerfect,
+      });
     }
 
     // Clear all fires at the end of the wave
@@ -2312,27 +2401,33 @@ export class WaveSystem {
   /**
    * Roll one reward from a dig site reward pool (weighted random).
    * @param {number} siteType - Dig site type (1, 2, or 3)
-   * @returns {{ type: string, amount?: number, level?: number, count?: number }|null}
+   * @param {{ reservedArtifactIds?: Set<string>|string[] }} [options]
+   * @returns {{ type: string, amount?: number, level?: number, count?: number, artifactId?: string }|null}
    */
-  rollDigSiteReward(siteType) {
+  rollDigSiteReward(siteType, options = {}) {
+    const reservedArtifactIds = options.reservedArtifactIds;
     const raw = CONFIG.DIG_SITE_REWARD_POOLS?.[siteType];
     let pool = filterWeightedRewardPool(this.gameState, raw || []);
+    pool = pool.filter((e) => {
+      if (e.type !== 'artifact_random') return true;
+      return getAvailableDigSiteArtifactDefs(this.gameState, reservedArtifactIds).length > 0;
+    });
     if (!pool.length) {
       return { type: 'currency', amount: 100 };
     }
     const total = pool.reduce((s, e) => s + (e.weight || 0), 0);
     if (total <= 0) return null;
-    let r = Math.random() * total;
+    let r = rngLoot().nextFloat() * total;
     for (const e of pool) {
       r -= e.weight || 0;
       if (r <= 0) {
-        const out = digSitePoolEntryToReward(e);
+        const out = digSitePoolEntryToReward(e, this.gameState, reservedArtifactIds);
         if (out) return out;
         break;
       }
     }
     const last = pool[pool.length - 1];
-    return digSitePoolEntryToReward(last) || { type: 'currency', amount: 100 };
+    return digSitePoolEntryToReward(last, this.gameState, reservedArtifactIds) || { type: 'currency', amount: 100 };
   }
 
   /**
@@ -2390,15 +2485,28 @@ export class WaveSystem {
       return;
     }
     if (reward.type === 'tree_juice') {
-      for (let i = 0; i < count; i++) {
-        this.gameState.townLevel = (this.gameState.townLevel || 1) + 1;
-        this.gameState.gridSystem?.applyTownUpgrade?.(
-          CONFIG.TOWN_HEALTH_PER_UPGRADE,
-          this.gameState.townLevel,
-        );
-        this.gameState.runStats?.recordTownHealthUpgrade?.();
+      grantTreeJuice(this.gameState, count);
+      if (typeof window !== 'undefined' && window.updateInventory) window.updateInventory();
+      return;
+    }
+    if (reward.type === 'artifact' && reward.artifactId) {
+      const def = getArtifactById(reward.artifactId);
+      if (!def) return;
+      if (!this.gameState.player.inventory) this.gameState.player.inventory = {};
+      if (!Array.isArray(this.gameState.player.inventory.collectedArtifactIds)) {
+        this.gameState.player.inventory.collectedArtifactIds = [];
       }
-      if (typeof window !== 'undefined' && window.AudioManager) window.AudioManager.playSFX('tree_juice');
+      if (!this.gameState.player.inventory.collectedArtifactIds.includes(reward.artifactId)) {
+        this.gameState.player.inventory.collectedArtifactIds.push(reward.artifactId);
+      }
+      this.gameState.runStats?.recordMapItemCollection?.('artifact', {
+        artifactId: reward.artifactId,
+        fromDigSite: true,
+      });
+      if (typeof window !== 'undefined' && window.AudioManager) {
+        window.AudioManager.playSFX('artifact_collected', { dedupeMs: 100 });
+      }
+      if (typeof window !== 'undefined' && window.updateInventory) window.updateInventory();
     }
   }
 
@@ -2463,6 +2571,7 @@ export class WaveSystem {
     const completedGroupForDigStats = this.currentWaveGroup;
     const noDamageEps = 1e-4;
     const fireDamageBySiteId = new Map();
+    const reservedArtifactIds = new Set();
     for (const site of surviving) {
       const raw = this.gameState.runStats?.getDigSiteDamageTotal?.(site.id);
       const dmg = typeof raw === 'number' && !Number.isNaN(raw) ? raw : Number.NaN;
@@ -2478,7 +2587,10 @@ export class WaveSystem {
       );
     }
     for (const site of surviving) {
-      const reward = this.rollDigSiteReward(site.type);
+      const reward = this.rollDigSiteReward(site.type, { reservedArtifactIds });
+      if (reward?.type === 'artifact' && reward.artifactId) {
+        reservedArtifactIds.add(reward.artifactId);
+      }
       if (!reward) continue;
       const siteConfig = CONFIG.DIG_SITE_TYPES?.[site.type];
       const fireDamage = fireDamageBySiteId.get(site.id);
@@ -2529,6 +2641,7 @@ export class WaveSystem {
         this.gameState.persistMeta();
       }
       this.showVictoryModal(digSiteRewards, metaUnlocks);
+      void this.gameState.submitRunToLeaderboards?.();
       return;
     }
     
@@ -2569,9 +2682,9 @@ export class WaveSystem {
 
   /**
    * Remove ambient map spawns from the prior wave group: water tanks, temp power-ups, mystery items,
-   * currency pickups, artifacts, dig sites, burning vaults, and vortexes. Player towers and
-   * suppression bombs are handled separately (returned to inventory in {@link #completeWaveGroup}
-   * before this runs). Dungeon entrances are intentionally kept — they own their hex until flooded.
+   * currency pickups, artifacts, dig sites, burning vaults, dungeon entrances, and vortexes. Player
+   * towers and suppression bombs are handled separately (returned to inventory in
+   * {@link #completeWaveGroup} before this runs).
    */
   clearAmbientWaveSpawnsForGroupBoundary() {
     this.gameState.waterTankSystem?.clearAllWaterTanks();
@@ -2581,6 +2694,7 @@ export class WaveSystem {
     this.gameState.artifactSystem?.clearAllItems();
     this.gameState.digSiteSystem?.clearAllDigSites();
     this.gameState.burningVaultSystem?.clearAllItems();
+    this.gameState.dungeonEntranceSystem?.clearAllItems();
     this.gameState.vortexSystem?.clearAllItems();
   }
 
@@ -2597,7 +2711,9 @@ export class WaveSystem {
 
     this.clearAmbientWaveSpawnsForGroupBoundary();
 
-    // Preserve / place dungeon before paths & spawners so they plan around its hex.
+    bindWaveRng(this.gameState, waveNumber, { force: true });
+
+    // Place the new group's opening dungeon before paths & spawners so they plan around its hex.
     if (this.gameState.dungeonEntranceSystem && !this.gameState.tutorialMode) {
       this.gameState.dungeonEntranceSystem.ensureDungeonForWave(waveGroup);
     }
@@ -3161,6 +3277,8 @@ export class WaveSystem {
       headerText.textContent = `Wave Group ${completedWaveGroupNumber} Complete!`;
       headerText.style.cssText = 'position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2; color: #FFFFFF; font-size: 32px; font-weight: bold; font-family: "Exo 2", sans-serif; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8); pointer-events: none; white-space: nowrap;';
       headerContainer.appendChild(headerText);
+
+      attachStarRatingToHeader(headerContainer, getLastStarResult(this.gameState), { animate: true });
       
       // Insert header at the beginning of modal content
       modalFrameContent.insertBefore(headerContainer, modalFrameContent.firstChild);
@@ -3417,6 +3535,7 @@ export class WaveSystem {
    * @param {HTMLElement | null | undefined} modal
    */
   teardownWaveCompleteModal(modal) {
+    teardownStarCinematic();
     if (!modal) return;
     delete modal._waveRewardsCollected;
     delete modal._groupRewardsCollected;
@@ -3834,6 +3953,149 @@ export class WaveSystem {
     }
 
     if (window.updateUI) window.updateUI();
+  }
+
+  /**
+   * View-only Artifact Trader board (Collection shortcut). No claims; closes without advancing waves.
+   * @returns {boolean} true if the review modal was opened
+   */
+  showArtifactTraderReviewModal() {
+    const collected = this.gameState?.player?.inventory?.collectedArtifactIds;
+    if (!Array.isArray(collected) || collected.length === 0) return false;
+
+    const liveTrader = document.getElementById('waveCompleteModal');
+    if (liveTrader?.dataset?.artifactTraderActive === '1') {
+      this.gameState?.notificationSystem?.showToast?.(
+        'The Artifact Trader is already here — claim bounties on this screen.',
+        3500,
+        'neutral',
+        { critical: true }
+      );
+      return false;
+    }
+
+    const modal = document.getElementById('artifactTraderReviewModal');
+    const statsDiv = document.getElementById('artifactTraderReviewStats');
+    const modalFrameContent = modal?.querySelector('.modal-frame-content');
+    const wants = ensureArtifactTraderWantsForRun(this.gameState);
+    if (!modal || !statsDiv || !modalFrameContent || !wants) return false;
+
+    revealArtifactTraderWants(this.gameState);
+
+    this._artifactTraderReviewWasPaused = !!(typeof window !== 'undefined' && window.gameLoop?.isPaused);
+    if (typeof window !== 'undefined' && window.pauseGameWithAudio) {
+      window.pauseGameWithAudio();
+    }
+    if (typeof window !== 'undefined' && window.syncPauseButton) {
+      window.syncPauseButton();
+    }
+
+    modal.dataset.artifactTraderReview = '1';
+    modal.classList.add('active', 'upgrade-token-mask', 'artifact-trader-modal');
+    playModalEnterAnimation(modal);
+    modal.style.pointerEvents = 'auto';
+
+    const modalInner = modal.querySelector('.modal');
+    if (modalInner) {
+      modalInner.style.pointerEvents = 'auto';
+      modalInner.classList.add('modal-upgrade-token', 'modal-no-frame');
+      modalInner.classList.remove('modal-frame-9patch');
+    }
+
+    modal.querySelector('.placement-header-container')?.remove();
+    this.removeWaveCompleteHeroGraphic(modal);
+
+    const headerContainer = document.createElement('div');
+    headerContainer.className = 'placement-header-container';
+    headerContainer.style.cssText =
+      'position: relative; display: flex; justify-content: center; align-items: center; width: 100%; margin-bottom: 5px!important;';
+    const headerImage = document.createElement('img');
+    headerImage.src = 'assets/images/ui/header-bg-orange.png';
+    headerImage.style.cssText =
+      'width: 800px; height: auto; image-rendering: crisp-edges; position: relative; z-index: 1;';
+    headerContainer.appendChild(headerImage);
+    const headerContentWrapper = document.createElement('div');
+    headerContentWrapper.style.cssText =
+      'position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2; display: flex; align-items: center; pointer-events: none;';
+    const headerText = document.createElement('div');
+    headerText.textContent = 'Artifact Trader';
+    headerText.style.cssText =
+      'color: #FFFFFF; font-size: 32px; font-weight: bold; font-family: "Exo 2", sans-serif; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8); white-space: nowrap;';
+    headerContentWrapper.appendChild(headerText);
+    headerContainer.appendChild(headerContentWrapper);
+    modalFrameContent.insertBefore(headerContainer, modalFrameContent.firstChild);
+
+    statsDiv.innerHTML = '';
+    const statsContainer = document.createElement('div');
+    statsContainer.style.cssText =
+      'display: flex; flex-direction: column; align-items: center; justify-content: flex-start; width: 100%; margin-top: 8px; padding-bottom: 4px;';
+
+    const doneBtn = document.createElement('button');
+    doneBtn.type = 'button';
+    doneBtn.id = 'artifactTraderReviewDoneBtn';
+    doneBtn.textContent = 'Done';
+    doneBtn.className = 'choice-btn cta-button cta-blue';
+    doneBtn.style.cssText =
+      'width: auto; min-width: auto; max-width: none; margin: 0; display: block; visibility: visible; position: relative; z-index: 5;';
+    doneBtn.onclick = () => this.closeArtifactTraderReviewModal();
+
+    mountArtifactTraderModalBody(statsContainer, wants, this.gameState, {
+      continueButton: doneBtn,
+      viewOnly: true,
+    });
+    statsDiv.appendChild(statsContainer);
+
+    this.addArtifactTraderHeroGraphic(modal);
+
+    if (!modal.dataset.artifactTraderReviewOverlayBound) {
+      modal.dataset.artifactTraderReviewOverlayBound = '1';
+      modal.addEventListener('click', (e) => {
+        if (e.target !== modal) return;
+        this.closeArtifactTraderReviewModal();
+      });
+    }
+
+    if (window.updateUI) window.updateUI();
+    return true;
+  }
+
+  /**
+   * Close the view-only Artifact Trader review modal.
+   * @param {(() => void) | null | undefined} [onDone]
+   */
+  closeArtifactTraderReviewModal(onDone) {
+    const modal = document.getElementById('artifactTraderReviewModal');
+    const resumeIfNeeded = () => {
+      if (!this._artifactTraderReviewWasPaused) {
+        if (typeof window !== 'undefined' && window.resumeGameAfterModalClose) {
+          window.resumeGameAfterModalClose({ withAudio: false });
+        }
+        if (typeof window !== 'undefined' && window.syncPauseButton) {
+          window.syncPauseButton();
+        }
+      }
+      this._artifactTraderReviewWasPaused = false;
+      onDone?.();
+    };
+
+    if (!modal) {
+      resumeIfNeeded();
+      return;
+    }
+
+    this.gameState?.inputHandler?.tooltipSystem?.hide?.();
+    closeModalOverlay(modal, {
+      extraRemove: ['upgrade-token-mask', 'artifact-trader-modal'],
+      onDone: () => {
+        delete modal.dataset.artifactTraderReview;
+        modal.setAttribute('aria-hidden', 'true');
+        this.removeWaveCompleteHeroGraphic(modal);
+        modal.querySelector('.placement-header-container')?.remove();
+        const statsDiv = document.getElementById('artifactTraderReviewStats');
+        if (statsDiv) statsDiv.innerHTML = '';
+        resumeIfNeeded();
+      },
+    });
   }
 
   /**
@@ -4793,6 +5055,8 @@ export class WaveSystem {
       headerText.textContent = `Wave ${completedWaveGroup}-${completedWaveInGroup} Complete!`;
       headerText.style.cssText = 'position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2; color: #FFFFFF; font-size: 32px; font-weight: bold; font-family: "Exo 2", sans-serif; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8); pointer-events: none; white-space: nowrap;';
       headerContainer.appendChild(headerText);
+
+      attachStarRatingToHeader(headerContainer, getLastStarResult(this.gameState), { animate: true });
       
       // Insert header at the beginning of modal content
       modalFrameContent.insertBefore(headerContainer, modalFrameContent.firstChild);
@@ -4846,10 +5110,8 @@ export class WaveSystem {
       firesNumberWrap.appendChild(firesNumber);
       if (showFiresHighScore) {
         const hs = document.createElement('div');
-        hs.className = 'wave-complete-stat-celebrate';
+        hs.className = 'wave-complete-stat-celebrate wave-complete-high-score';
         hs.textContent = 'new high score!';
-        hs.style.cssText =
-          'position: absolute; top: 13px; right: -8px; font-size: 13px; font-weight: bold; color: #FFD700; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5); z-index: 2; pointer-events: none; letter-spacing: 0px; white-space: nowrap; font-family: "Exo 2", sans-serif;';
         firesNumberWrap.appendChild(hs);
       }
       firesTextContainer.appendChild(firesNumberWrap);
@@ -5090,9 +5352,7 @@ export class WaveSystem {
         firesBreakdown += '</ul>';
       }
       
-      // Add score to leaderboard when scenario run ends
-      const finalScore = this.gameState.player.score ?? 0;
-      addScoreToLeaderboard(finalScore);
+      // Scenarios are not ranked on the global boards
 
       statsDiv.innerHTML = `
         <p style="text-shadow: 0.5px 0.5px 1px rgba(0, 0, 0, 0.25), -0.5px -0.5px 1px rgba(0, 0, 0, 0.25), 0.5px -0.5px 1px rgba(0, 0, 0, 0.25), -0.5px 0.5px 1px rgba(0, 0, 0, 0.25);"><strong>Scenario Complete!</strong></p>

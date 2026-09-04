@@ -2,6 +2,7 @@
 
 import { CONFIG } from '../config.js';
 import { setLocalStorageItemWithRetry } from '../utils/localStorageQuota.js';
+import { emptyWaveStarTracking, normalizeStarsByWave, sumStarsEarned, countPerfectWaves } from './starSystem.js';
 
 const HISTORY_KEY = 'hexfire_run_stats_history_v1';
 const HISTORY_MAX = 15;
@@ -56,12 +57,33 @@ function compactStatsForHistory(data) {
     highestComboHexCount: data.highestComboHexCount,
     highestComboTierId: data.highestComboTierId,
     comboEvents: slice(data.comboEvents),
+    vortexCombosByTier: data.vortexCombosByTier,
+    vortexComboXpTotal: data.vortexComboXpTotal,
+    highestVortexComboCount: data.highestVortexComboCount,
+    highestVortexComboTierId: data.highestVortexComboTierId,
+    vortexComboEvents: slice(data.vortexComboEvents),
+    debugModeUsed: !!data.debugModeUsed,
+    starsByWave: normalizeStarsByWave(data.starsByWave),
+    starsEarned: sumStarsEarned(data.starsByWave),
+    perfectWaves: countPerfectWaves(data.starsByWave),
   };
 }
 
 function emptyCombosByTier() {
   return {
     giant: 0,
+    monster: 0,
+    ludicrous: 0,
+    god: 0,
+  };
+}
+
+function emptyVortexCombosByTier() {
+  return {
+    nice: 0,
+    super: 0,
+    mega: 0,
+    ultra: 0,
     monster: 0,
     ludicrous: 0,
     god: 0,
@@ -139,6 +161,22 @@ function emptyData() {
     highestComboTierId: null,
     /** @type {Array<{ tierId: string, text: string, hexCount: number, xp: number, baseXp: number, wave: number, waveGroup: number, waveInGroup: number, at: number }>} */
     comboEvents: [],
+    /** @type {Record<string, number>} Count of each vortex combo tier achieved this run */
+    vortexCombosByTier: emptyVortexCombosByTier(),
+    /** Total boosted vortex combo XP earned this run */
+    vortexComboXpTotal: 0,
+    /** Largest vortex combo (count) achieved this run */
+    highestVortexComboCount: 0,
+    /** Tier id for {@link highestVortexComboCount} */
+    highestVortexComboTierId: null,
+    /** @type {Array<{ tierId: string, text: string, count: number, xp: number, baseXp: number, wave: number, waveGroup: number, waveInGroup: number, at: number }>} */
+    vortexComboEvents: [],
+    /** True if debugging was on at any point during this run (sticky). */
+    debugModeUsed: false,
+    /** @type {Array<{ wave: number, waveGroup: number, waveInGroup: number, stars: number, perfect: boolean, criteria?: object }>} */
+    starsByWave: [],
+    /** Live per-wave counters used to score stars (reset at wave start; persisted mid-wave). */
+    waveStarTracking: emptyWaveStarTracking(),
   };
 }
 
@@ -162,6 +200,16 @@ export class RunStatsTracker {
     this.data.runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     this.data.runStartedAt = Date.now();
     this.data.lastRunTotalFiresExtinguished = 0;
+    this.noteDebugModeIfOn();
+  }
+
+  /** Sticky: once debugging is used, the run stays flagged even if it is turned off. */
+  markDebugModeUsed() {
+    if (this.data) this.data.debugModeUsed = true;
+  }
+
+  noteDebugModeIfOn() {
+    if (CONFIG.DEBUG_MODE) this.markDebugModeUsed();
   }
 
   getCtx() {
@@ -224,8 +272,76 @@ export class RunStatsTracker {
     });
   }
 
+  /**
+   * Record a timed vortex combo achieved during the run.
+   * @param {string} tierId - Tier id from {@link CONFIG.VORTEX_COMBO_TIERS}
+   * @param {string} text - Combo phrase
+   * @param {number} count - Vortexes in the combo chain
+   * @param {number} xpAwarded - Boosted XP granted
+   * @param {number} baseXp - Tier baseline × wave group, before XP power-up boosts
+   */
+  recordVortexCombo(tierId, text, count, xpAwarded, baseXp) {
+    const id = String(tierId || 'unknown').toLowerCase();
+    if (!this.data.vortexCombosByTier) this.data.vortexCombosByTier = emptyVortexCombosByTier();
+    if (this.data.vortexCombosByTier[id] === undefined) this.data.vortexCombosByTier[id] = 0;
+    this.data.vortexCombosByTier[id] += 1;
+    const n = Math.max(0, Math.floor(Number(count)) || 0);
+    if (n > (this.data.highestVortexComboCount || 0)) {
+      this.data.highestVortexComboCount = n;
+      this.data.highestVortexComboTierId = id;
+    }
+    const xp = Math.max(0, Math.round(Number(xpAwarded)) || 0);
+    this.data.vortexComboXpTotal = (this.data.vortexComboXpTotal || 0) + xp;
+    const ctx = this.getCtx();
+    if (!Array.isArray(this.data.vortexComboEvents)) this.data.vortexComboEvents = [];
+    this.data.vortexComboEvents.push({
+      tierId: id,
+      text: String(text || ''),
+      count: n,
+      xp,
+      baseXp: Math.max(0, Math.round(Number(baseXp)) || 0),
+      wave: ctx.wave,
+      waveGroup: ctx.waveGroup,
+      waveInGroup: ctx.waveInGroup,
+      at: Date.now(),
+    });
+  }
+
   resetTowerDamageForNewWave() {
     this.data.towerDamageThisWave = 0;
+  }
+
+  resetWaveStarTracking() {
+    this.data.waveStarTracking = emptyWaveStarTracking();
+  }
+
+  recordWaveStars(row) {
+    if (!row) return;
+    if (!Array.isArray(this.data.starsByWave)) this.data.starsByWave = [];
+    const wave = Math.max(1, Math.floor(Number(row.wave)) || 1);
+    const next = {
+      wave,
+      waveGroup: Math.max(1, Math.floor(Number(row.waveGroup)) || 1),
+      waveInGroup: Math.max(1, Math.floor(Number(row.waveInGroup)) || 1),
+      stars: Math.max(0, Math.min(3, Math.floor(Number(row.stars)) || 0)),
+      perfect: !!row.perfect,
+      criteria: row.criteria && typeof row.criteria === 'object' ? { ...row.criteria } : undefined,
+    };
+    const idx = this.data.starsByWave.findIndex((existing) => existing && existing.wave === wave);
+    if (idx >= 0) this.data.starsByWave[idx] = next;
+    else this.data.starsByWave.push(next);
+  }
+
+  recordDungeonFloodedThisWave() {
+    if (!this.data.waveStarTracking) this.data.waveStarTracking = emptyWaveStarTracking();
+    this.data.waveStarTracking.dungeonsFlooded =
+      (Math.max(0, Math.floor(Number(this.data.waveStarTracking.dungeonsFlooded)) || 0)) + 1;
+  }
+
+  recordVortexExtinguishedThisWave() {
+    if (!this.data.waveStarTracking) this.data.waveStarTracking = emptyWaveStarTracking();
+    this.data.waveStarTracking.vortexesExtinguished =
+      (Math.max(0, Math.floor(Number(this.data.waveStarTracking.vortexesExtinguished)) || 0)) + 1;
   }
 
   addTowerDamageThisWave(amount) {
@@ -323,6 +439,11 @@ export class RunStatsTracker {
       ...entry,
       cause: entry.cause || 'fire',
     });
+    if (this.gameState?.wave?.isActive) {
+      if (!this.data.waveStarTracking) this.data.waveStarTracking = emptyWaveStarTracking();
+      this.data.waveStarTracking.towersDestroyed =
+        (Math.max(0, Math.floor(Number(this.data.waveStarTracking.towersDestroyed)) || 0)) + 1;
+    }
   }
 
   recordRotation() {
@@ -389,6 +510,11 @@ export class RunStatsTracker {
     if (!amount || amount <= 0) return;
     if (!this.data.digSiteDamageById[siteId]) this.data.digSiteDamageById[siteId] = 0;
     this.data.digSiteDamageById[siteId] += amount;
+    if (this.gameState?.wave?.isActive) {
+      if (!this.data.waveStarTracking) this.data.waveStarTracking = emptyWaveStarTracking();
+      this.data.waveStarTracking.digSiteDamage =
+        (Math.max(0, Number(this.data.waveStarTracking.digSiteDamage) || 0)) + amount;
+    }
   }
 
   /**
@@ -516,6 +642,7 @@ export class RunStatsTracker {
   }
 
   toJSON() {
+    this.noteDebugModeIfOn();
     return JSON.parse(JSON.stringify(this.data));
   }
 
@@ -578,12 +705,43 @@ export class RunStatsTracker {
           }
         }
       }
+      merged.vortexCombosByTier = {
+        ...emptyVortexCombosByTier(),
+        ...(json.vortexCombosByTier && typeof json.vortexCombosByTier === 'object'
+          ? json.vortexCombosByTier
+          : {}),
+      };
+      merged.vortexComboXpTotal = Math.max(0, Math.round(Number(json.vortexComboXpTotal)) || 0);
+      merged.highestVortexComboCount = Math.max(
+        0,
+        Math.floor(Number(json.highestVortexComboCount)) || 0
+      );
+      merged.highestVortexComboTierId =
+        json.highestVortexComboTierId != null && String(json.highestVortexComboTierId).length
+          ? String(json.highestVortexComboTierId).toLowerCase()
+          : null;
+      merged.vortexComboEvents = Array.isArray(json.vortexComboEvents) ? json.vortexComboEvents : [];
+      if (!merged.highestVortexComboCount && merged.vortexComboEvents.length > 0) {
+        for (const ev of merged.vortexComboEvents) {
+          const n = Math.max(0, Math.floor(Number(ev?.count)) || 0);
+          if (n >= merged.highestVortexComboCount) {
+            merged.highestVortexComboCount = n;
+            merged.highestVortexComboTierId = ev?.tierId
+              ? String(ev.tierId).toLowerCase()
+              : merged.highestVortexComboTierId;
+          }
+        }
+      }
       merged.lastRunTotalFiresExtinguished = Math.max(
         0,
         Math.floor(Number(json.lastRunTotalFiresExtinguished)) || 0
       );
+      merged.debugModeUsed = !!(json.debugModeUsed || merged.debugModeUsed);
+      merged.starsByWave = normalizeStarsByWave(json.starsByWave);
+      merged.waveStarTracking = emptyWaveStarTracking(json.waveStarTracking);
       t.data = merged;
     }
+    t.noteDebugModeIfOn();
     return t;
   }
 }
@@ -596,6 +754,8 @@ export class RunStatsTracker {
  */
 export function appendRunToHistory(tracker, meta = {}) {
   try {
+    tracker?.noteDebugModeIfOn?.();
+    const debugModeUsed = !!tracker?.data?.debugModeUsed;
     const entry = {
       savedAt: Date.now(),
       outcome: meta.outcome || 'unknown',
@@ -613,6 +773,14 @@ export function appendRunToHistory(tracker, meta = {}) {
           : null,
         highestComboHexCount: Math.max(0, Math.floor(Number(tracker?.data?.highestComboHexCount)) || 0),
         highestComboTierId: tracker?.data?.highestComboTierId ?? null,
+        highestVortexComboCount: Math.max(
+          0,
+          Math.floor(Number(tracker?.data?.highestVortexComboCount)) || 0
+        ),
+        highestVortexComboTierId: tracker?.data?.highestVortexComboTierId ?? null,
+        debugModeUsed,
+        starsEarned: sumStarsEarned(tracker?.data?.starsByWave),
+        perfectWaves: countPerfectWaves(tracker?.data?.starsByWave),
       },
       stats: compactStatsForHistory(tracker?.data),
     };

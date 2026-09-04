@@ -2,20 +2,50 @@
 
 Queue:
 
-It was too easy to get to a high level and have tons of upgraded towers, need to increase level up curve and decrease money gained across the board
+Next playtest balancing:
+    --at the end of the run, answer these questions
+        --was money too easy or hard to come by?
+        --did the player get through 3 of the specialties? ideally that should be the upper limit.
+        --did meta and wave unlocks feel correct?
+        --do we need to change vortex spawn rates?
+    Notes:
+        --vortex health felt too easy on wave group 18, and some of the earlier and later ones around that
+        --too easy to get money to buy things, reduce all money, and maybe increase jet tower cost - DONE
+        --vortexes got a lot harder on group 19 (this felt good and challenging!)
+        --many shop items increase in cost now and the artifact trader has passes available, so see how this feels on next run
+        --had all artifacts by wave group 27
+        --even with the OP money and towers from this run, wave group 30 was still really hard and wrecked the health of all towers
+            --this is probably a good thing since it makes tower durability power ups more important
 
 
-Next playtest:
---check difficulty curve for the following new components:
-    --check dungeon entrance progression
-    --check vortex progression
-    --check specialty strength and type progressions
-    --check meta unlock and item unlock progression
---balance out the rewards pools for dungeon entrances
-    --make them match each other in value more or less
---balance out the xp gained from vortexes
-    --in my current run, i hit level 50 by wave 16-1
+Next playtest needs:
+    --how do vortexes feel since resources have been nerfed
+    --new specialty level
+    --superchargers
+    --new passes items
+    --new rewards pools across the board
+    --artifacts are less common slightly
 
+
+Help/Hint system that detects when certain things happen and shows a hint popup
+
+
+Quests:
+    --randomly appear on one of the 6 corners of the map
+    --disappear at the end of each wave
+    --actual accepted quests stack up in quest log until completed
+    --they each give a random specific quest:
+        --extinguish 10 vortexes
+        --collect 5 gifts of the grove
+        --collect 10 temporary power ups
+        --destroy 10 water tanks
+        --clear first ring of hexes around all spawners at the same time
+        --clear paths and grove of all fires for at least 1 second
+        --flood two dungeon entrances in the same wave
+        --protect three dig sites from taking any damage in the same wave group
+        --destroy x burning vaults in the same wave
+        --destroy a vortex when it's on an adjacent grove hex
+        --complete a wave without any towers losing any HP (losing shield is fine)
 
 Difficulty settings - harder difficulties:
     --increased spread rates
@@ -23,16 +53,12 @@ Difficulty settings - harder difficulties:
     --increased fire health
     --increased fire damage
     --increased vortex spawn rates
+    --increased vortex speeds
 
 Reset meta progression and play through without any unlocks
     --does everything feel locked correctly and unlocking at the right time?
     --is the game harder/easier without things unlocked during a playthrough?
 
-Star system
-    --1, 2, or 3 stars at the end of each wave
-    --should it be a score threshold that escalates per wave
-    --it could be instead 3 stars if grove and all towers ended in full health or took no health loss, 2 stars if no towers lost and no dig sites destroyed, or 1 star otherwise
-    --stars are collected just like DTI and if you pass thresholds you get new ranks - what should the reward be?
 
 Achievements/Badges
 --x fires extinguished for a single wave

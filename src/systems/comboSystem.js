@@ -1,6 +1,13 @@
-// Combo System — detects contiguous fire extinguishes within a short time window
+// Combo System — contiguous fire extinguishes + timed vortex extinguish chains
 
-import { CONFIG, getComboTierForHexCount, getComboXpForWaveGroup, getComboDisplayText } from '../config.js';
+import {
+  CONFIG,
+  getComboTierForHexCount,
+  getComboXpForWaveGroup,
+  getComboDisplayText,
+  getVortexComboTierForCount,
+  getVortexComboDisplayText,
+} from '../config.js';
 import { getNeighbors, hexKey } from '../utils/hexMath.js';
 
 /**
@@ -61,6 +68,10 @@ export class ComboSystem {
     this.pending = [];
     this.lastEventTime = 0;
     this.batchStartTime = 0;
+
+    /** @type {Array<{ q: number, r: number, time: number }>} */
+    this.vortexPending = [];
+    this.vortexLastEventTime = 0;
   }
 
   /**
@@ -78,10 +89,26 @@ export class ComboSystem {
   }
 
   /**
-   * Called each render frame; flushes the batch once idle or max span is reached.
+   * Record a vortex extinguish for timed vortex-combo chaining.
+   * @param {number} q
+   * @param {number} r
+   */
+  recordVortexExtinguished(q, r) {
+    const now = performance.now();
+    this.vortexPending.push({ q, r, time: now });
+    this.vortexLastEventTime = now;
+  }
+
+  /**
+   * Called each render frame; flushes batches once idle (or fire max-span) is reached.
    * @param {number} _deltaTime - Unused; timing uses performance.now()
    */
   updateFrame(_deltaTime) {
+    this.updateFireCombos();
+    this.updateVortexCombos();
+  }
+
+  updateFireCombos() {
     if (this.pending.length === 0) return;
 
     const idleMs = CONFIG.COMBO_BATCH_WINDOW_MS ?? 150;
@@ -97,6 +124,16 @@ export class ComboSystem {
     }
     if (idleElapsed) {
       this.flush();
+    }
+  }
+
+  updateVortexCombos() {
+    if (this.vortexPending.length === 0) return;
+
+    const idleMs = CONFIG.VORTEX_COMBO_WINDOW_MS ?? 250;
+    const now = performance.now();
+    if (now - this.vortexLastEventTime >= idleMs) {
+      this.flushVortexCombo();
     }
   }
 
@@ -135,6 +172,19 @@ export class ComboSystem {
     this.batchStartTime = 0;
     this.lastEventTime = 0;
     this.evaluateBatch(events);
+  }
+
+  flushVortexCombo() {
+    if (this.vortexPending.length === 0) return;
+    const events = this.vortexPending;
+    this.vortexPending = [];
+    this.vortexLastEventTime = 0;
+
+    const count = events.length;
+    const tier = getVortexComboTierForCount(count);
+    if (!tier) return;
+
+    this.triggerVortexCombo(tier, events);
   }
 
   /**
@@ -200,9 +250,51 @@ export class ComboSystem {
     }
   }
 
+  /**
+   * @param {{ minCount: number, text: string, color: string, sfxKey: string, id: string, xp: number }} tier
+   * @param {Array<{ q: number, r: number, time: number }>} events
+   */
+  triggerVortexCombo(tier, events) {
+    const center = getComponentCenter(events);
+    const waveGroup = Math.max(
+      1,
+      Math.floor(
+        Number(this.gameState?.waveSystem?.currentWaveGroup ?? this.gameState?.wave?.currentGroup) || 1,
+      ),
+    );
+    const baseXp = getComboXpForWaveGroup(tier.xp, waveGroup);
+    const boostedXp =
+      this.gameState?.progressionSystem?.awardComboXP?.(baseXp) ?? baseXp;
+
+    const count = events.length;
+    const displayText = getVortexComboDisplayText(tier, count);
+
+    this.gameState?.notificationSystem?.addComboNotification?.(
+      center.q,
+      center.r,
+      displayText,
+      tier.color,
+      boostedXp,
+    );
+
+    this.gameState?.runStats?.recordVortexCombo?.(
+      tier.id,
+      displayText,
+      count,
+      boostedXp,
+      baseXp,
+    );
+
+    if (typeof window !== 'undefined' && window.AudioManager && tier.sfxKey) {
+      window.AudioManager.playSFX(tier.sfxKey, { dedupeMs: 150 });
+    }
+  }
+
   reset() {
     this.pending = [];
     this.lastEventTime = 0;
     this.batchStartTime = 0;
+    this.vortexPending = [];
+    this.vortexLastEventTime = 0;
   }
 }

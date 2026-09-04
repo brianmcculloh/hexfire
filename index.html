@@ -6,7 +6,7 @@
     <title>Hexfire - Tower Defense</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@300;400;500;600;700;800;900&family=Luckiest+Guy&display=swap" rel="stylesheet">
     <link rel="icon" type="image/png" href="assets/images/ui/hexfire-logo.png">
     <link rel="preload" href="assets/images/ui/cursor-drag.png" as="image">
     <link rel="preload" href="assets/images/ui/cursor-default.png" as="image">
@@ -93,9 +93,13 @@
                             <span class="overlay-progress-text" id="overlayTownHealth">120 / 120</span>
                         </div>
                     </div>
-                    <div class="overlay-row overlay-row-score overlay-row-tooltip" data-tooltip="Your score. Earn points by extinguishing fires and completing waves.">
+                    <div class="overlay-row overlay-row-score overlay-row-tooltip" data-tooltip="Score and per-wave star requirements (see tooltip).">
                         <span class="overlay-label"><img src="assets/images/misc/score.png" style="width: 30px; height: auto; object-fit: contain; image-rendering: pixelated; vertical-align: middle; margin-right: 8px;" /></span>
                         <span class="overlay-value overlay-score-value" id="overlayScore">0</span>
+                        <span class="overlay-star-score-wrap">
+                            <img src="assets/images/misc/star_score.png" class="overlay-star-score" alt="" />
+                            <span class="overlay-star-score-value" id="overlayStarScore">0</span>
+                        </span>
                     </div>
                     <div class="overlay-divider"></div>
                     <div id="overlayCurrencyRow" class="overlay-row overlay-row-resource overlay-row-tooltip" data-tooltip="Currency earned from extinguishing fires and completing objectives. Spend at the shop to buy towers and items.">
@@ -124,7 +128,7 @@
                             <span class="overlay-value" id="overlayPlacedItems" style="color: #FFFFFF;">0</span>
                         </span>
                         <span class="overlay-resource-pair overlay-row-tooltip" data-tooltip="Map Towers — towers currently placed on the map.">
-                            <span class="overlay-label overlay-label-compact"><img src="assets/images/towers/spread_range_1.png" class="overlay-map-stat-icon overlay-map-stat-icon-tower" alt="" /></span>
+                            <span class="overlay-label overlay-label-compact"><img src="assets/images/towers/jet_range_4.png?v=4" class="overlay-map-stat-icon overlay-map-stat-icon-tower" alt="" /></span>
                             <span class="overlay-value" id="overlayPlacedTowers" style="color: #FFFFFF;">0</span>
                         </span>
                     </div>
@@ -195,8 +199,8 @@
                     <div class="overlay-row debug-row-inline">
                         <button id="debugPlaceAllBtn" class="debug-btn debug-btn-blue debug-btn-wrap">Place All</button>
                         <button id="debugGameOverBtn" class="debug-btn debug-btn-red debug-btn-wrap">Game Over</button>
-                        <button id="debugGroveHealthBtn" class="debug-btn debug-btn-green debug-btn-wrap" title="Add +100 current and max HP to the Ancient Grove">Grove +100</button>
-                        <button id="debugCurrencyBtn" class="debug-btn debug-btn-yellow debug-btn-wrap" title="Add +1000 currency">+<br>$1000</button>
+                        <button id="debugGroveHealthBtn" class="debug-btn debug-btn-green debug-btn-wrap" title="Add +1000 current and max HP to the Ancient Grove">Grove +1000</button>
+                        <button id="debugCurrencyBtn" class="debug-btn debug-btn-yellow debug-btn-wrap" title="Add +$10,000 currency">Money<br>+ $10,000</button>
                     </div>
                     <div class="overlay-row debug-row-inline">
                         <button id="debugPlaceBoxesBtn" class="debug-btn debug-btn-blue debug-btn-wrap" title="Spawns up to 5 Gifts of the Grove and 5 burning vaults">Place Boxes</button>
@@ -208,7 +212,15 @@
                     </div>
                     <div class="overlay-row debug-row-inline">
                         <button id="debugResetMetaProgressionBtn" class="debug-btn debug-btn-red debug-btn-wrap" title="Reset persistent meta progression unlocks">Reset Meta</button>
+                        <button id="debugMatchMetaProgressionBtn" class="debug-btn debug-btn-green debug-btn-wrap" title="Restore meta progression from the loaded save (undo Max Meta without wiping to 0)">Match Meta</button>
                         <button id="debugMaxMetaProgressionBtn" class="debug-btn debug-btn-yellow debug-btn-wrap" title="Unlock all persistent meta progression items">Max Meta</button>
+                        <button type="button" id="debugResetScoresBtn" class="debug-btn debug-btn-red debug-btn-wrap" title="Delete every leaderboard score from local storage and the live database">Reset Scores</button>
+                    </div>
+                    <div class="overlay-row debug-row-inline">
+                        <button type="button" id="debugStar1Btn" class="debug-btn debug-btn-yellow debug-btn-wrap" title="End the active wave with 1 star">1 Star</button>
+                        <button type="button" id="debugStar2Btn" class="debug-btn debug-btn-yellow debug-btn-wrap" title="End the active wave with 2 stars">2 Stars</button>
+                        <button type="button" id="debugStar3Btn" class="debug-btn debug-btn-yellow debug-btn-wrap" title="End the active wave with 3 stars">3 Stars</button>
+                        <button type="button" id="debugStarPerfectBtn" class="debug-btn debug-btn-yellow debug-btn-wrap" title="End the active wave with a Perfect rating">Perfect</button>
                     </div>
                 </div>
             </div>
@@ -219,6 +231,16 @@
                 <div class="minimap-wrapper">
                     <div class="minimap-blur-background"></div>
                     <canvas id="minimapCanvas" class="minimap-canvas"></canvas>
+                    <div class="minimap-zoom" id="minimapZoomControls">
+                        <span class="minimap-zoom-label">zoom</span>
+                        <button type="button" id="minimapZoomInBtn" class="minimap-zoom-btn" aria-label="Zoom in">
+                            <img src="assets/images/ui/icon-zoom-in.png" alt="">
+                        </button>
+                        <button type="button" id="minimapZoomOutBtn" class="minimap-zoom-btn" aria-label="Zoom out">
+                            <img src="assets/images/ui/icon-zoom-out.png" alt="">
+                        </button>
+                        <span id="minimapZoomValue" class="minimap-zoom-value">100%</span>
+                    </div>
                 </div>
             </div>
             
@@ -389,6 +411,15 @@
         </div>
     </div>
 
+    <!-- Artifact Trader review (Collection shortcut — view only, no claims) -->
+    <div id="artifactTraderReviewModal" class="modal-overlay" aria-hidden="true">
+        <div class="modal modal-no-frame modal-upgrade-token">
+            <div class="modal-frame-content">
+                <div class="wave-stats" id="artifactTraderReviewStats"></div>
+            </div>
+        </div>
+    </div>
+
     <!-- Reusable Confirm Modal -->
     <div id="confirmModal" class="modal-overlay">
         <div class="modal modal-frame-9patch">
@@ -398,6 +429,21 @@
                 <div class="modal-choices">
                     <button class="choice-btn cta-button" id="confirmCancelBtn">Cancel</button>
                     <button class="choice-btn cta-button cta-lime" id="confirmOkBtn">Confirm</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Nested confirm for "Max" shop quantity (stacks above #confirmModal) -->
+    <div id="confirmModalMax" class="modal-overlay confirm-modal-nested">
+        <div class="modal modal-frame-9patch">
+            <div class="modal-frame-content">
+                <h2 id="confirmMaxTitle">Maximum purchase?</h2>
+                <p class="modal-subtitle" id="confirmMaxMessage">Are you sure?</p>
+                <div class="modal-cost-display" id="confirmMaxCost" style="display: none;"></div>
+                <div class="modal-choices">
+                    <button class="choice-btn cta-button" id="confirmMaxCancelBtn">Cancel</button>
+                    <button class="choice-btn cta-button cta-lime" id="confirmMaxOkBtn">Purchase</button>
                 </div>
             </div>
         </div>
@@ -437,17 +483,18 @@
                         A tile-based tower defense game set in a distant world. Defend the Ancient Grove from burning down as long as you can—towers, bombs, and every fire-extinguishing tool at your disposal.
                     </p>
                     <div class="splash-buttons">
-                        <button class="choice-btn splash-btn cta-button cta-purple" id="splashNewGameBtn"><img src="assets/images/ui/icon-new-game.png" alt="" class="splash-btn-icon"> New Game</button>
+                            <button class="choice-btn splash-btn cta-button cta-purple" id="splashNewGameBtn"><img src="assets/images/ui/icon-new-game.png" alt="" class="splash-btn-icon"> New Game</button>
                         <button class="choice-btn splash-btn cta-button cta-blue" id="saveGameBtn" style="display: none;"><img src="assets/images/ui/icon-save.png" alt="" class="splash-btn-icon"> Save Game</button>
                         <div class="splash-buttons-row">
-                            <button class="choice-btn splash-btn cta-button cta-lime" id="splashLoadGameBtn"><img src="assets/images/ui/icon-load.png" alt="" class="splash-btn-icon"> Load Game</button>
-                            <button class="choice-btn splash-btn cta-button cta-green" id="splashLoadScenarioBtn"><img src="assets/images/ui/icon-load-scenario.png" alt="" class="splash-btn-icon"> Load Scenario</button>
-                            <button class="choice-btn splash-btn cta-button cta-orange" id="splashShowTutorialBtn"><img src="assets/images/misc/torch.png" alt="" class="splash-btn-icon"> Show tutorial</button>
+                            <button class="choice-btn splash-btn cta-button cta-yellow" id="splashDailyChallengeBtn"><img src="assets/images/ui/daily.png" alt="" class="splash-btn-icon splash-btn-icon-daily"> Daily Challenge</button>
+                            <button class="choice-btn splash-btn cta-button cta-yellow" id="splashLeaderboardBtn"><img src="assets/images/ui/icon-trophy.png" alt="" class="splash-btn-icon"> Leaderboards</button>
                         </div>
                         <div class="splash-buttons-row">
-                            <button class="choice-btn splash-btn cta-button cta-special" id="splashSettingsBtn"><img src="assets/images/ui/icon-settings.png" alt="" class="splash-btn-icon"> Settings</button>
-                            <button class="choice-btn splash-btn cta-button cta-yellow" id="splashLeaderboardBtn"><img src="assets/images/ui/icon-trophy.png" alt="" class="splash-btn-icon"> High Scores</button>
+                            <button class="choice-btn splash-btn cta-button cta-lime" id="splashLoadGameBtn"><img src="assets/images/ui/icon-load.png" alt="" class="splash-btn-icon"> Load Game</button>
+                            <button class="choice-btn splash-btn cta-button cta-green" id="splashLoadScenarioBtn"><img src="assets/images/ui/icon-load-scenario.png" alt="" class="splash-btn-icon"> Scenarios</button>
+                            <button class="choice-btn splash-btn cta-button cta-orange" id="splashShowTutorialBtn"><img src="assets/images/misc/torch.png" alt="" class="splash-btn-icon"> Show tutorial</button>
                         </div>
+                        <button class="choice-btn splash-btn cta-button cta-special" id="splashSettingsBtn"><img src="assets/images/ui/icon-settings.png" alt="" class="splash-btn-icon"> Settings</button>
                         <button class="choice-btn splash-btn cta-button cta-red" id="closeSettingsBtn" style="display: none;">Close</button>
                     </div>
                 </div>
@@ -460,7 +507,16 @@
         <div class="modal modal-frame-9patch" style="max-width: 900px; max-height: 90vh;">
             <div class="modal-frame-content">
                 <h2>Settings</h2>
+                <div class="settings-scroll-wrap">
                 <div id="settingsContent" class="settings-grid">
+                <!-- Player name (leaderboards / multiplayer) -->
+                <div class="setting-item setting-item-display-name">
+                    <div class="setting-display-name-heading">
+                        <label for="settingDisplayName">Player name</label>
+                        <span class="setting-display-name-hint">Used on leaderboards and in multiplayer.</span>
+                    </div>
+                    <input type="text" id="settingDisplayName" class="rename-input" placeholder="Your name" maxlength="24" autocomplete="nickname">
+                </div>
                 <!-- Game Difficulty -->
                 <div class="setting-item">
                     <label style="display: block; color: #fff; margin-bottom: 8px; font-weight: bold;">Game Difficulty</label>
@@ -510,41 +566,6 @@
                     </label>
                     <input type="range" id="settingMusicVolume" class="setting-slider" min="0" max="100" value="50" step="5">
                 </div>
-                
-                <!-- Screen Shake -->
-                <div class="setting-item">
-                    <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
-                        <span style="font-weight: bold;">Screen Shake</span>
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="settingEnableScreenShake" checked>
-                            <span class="toggle-slider"></span>
-                        </label>
-                    </label>
-                </div>
-
-                <!-- Map zoom: 75% / 100% (default) / 125% — also keys - / = / 0 -->
-                <div class="setting-item">
-                    <label for="settingMapZoom" style="display: block; color: #fff; margin-bottom: 8px; font-weight: bold; cursor: var(--cursor-default);">
-                        Map zoom: <span id="settingMapZoomValue" style="font-weight: normal;">100%</span>
-                    </label>
-                    <input type="range" id="settingMapZoom" class="setting-slider setting-slider-steps" min="0" max="2" value="1" step="1" aria-valuetext="100%">
-                    <div class="setting-slider-labels" aria-hidden="true">
-                        <span>75%</span>
-                        <span>100%</span>
-                        <span>125%</span>
-                    </div>
-                </div>
-
-                <!-- Master water draw toggle (when off, hide dependent water settings) -->
-                <div class="setting-item">
-                    <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
-                        <span style="font-weight: bold;">Show water</span>
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="settingDisableWaterEffects" checked>
-                            <span class="toggle-slider"></span>
-                        </label>
-                    </label>
-                </div>
 
                 <!-- Water opacity preference (visual only — does not thin particles) -->
                 <div class="setting-item" id="settingWaterVisibilityRow">
@@ -576,15 +597,22 @@
                     </div>
                 </div>
                 
-                <!-- Hover tooltips (map, shop, overlay, etc.) -->
+                <!-- Hover tooltips: all, HUD/menus only, or none -->
                 <div class="setting-item">
-                    <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
-                        <span style="font-weight: bold;">Tooltips</span>
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="settingDisableGameTooltips" checked>
-                            <span class="toggle-slider"></span>
-                        </label>
-                    </label>
+                    <label style="display: block; color: #fff; margin-bottom: 8px; font-weight: bold;">Tooltips</label>
+                    <div class="scenario-dropdown-container">
+                        <div class="scenario-dropdown" id="settingTooltipLevelDropdown">
+                            <div class="scenario-dropdown-selected" id="settingTooltipLevelSelected">
+                                <span id="settingTooltipLevelText">All</span>
+                                <span class="scenario-dropdown-arrow">▼</span>
+                            </div>
+                            <div class="scenario-dropdown-menu" id="settingTooltipLevelMenu">
+                                <div class="scenario-dropdown-option" data-value="all">All</div>
+                                <div class="scenario-dropdown-option" data-value="hud">HUD only</div>
+                                <div class="scenario-dropdown-option" data-value="none">None</div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Tower select mode: hover vs click for rotation arrows -->
@@ -615,17 +643,25 @@
                     </label>
                 </div>
                 
-                <!-- Notifications -->
+                <!-- Notifications: all toasts, errors/blocked actions only, or none -->
                 <div class="setting-item">
-                    <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
-                        <span style="font-weight: bold;">Notifications</span>
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="settingDisableNotifications" checked>
-                            <span class="toggle-slider"></span>
-                        </label>
-                    </label>
+                    <label style="display: block; color: #fff; margin-bottom: 8px; font-weight: bold;">Notifications</label>
+                    <div class="scenario-dropdown-container">
+                        <div class="scenario-dropdown" id="settingNotificationLevelDropdown">
+                            <div class="scenario-dropdown-selected" id="settingNotificationLevelSelected">
+                                <span id="settingNotificationLevelText">All</span>
+                                <span class="scenario-dropdown-arrow">▼</span>
+                            </div>
+                            <div class="scenario-dropdown-menu" id="settingNotificationLevelMenu">
+                                <div class="scenario-dropdown-option" data-value="all">All</div>
+                                <div class="scenario-dropdown-option" data-value="critical">Critical</div>
+                                <div class="scenario-dropdown-option" data-value="none">None</div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
                 
+                </div>
                 </div>
                 <div class="modal-choices modal-choices-settings-footer">
                     <div class="modal-choices-settings-footer-row">
@@ -649,6 +685,28 @@
             <div class="modal-frame-content">
                 <h2>Advanced Settings</h2>
                 <div class="settings-grid">
+                <!-- Screen Shake -->
+                <div class="setting-item">
+                    <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
+                        <span style="font-weight: bold;">Screen Shake</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="settingEnableScreenShake" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </label>
+                </div>
+
+                <!-- Master water draw toggle (when off, hide dependent water settings on the main panel) -->
+                <div class="setting-item">
+                    <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
+                        <span style="font-weight: bold;">Show water</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="settingDisableWaterEffects" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </label>
+                </div>
+
                 <!-- Debug Mode -->
                 <div class="setting-item">
                     <label style="display: flex; align-items: center; justify-content: space-between; color: #fff; cursor: var(--cursor-default);">
@@ -782,7 +840,7 @@
     <div id="towerStatsModal" class="modal-overlay tower-stats-overlay" aria-hidden="true">
         <div class="tower-stats-screen">
             <h2 class="map-progression-title">Tower Statistics</h2>
-            <p class="map-progression-intro">Compare all tower types at their highest upgrade levels by power, range, area, health, and cost.</p>
+            <p class="map-progression-intro">Compare all tower types at their highest upgrade levels by power, range, area, health, and cost. Click Map Towers at any time to get back to this screen.</p>
             <div class="tower-stats-list-wrap">
                 <div id="towerStatsList" class="tower-stats-list" role="list"></div>
             </div>
@@ -817,12 +875,44 @@
                 </div>
                 <h2 class="map-progression-title specialty-screen-title">Specialty Research</h2>
             </div>
-            <p class="map-progression-intro">Choose a path to specialize in. You can specialize in multiple paths.</p>
+            <p class="map-progression-intro">Choose a path to specialize in. You can specialize in multiple paths. Click your level or XP bar at any time to get back to this screen.</p>
             <div class="specialty-tree-wrap">
                 <div id="specialtyTreeGrid" class="specialty-tree-grid" role="list"></div>
             </div>
             <div class="modal-choices specialty-footer">
                 <button type="button" class="choice-btn cta-button cta-blue" id="closeSpecialtyBtn">Done</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Supercharger picker (inventory stack of 5) -->
+    <div id="superchargeModal" class="modal-overlay supercharge-overlay" aria-hidden="true">
+        <div class="supercharge-screen">
+            <div class="specialty-title-row">
+                <div class="specialty-plans-cluster">
+                    <img src="assets/images/items/supercharger.png?v=5" alt="" class="specialty-plans-icon" />
+                    <span id="superchargerTokenBadge" class="specialty-plans-badge" hidden></span>
+                </div>
+                <h2 class="map-progression-title specialty-screen-title">Tower Superchargers</h2>
+            </div>
+            <p class="map-progression-intro">Choose a tower type to unlock an extra upgrade level, which will allow all towers of that type to be upgraded a 5th time.</p>
+            <div class="tower-stats-list-wrap">
+                <div id="superchargeTowerList" class="tower-stats-list" role="list"></div>
+            </div>
+            <div class="modal-choices tower-stats-footer">
+                <button type="button" class="choice-btn cta-button cta-blue" id="closeSuperchargeBtn">Done</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Supercharge options for a single tower type -->
+    <div id="superchargeOptionsModal" class="modal-overlay supercharge-options-overlay" aria-hidden="true">
+        <div class="supercharge-options-screen">
+            <h2 class="map-progression-title" id="superchargeOptionsTitle">Supercharge Tower</h2>
+            <p class="map-progression-intro">Choose one upgrade track to unlock a 5th upgrade level. Each can only be supercharged once. The bonus applies after you upgrade that track (requires 8 upgrade plans).</p>
+            <div id="superchargeOptionsList" class="supercharge-options-list" role="list"></div>
+            <div class="modal-choices tower-stats-footer">
+                <button type="button" class="choice-btn cta-button cta-blue" id="closeSuperchargeOptionsBtn">Back</button>
             </div>
         </div>
     </div>
@@ -907,8 +997,8 @@
                         <div class="modal-frame-content">
                             <div class="story-text">
                                 <h2 class="story-panel-header">Welcome to Hexalon...</h2>
-                                <p class="story-paragraph">...an exotic world full of magical creatures, some lovers of trees and greenery, but most worshippers of <span class="text-fire text-jitter text-glow">fire</span>. You are a powerful <span class="text-wave text-water text-cycle-water">water wielder</span>—skilled in subduing flame. Your arsenal of extinguishing devices could save many innocent beings from a fiery demise.</p>
-                                <p class="story-paragraph">Speaking of innocent beings, they exclusively live in mighty clusters of trees called <span class="text-glow-pulse text-grove">Ancient Groves</span>. Most of this planet is desolate rocky waste, but there are some <span class="text-gradient-grove">paths of green</span> that meander outwards from these groves. One catch: when fire reaches a path, it spreads very quickly.</p>
+                                <p class="story-paragraph">...an exotic world full of magical creatures, some lovers of trees and greenery, but most worshippers of <span class="text-fire text-jitter text-glow">fire</span>. You are a powerful <span class="text-wave text-water text-cycle-water">water wielder</span>, skilled in subduing flame.</p>
+                                <p class="story-paragraph">The innocent beings of Hexalon live in mighty clusters of trees called <span class="text-glow-pulse text-grove">Ancient Groves</span>. Most of this planet is desolate rocky waste, but there are some <span class="text-gradient-grove">paths of green</span> that meander outwards from the groves.</p>
                                 <div class="story-nav-buttons">
                                     <button type="button" class="story-next-btn cta-button">Next <img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon" /></button>
                                 </div>
@@ -921,7 +1011,10 @@
             <div class="story-panel" id="storyPanel2" data-panel="2">
                 <div class="story-panel-content">
                     <div class="story-image story-image-threats">
-                        <img src="assets/images/items/flame_spawner.png" alt="Flame Spawner" class="story-icon story-spawner-icon">
+                        <div class="story-spawner-wrap">
+                            <canvas class="story-spawner-fx" aria-hidden="true"></canvas>
+                            <img src="assets/images/items/flame_spawner.png" alt="Flame Spawner" class="story-spawner-icon">
+                        </div>
                         <div class="story-vortex-wrap">
                             <canvas class="story-vortex-fx" aria-hidden="true"></canvas>
                             <img src="assets/images/items/vortex_whirlwind.png" alt="Fire Whirlwind" class="story-vortex-icon" style="--vortex-spin-duration: 2.427s;">
@@ -931,9 +1024,8 @@
                         <div class="modal-frame-content">
                             <div class="story-text">
                                 <h2 class="story-panel-header">It's a dangerous world out there.</h2>
-                                <p class="story-paragraph">Hexalon has one thing in common with Earth: <span class="text-jitter-fast text-fire-cinder text-uppercase">lightning</span>. It strikes randomly, without warning—setting the ground alight.</p>
-                                <p class="story-paragraph">Even worse: <span class="text-cycle-fire">Fire Spawners</span>. Seemingly wired to Hexalon's core, they're indestructible and spread fire in every direction.</p>
-                                <p class="story-paragraph">And then there are <span class="text-fire-blaze text-grow-pulse text-pulse-fast">Fire Vortexes</span>—very strong, swirling storms of flame that slowly move along the path towards the grove.</p>
+                                <p class="story-paragraph">Hexalon has one thing in common with Earth: <span class="text-jitter-fast text-fire-cinder text-uppercase">lightning</span>. It strikes randomly and without warning. Even worse: <span class="text-cycle-fire">Fire Spawners</span>. Seemingly wired to Hexalon's core, they're indestructible and spread fire in every direction.</p>
+                                <p class="story-paragraph">And then there are <span class="text-fire-blaze text-pulse-fast">Fire Vortexes</span>&mdash;very strong swirling storms of fire with one objective: destroy the grove.</p>
                                 <div class="story-nav-buttons">
                                     <button type="button" class="story-back-btn cta-button"><img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon story-arrow-back" /> Back</button>
                                     <button type="button" class="story-next-btn cta-button">Next <img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon" /></button>
@@ -949,14 +1041,39 @@
                     <div class="story-image story-towers-stagger">
                         <div class="story-towers-stagger-inner">
                             <div class="story-towers-col story-towers-col-left">
-                                <img src="assets/images/towers/jet_range_1.png" alt="Jet Tower" class="story-tower-icon">
-                                <img src="assets/images/towers/bomber_range_1.png" alt="Bomber Tower" class="story-tower-icon">
-                                <img src="assets/images/towers/pulsing_range_1.png" alt="Pulsing Tower" class="story-tower-icon">
+                                <div class="story-tower-spin-wrap">
+                                    <div class="story-tower-snap-pivot">
+                                        <img src="assets/images/towers/jet_range_1.png?v=4" alt="Jet Tower" class="story-tower-icon story-tower-icon--snap">
+                                    </div>
+                                </div>
+                                <div class="story-tower-spin-wrap">
+                                    <div class="story-tower-snap-pivot" style="animation-delay: -1.6s;">
+                                        <img src="assets/images/towers/bomber_range_1.png?v=4" alt="Bomber Tower" class="story-tower-icon story-tower-icon--snap">
+                                    </div>
+                                </div>
+                                <div class="story-tower-spin-wrap story-tower-spin-wrap--large">
+                                    <div class="story-tower-spin-pivot">
+                                        <img src="assets/images/towers/pulsing_range_1.png?v=4" alt="Pulsing Tower" class="story-tower-icon story-tower-icon--spin" data-display-size="144" onload="window.alignInventorySpinTurretPivot&&window.alignInventorySpinTurretPivot(this)">
+                                    </div>
+                                </div>
                             </div>
                             <div class="story-towers-col story-towers-col-right">
-                                <img src="assets/images/towers/spread_range_1.png" alt="Spread Tower" class="story-tower-icon">
-                                <img src="assets/images/towers/rain_range_1.png" alt="Rain Tower" class="story-tower-icon">
-                                <img src="assets/images/items/suppression_1.png" alt="Suppression Bomb" class="story-tower-icon">
+                                <div class="story-tower-spin-wrap story-tower-spin-wrap--large">
+                                    <div class="story-tower-snap-pivot" style="animation-delay: -0.8s;">
+                                        <img src="assets/images/towers/spread_range_1.png?v=4" alt="Spread Tower" class="story-tower-icon story-tower-icon--snap story-tower-icon--snap-large">
+                                    </div>
+                                </div>
+                                <div class="story-tower-spin-wrap story-tower-spin-wrap--large">
+                                    <div class="story-tower-spin-pivot">
+                                        <img src="assets/images/towers/rain_range_1.png?v=4" alt="Rain Tower" class="story-tower-icon story-tower-icon--spin" data-display-size="144" onload="window.alignInventorySpinTurretPivot&&window.alignInventorySpinTurretPivot(this)">
+                                    </div>
+                                </div>
+                                <div class="story-bomb-cycle">
+                                    <img src="assets/images/items/suppression_1.png" alt="Suppression Bomb level 1" class="story-tower-icon">
+                                    <img src="assets/images/items/suppression_2.png" alt="" class="story-tower-icon" aria-hidden="true">
+                                    <img src="assets/images/items/suppression_3.png" alt="" class="story-tower-icon" aria-hidden="true">
+                                    <img src="assets/images/items/suppression_4.png" alt="" class="story-tower-icon" aria-hidden="true">
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -964,9 +1081,54 @@
                         <div class="modal-frame-content">
                             <div class="story-text">
                                 <h2 class="story-panel-header">You have the power to fight back.</h2>
-                                <p class="story-paragraph">Behold! As an expert <span class="text-wave text-cycle-water">water wielder</span>, you've got plenty of fire-fighting tools at your disposal—towers, suppression bombs, and more.</p>
-                                <p class="story-paragraph">Buy what you need from the <span class="text-gradient-grove text-grow-pulse">shop</span>, then drag and drop to place them on the map. (Be careful how you place them; you can only move them between waves.)</p>
-                                <p class="story-paragraph">Gain experience to earn <span class="text-gradient-upgrade">upgrade plans</span>, which let you upgrade your towers to match the increasing strength of fires.</p>
+                                <p class="story-paragraph">As an expert <span class="text-wave text-cycle-water">water wielder</span> you've got plenty of fire-fighting tools at your disposal. Earn money to buy items from the <span class="text-gradient-grove text-grow-pulse">shop</span>. Gain experience to earn <span class="text-gradient-upgrade">upgrade plans</span>, which let you upgrade the power, range, and speed of your towers.</p>
+                                <div class="story-nav-buttons">
+                                    <button type="button" class="story-back-btn cta-button"><img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon story-arrow-back" /> Back</button>
+                                    <button type="button" class="story-next-btn cta-button">Next <img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon" /></button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="story-panel" id="storyPanel4" data-panel="4">
+                <div class="story-panel-content">
+                    <div class="story-image story-image-collectibles">
+                        <div class="story-collectibles-orbit">
+                            <div class="story-orbit-planet" style="--a: 0deg;">
+                                <div class="story-orbit-counter">
+                                    <canvas class="story-collectible-fx" data-fx="mystery" aria-hidden="true"></canvas>
+                                    <img src="assets/images/items/mystery_common.png" alt="Mystery Box" class="story-collectible-icon">
+                                </div>
+                            </div>
+                            <div class="story-orbit-planet" style="--a: 90deg;">
+                                <div class="story-orbit-counter">
+                                    <img src="assets/images/items/dungeon_1.png" alt="Dungeon Entrance" class="story-collectible-icon story-collectible-icon--dungeon">
+                                    <!-- Smoulder sparks draw above the door, same as on the map -->
+                                    <canvas class="story-collectible-fx story-collectible-fx--over" data-fx="dungeon" aria-hidden="true"></canvas>
+                                </div>
+                            </div>
+                            <div class="story-orbit-planet" style="--a: 180deg;">
+                                <div class="story-orbit-counter">
+                                    <canvas class="story-collectible-fx" data-fx="powerup" aria-hidden="true"></canvas>
+                                    <img src="assets/images/power_ups/water_pressure.png" alt="Water Pressure" class="story-collectible-icon story-collectible-icon--powerup">
+                                </div>
+                            </div>
+                            <div class="story-orbit-planet" style="--a: 270deg;">
+                                <div class="story-orbit-counter">
+                                    <canvas class="story-collectible-fx" data-fx="artifact" aria-hidden="true"></canvas>
+                                    <img src="assets/images/artifacts/key_2.png" alt="Golden City Key" class="story-collectible-icon story-collectible-icon--artifact">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="story-text-frame modal modal-frame-9patch">
+                        <div class="modal-frame-content">
+                            <div class="story-text">
+                                <h2 class="story-panel-header">Use water to collect bonuses.</h2>
+                                <p class="story-paragraph">Hexalon has always been a strange place. Spray open <span class="text-glow text-cycle-grove">Gifts of the Grove</span>, flood <span class="text-fire-blaze text-grow-pulse">dungeon entrances</span>, claim <span class="text-wave text-cycle-water">power-ups</span>, and collect <span class="text-shimmer text-fire-firestorm">Artifacts</span> with your water powers.</p>
+                                <p class="story-paragraph">Some items are easy to collect, while others take quite a bit of water power (like dungeon entrances.) Persistence is key!</p>
                                 <div class="story-nav-buttons">
                                     <button type="button" class="story-back-btn cta-button"><img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon story-arrow-back" /> Back</button>
                                     <button type="button" class="story-next-btn cta-button">Next <img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon" /></button>
@@ -977,7 +1139,7 @@
                 </div>
             </div>
             
-            <div class="story-panel" id="storyPanel4" data-panel="4">
+            <div class="story-panel" id="storyPanel5" data-panel="5">
                 <div class="story-panel-content">
                     <div class="story-image">
                         <img src="assets/images/creatures/group22.png" alt="Creature Group" class="story-icon">
@@ -986,9 +1148,9 @@
                         <div class="modal-frame-content">
                             <div class="story-text">
                                 <h2 class="story-panel-header">Watch out for the denizens of fire!</h2>
-                                <p class="story-paragraph">We should probably talk about the <span class="text-jitter-fast text-fire text-uppercase">bosses</span> of Hexalon. You haven't discovered where they live or much about them yet—but you do know they seem provoked by the end of each wave group.</p>
-                                <p class="story-paragraph">These fire-loving magical enemies each have a unique summoning power they use to inflict as much fire damage as possible.</p>
-                                <p class="story-paragraph">Your job: stop the fires. Save the innocent creatures of Hexalon. Ready?</p>
+                                <p class="story-paragraph">We need to talk about the <span class="text-jitter-fast text-fire text-uppercase">bosses</span> of Hexalon. You haven't discovered where they live or much about them yet—but you do know they seem provoked by the end of each wave group.</p>
+                                <p class="story-paragraph">These fire-loving magical enemies each have a unique summoning power they use to inflict damage to your towers and the Grove.</p>
+                                <p class="story-paragraph">Can you defeat them all?</p>
                                 <div class="story-nav-buttons">
                                     <button type="button" class="story-back-btn cta-button"><img src="assets/images/ui/arrow.png" alt="" class="story-arrow-icon story-arrow-back" /> Back</button>
                                     <div class="story-start-row">
@@ -1016,14 +1178,19 @@
     <div id="leaderboardModal" class="modal-overlay save-load-mask">
         <div class="modal modal-frame-9patch">
             <div class="modal-frame-content">
-                <h2>Score Leaderboard</h2>
-                <p class="modal-subtitle">Top 100 highest scores</p>
+                <h2>Leaderboards</h2>
+                <p class="modal-subtitle" id="leaderboardSubtitle">Global high scores</p>
+                <div class="leaderboard-tabs" role="tablist">
+                    <button type="button" class="choice-btn cta-button cta-yellow leaderboard-tab is-active" id="leaderboardTabDaily" data-board="daily" role="tab" aria-selected="true">Today</button>
+                    <button type="button" class="choice-btn cta-button cta-red leaderboard-tab" id="leaderboardTabYesterday" data-board="yesterday" role="tab" aria-selected="false">Yesterday</button>
+                    <button type="button" class="choice-btn cta-button cta-red leaderboard-tab" id="leaderboardTabAlltime" data-board="alltime" role="tab" aria-selected="false">All Time</button>
+                </div>
                 <div id="leaderboardList" class="leaderboard-list">
                     <!-- Entries populated dynamically -->
                 </div>
                 <div class="modal-choices leaderboard-modal-choices" style="margin-top: 16px;">
-                    <button type="button" class="choice-btn cta-button cta-red" id="leaderboardResetBtn">Reset</button>
-                    <button type="button" class="choice-btn cta-button" id="leaderboardCloseBtn">Close</button>
+                    <button type="button" class="choice-btn cta-button" id="leaderboardCloseBtn">Done</button>
+                    <button type="button" class="choice-btn splash-btn cta-button cta-green" id="leaderboardRefreshBtn">Refresh <img src="assets/images/ui/icon-restart.png" alt="" class="splash-btn-icon"></button>
                 </div>
             </div>
         </div>

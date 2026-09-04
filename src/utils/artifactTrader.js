@@ -1,8 +1,8 @@
 /**
  * Artifact trader: per-run want list + helpers (UI mount in WaveSystem).
- * Wants: 5 individuals (left), 3 pairs + 2 multi-want rows (right). The last want row is 3 items, or
- * (20% chance) 4 from one of the 4-item sets. Pair/triple/quad set exclusivity: pair sets differ from
- * the two “right column” want sets. Rewards are drawn from CONFIG.ARTIFACT_TRADER_REWARD_POOLS per size.
+ * Wants: 6 individuals (left), 3 pairs + 3 multi-want rows (right). The last multi-want row is 3 items, or
+ * (33% chance) 4 from one of the 4-item sets. Pair/multi set exclusivity: pair sets differ from
+ * the three “right column” multi-want sets. Rewards are drawn from CONFIG.ARTIFACT_TRADER_REWARD_POOLS per size.
  */
 
 import {
@@ -14,15 +14,29 @@ import {
   getPowerUpGraphicFilename,
   ARTIFACT_SET_IDS,
   applyCurrencyGainBonuses,
+  getMovementTokenShopCost,
+  getPermanentPowerUpShopPurchaseCost,
+  getUpgradePlanShopCost,
+  getTownUpgradeShopCost,
+  getTowerRepairShopCost,
+  getEscalatingShopBulkCost,
+  getShieldShopCost,
+  getSuppressionBombShopCost,
+  getShieldPurchasesForLevel,
+  getSuppressionBombPurchasesForLevel,
 } from '../config.js';
 import { createModalFloatingImage, createModalFloatingText } from './modal.js';
+import { grantTreeJuice } from './treeJuiceUI.js';
+import {
+  grantShopPricePass,
+  getPassIdFromRewardBundle,
+  getShopPricePassDef,
+  isShopPricePassType,
+} from './shopPricePasses.js';
+import { rngLoot } from './rng.js';
 
 function shuffleInPlace(arr) {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr;
+  return rngLoot().shuffle(arr);
 }
 
 /** Pick `count` distinct artifact ids from a single set (no global uniqueness). */
@@ -34,28 +48,55 @@ function pickDistinctIdsFromSet(setId, count) {
   return ids.slice(0, count);
 }
 
-const TRADER_LAST_ROW_FOUR_PROB = 0.2;
+/** Chance the last right-column multi-want row is a 4-item set instead of a triple. */
+const TRADER_LAST_ROW_FOUR_PROB = 1 / 3;
+const TRADER_INDIVIDUAL_COUNT = 6;
+const TRADER_PAIR_COUNT = 3;
+/** Right-column multi-want rows (triples, with the last optionally a quad). */
+const TRADER_MULTI_COUNT = 3;
 
 /**
- * A reward bundle: array of parts, each { type, count, ... } — one visual per unit of count.
+ * A reward bundle: array of parts, each { type, count, ... } — one icon per part, with an xN count when n > 1.
  * @param {string} poolKey
+ * @param {{ gameState?: object|null, blockedPassIds?: Set<string> }} [options]
  * @returns {object[]}
  */
-function pickRandomRewardFromPool(poolKey) {
+function pickRandomRewardFromPool(poolKey, options = {}) {
+  const { gameState = null, blockedPassIds = new Set() } = options;
+  const ownedPasses = new Set(gameState?.player?.runShopPricePasses || []);
+  const blocked = new Set([...blockedPassIds, ...ownedPasses]);
+
   const pool = CONFIG.ARTIFACT_TRADER_REWARD_POOLS?.[poolKey];
   if (Array.isArray(pool) && pool.length > 0) {
     // Legacy shape: pool is array of reward bundles; uniform random.
     if (Array.isArray(pool[0])) {
-      const legacy = pool[Math.floor(Math.random() * pool.length)];
+      const eligible = pool.filter((bundle) => !rewardBundleHasBlockedPass(bundle, blocked));
+      const pickFrom = eligible.length > 0
+        ? eligible
+        : pool.filter((bundle) => !rewardBundleHasBlockedPass(bundle, blocked));
+      if (pickFrom.length === 0) {
+        return [{ type: 'upgrade_plans', count: 1 }];
+      }
+      const legacy = rngLoot().pick(pickFrom);
       if (Array.isArray(legacy) && legacy.length > 0) {
         return JSON.parse(JSON.stringify(legacy));
       }
     }
     // Weighted shape: [{ weight, rewards: [...] }, ...]
-    const totalWeight = pool.reduce((sum, row) => sum + (row?.weight || 1), 0);
+    const eligibleRows = pool.filter(
+      (row) => !rewardBundleHasBlockedPass(row?.rewards, blocked)
+    );
+    // Never fall back to rows that contain an already-used pass on this trader screen.
+    const rows = eligibleRows.length > 0
+      ? eligibleRows
+      : pool.filter((row) => !rewardBundleHasBlockedPass(row?.rewards, blocked));
+    if (rows.length === 0) {
+      return [{ type: 'upgrade_plans', count: 1 }];
+    }
+    const totalWeight = rows.reduce((sum, row) => sum + (row?.weight || 1), 0);
     if (totalWeight > 0) {
-      let roll = Math.random() * totalWeight;
-      for (const row of pool) {
+      let roll = rngLoot().nextFloat() * totalWeight;
+      for (const row of rows) {
         roll -= (row?.weight || 1);
         if (roll <= 0) {
           if (Array.isArray(row?.rewards) && row.rewards.length > 0) {
@@ -73,6 +114,70 @@ function isRewardPartOk(p) {
   return p && typeof p === 'object' && typeof p.type === 'string' && p.type.length > 0;
 }
 
+function rewardBundleHasBlockedPass(rewards, blockedPassIds) {
+  if (!Array.isArray(rewards) || !blockedPassIds?.size) return false;
+  for (const part of rewards) {
+    if (part?.type && isShopPricePassType(part.type) && blockedPassIds.has(part.type)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** @param {object} wants */
+function wantsHasDuplicatePasses(wants) {
+  const seen = new Set();
+  const rows = [
+    ...(wants?.individuals || []),
+    ...(wants?.pairs || []),
+    ...(wants?.triples || []),
+  ];
+  for (const row of rows) {
+    const pid = getPassIdFromRewardBundle(row?.reward);
+    if (!pid) continue;
+    if (seen.has(pid)) return true;
+    seen.add(pid);
+  }
+  return false;
+}
+
+/**
+ * Ensure each shop price pass appears on at most one trader row (handles legacy saves).
+ * @param {object} wants
+ * @param {object|null} [gameState]
+ */
+function sanitizeArtifactTraderWantPassUniqueness(wants, gameState = null) {
+  if (!wants) return wants;
+  const blockedPassIds = new Set(gameState?.player?.runShopPricePasses || []);
+
+  const fixBundle = (bundle, poolKey) => {
+    let current = Array.isArray(bundle) ? bundle : [{ type: 'upgrade_plans', count: 1 }];
+    for (let guard = 0; guard < 24; guard++) {
+      const pid = getPassIdFromRewardBundle(current);
+      if (!pid) return current;
+      if (blockedPassIds.has(pid)) {
+        current = pickRandomRewardFromPool(poolKey, { gameState, blockedPassIds });
+        continue;
+      }
+      blockedPassIds.add(pid);
+      return current;
+    }
+    return [{ type: 'upgrade_plans', count: 1 }];
+  };
+
+  for (const row of wants.individuals || []) {
+    row.reward = fixBundle(row.reward, 'single');
+  }
+  for (const row of wants.pairs || []) {
+    row.reward = fixBundle(row.reward, 'pair');
+  }
+  for (const row of wants.triples || []) {
+    const poolKey = row?.ids?.length >= 4 ? 'quad' : 'triple';
+    row.reward = fixBundle(row.reward, poolKey);
+  }
+  return wants;
+}
+
 /**
  * @returns {{
  *   individuals: { artifactId: string, reward: object[] }[],
@@ -80,21 +185,48 @@ function isRewardPartOk(p) {
  *   triples: { set: string, ids: string[], reward: object[] }[],
  * }}
  */
-export function generateArtifactTraderWants() {
+export function generateArtifactTraderWants(gameState = null) {
   for (let attempt = 0; attempt < 100; attempt++) {
-    const tripleAEligible = ARTIFACT_SET_IDS.filter((sid) => getArtifactsBySet(sid).length >= 3);
-    if (tripleAEligible.length < 1) break;
-    shuffleInPlace(tripleAEligible);
-    const tripleSetA = tripleAEligible[0];
-    const idsTA = pickDistinctIdsFromSet(tripleSetA, 3);
-    if (!idsTA) continue;
+    const blockedPassIds = new Set();
+    const pickFromPool = (poolKey) => {
+      const reward = pickRandomRewardFromPool(poolKey, { gameState, blockedPassIds });
+      const pid = getPassIdFromRewardBundle(reward);
+      if (pid) blockedPassIds.add(pid);
+      return reward;
+    };
 
-    const useFourOnLast = Math.random() < TRADER_LAST_ROW_FOUR_PROB;
+    const usedSets = new Set();
+    const triples = [];
+    let multiFail = false;
+
+    // First (MULTI_COUNT - 1) multi-want rows are always triples from distinct sets.
+    for (let i = 0; i < TRADER_MULTI_COUNT - 1; i++) {
+      const eligible = ARTIFACT_SET_IDS.filter(
+        (sid) => getArtifactsBySet(sid).length >= 3 && !usedSets.has(sid)
+      );
+      if (eligible.length < 1) {
+        multiFail = true;
+        break;
+      }
+      shuffleInPlace(eligible);
+      const setId = eligible[0];
+      const ids = pickDistinctIdsFromSet(setId, 3);
+      if (!ids) {
+        multiFail = true;
+        break;
+      }
+      usedSets.add(setId);
+      triples.push({ set: setId, ids, reward: pickFromPool('triple') });
+    }
+    if (multiFail) continue;
+
+    // Last multi-want row: ~33% chance of a quad (if a free 4-item set exists), else a triple.
+    const useFourOnLast = rngLoot().nextFloat() < TRADER_LAST_ROW_FOUR_PROB;
     const quadOnlyEligible = ARTIFACT_SET_IDS.filter(
-      (sid) => sid !== tripleSetA && getArtifactsBySet(sid).length >= 4
+      (sid) => !usedSets.has(sid) && getArtifactsBySet(sid).length >= 4
     );
-    const tripleBOnlyEligible = ARTIFACT_SET_IDS.filter(
-      (sid) => getArtifactsBySet(sid).length >= 3 && sid !== tripleSetA
+    const tripleOnlyEligible = ARTIFACT_SET_IDS.filter(
+      (sid) => !usedSets.has(sid) && getArtifactsBySet(sid).length >= 3
     );
 
     let lastSet;
@@ -110,72 +242,81 @@ export function generateArtifactTraderWants() {
       lastIds = ids4;
       lastPoolKey = 'quad';
     } else {
-      if (tripleBOnlyEligible.length < 1) continue;
-      shuffleInPlace(tripleBOnlyEligible);
-      lastSet = tripleBOnlyEligible[0];
+      if (tripleOnlyEligible.length < 1) continue;
+      shuffleInPlace(tripleOnlyEligible);
+      lastSet = tripleOnlyEligible[0];
       const idsB = pickDistinctIdsFromSet(lastSet, 3);
       if (!idsB) continue;
       lastIds = idsB;
       lastPoolKey = 'triple';
     }
+    usedSets.add(lastSet);
+    triples.push({ set: lastSet, ids: lastIds, reward: pickFromPool(lastPoolKey) });
 
-    const usedSets = new Set([tripleSetA, lastSet]);
     const pairEligible = ARTIFACT_SET_IDS.filter(
       (sid) => getArtifactsBySet(sid).length >= 2 && !usedSets.has(sid)
     );
     shuffleInPlace(pairEligible);
-    if (pairEligible.length < 3) continue;
+    if (pairEligible.length < TRADER_PAIR_COUNT) continue;
 
     const pairs = [];
     let pairFail = false;
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < TRADER_PAIR_COUNT; i++) {
       const setId = pairEligible[i];
       const pids = pickDistinctIdsFromSet(setId, 2);
       if (!pids) {
         pairFail = true;
         break;
       }
-      pairs.push({ set: setId, ids: [pids[0], pids[1]], reward: pickRandomRewardFromPool('pair') });
+      pairs.push({ set: setId, ids: [pids[0], pids[1]], reward: pickFromPool('pair') });
     }
     if (pairFail) continue;
 
     const allArtifactIds = (CONFIG.ARTIFACTS || [])
       .map((a) => a && a.id)
       .filter((id) => id && getArtifactById(id));
-    if (allArtifactIds.length < 5) continue;
+    if (allArtifactIds.length < TRADER_INDIVIDUAL_COUNT) continue;
     const indPool = [...allArtifactIds];
     shuffleInPlace(indPool);
-    const indIds = indPool.slice(0, 5);
+    const indIds = indPool.slice(0, TRADER_INDIVIDUAL_COUNT);
     const individuals = indIds.map((artifactId) => ({
       artifactId,
-      reward: pickRandomRewardFromPool('single'),
+      reward: pickFromPool('single'),
     }));
 
-    return {
+    const result = {
       individuals,
       pairs,
-      triples: [
-        { set: tripleSetA, ids: idsTA, reward: pickRandomRewardFromPool('triple') },
-        { set: lastSet, ids: lastIds, reward: pickRandomRewardFromPool(lastPoolKey) },
-      ],
+      triples,
     };
+    if (wantsHasDuplicatePasses(result)) continue;
+    return result;
   }
+  const fallbackBlocked = new Set();
+  const fallbackPick = (poolKey) => {
+    const reward = pickRandomRewardFromPool(poolKey, { gameState, blockedPassIds: fallbackBlocked });
+    const pid = getPassIdFromRewardBundle(reward);
+    if (pid) fallbackBlocked.add(pid);
+    return reward;
+  };
   return {
     individuals: [
-      { artifactId: 'ace_of_hearts', reward: pickRandomRewardFromPool('single') },
-      { artifactId: 'backpack_red', reward: pickRandomRewardFromPool('single') },
-      { artifactId: 'book_green', reward: pickRandomRewardFromPool('single') },
-      { artifactId: 'die_blue', reward: pickRandomRewardFromPool('single') },
-      { artifactId: 'key_1', reward: pickRandomRewardFromPool('single') },
+      { artifactId: 'ace_of_hearts', reward: fallbackPick('single') },
+      { artifactId: 'backpack_red', reward: fallbackPick('single') },
+      { artifactId: 'book_green', reward: fallbackPick('single') },
+      { artifactId: 'die_blue', reward: fallbackPick('single') },
+      { artifactId: 'key_1', reward: fallbackPick('single') },
+      { artifactId: 'flag_yellow', reward: fallbackPick('single') },
     ],
     pairs: [
-      { set: 'keys', ids: ['key_2', 'key_3'], reward: pickRandomRewardFromPool('pair') },
-      { set: 'dice', ids: ['die_black', 'die_red'], reward: pickRandomRewardFromPool('pair') },
-      { set: 'books', ids: ['book_red', 'book_blue'], reward: pickRandomRewardFromPool('pair') },
+      { set: 'keys', ids: ['key_2', 'key_3'], reward: fallbackPick('pair') },
+      { set: 'dice', ids: ['die_black', 'die_red'], reward: fallbackPick('pair') },
+      { set: 'books', ids: ['book_red', 'book_blue'], reward: fallbackPick('pair') },
     ],
     triples: [
-      { set: 'aces', ids: ['ace_of_diamonds', 'ace_of_clubs', 'ace_of_spades'], reward: pickRandomRewardFromPool('triple') },
-      { set: 'potions', ids: ['potion_green', 'potion_yellow', 'potion_pink', 'potion_red'], reward: pickRandomRewardFromPool('quad') },
+      { set: 'aces', ids: ['ace_of_diamonds', 'ace_of_clubs', 'ace_of_spades'], reward: fallbackPick('triple') },
+      { set: 'medals', ids: ['medal_1', 'medal_2', 'medal_3'], reward: fallbackPick('triple') },
+      { set: 'potions', ids: ['potion_green', 'potion_yellow', 'potion_pink', 'potion_red'], reward: fallbackPick('quad') },
     ],
   };
 }
@@ -202,9 +343,9 @@ function tryMigrateLegacyArtifactTraderWants(w) {
 
 function artifactTraderWantsShapeOk(w) {
   if (!w || typeof w !== 'object') return false;
-  if (!Array.isArray(w.individuals) || w.individuals.length !== 5) return false;
-  if (!Array.isArray(w.pairs) || w.pairs.length !== 3) return false;
-  if (!Array.isArray(w.triples) || w.triples.length !== 2) return false;
+  if (!Array.isArray(w.individuals) || w.individuals.length !== TRADER_INDIVIDUAL_COUNT) return false;
+  if (!Array.isArray(w.pairs) || w.pairs.length !== TRADER_PAIR_COUNT) return false;
+  if (!Array.isArray(w.triples) || w.triples.length !== TRADER_MULTI_COUNT) return false;
 
   for (const row of w.individuals) {
     if (!row || typeof row !== 'object' || !row.artifactId || !Array.isArray(row.reward) || !row.reward.length) {
@@ -216,12 +357,17 @@ function artifactTraderWantsShapeOk(w) {
     if (!p || !Array.isArray(p.ids) || p.ids.length !== 2 || !p.ids[0] || !p.ids[1]) return false;
     if (!Array.isArray(p.reward) || !p.reward.length || !p.reward.every(isRewardPartOk)) return false;
   }
-  const t0 = w.triples[0];
-  const t1 = w.triples[1];
-  if (!t0 || t0.ids.length !== 3 || !Array.isArray(t0.reward) || !t0.reward.every(isRewardPartOk)) return false;
-  if (!t1) return false;
-  if (t1.ids.length !== 3 && t1.ids.length !== 4) return false;
-  if (!Array.isArray(t1.reward) || !t1.reward.length || !t1.reward.every(isRewardPartOk)) return false;
+  for (let i = 0; i < w.triples.length; i++) {
+    const t = w.triples[i];
+    if (!t || !Array.isArray(t.ids) || !Array.isArray(t.reward) || !t.reward.length) return false;
+    if (!t.reward.every(isRewardPartOk)) return false;
+    const isLast = i === w.triples.length - 1;
+    if (isLast) {
+      if (t.ids.length !== 3 && t.ids.length !== 4) return false;
+    } else if (t.ids.length !== 3) {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -232,12 +378,13 @@ export function ensureArtifactTraderWantsForRun(gameState) {
   if (legacy) {
     inv.artifactTraderWants = legacy;
   } else if (!artifactTraderWantsShapeOk(inv.artifactTraderWants)) {
-    inv.artifactTraderWants = generateArtifactTraderWants();
+    inv.artifactTraderWants = generateArtifactTraderWants(gameState);
     inv.artifactTraderCompletedTrades = [];
   }
   if (!Array.isArray(inv.artifactTraderCompletedTrades)) {
     inv.artifactTraderCompletedTrades = [];
   }
+  sanitizeArtifactTraderWantPassUniqueness(inv.artifactTraderWants, gameState);
   return inv.artifactTraderWants;
 }
 
@@ -401,9 +548,12 @@ const TRADER_ARTIFACT_BOX_W_QUAD = 308;
 const TRADER_ROW_ARROW_COL_W = 18;
 const TRADER_ROW_COL_GAP = 6;
 const TRADER_REWARD_ICON_H_PX = 52;
-const TRADER_REWARD_COL_MAX_W_PX = 200;
-/** ~10% more overlap than the prior 14px default. */
-const TRADER_REWARD_OVERLAP_PX = 15;
+const TRADER_REWARD_COL_MAX_W_PX = 240;
+const TRADER_REWARD_UNIT_GAP_PX = 10;
+const TRADER_REWARD_COUNT_GAP_PX = 3;
+const TRADER_REWARD_COUNT_W_SM_PX = 22;
+const TRADER_REWARD_COUNT_W_LG_PX = 32;
+const TRADER_REWARD_WRAP_AT = 3;
 /** Narrow reward rows still need room for the Claim button. */
 const TRADER_CLAIM_BTN_MIN_W_PX = 72;
 const TRADER_DIM_FILTER = 'brightness(0.38) saturate(0.92)';
@@ -547,50 +697,39 @@ function applyRewardBundleToPlayer(gameState, rewardBundle) {
         gameState.player.inventory.purchasedSuppressionBombs.push({ type: 'suppression_bomb', level, totalUses, usesRemaining: totalUses });
       }
     } else if (part.type === 'tree_juice') {
-      for (let i = 0; i < n; i++) {
-        gameState.townLevel = (gameState.townLevel || 1) + 1;
-        gameState.gridSystem?.applyTownUpgrade?.(
-          CONFIG.TOWN_HEALTH_PER_UPGRADE,
-          gameState.townLevel,
-        );
-      }
+      grantTreeJuice(gameState, n);
+    } else if (part.type === 'movement_token') {
+      gameState.player.movementTokens = (gameState.player.movementTokens || 0) + n;
+    } else if (part.type === 'repair_supplies' || part.type === 'tower_repair') {
+      gameState.player.towerRepairs = (gameState.player.towerRepairs || 0) + n;
+    } else if (isShopPricePassType(part.type)) {
+      grantShopPricePass(gameState, part.type);
     }
   }
 }
 
-function rewardIconsRowWidth(count, unitW = TRADER_REWARD_ICON_H_PX) {
-  const n = Math.max(0, Math.floor(count));
-  if (n <= 0) return 0;
-  if (n === 1) return unitW;
-  return unitW + (n - 1) * (unitW - TRADER_REWARD_OVERLAP_PX);
-}
-
-function styleTraderRewardIcon(img, stackIndex = 0, stackTotal = 1) {
-  img.classList.add('collectible-sprite-smooth');
-  img.style.cssText = `height: ${TRADER_REWARD_ICON_H_PX}px; width: auto; flex-shrink: 0; cursor: inherit;`;
-  if (stackTotal >= 2 && stackIndex > 0) {
-    img.style.marginLeft = `-${TRADER_REWARD_OVERLAP_PX}px`;
-    img.style.position = 'relative';
-    img.style.zIndex = String(stackIndex);
-  }
-  return img;
-}
-
-/** Count every reward portrait in a bundle (one currency chip = one icon). */
-function countRewardBundleIcons(bundle) {
-  if (!Array.isArray(bundle)) return 0;
-  let total = 0;
-  for (const part of bundle) {
-    if (!part || !part.type) continue;
+function rewardPartDisplayCount(part) {
+  if (!part || !part.type) return 0;
+  if (isShopPricePassType(part.type)) return 1;
+  if (part.type === 'currency') {
     const n = part.count != null && part.count > 0 ? Math.floor(part.count) : 1;
-    if (part.type === 'currency') {
-      const amt = part.amount != null && part.amount > 0 ? Number(part.amount) : 0;
-      if (amt * n > 0) total += 1;
-    } else if (['upgrade_plans', 'shield', 'suppression_bomb', 'tree_juice', 'permanent_power_up'].includes(part.type)) {
-      total += n;
-    }
+    const amt = part.amount != null && part.amount > 0 ? Number(part.amount) : 0;
+    return amt * n > 0 ? 1 : 0;
   }
-  return total;
+  return part.count != null && part.count > 0 ? Math.floor(part.count) : 1;
+}
+
+function rewardCountBadgeWidth(n) {
+  if (n <= 1) return 0;
+  return n >= 10 ? TRADER_REWARD_COUNT_W_LG_PX : TRADER_REWARD_COUNT_W_SM_PX;
+}
+
+function rewardUnitVisualWidth(part) {
+  const n = rewardPartDisplayCount(part);
+  if (n <= 0) return 0;
+  const showCount = part.type !== 'currency' && n > 1;
+  const countW = showCount ? rewardCountBadgeWidth(n) : 0;
+  return TRADER_REWARD_ICON_H_PX + (countW ? TRADER_REWARD_COUNT_GAP_PX + countW : 0);
 }
 
 /**
@@ -639,6 +778,20 @@ function createTraderRewardIconElement(part, unitIndex = 0, gameState = null) {
     img.src = 'assets/images/items/town_defense.png';
     img.alt = 'Tree juice';
     img.dataset.traderReward = 'tree_juice';
+  } else if (part.type === 'movement_token') {
+    img.src = 'assets/images/items/movement_token.png';
+    img.alt = 'Movement token';
+    img.dataset.traderReward = 'movement_token';
+  } else if (part.type === 'repair_supplies' || part.type === 'tower_repair') {
+    img.src = 'assets/images/items/repair.png';
+    img.alt = 'Repair supplies';
+    img.dataset.traderReward = 'repair_supplies';
+  } else if (isShopPricePassType(part.type)) {
+    const def = getShopPricePassDef(part.type);
+    if (!def?.sprite) return null;
+    img.src = `assets/images/items/${def.sprite}`;
+    img.alt = def.name || part.type;
+    img.dataset.traderReward = part.type;
   } else if (part.type === 'permanent_power_up') {
     const powerUpId = part.powerUpId;
     const gfx = powerUpId ? getPowerUpGraphicFilename(powerUpId) : null;
@@ -653,47 +806,199 @@ function createTraderRewardIconElement(part, unitIndex = 0, gameState = null) {
   return img;
 }
 
+function styleTraderRewardIcon(img) {
+  img.classList.add('collectible-sprite-smooth');
+  img.style.cssText = `height: ${TRADER_REWARD_ICON_H_PX}px; width: auto; flex-shrink: 0; cursor: inherit;`;
+  return img;
+}
+
+function createTraderRewardUnit(part, gameState = null, options = {}) {
+  const icon = createTraderRewardIconElement(part, 0, gameState);
+  if (!icon) return null;
+  styleTraderRewardIcon(icon);
+  const unit = document.createElement('div');
+  unit.className = 'artifact-trader-reward-unit';
+  unit.appendChild(icon);
+  const n = rewardPartDisplayCount(part);
+  const showCount = part.type !== 'currency' && (n > 1 || options.alwaysShowCount);
+  if (showCount && n > 0) {
+    const countEl = document.createElement('span');
+    countEl.className = 'artifact-trader-reward-count';
+    countEl.textContent = `x${n}`;
+    unit.appendChild(countEl);
+  }
+  return unit;
+}
+
 /**
- * @param {object[]} rewardBundle
- * @returns {HTMLElement}
+ * Live shop-replacement value for a reward bundle.
+ * Escalating shop items (upgrade plans, tree juice, repair supplies, movement tokens,
+ * permanent power-ups) use the next sequential shop prices from current run state.
+ * @param {object[]} bundle
+ * @param {object|null} [gameState]
+ * @returns {number}
  */
-function buildArtifactTraderRewardRow(rewardBundle, gameState = null) {
-  const icons = [];
-  for (const part of rewardBundle || []) {
-    if (!part || !part.type) continue;
+export function getRewardBundleCurrentShopValue(bundle, gameState = null) {
+  if (!Array.isArray(bundle)) return 0;
+  let total = 0;
+  let tokenOffset = 0;
+  let upgradePlanOffset = 0;
+  let treeJuiceOffset = 0;
+  let repairOffset = 0;
+  const purchasedTokens = Math.max(0, Math.floor(Number(gameState?.player?.movementTokensPurchased) || 0));
+  const upgradePlansPurchased = Math.max(0, Math.floor(Number(gameState?.player?.upgradePlansPurchased) || 0));
+  const townUpgradesPurchased = Math.max(0, Math.floor(Number(gameState?.player?.townHealthUpgradesPurchased) || 0));
+  const towerRepairsPurchased = Math.max(0, Math.floor(Number(gameState?.player?.towerRepairsPurchased) || 0));
+  const powerOwned = { ...(gameState?.player?.powerUps || {}) };
+  /** @type {Record<number, number>} */
+  const shieldOwned = {};
+  /** @type {Record<number, number>} */
+  const bombOwned = {};
+  for (let lv = 1; lv <= 4; lv++) shieldOwned[lv] = getShieldPurchasesForLevel(gameState, lv);
+  for (let lv = 1; lv <= 5; lv++) bombOwned[lv] = getSuppressionBombPurchasesForLevel(gameState, lv);
+
+  for (const part of bundle) {
+    if (!part?.type) continue;
     const n = part.count != null && part.count > 0 ? Math.floor(part.count) : 1;
     if (part.type === 'currency') {
-      const icon = createTraderRewardIconElement(part, 0, gameState);
-      if (icon) icons.push(icon);
+      const amt = part.amount != null && part.amount > 0 ? Number(part.amount) : 0;
+      if (amt > 0) total += applyCurrencyGainBonuses(amt * n, gameState);
       continue;
     }
-    for (let u = 0; u < n; u++) {
-      const icon = createTraderRewardIconElement(part, u, gameState);
-      if (icon) icons.push(icon);
+    if (part.type === 'upgrade_plans') {
+      total += getEscalatingShopBulkCost(
+        (count) => getUpgradePlanShopCost(count, gameState),
+        upgradePlansPurchased + upgradePlanOffset,
+        n
+      );
+      upgradePlanOffset += n;
+      continue;
+    }
+    if (part.type === 'tree_juice') {
+      total += getEscalatingShopBulkCost(
+        (count) => getTownUpgradeShopCost(count, gameState),
+        townUpgradesPurchased + treeJuiceOffset,
+        n
+      );
+      treeJuiceOffset += n;
+      continue;
+    }
+    if (part.type === 'repair_supplies' || part.type === 'tower_repair') {
+      total += getEscalatingShopBulkCost(
+        (count) => getTowerRepairShopCost(count, gameState),
+        towerRepairsPurchased + repairOffset,
+        n
+      );
+      repairOffset += n;
+      continue;
+    }
+    if (isShopPricePassType(part.type)) {
+      total += Number(getShopPricePassDef(part.type)?.shopValue) || 0;
+      continue;
+    }
+    if (part.type === 'shield') {
+      const level = Math.min(4, Math.max(1, Math.round(Number(part.level || 1))));
+      let owned = Math.max(0, Math.floor(Number(shieldOwned[level]) || 0));
+      for (let i = 0; i < n; i++) {
+        total += getShieldShopCost(level, owned, gameState);
+        owned += 1;
+      }
+      shieldOwned[level] = owned;
+      continue;
+    }
+    if (part.type === 'suppression_bomb') {
+      const level = clampSuppressionBombLevel(part.level || 1);
+      let owned = Math.max(0, Math.floor(Number(bombOwned[level]) || 0));
+      for (let i = 0; i < n; i++) {
+        total += getSuppressionBombShopCost(level, owned, gameState);
+        owned += 1;
+      }
+      bombOwned[level] = owned;
+      continue;
+    }
+    if (part.type === 'movement_token') {
+      total += getEscalatingShopBulkCost(
+        (count) => getMovementTokenShopCost(count),
+        purchasedTokens + tokenOffset,
+        n
+      );
+      tokenOffset += n;
+      continue;
+    }
+    if (part.type === 'permanent_power_up') {
+      const id = part.powerUpId;
+      if (!id || !CONFIG.POWER_UPS?.[id]) continue;
+      let owned = Math.max(0, Math.floor(Number(powerOwned[id]) || 0));
+      for (let i = 0; i < n; i++) {
+        total += getPermanentPowerUpShopPurchaseCost(id, owned);
+        owned += 1;
+      }
+      powerOwned[id] = owned;
     }
   }
+  return Math.round(total);
+}
 
-  if (icons.length === 0) {
-    const fallback = document.createElement('img');
-    fallback.src = 'assets/images/items/upgrade_token.png';
-    fallback.alt = 'Upgrade plans';
-    fallback.dataset.traderReward = 'upgrade_plans';
-    icons.push(fallback);
+/**
+ * @param {object[]} rewardBundle
+ * @param {object|null} [gameState]
+ * @param {{ wrapAt?: number, overlapPx?: number, unitGapPx?: number }} [options]
+ *   wrapAt: max unique reward types per row
+ *   overlapPx: overlap subsequent units (e.g. time-specialty stacks)
+ *   unitGapPx: gap between units when not overlapping
+ *   alwaysShowCount: show x1 as well as x2+
+ * @returns {HTMLElement}
+ */
+function buildArtifactTraderRewardRow(rewardBundle, gameState = null, options = {}) {
+  const unitOpts = { alwaysShowCount: !!options.alwaysShowCount };
+  const units = [];
+  for (const part of rewardBundle || []) {
+    if (!part || !part.type) continue;
+    const unit = createTraderRewardUnit(part, gameState, unitOpts);
+    if (unit) units.push(unit);
   }
 
-  const stackTotal = icons.length;
+  if (units.length === 0) {
+    const fallback = createTraderRewardUnit({ type: 'upgrade_plans', count: 1 }, gameState, unitOpts);
+    if (fallback) units.push(fallback);
+  }
+
+  const wrapAt = Number.isFinite(options.wrapAt) && options.wrapAt > 0 ? Math.floor(options.wrapAt) : 0;
+  const overlapPx = Number.isFinite(options.overlapPx) && options.overlapPx > 0 ? Number(options.overlapPx) : 0;
+  const unitGapPx = overlapPx
+    ? 0
+    : (Number.isFinite(options.unitGapPx) ? Math.max(0, Number(options.unitGapPx)) : TRADER_REWARD_UNIT_GAP_PX);
   const row = document.createElement('div');
   row.className = 'artifact-trader-reward-row';
-  if (stackTotal >= 2) row.classList.add('artifact-trader-reward-row--stacked');
+  if (overlapPx) row.classList.add('artifact-trader-reward-row--overlap');
+
+  const appendUnitRow = (chunk) => {
+    const stack = document.createElement('div');
+    stack.className = 'artifact-trader-reward-stack';
+    stack.style.cssText = `display: inline-flex; flex-direction: row; align-items: center; justify-content: center; gap: ${unitGapPx}px;`;
+    chunk.forEach((unit, i) => {
+      if (overlapPx && i > 0) {
+        unit.style.marginLeft = `-${overlapPx}px`;
+        unit.style.position = 'relative';
+        unit.style.zIndex = String(i + 1);
+      }
+      stack.appendChild(unit);
+    });
+    row.appendChild(stack);
+  };
+
+  if (wrapAt && units.length > wrapAt) {
+    row.style.cssText =
+      `display: flex; flex-direction: column; flex-wrap: nowrap; align-items: center; justify-content: center; gap: ${overlapPx ? 0 : 4}px; min-height: 0; max-width: 100%; position: relative;`;
+    for (let i = 0; i < units.length; i += wrapAt) {
+      appendUnitRow(units.slice(i, i + wrapAt));
+    }
+    return row;
+  }
+
   row.style.cssText =
     'display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; justify-content: center; gap: 0; min-height: 0; max-width: 100%; white-space: nowrap;';
-
-  const stack = document.createElement('div');
-  stack.className = 'artifact-trader-reward-stack';
-  icons.forEach((img, i) => {
-    stack.appendChild(styleTraderRewardIcon(img, i, stackTotal));
-  });
-  row.appendChild(stack);
+  appendUnitRow(units);
   return row;
 }
 
@@ -724,10 +1029,19 @@ export {
   wireTraderRewardTooltips,
 };
 
-function rewardBundleVisualWidth(bundle) {
-  const iconCount = countRewardBundleIcons(bundle);
-  if (iconCount <= 0) return TRADER_REWARD_ICON_H_PX;
-  return rewardIconsRowWidth(iconCount);
+function rewardBundleVisualWidth(bundle, wrapAt = TRADER_REWARD_WRAP_AT) {
+  const parts = (Array.isArray(bundle) ? bundle : []).filter((part) => rewardPartDisplayCount(part) > 0);
+  if (parts.length === 0) return TRADER_REWARD_ICON_H_PX;
+  const widths = parts.map(rewardUnitVisualWidth);
+  const at = Number.isFinite(wrapAt) && wrapAt > 0 ? Math.floor(wrapAt) : widths.length;
+  let maxRow = 0;
+  for (let i = 0; i < widths.length; i += at) {
+    const chunk = widths.slice(i, i + at);
+    const rowW = chunk.reduce((sum, w) => sum + w, 0)
+      + Math.max(0, chunk.length - 1) * TRADER_REWARD_UNIT_GAP_PX;
+    if (rowW > maxRow) maxRow = rowW;
+  }
+  return maxRow;
 }
 
 function computeRewardColWidth(rewardBundle) {
@@ -756,6 +1070,7 @@ function createTradeRow(artifactBoxEl, artifactIds, gameState, rowOpts = {}) {
   const maxRow = rowOpts.maxRowWidth
     ?? (Math.round(wantColWidth) + TRADER_ROW_ARROW_COL_W + rewardColWidth + colGap * 2);
   const rewardBundle = rowOpts.reward;
+  const viewOnly = rowOpts.viewOnly === true;
   const key = makeTradeRowKey(artifactIds);
   const row = document.createElement('div');
   row.className = 'artifact-trader-trade-row';
@@ -772,16 +1087,22 @@ function createTradeRow(artifactBoxEl, artifactIds, gameState, rowOpts = {}) {
   const rewardWrap = buildArtifactTraderRewardRow(
     Array.isArray(rewardBundle) && rewardBundle.length ? rewardBundle : [{ type: 'upgrade_plans', count: 1 }],
     gameState,
+    { wrapAt: TRADER_REWARD_WRAP_AT },
   );
   rewardCol.appendChild(rewardWrap);
   const tradeBtn = document.createElement('button');
   tradeBtn.type = 'button';
   tradeBtn.className = 'artifact-trader-trade-btn choice-btn cta-button cta-yellow cta-small';
   tradeBtn.textContent = 'Claim';
+  if (viewOnly) {
+    tradeBtn.disabled = true;
+    tradeBtn.setAttribute('aria-hidden', 'true');
+    tradeBtn.style.display = 'none';
+  }
   tradeBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     e.preventDefault();
-    if (tradeBtn.disabled) return;
+    if (viewOnly || tradeBtn.disabled) return;
     // Trigger floating visuals BEFORE row state refresh/hide so anchors keep correct viewport coordinates.
     playRewardBundleFloatAnimation(rewardWrap);
 
@@ -795,6 +1116,7 @@ function createTradeRow(artifactBoxEl, artifactIds, gameState, rowOpts = {}) {
     }
     if (window.updateUI) window.updateUI();
     if (window.updateInventory) window.updateInventory();
+    if (window.updateShop) window.updateShop();
     refresh();
   });
   rewardCol.appendChild(tradeBtn);
@@ -838,7 +1160,7 @@ function createTradeRow(artifactBoxEl, artifactIds, gameState, rowOpts = {}) {
       completedCheckmark.style.filter = '';
     };
 
-    tradeBtn.disabled = !canExecuteTrade;
+    tradeBtn.disabled = viewOnly || !canExecuteTrade;
 
     artifactBoxEl.classList.remove(
       'artifact-trader-want-box--traded',
@@ -856,7 +1178,7 @@ function createTradeRow(artifactBoxEl, artifactIds, gameState, rowOpts = {}) {
       return;
     }
 
-    if (canExecuteTrade) {
+    if (canExecuteTrade && !viewOnly) {
       artifactBoxEl.classList.add('artifact-trader-want-box--available');
     } else {
       artifactBoxEl.classList.add('artifact-trader-want-box--locked');
@@ -864,7 +1186,7 @@ function createTradeRow(artifactBoxEl, artifactIds, gameState, rowOpts = {}) {
 
     completedCheckmark.style.display = 'none';
     rewardWrap.style.display = '';
-    tradeBtn.style.display = '';
+    tradeBtn.style.display = viewOnly ? 'none' : '';
 
     row.style.filter = '';
 
@@ -945,6 +1267,10 @@ function wireTraderRewardTooltips(root, gameState) {
         }
       } else if (key === 'movement_token') {
         html = ts.getLevelUpRewardTooltipContent?.({ towerType: 'movement_token' }, gameState, { omitShopCost: true }) || '';
+      } else if (key === 'repair_supplies' || key === 'tower_repair') {
+        html = ts.getLevelUpRewardTooltipContent?.({ towerType: 'tower_repair' }, gameState, { omitShopCost: true }) || '';
+      } else if (isShopPricePassType(key)) {
+        html = ts.getShopPricePassTooltipContent?.(key, gameState) || '';
       }
       if (!html) return;
       ts.show(html, e.clientX, e.clientY);
@@ -963,18 +1289,20 @@ function wireTraderRewardTooltips(root, gameState) {
  * @param {HTMLElement} statsDiv
  * @param {ReturnType<typeof generateArtifactTraderWants>} wants
  * @param {object} gameState
- * @param {{ continueButton?: HTMLElement | null }} [opts]
+ * @param {{ continueButton?: HTMLElement | null, viewOnly?: boolean }} [opts]
  */
 export function mountArtifactTraderModalBody(statsDiv, wants, gameState, opts = {}) {
   statsDiv.innerHTML = '';
   const wrap = document.createElement('div');
   wrap.className = 'artifact-trader-body';
+  const viewOnly = opts.viewOnly === true;
 
   const blurb = document.createElement('p');
-  blurb.textContent =
-    "You come across a traveling trader who seems to be inquiring about some specific artifacts, and it appears he has posted bounties for them. Claim your reward for your dilligent searching!";
+  blurb.textContent = viewOnly
+    ? "Reference the trader's bounty board for this run. Claims can only be made when the trader appears between waves. Open Collection and click Artifact Trader at any time to get back to this screen."
+    : "You come across a traveling trader who seems to be inquiring about some specific artifacts, and it appears he has posted bounties for them. Claim your reward for your dilligent searching!";
   blurb.style.cssText =
-    'color: #E2E8F0; font-size: 15px; line-height: 1.45; margin: 6px auto 10px; max-width: 720px; font-family: "Exo 2", sans-serif;';
+    'color: #E2E8F0; font-size: 15px; line-height: 1.45; margin: 6px auto 10px; max-width: 720px; width: 100%; font-family: "Exo 2", sans-serif; text-align: center; text-wrap: balance;';
   wrap.appendChild(blurb);
 
   const columns = document.createElement('div');
@@ -999,6 +1327,7 @@ export function mountArtifactTraderModalBody(statsDiv, wants, gameState, opts = 
         wantColWidth: TRADER_ARTIFACT_BOX_W_SINGLE,
         rewardColWidth: leftSinglesMaxRewardW,
         reward: ind.reward,
+        viewOnly,
       })
     );
   });
@@ -1021,6 +1350,7 @@ export function mountArtifactTraderModalBody(statsDiv, wants, gameState, opts = 
         wantColWidth: TRADER_ARTIFACT_BOX_W_PAIR,
         rewardColWidth: rightPairsMaxRewardW,
         reward: pair.reward,
+        viewOnly,
       })
     );
   });
@@ -1051,6 +1381,7 @@ export function mountArtifactTraderModalBody(statsDiv, wants, gameState, opts = 
         wantColWidth: w,
         rewardColWidth: rewardW,
         reward: triple.reward,
+        viewOnly,
       })
     );
   });

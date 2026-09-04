@@ -1,6 +1,6 @@
 // Main Entry Point - Initializes and starts the game
 
-import { CONFIG, getFireTypeConfig, getSuppressionBombCost, getSuppressionBombTotalUses, getSuppressionBombMaxLevel, clampSuppressionBombLevel, getEffectiveSuppressionBombPower, getShieldCost, getShieldHealth, getLevelThreshold, getLevelTierSpritePath, getTowerUnlockStatus, getPlayerLevel, getTowerPower, getPulsingPower, getPulsingAttackInterval, getRainPower, getBomberPower, getBomberAttackInterval, getPowerUpMultiplier, getTowerRange, getSpreadTowerRange, getRainRange, addPlayerScore, getPowerUpGraphicFilename, getPermanentPowerUpShopPurchaseCost, getMovementTokenShopCost, getArtifactById, isTowerRepairShopUnlocked, getWaveGroupName, formatActiveWaveTimerText, formatClockMinutesSeconds, formatWaveGroupSlotDisplay, formatPowerUpStackEffectSummary, getPermanentPowerUpDescription, getTempPowerUpDescription, resolveWaterTankTypeIdFromPoolRow, isWaterTankTypeAvailableAtWaveGroup, getSentinelTurretSizeMultiplier, getPerimeterTurretSizeMultiplier, getPerimeterTurretOffsetPx, getChargeTurretHeightMultiplier, getChargeTurretAspectRatio, getChargeTurretOffsetPx, getHealthBarFillColor, applyCurrencyGainBonuses, formatWaterDamageRate } from './config.js';
+import { CONFIG, getFireTypeConfig, getSuppressionBombCost, getSuppressionBombTotalUses, getSuppressionBombMaxLevel, clampSuppressionBombLevel, getEffectiveSuppressionBombPower, getShieldCost, getShieldHealth, getLevelThreshold, getLevelTierSpritePath, getTowerUnlockStatus, getPlayerLevel, getTowerPower, getPulsingPower, getPulsingAttackInterval, getRainPower, getBomberPower, getBomberAttackInterval, getPowerUpMultiplier, getTowerRange, getSpreadTowerRange, getRainRange, addPlayerScore, getPowerUpGraphicFilename, getPermanentPowerUpShopPurchaseCost, getMovementTokenShopCost, getUpgradePlanShopCost, getTownUpgradeShopCost, getTowerRepairShopCost, getEscalatingShopBulkCost, getShieldShopCost, getSuppressionBombShopCost, getShieldBundleShopCost, getSuppressionBundleShopCost, getShieldPurchasesForLevel, getSuppressionBombPurchasesForLevel, getTotalShieldUnitsPurchased, getTotalSuppressionBombUnitsPurchased, getArtifactById, isTowerRepairShopUnlocked, getWaveGroupName, formatActiveWaveTimerText, formatClockMinutesSeconds, formatWaveGroupSlotDisplay, formatPowerUpStackEffectSummary, getPermanentPowerUpDescription, getTempPowerUpDescription, resolveWaterTankTypeIdFromPoolRow, isWaterTankTypeAvailableAtWaveGroup, getSentinelTurretSizeMultiplier, getPerimeterTurretSizeMultiplier, getPerimeterTurretOffsetPx, getChargeTurretHeightMultiplier, getChargeTurretAspectRatio, getChargeTurretOffsetPx, getHealthBarFillColor, applyCurrencyGainBonuses, formatWaterDamageRate, getTowerSuperchargedAttrs, getTowerReachedSuperchargeLevelAttrs, canTowerBeUpgraded } from './config.js';
 import { filterWeightedRewardPool } from './utils/rewardPoolUnlocks.js';
 import {
   showConfirmModal,
@@ -15,7 +15,7 @@ import {
   prefersReducedModalMotion,
 } from './utils/modal.js';
 import { SCENARIOS, getAllScenarioNames, getScenarioByName } from './scenarios.js';
-import { TUTORIAL_CONFIG, TUTORIAL_STEPS, TUTORIAL_LIGHTNING_HEX, TUTORIAL_TOWER_PLACEMENT_HEX, TUTORIAL_STEP9_INITIAL_PLACEMENT_HEX, TUTORIAL_STEP9_MOVE_TO_HEX, TUTORIAL_STEP9_PLACEMENT_HEX, TUTORIAL_FIRE_SPAWNER_HEX, TUTORIAL_STEP9_DIRECTION_TOWARD_SPAWNER, TUTORIAL_STEP13_PATH_HEX, TUTORIAL_STEP13_DIRECTION_ALONG_PATH, TUTORIAL_STEP13_SPAWNER_ADJACENT_HEXES, TUTORIAL_STEP13_RIGHT_EDGE_HEXES, TUTORIAL_WATER_TANK_HEX, TUTORIAL_STEP26_DIRECTION_TOWARD_WATER_TANK, getTutorialStep } from './tutorial.js';
+import { TUTORIAL_CONFIG, TUTORIAL_STEPS, TUTORIAL_LIGHTNING_HEX, TUTORIAL_TOWER_PLACEMENT_HEX, TUTORIAL_STEP9_INITIAL_PLACEMENT_HEX, TUTORIAL_STEP9_MOVE_TO_HEX, TUTORIAL_STEP9_PLACEMENT_HEX, TUTORIAL_FIRE_SPAWNER_HEX, TUTORIAL_STEP9_DIRECTION_TOWARD_SPAWNER, TUTORIAL_STEP13_PATH_HEX, TUTORIAL_STEP13_DIRECTION_ALONG_PATH, TUTORIAL_STEP13_SPAWNER_ADJACENT_HEXES, TUTORIAL_STEP13_RIGHT_EDGE_HEXES, TUTORIAL_WATER_TANK_HEX, TUTORIAL_STEP26_DIRECTION_TOWARD_WATER_TANK, TUTORIAL_STEP27_SPAWNER_RING_FIRE_HEXES, TUTORIAL_GROVE_PATH_FIRE_HEX, TUTORIAL_GROVE_FIRE_HEX, TUTORIAL_GROVE_HEX, getTutorialStep } from './tutorial.js';
 import { GridSystem } from './systems/gridSystem.js';
 import { FireSystem } from './systems/fireSystem.js';
 import { PathSystem } from './systems/pathSystem.js';
@@ -44,7 +44,8 @@ import { SurvivalHeroSystem } from './systems/survivalHeroSystem.js';
 import { ComboSystem } from './systems/comboSystem.js';
 import { Renderer } from './utils/renderer.js';
 import { InputHandler, CURSOR_DEFAULT, CURSOR_DRAG, CURSOR_PLUS, CURSOR_X, setBodyCursor } from './utils/inputHandler.js';
-import { NotificationSystem } from './utils/notifications.js';
+import { NotificationSystem, normalizeNotificationLevel } from './utils/notifications.js';
+import { normalizeTooltipLevel } from './utils/tooltip.js';
 import { saveGame, loadGame, renameSave, deleteSave, hasSaveData, getSaveInfo, applyLoadedState, repairStoredSave, saveTutorialState, loadTutorialState, clearTutorialState, formatTimestamp } from './utils/saveLoad.js';
 import { setLocalStorageItemWithRetry, trimLeaderboard, trimRunHistory } from './utils/localStorageQuota.js';
 import { submitFeedbackReport } from './utils/feedbackReport.js';
@@ -60,7 +61,7 @@ import {
   showMovementTokenSellbackModal,
 } from './utils/tokenVoucherUI.js';
 import { attachAutoShieldsButton, initAutoShieldsUI } from './utils/autoShieldsUI.js';
-import { addScoreToLeaderboard, getLeaderboard, formatLeaderboardDate, clearLeaderboard } from './utils/leaderboard.js';
+import { fetchLeaderboard, submitRunScore, flushPendingLeaderboardSubmit, getLeaderboardSubmitSkipReason, resetAllLeaderboards } from './utils/leaderboard.js';
 import { GameLoop } from './gameLoop.js';
 import {
   RunStatsTracker,
@@ -69,6 +70,13 @@ import {
   getTotalRunFiresExtinguished,
   migrateRunHistoryStorage,
 } from './systems/runStatsSystem.js';
+import {
+  getPerfectWaveCount,
+  getStarRatingHudTooltipHtml,
+  getTotalStarsEarned,
+  PERFECT_MEDAL_SRC,
+  STAR_FULL_SRC,
+} from './systems/starSystem.js';
 import { wireRunHistoryModal, openRunHistoryModal } from './utils/runHistoryUI.js';
 import { wireMapProgressionModal, shouldShowMapProgressionGate } from './utils/mapProgressionUI.js';
 import {
@@ -77,10 +85,15 @@ import {
 } from './utils/specialtyUI.js';
 import { ensureSpecialtyMilestoneRewards } from './utils/specialtyRewards.js';
 import { wireTowerStatsModal, openTowerStatsModal, closeTowerStatsModal, attachTowerDetailsButton } from './utils/towerStatsUI.js';
+import { wireSuperchargeModal, handleSuperchargerInventoryClick } from './utils/towerSuperchargeUI.js';
+import { grantTreeJuice, handleTreeJuiceInventoryClick, TREE_JUICE_COLOR } from './utils/treeJuiceUI.js';
 import { AudioManager } from './utils/audioManager.js';
 import { initTextEffects, processTextWaveElements } from './utils/textEffects.js';
 import { setStoryVortexFxActive } from './utils/storyVortexFx.js';
+import { setStorySpawnerFxActive } from './utils/storySpawnerFx.js';
+import { setStoryCollectiblesFxActive } from './utils/storyCollectiblesFx.js';
 import { axialToPixel } from './utils/hexMath.js';
+import { assetUrl } from './utils/assetUrl.js';
 import { getTempPowerUpTimeReference } from './utils/tempPowerUpClock.js';
 import {
   getArtifactMuseumLoanBlockReason,
@@ -93,6 +106,7 @@ import {
   isArtifactSoughtByTrader,
   isArtifactTradedToTrader,
 } from './utils/artifactTrader.js';
+import { getOwnedShopPricePassIds, getShopPricePassDef } from './utils/shopPricePasses.js';
 import {
   buildMetaProgressionGalleryHtml,
   buildMetaProgressionUnlocksHtml,
@@ -101,6 +115,8 @@ import {
   isMetaItemUnlocked,
   normalizeMetaProgression,
   resetMetaProgression,
+  restoreLoadedSaveMetaProgression,
+  snapshotLoadedSaveMetaProgression,
   startMetaProgressionRunSnapshot,
   unlockAllMetaProgression,
   unlockMetaProgressionForCompletedWaveGroup,
@@ -115,6 +131,15 @@ import {
   migrateSeenShopItems,
   syncNewlyUnlockedFromSeen,
 } from './utils/shopSeenItems.js';
+import {
+  bindWaveRng,
+  dailyRunSeed,
+  getUtcDateKey,
+  initRunRng,
+  installLayoutFingerprintDebug,
+  parseSeedParam,
+} from './utils/rng.js';
+import { sanitizeDisplayName, getOrCreatePlayerId } from './utils/platform.js';
 
 // Align :root --cursor-* and html/body with inputHandler's absolute cursor URLs (CSS-only :root uses stylesheet-relative urls and often falls back to the OS cursor).
 (function applyCursorCssVarsFromInputHandler() {
@@ -176,10 +201,15 @@ const gameState = {
   isUpgradeSelectionMode: false, // Flag for upgrade selection mode
   isDungeonRewardMode: false, // Flag while choosing a flooded dungeon reward
   isTowerSellbackMode: false, // Flag for Tower Sellback target selection mode
-  isMovementTokenMode: false, // Flag for movement token mode (reposition one tower during wave)
-  movementTokenTargetTowerId: null, // Tower designated for repositioning until player clicks Done/Resume
-  movementTokenRepositioned: false, // True after the player has moved the designated tower at least once
-  movementTokenCommitted: false, // True after token is spent (tower picked or stored to inventory); shows Done panel
+  isMovementTokenMode: false, // Flag for movement token mode (reposition towers during wave)
+  /** @type {Map<string, {q: number, r: number}>|null} originalTowerId → origin hex at session start */
+  movementTokenOrigins: null,
+  /** @type {string[]} original tower ids currently stored in inventory this session */
+  movementTokenStoredTowerIds: [],
+  /** @type {Map<string, string>|null} currentMapTowerId → originalTowerId (survives store→place) */
+  movementTokenIdRemap: null,
+  /** Tokens owned when the session began (UI “out of Y available”) */
+  movementTokenAvailableAtStart: 0,
   isRepairSelectionMode: false, // Flag for Repair Supplies: click broken stored tower to consume one stack unit
   isPartsRecycleMode: false, // Flag for Parts Voucher: click broken stored tower to recycle for currency
   totalFiresExtinguished: 0, // Track total fires extinguished across entire run
@@ -195,10 +225,28 @@ const gameState = {
     currency: CONFIG.DEBUG_MODE ? 99999 : CONFIG.STARTING_CURRENCY, // New currency system (99999 in debug mode)
     upgradePlans: CONFIG.STARTING_UPGRADE_PLANS, // Upgrade plans for multiple level gains
     specialtyPlans: CONFIG.STARTING_SPECIALTY_PLANS, // Specialty plans (every 5 levels)
+    superchargers: CONFIG.STARTING_SUPERCHARGERS, // Supercharger tokens (5 spend to boost a tower type)
+    towerSupercharges: {}, // { [towerType]: { range?: true, power?: true, speed?: true } }
     specialties: { time: 0, power: 0, money: 0, health: 0 },
     specialtyTimeMilestonePowerUps: null,
-    movementTokens: 0, // Movement tokens: reposition one tower during wave (dig site / shop only)
+    specialtyPowerMilestonePowerUps: null,
+    movementTokens: 0, // Movement tokens: reposition towers during wave (1 token per tower moved/stored)
     movementTokensPurchased: 0, // Shop buys this run (drives escalating MOVEMENT_TOKEN_COST)
+    upgradePlansPurchased: 0, // Shop buys this run (drives escalating UPGRADE_PLAN_COST)
+    townHealthUpgradesPurchased: 0, // Shop Tree Juice buys this run (drives escalating TOWN_UPGRADE_COST)
+    treeJuice: 0, // Tree Juice (stack); use from inventory to raise grove max HP and restore to 100%
+    towerRepairsPurchased: 0, // Shop Repair Supplies buys this run (drives escalating TOWER_REPAIR_COST)
+    shieldPurchasesByLevel: { 1: 0, 2: 0, 3: 0, 4: 0 },
+    suppressionBombPurchasesByLevel: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
+    runShopPricePasses: [], // Artifact-trader passes acquired this run (locks shop prices)
+    upgradePlanPriceLocked: null,
+    townUpgradePriceLocked: null,
+    towerRepairPriceLocked: null,
+    shieldPriceLockedByLevel: null,
+    suppressionBombPriceLockedByLevel: null,
+    shieldBundlePriceLocked: null,
+    suppressionBundlePriceLocked: null,
+    powerUpPriceLockedById: null,
     towerSellbacks: 0, // Tower Sellback tokens: remove a placed tower and refund spent upgrade plans
     towerRepairs: 0, // Repair Supplies (stack); apply from inventory to clear broken on a stored tower
     partsVouchers: 0, // Parts Vouchers (stack); recycle broken stored towers between waves
@@ -226,6 +274,7 @@ const gameState = {
     isScenario: false, // Whether this is a scenario (single wave, 5 minutes)
     scenarioNumber: null, // Scenario number (if in scenario mode)
     scenarioName: null, // Scenario name (if in scenario mode)
+    lastStarResult: null,
   },
   
   // Scenario-specific unlocks (null when not in scenario mode)
@@ -235,6 +284,8 @@ const gameState = {
   meta: {
     endlessMode: false,
     endlessUnlocked: false,
+    displayName: '',
+    displayNameSet: false,
     progression: normalizeMetaProgression(),
     activeRunProgression: null,
     useRunStartMetaProgression: false,
@@ -246,6 +297,7 @@ const gameState = {
   simplifiedFireVisuals: false,
 
   runStats: null,
+  rng: null,
 };
 
 /**
@@ -440,6 +492,16 @@ function initializeDebugStartingTowers() {
         if (n > 0) {
           gameState.player.tokenVouchers = (gameState.player.tokenVouchers || 0) + n;
         }
+      } else if (itemConfig.type === 'tree_juice' || itemConfig.type === 'town_health') {
+        const n = itemConfig.count || 0;
+        if (n > 0) {
+          grantTreeJuice(gameState, n);
+        }
+      } else if (itemConfig.type === 'supercharger' || itemConfig.type === 'superchargers') {
+        const n = itemConfig.count || 0;
+        if (n > 0) {
+          gameState.player.superchargers = (gameState.player.superchargers || 0) + n;
+        }
       }
     });
   }
@@ -496,6 +558,7 @@ function init() {
     musicUseWebApi: CONFIG.AUDIO_MUSIC_USE_WEB_API !== false,
     bossAbilitySfxVolumeMultiplier: CONFIG.AUDIO_BOSS_ABILITY_SFX_VOLUME_MULTIPLIER ?? 1,
     bossAbilitySfxVolumeByKey: CONFIG.AUDIO_BOSS_ABILITY_SFX_VOLUME_BY_KEY || {},
+    sfxVolumeByKey: CONFIG.AUDIO_SFX_VOLUME_BY_KEY || {},
   });
   window.AudioManager = AudioManager;
   
@@ -548,6 +611,7 @@ function init() {
       step === 15 ||
       step === 26 ||
       step === 27 ||
+      step === 35 || // Step 36: place rain tower on grove
       shieldApplyFromInventory
     );
   };
@@ -565,6 +629,15 @@ function init() {
 
   // Initialize map scroll system
   gameState.inputHandler.initializeMapScroll();
+
+  initRunRng(gameState, {
+    mode: 'campaign',
+    contentVersion: CONFIG.CONTENT_VERSION,
+    waveNumber: gameState.wave.number || 1,
+  });
+  installLayoutFingerprintDebug(gameState);
+  gameState.submitRunToLeaderboards = submitRunToLeaderboards;
+  void flushPendingLeaderboardSubmit();
   
   // Generate paths based on the current wave number
   gameState.pathSystem.generatePaths(gameState.wave.number);
@@ -610,6 +683,21 @@ function init() {
       saveTutorialState(gameState);
       requestAnimationFrame(() => updateTutorialArrow());
     }
+    // Tutorial step 36 -> 37: rain extinguished the grove fire — short delay, then finish + auto-pause
+    if (
+      gameState.tutorialMode &&
+      getTutorialProgress() === 36 &&
+      q === TUTORIAL_GROVE_FIRE_HEX.q &&
+      r === TUTORIAL_GROVE_FIRE_HEX.r
+    ) {
+      setTimeout(() => {
+        if (!gameState.tutorialMode || getTutorialProgress() !== 36) return;
+        setTutorialProgress(37);
+        saveTutorialState(gameState);
+        pauseGameWithAudio();
+        requestAnimationFrame(() => updateTutorialArrow());
+      }, 1000);
+    }
     if (window.AudioManager) { const i = Math.floor(Math.random() * 5) + 1; window.AudioManager.playSFX(`extinguish${i}`, { volume: 0.3, maxConcurrent: 1 }); }
     // Award XP and get the boosted XP amount
     const boostedXP = gameState.progressionSystem.awardXP(fireType) || 0;
@@ -634,14 +722,12 @@ function init() {
   // Setup water tank system to award XP and score on fire extinguished
   gameState.waterTankSystem.setOnFireExtinguished(handleFireExtinguished);
 
-  // Tutorial step 28 -> 29: advance when water tank explodes (final step) - 1s delay before showing last step, then auto-pause
+  // Tutorial step 29 -> 30: after water tank explodes, keep interim bubble briefly, then grove-fire sequence (no auto-pause)
   gameState.waterTankSystem.onWaterTankExploded = () => {
     if (gameState.tutorialMode && getTutorialProgress() === 28) {
       setTimeout(() => {
-        setTutorialProgress(29);
-        saveTutorialState(gameState);
-        pauseGameWithAudio(); // Auto-pause when final step displays
-        requestAnimationFrame(() => updateTutorialArrow());
+        if (!gameState.tutorialMode || getTutorialProgress() !== 28) return;
+        beginTutorialGroveFireSequence();
       }, 1000);
     }
   };
@@ -693,10 +779,11 @@ function init() {
     addPlayerScore(gameState, waveScore);
     const isGroupComplete = gameState.waveSystem.waveInGroup > gameState.waveSystem.wavesPerGroup;
     if (window.AudioManager) {
+      window.AudioManager.playSFX('wave_complete_sfx');
       if (isGroupComplete) {
         window.AudioManager.pauseWaveGroupMusic();
       } else {
-        window.AudioManager.playSFXStinger('wave_complete', { reverb: false, volumeMultiplier: 0.9 });
+        window.AudioManager.playSFXStinger('wave_complete', { reverb: false, volumeMultiplier: 1.375 });
         window.AudioManager.pauseWaveGroupMusic();
         window.AudioManager.playAmbientDelayed({ delayMs: 6000, fadeInSec: 2, volumeMultiplier: 0.8 });
       }
@@ -713,7 +800,7 @@ function init() {
   // Also auto-save after wave group completion (redundant but ensures save at group boundaries)
   gameState.waveSystem.callbacks.onWaveGroupComplete = (waveGroup) => {
     if (window.AudioManager) {
-      window.AudioManager.playSFXStinger('group_complete', { reverb: false, volumeMultiplier: 0.9 });
+      window.AudioManager.playSFXStinger('group_complete', { reverb: false, volumeMultiplier: 1.375 });
       window.AudioManager.stopMusic();
       window.AudioManager.playAmbientDelayed({ delayMs: 15000, fadeInSec: 2, volumeMultiplier: 0.8 });
     }
@@ -859,6 +946,7 @@ function init() {
       
       // Show pause button and update its state
       pauseBtn.style.display = 'block';
+      gameState.waveSystem?.updateClearAllButtonVisibility?.();
       if (gameLoop.isPaused || gameState.isDungeonRewardMode) {
         pauseBtn.className = 'control-btn cta-button cta-green resume-pulse';
         pauseBtn.innerHTML = '<img src="assets/images/ui/resume.png" alt="Resume" class="control-btn-icon" /> Resume';
@@ -875,16 +963,10 @@ function init() {
   }
 
   function syncCancelMovementButton() {
-    // Cancel panel until commit; Done panel after token is spent (pick or inventory store)
-    if (gameState.isMovementTokenMode && !gameState.movementTokenCommitted) {
-      hideMovementDoneInstructions();
+    if (gameState.isMovementTokenMode) {
       showMovementInstructions();
-    } else if (gameState.isMovementTokenMode && gameState.movementTokenCommitted) {
-      hideMovementInstructions();
-      showMovementDoneInstructions();
     } else {
       hideMovementInstructions();
-      hideMovementDoneInstructions();
     }
     if (gameState.isRepairSelectionMode) {
       showRepairInstructions();
@@ -898,6 +980,186 @@ function init() {
     }
     syncInventoryTargetModeTabLocks();
     syncMenuButton();
+  }
+
+  /** How many towers currently differ from their session-start positions (moved or stored). */
+  function getMovementTokenPendingSpend() {
+    const origins = gameState.movementTokenOrigins;
+    if (!(origins instanceof Map) || origins.size === 0) return 0;
+    const stored = new Set(gameState.movementTokenStoredTowerIds || []);
+    const remap = gameState.movementTokenIdRemap instanceof Map
+      ? gameState.movementTokenIdRemap
+      : new Map();
+    /** @type {Map<string, string>} originalId → current map tower id */
+    const currentByOriginal = new Map();
+    for (const [currentId, originalId] of remap) {
+      currentByOriginal.set(originalId, currentId);
+    }
+    let count = 0;
+    for (const [originalId, origin] of origins) {
+      if (stored.has(originalId)) {
+        count += 1;
+        continue;
+      }
+      const currentId = currentByOriginal.get(originalId);
+      if (!currentId) continue;
+      const tower = gameState.towerSystem?.getTower(currentId);
+      if (!tower) continue;
+      if (tower.q !== origin.q || tower.r !== origin.r) count += 1;
+    }
+    return count;
+  }
+
+  function resolveMovementTokenOriginalId(towerId) {
+    if (!towerId) return null;
+    const remap = gameState.movementTokenIdRemap;
+    if (remap instanceof Map && remap.has(towerId)) return remap.get(towerId);
+    return towerId;
+  }
+
+  function isMovementTokenSessionStoredTower(storedTower) {
+    if (!gameState.isMovementTokenMode || !storedTower?.movementTokenOriginalId) return false;
+    const origins = gameState.movementTokenOrigins;
+    if (!(origins instanceof Map)) return false;
+    return origins.has(storedTower.movementTokenOriginalId);
+  }
+
+  function isMovementTokenTowerDisplaced(towerId) {
+    if (!gameState.isMovementTokenMode || !towerId) return false;
+    const origins = gameState.movementTokenOrigins;
+    if (!(origins instanceof Map)) return false;
+    const originalId = resolveMovementTokenOriginalId(towerId);
+    if ((gameState.movementTokenStoredTowerIds || []).includes(originalId)) return true;
+    const origin = origins.get(originalId);
+    if (!origin) return false;
+    const tower = gameState.towerSystem?.getTower(towerId);
+    if (!tower) return false;
+    return tower.q !== origin.q || tower.r !== origin.r;
+  }
+
+  /**
+   * Whether moving towerId to (toQ, toR) is allowed under the token budget.
+   * Moving back to origin is always allowed; new displacements need a free token slot.
+   */
+  function canMovementTokenAcceptMove(towerId, toQ, toR) {
+    if (!gameState.isMovementTokenMode || !towerId) return false;
+    const origins = gameState.movementTokenOrigins;
+    if (!(origins instanceof Map)) return false;
+    const originalId = resolveMovementTokenOriginalId(towerId);
+    const origin = origins.get(originalId);
+    if (!origin) return false;
+    if ((gameState.movementTokenStoredTowerIds || []).includes(originalId)) return false;
+    const wouldBeDisplaced = toQ !== origin.q || toR !== origin.r;
+    if (!wouldBeDisplaced) return true;
+    if (isMovementTokenTowerDisplaced(towerId)) return true;
+    const available = Math.max(0, Math.floor(Number(gameState.movementTokenAvailableAtStart) || 0));
+    return getMovementTokenPendingSpend() < available;
+  }
+
+  /** Whether storing towerId to inventory is allowed under the token budget. */
+  function canMovementTokenAcceptStore(towerId) {
+    if (!gameState.isMovementTokenMode || !towerId) return false;
+    const origins = gameState.movementTokenOrigins;
+    if (!(origins instanceof Map)) return false;
+    const originalId = resolveMovementTokenOriginalId(towerId);
+    if (!origins.has(originalId)) return false;
+    if ((gameState.movementTokenStoredTowerIds || []).includes(originalId)) return false;
+    if (isMovementTokenTowerDisplaced(towerId)) return true;
+    const available = Math.max(0, Math.floor(Number(gameState.movementTokenAvailableAtStart) || 0));
+    return getMovementTokenPendingSpend() < available;
+  }
+
+  function recordMovementTokenStore(towerId) {
+    if (!towerId) return;
+    const originalId = resolveMovementTokenOriginalId(towerId);
+    if (!originalId) return;
+    if (!Array.isArray(gameState.movementTokenStoredTowerIds)) {
+      gameState.movementTokenStoredTowerIds = [];
+    }
+    if (!gameState.movementTokenStoredTowerIds.includes(originalId)) {
+      gameState.movementTokenStoredTowerIds.push(originalId);
+    }
+    if (gameState.movementTokenIdRemap instanceof Map) {
+      gameState.movementTokenIdRemap.delete(towerId);
+    }
+    const origin = gameState.movementTokenOrigins?.get?.(originalId);
+    const list = gameState.player?.inventory?.storedTowers;
+    const storedTower = Array.isArray(list) ? list[list.length - 1] : null;
+    if (storedTower) {
+      storedTower.movementTokenOriginalId = originalId;
+      if (origin) {
+        storedTower.movementTokenOriginQ = origin.q;
+        storedTower.movementTokenOriginR = origin.r;
+      }
+    }
+    ensureMovementTokenInventoryVisible();
+  }
+
+  /** After placing a session-stored tower back on the map. */
+  function recordMovementTokenPlace(originalId, newTowerId) {
+    if (!originalId || !newTowerId) return;
+    gameState.movementTokenStoredTowerIds = (gameState.movementTokenStoredTowerIds || []).filter(
+      (id) => id !== originalId
+    );
+    if (!(gameState.movementTokenIdRemap instanceof Map)) {
+      gameState.movementTokenIdRemap = new Map();
+    }
+    gameState.movementTokenIdRemap.set(newTowerId, originalId);
+  }
+
+  function stripMovementTokenInventoryStamps() {
+    const list = gameState.player?.inventory?.storedTowers;
+    if (!Array.isArray(list)) return;
+    for (const tower of list) {
+      if (!tower) continue;
+      delete tower.movementTokenOriginalId;
+      delete tower.movementTokenOriginQ;
+      delete tower.movementTokenOriginR;
+    }
+  }
+
+  function ensureMovementTokenInventoryVisible() {
+    if (typeof switchTab === 'function') switchTab('inventory');
+    if (typeof switchInventorySubTab === 'function') switchInventorySubTab('items');
+  }
+
+  function snapshotMovementTokenOrigins() {
+    const origins = new Map();
+    const remap = new Map();
+    const towers = gameState.towerSystem?.getAllTowers?.() || [];
+    for (const tower of towers) {
+      if (!tower?.id) continue;
+      origins.set(tower.id, { q: tower.q, r: tower.r });
+      remap.set(tower.id, tower.id);
+    }
+    gameState.movementTokenOrigins = origins;
+    gameState.movementTokenIdRemap = remap;
+    gameState.movementTokenStoredTowerIds = [];
+    gameState.movementTokenAvailableAtStart = Math.max(
+      0,
+      Math.floor(Number(gameState.player.movementTokens) || 0)
+    );
+  }
+
+  function clearMovementTokenSession() {
+    stripMovementTokenInventoryStamps();
+    gameState.movementTokenOrigins = null;
+    gameState.movementTokenStoredTowerIds = [];
+    gameState.movementTokenIdRemap = null;
+    gameState.movementTokenAvailableAtStart = 0;
+  }
+
+  function spendMovementTokensForSession() {
+    const n = getMovementTokenPendingSpend();
+    if (n <= 0) return 0;
+    gameState.player.movementTokens = Math.max(
+      0,
+      (gameState.player.movementTokens || 0) - n
+    );
+    for (let i = 0; i < n; i++) {
+      gameState.runStats?.recordMovementTokenUse?.();
+    }
+    return n;
   }
 
   function syncMenuButton() {
@@ -919,10 +1181,19 @@ function init() {
   }
 
   function showMovementInstructions() {
-    // Remove any existing instruction panel to prevent stacking
     hideMovementInstructions();
-    
-    // Create a temporary instruction overlay
+
+    const pending = getMovementTokenPendingSpend();
+    const available = Math.max(
+      0,
+      Math.floor(
+        Number(gameState.movementTokenAvailableAtStart ?? gameState.player.movementTokens) || 0
+      )
+    );
+    const hasChanges = pending > 0;
+    const tokenWord = pending === 1 ? 'Movement Token' : 'Movement Tokens';
+    const spendLine = `Spend <strong style="color:#FFFFFF;">${pending}</strong> ${tokenWord} (out of <strong style="color:#FFFFFF;">${available}</strong> available.)`;
+
     const instructionDiv = document.createElement('div');
     instructionDiv.id = 'movementInstructions';
     instructionDiv.style.cssText = `
@@ -940,17 +1211,21 @@ function init() {
       box-shadow: none;
     `;
     instructionDiv.innerHTML = `
-      <div style="margin-bottom: 8px;"><strong>Click or drag a tower to reposition it</strong></div>
-      <div style="font-size: 14px; color: #ccc; margin-bottom: 10px;">Game is paused. Cancel to abort without spending a token.</div>
-      <div style="display: flex; justify-content: center; margin-top: 5px;">
+      <div style="margin-bottom: 8px;"><strong>Reposition your towers</strong></div>
+      <div style="font-size: 14px; color: #ccc; margin-bottom: 8px;">${spendLine}</div>
+      <div style="font-size: 12px; color: #8aa0c8; margin-bottom: 12px;">Click or drag towers to reposition, right-click to store in inventory</div>
+      <div style="display: flex; justify-content: center; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 5px;">
         <button id="cancelMovementModalBtn" class="cta-button" style="
           color: white;
           cursor: var(--cursor-default);
         ">Cancel repositioning</button>
+        ${hasChanges ? `<button id="doneMovementModalBtn" class="cta-button cta-lime" style="
+          color: white;
+          cursor: var(--cursor-default);
+        "></button>` : ''}
       </div>
     `;
-    
-    // Add cancel button functionality
+
     const cancelBtn = instructionDiv.querySelector('#cancelMovementModalBtn');
     cancelBtn.classList.add('upgrade-modal-btn');
     cancelBtn.style.setProperty('--btn-bg-hover', '#6b6b6b');
@@ -958,73 +1233,50 @@ function init() {
     cancelBtn.onclick = () => {
       handleCancelMovement();
     };
-    
-    // Append to canvas-container so it's positioned relative to the map area
+
+    const confirmBtn = instructionDiv.querySelector('#doneMovementModalBtn');
+    if (confirmBtn) {
+      // Same layout as upgrade-plan CTAs: label + icon + x{cost}
+      const row = document.createElement('div');
+      row.style.cssText = 'display: flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap;';
+
+      const labelSpan = document.createElement('span');
+      labelSpan.textContent = 'Confirm';
+      labelSpan.style.fontSize = 'inherit';
+      row.appendChild(labelSpan);
+
+      const tokenImg = document.createElement('img');
+      tokenImg.src = 'assets/images/items/movement_token.png';
+      tokenImg.alt = '';
+      tokenImg.style.cssText = 'width: 32px; height: auto; object-fit: contain; image-rendering: crisp-edges;';
+      row.appendChild(tokenImg);
+
+      const costSpan = document.createElement('span');
+      costSpan.textContent = `x${pending}`;
+      costSpan.style.color = '#4FC3F7';
+      costSpan.style.fontWeight = 'bold';
+      costSpan.style.fontSize = '24px';
+      costSpan.style.textShadow = '0 0 25px rgba(0,0,0,.3), 0 0 10px rgba(0,0,0,.3), 0 0 5px rgba(0,0,0,.5)';
+      costSpan.style.marginLeft = '-6px';
+      costSpan.style.textTransform = 'none';
+      row.appendChild(costSpan);
+
+      confirmBtn.appendChild(row);
+      confirmBtn.onclick = () => {
+        handleDoneMovementMode();
+      };
+    }
+
     const canvasContainer = document.querySelector('.canvas-container');
     if (canvasContainer) {
       canvasContainer.appendChild(instructionDiv);
     } else {
-      // Fallback to body if canvas-container not found
       document.body.appendChild(instructionDiv);
     }
   }
 
   function hideMovementInstructions() {
     const instructionDiv = document.getElementById('movementInstructions');
-    if (instructionDiv && instructionDiv.parentNode) {
-      instructionDiv.parentNode.removeChild(instructionDiv);
-    }
-  }
-
-  /** After token is spent: Done returns to normal pause (use another token or Resume). */
-  function showMovementDoneInstructions() {
-    hideMovementDoneInstructions();
-
-    const instructionDiv = document.createElement('div');
-    instructionDiv.id = 'movementDoneInstructions';
-    instructionDiv.style.cssText = `
-      position: absolute;
-      bottom: 16px;
-      left: 16px;
-      background: url('assets/images/ui/modal6.png') center/100% 100% no-repeat;
-      color: white;
-      padding: 24px 32px;
-      border-radius: 12px;
-      border: none;
-      z-index: 100000 !important;
-      font-size: 16px;
-      text-align: center;
-      box-shadow: none;
-    `;
-    instructionDiv.innerHTML = `
-      <div style="margin-bottom: 8px;"><strong>Reposition your tower</strong></div>
-      <div style="font-size: 14px; color: #ccc; margin-bottom: 10px;">Click Done when finished moving this tower</div>
-      <div style="display: flex; justify-content: center; margin-top: 5px;">
-        <button id="doneMovementModalBtn" class="cta-button" style="
-          color: white;
-          cursor: var(--cursor-default);
-        ">Done</button>
-      </div>
-    `;
-
-    const doneBtn = instructionDiv.querySelector('#doneMovementModalBtn');
-    doneBtn.classList.add('upgrade-modal-btn');
-    doneBtn.style.setProperty('--btn-bg-hover', '#6b6b6b');
-    doneBtn.style.setProperty('--btn-border-hover', '#9a9a9a');
-    doneBtn.onclick = () => {
-      handleDoneMovementMode();
-    };
-
-    const canvasContainer = document.querySelector('.canvas-container');
-    if (canvasContainer) {
-      canvasContainer.appendChild(instructionDiv);
-    } else {
-      document.body.appendChild(instructionDiv);
-    }
-  }
-
-  function hideMovementDoneInstructions() {
-    const instructionDiv = document.getElementById('movementDoneInstructions');
     if (instructionDiv && instructionDiv.parentNode) {
       instructionDiv.parentNode.removeChild(instructionDiv);
     }
@@ -1156,12 +1408,12 @@ function init() {
     if (window.updateUI) window.updateUI();
   }
 
-  /** Exit movement mode after the token is spent; stay paused so the player can chain tokens or Resume. */
+  /** Exit movement mode after spending tokens for net moves; stay paused so the player can chain tokens or Resume. */
   function handleDoneMovementMode() {
     if (!gameState.isMovementTokenMode) return;
+    spendMovementTokensForSession();
     setMovementTokenMode(false);
     hideMovementInstructions();
-    hideMovementDoneInstructions();
     if (window.syncPauseButton) window.syncPauseButton();
     if (window.updateInventory) window.updateInventory();
     if (window.updateUI) window.updateUI();
@@ -1178,16 +1430,17 @@ function init() {
     }
     const inventoryTabBtn = document.querySelector('.tab-button[data-tab="inventory"]');
     if (inventoryTabBtn) {
-      inventoryTabBtn.style.cursor = movementLock ? 'var(--cursor-x)' : '';
-      inventoryTabBtn.setAttribute('aria-disabled', movementLock ? 'true' : 'false');
+      // Inventory stays usable in movement mode so session-stored towers can be re-placed.
+      inventoryTabBtn.style.cursor = '';
+      inventoryTabBtn.setAttribute('aria-disabled', 'false');
     }
     const artifactsBtn = document.querySelector('#inventoryTab .shop-sub-tab-button[data-inventory-sub-tab="artifacts"]');
     if (artifactsBtn) {
-      artifactsBtn.style.cursor = repairPartsLock ? 'var(--cursor-x)' : '';
-      artifactsBtn.setAttribute('aria-disabled', repairPartsLock ? 'true' : 'false');
+      artifactsBtn.style.cursor = (repairPartsLock || movementLock) ? 'var(--cursor-x)' : '';
+      artifactsBtn.setAttribute('aria-disabled', (repairPartsLock || movementLock) ? 'true' : 'false');
     }
     document.querySelectorAll('#inventoryTab .shop-sub-tab-button[data-inventory-sub-tab]').forEach((btn) => {
-      if (movementLock) {
+      if (movementLock && btn.dataset.inventorySubTab !== 'items') {
         btn.style.cursor = 'var(--cursor-x)';
         btn.setAttribute('aria-disabled', 'true');
       } else if (btn.dataset.inventorySubTab !== 'artifacts') {
@@ -1221,10 +1474,10 @@ function init() {
   function setMovementTokenMode(active) {
     const on = !!active;
     gameState.isMovementTokenMode = on;
-    if (!on) {
-      gameState.movementTokenTargetTowerId = null;
-      gameState.movementTokenRepositioned = false;
-      gameState.movementTokenCommitted = false;
+    if (on) {
+      snapshotMovementTokenOrigins();
+    } else {
+      clearMovementTokenSession();
       // Hide rotation arrows when the movement-token action finishes.
       gameState.selectedTowerId = null;
       gameState.inputHandler?.clearTowerPierceDwell?.();
@@ -1260,35 +1513,129 @@ function init() {
   }
 
   function handleCancelMovement() {
-    if (gameState.isMovementTokenMode && !gameState.movementTokenCommitted) {
-      setMovementTokenMode(false);
-      hideMovementInstructions();
-      hideMovementDoneInstructions();
-      if (window.updateInventory) window.updateInventory();
-      if (window.updateUI) window.updateUI();
-      
-      // Only auto-resume if the player did not manually pause first
-      resumeUnlessPausedByPlayer({ withAudio: true });
-      if (window.syncPauseButton) window.syncPauseButton();
+    if (!gameState.isMovementTokenMode) return;
+    if (getMovementTokenPendingSpend() > 0) {
+      revertMovementTokenSession();
     }
+    setMovementTokenMode(false);
+    hideMovementInstructions();
+    if (window.updateInventory) window.updateInventory();
+    if (window.updateUI) window.updateUI();
+    if (gameState.waveSystem) gameState.waveSystem.updateClearAllButtonVisibility();
+
+    // Only auto-resume if the player did not manually pause first
+    resumeUnlessPausedByPlayer({ withAudio: true });
+    if (window.syncPauseButton) window.syncPauseButton();
   }
 
-  function isMovementTokenRepositionLocked() {
-    return !!(gameState.isMovementTokenMode && gameState.movementTokenTargetTowerId);
+  /**
+   * Restore every session tower to its snapshot origin without spending tokens.
+   * Removes all session towers from the map/inventory first so swaps can be undone safely.
+   */
+  function revertMovementTokenSession() {
+    const origins = gameState.movementTokenOrigins;
+    if (!(origins instanceof Map) || origins.size === 0) return;
+
+    const remap = gameState.movementTokenIdRemap instanceof Map
+      ? gameState.movementTokenIdRemap
+      : new Map();
+    const storedIds = new Set(gameState.movementTokenStoredTowerIds || []);
+    /** @type {Map<string, string>} originalId → current map id */
+    const currentByOriginal = new Map();
+    for (const [currentId, originalId] of remap) {
+      currentByOriginal.set(originalId, currentId);
+    }
+
+    const restores = [];
+    for (const [originalId, origin] of origins) {
+      let data = null;
+      let direction = 0;
+
+      if (storedIds.has(originalId)) {
+        const list = gameState.player?.inventory?.storedTowers;
+        if (Array.isArray(list)) {
+          const idx = list.findIndex((t) => t?.movementTokenOriginalId === originalId);
+          if (idx >= 0) {
+            data = { ...list[idx] };
+            delete data.movementTokenOriginalId;
+            delete data.movementTokenOriginQ;
+            delete data.movementTokenOriginR;
+            list.splice(idx, 1);
+          }
+        }
+      } else {
+        const currentId = currentByOriginal.get(originalId);
+        const tower = currentId ? gameState.towerSystem?.getTower(currentId) : null;
+        if (tower) {
+          direction = tower.direction || 0;
+          data = {
+            type: tower.type,
+            rangeLevel: tower.rangeLevel,
+            powerLevel: tower.powerLevel,
+            shield: tower.shield ? { ...tower.shield } : null,
+            sentinelMode: tower.sentinelMode,
+            perimeterRing: tower.perimeterRing,
+            chargeTargetDistance: tower.chargeTargetDistance,
+            chargeMode: tower.chargeMode,
+            runStatsInstanceId: tower.runStatsInstanceId ?? null,
+          };
+          gameState.towerSystem?.removeTower(currentId);
+        }
+      }
+
+      if (data) {
+        restores.push({
+          originalId,
+          q: origin.q,
+          r: origin.r,
+          direction,
+          data,
+        });
+      }
+    }
+
+    const newRemap = new Map();
+    for (const item of restores) {
+      const towerId = gameState.towerSystem?.placeTower(
+        item.q,
+        item.r,
+        item.direction,
+        item.data.type,
+        true,
+        item.data
+      );
+      if (towerId) {
+        newRemap.set(towerId, item.originalId);
+        gameState.towerSystem?.updateTowerAffectedHexes?.(towerId);
+      }
+    }
+
+    gameState.movementTokenStoredTowerIds = [];
+    gameState.movementTokenIdRemap = newRemap;
+    gameState.selectedTowerId = null;
+    gameState.inputHandler?.clearTowerPierceDwell?.();
+    gameState.renderer?.arrowHoverState?.clear?.();
   }
 
   function isMovementTokenAllowedInteraction(target) {
     if (!target?.closest) return false;
     if (target.closest('#pauseBtn')) return true;
-    if (target.closest('#movementDoneInstructions')) return true;
+    if (target.closest('#movementInstructions')) return true;
+    if (target.closest('#cancelMovementModalBtn')) return true;
     if (target.closest('#doneMovementModalBtn')) return true;
     if (target.closest('#gameCanvas')) return true;
+    // Session-stored towers (and inventory chrome) stay interactive so they can be re-placed.
+    if (target.closest('.tab-button[data-tab="inventory"]')) return true;
+    if (target.closest('#inventoryTab')) return true;
     return false;
   }
 
   function handleMovementTokenBlockedInteraction(e) {
-    if (!isMovementTokenRepositionLocked()) return;
+    if (!gameState.isMovementTokenMode) return;
     if (isMovementTokenAllowedInteraction(e.target)) return;
+    // Block side-panel / shop / inventory while repositioning (tabs are also locked).
+    const sidePanel = e.target.closest?.('.side-panel');
+    if (!sidePanel) return;
     e.preventDefault();
     e.stopImmediatePropagation();
   }
@@ -1296,46 +1643,21 @@ function init() {
   document.addEventListener('click', handleMovementTokenBlockedInteraction, true);
   document.addEventListener('mousedown', handleMovementTokenBlockedInteraction, true);
 
-  /** First tower pick in movement mode: spend token, hide panel, designate target */
-  function designateMovementTokenTarget(towerId) {
-    if (!gameState.isMovementTokenMode || !towerId) return;
-    const isFirstDesignation = !gameState.movementTokenTargetTowerId;
-    gameState.movementTokenTargetTowerId = towerId;
-    if (isFirstDesignation) {
-      gameState.movementTokenCommitted = true;
-      gameState.player.movementTokens = Math.max(0, (gameState.player.movementTokens || 0) - 1);
-      gameState.runStats?.recordMovementTokenUse?.();
-      if (window.syncCancelMovementButton) window.syncCancelMovementButton();
-      if (window.updateInventory) window.updateInventory();
-      if (window.updateUI) window.updateUI();
-      if (gameState.waveSystem) gameState.waveSystem.updateClearAllButtonVisibility();
-    }
-  }
-
-  /** Store tower to inventory during movement mode before picking one: spend token, show Done panel */
-  function commitMovementTokenViaInventoryStore() {
-    if (!gameState.isMovementTokenMode || gameState.movementTokenCommitted) return;
-    gameState.movementTokenCommitted = true;
-    gameState.player.movementTokens = Math.max(0, (gameState.player.movementTokens || 0) - 1);
-    gameState.runStats?.recordMovementTokenUse?.();
+  /** After a tower is repositioned, stored, or re-placed; refresh Cancel/Confirm panel. */
+  function onMovementTokenSessionChanged() {
+    if (!gameState.isMovementTokenMode) return;
     if (window.syncCancelMovementButton) window.syncCancelMovementButton();
     if (window.updateInventory) window.updateInventory();
-    if (window.updateUI) window.updateUI();
-    if (gameState.waveSystem) gameState.waveSystem.updateClearAllButtonVisibility();
   }
 
-  /** After the player repositions the designated tower; stay in movement mode until Done/Resume */
-  function onMovementTokenReposition() {
-    if (!gameState.isMovementTokenMode) return;
-    gameState.movementTokenRepositioned = true;
-  }
-
-  /** Resume button while in movement mode: exit mode and continue the wave */
+  /** Resume button while in movement mode: spend for net moves (if any), exit mode, continue the wave */
   function finalizeMovementTokenOnResume() {
     if (!gameState.isMovementTokenMode) return;
+    if (getMovementTokenPendingSpend() > 0) {
+      spendMovementTokensForSession();
+    }
     setMovementTokenMode(false);
     hideMovementInstructions();
-    hideMovementDoneInstructions();
     if (window.updateInventory) window.updateInventory();
     if (window.updateUI) window.updateUI();
     if (gameState.waveSystem) gameState.waveSystem.updateClearAllButtonVisibility();
@@ -1345,10 +1667,15 @@ function init() {
       if (window.syncPauseButton) window.syncPauseButton();
     }
   }
-  gameState.designateMovementTokenTarget = designateMovementTokenTarget;
-  gameState.onMovementTokenReposition = onMovementTokenReposition;
+  gameState.getMovementTokenPendingSpend = getMovementTokenPendingSpend;
+  gameState.isMovementTokenTowerDisplaced = isMovementTokenTowerDisplaced;
+  gameState.isMovementTokenSessionStoredTower = isMovementTokenSessionStoredTower;
+  gameState.canMovementTokenAcceptMove = canMovementTokenAcceptMove;
+  gameState.canMovementTokenAcceptStore = canMovementTokenAcceptStore;
+  gameState.recordMovementTokenStore = recordMovementTokenStore;
+  gameState.recordMovementTokenPlace = recordMovementTokenPlace;
+  gameState.onMovementTokenSessionChanged = onMovementTokenSessionChanged;
   gameState.finalizeMovementTokenOnResume = finalizeMovementTokenOnResume;
-  gameState.commitMovementTokenViaInventoryStore = commitMovementTokenViaInventoryStore;
 
   // Store globally for debugging
   window.gameState = gameState;
@@ -1421,21 +1748,22 @@ function init() {
   window.updateFpsCounterVisibility = updateFpsCounterVisibility;
   window.showMovementInstructions = showMovementInstructions;
   window.hideMovementInstructions = hideMovementInstructions;
-  window.showMovementDoneInstructions = showMovementDoneInstructions;
-  window.hideMovementDoneInstructions = hideMovementDoneInstructions;
   window.showRepairInstructions = showRepairInstructions;
   window.hideRepairInstructions = hideRepairInstructions;
   window.showPartsRecycleInstructions = showPartsRecycleInstructions;
   window.hidePartsRecycleInstructions = hidePartsRecycleInstructions;
   window.createTowerIconHTML = createTowerIconHTML;
+  window.alignInventorySpinTurretPivot = alignInventorySpinTurretPivot;
   
   // Debug flag functions
   window.toggleDebugMode = () => {
     CONFIG.DEBUG_MODE = !CONFIG.DEBUG_MODE;
+    if (CONFIG.DEBUG_MODE) gameState.runStats?.markDebugModeUsed?.();
     console.log(`Debug mode: ${CONFIG.DEBUG_MODE ? 'ON' : 'OFF'}`);
   };
   window.setDebugMode = (enabled) => {
     CONFIG.DEBUG_MODE = enabled;
+    if (CONFIG.DEBUG_MODE) gameState.runStats?.markDebugModeUsed?.();
     console.log(`Debug mode: ${CONFIG.DEBUG_MODE ? 'ON' : 'OFF'}`);
   };
   window.grantTempPowerUp = grantTempPowerUp;
@@ -1523,6 +1851,17 @@ function init() {
       }
       return; // Allow through - modal will process purchase
     }
+    // Step 34 (rain confirm): advance to inventory tab step
+    if (stepIndex === 33 && (target.id === 'confirmOkBtn' || target.closest('#confirmOkBtn'))) {
+      if (e.type === 'click') {
+        setTimeout(() => {
+          setTutorialProgress(34);
+          saveTutorialState(gameState);
+          requestAnimationFrame(() => updateTutorialArrow());
+        }, 0);
+      }
+      return; // Allow through - modal will process purchase
+    }
     // Allow buttons inside modals (e.g. Confirm/Cancel in confirm modal when restarting/exiting tutorial)
     if (target.closest('.modal-overlay.active')) {
       return; // Allow through
@@ -1533,7 +1872,7 @@ function init() {
         e.preventDefault();
         e.stopPropagation();
         (async () => {
-          const cost = getShieldCost(1);
+          const cost = getShieldShopCost(1, getShieldPurchasesForLevel(gameState, 1), gameState);
           const confirmPromise = showConfirmModal({
             title: 'Purchase Shield?',
             message: '',
@@ -1655,7 +1994,7 @@ function init() {
             e.preventDefault();
             e.stopPropagation();
             (async () => {
-              const cost = getShieldCost(1);
+              const cost = getShieldShopCost(1, getShieldPurchasesForLevel(gameState, 1), gameState);
               const confirmPromise = showConfirmModal({
                 title: 'Purchase Shield?',
                 message: '',
@@ -1686,6 +2025,15 @@ function init() {
         if (stepIndex === 24) {
           setTimeout(() => {
             setTutorialProgress(stepIndex + 1);
+            saveTutorialState(gameState);
+            requestAnimationFrame(() => updateTutorialArrow());
+          }, 0);
+          return; // Allow through - switchTab will run
+        }
+        // Step 35 (inventory tab after rain purchase): advance when user clicks inventory
+        if (stepIndex === 34) {
+          setTimeout(() => {
+            setTutorialProgress(35);
             saveTutorialState(gameState);
             requestAnimationFrame(() => updateTutorialArrow());
           }, 0);
@@ -1734,7 +2082,7 @@ function init() {
           requestAnimationFrame(() => updateTutorialArrow());
           return; // Allow through - button will resume the game
         }
-        // Step 28 (Resume button): hide arrow, show water tank bubble; step 29 advances when water tank explodes
+        // Step 29 (Resume button): hide arrow, show water tank bubble; step 30 begins after water tank explodes
         if (step.target === '#pauseBtn' && stepIndex === 28) {
           gameState.tutorialStep28ResumeClicked = true;
           setTimeout(() => {
@@ -1742,7 +2090,87 @@ function init() {
             if (arrow) arrow.style.display = 'none';
             showTutorialWaterTankBubble();
           }, 0);
-          return; // Allow through - button will resume the game; final step triggers on water tank explosion
+          return; // Allow through - button will resume; grove-fire sequence starts after explosion
+        }
+        // Step 30 (Pause): advance when user clicks Pause after grove catches fire
+        if (step.target === '#pauseBtn' && stepIndex === 29) {
+          setTutorialProgress(30);
+          saveTutorialState(gameState);
+          requestAnimationFrame(() => updateTutorialArrow());
+          return; // Allow through - button will pause the game
+        }
+        // Step 31 (shop tab): allow click to switch to shop
+        if (step.target === '#shopTabBtn' && stepIndex === 30) {
+          setTimeout(() => {
+            setTutorialProgress(31);
+            saveTutorialState(gameState);
+            requestAnimationFrame(() => updateTutorialArrow());
+          }, 0);
+          return;
+        }
+        // Step 32 (shop sub-tabs): only Towers click advances
+        if (step.target === '.shop-sub-tabs' && stepIndex === 31) {
+          const subTabBtn = target.closest('.shop-sub-tab-button');
+          if (subTabBtn && subTabBtn.dataset.shopSubTab === 'towers') {
+            e.preventDefault();
+            e.stopPropagation();
+            switchShopSubTab('towers');
+            setTimeout(() => {
+              setTutorialProgress(32);
+              saveTutorialState(gameState);
+              const itemsBtn = document.querySelector('#shopTab .shop-sub-tab-button[data-shop-sub-tab="items"]');
+              const powerupsBtn = document.querySelector('#shopTab .shop-sub-tab-button[data-shop-sub-tab="powerups"]');
+              if (itemsBtn) itemsBtn.classList.add('tutorial-disabled');
+              if (powerupsBtn) powerupsBtn.classList.add('tutorial-disabled');
+              requestAnimationFrame(() => updateTutorialArrow());
+            }, 0);
+            return;
+          }
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        // Step 33 (rain purchase): open confirm modal, advance to confirm step
+        if (step.target === '#rain-tower-shop' && stepIndex === 32) {
+          const rainEl = target.closest('#rain-tower-shop');
+          if (rainEl) {
+            e.preventDefault();
+            e.stopPropagation();
+            (async () => {
+              const confirmPromise = showConfirmModal({
+                title: 'Purchase Rain Tower?',
+                message: '',
+                confirmText: 'Purchase',
+                cancelText: 'Cancel',
+                itemIcon: createTowerIconHTML('rain', 1, 1, true),
+                cost: CONFIG.TOWER_COST_RAIN,
+                maxQuantity: 1,
+                lockQuantity: true,
+              });
+              setTutorialProgress(33);
+              saveTutorialState(gameState);
+              requestAnimationFrame(() => updateTutorialArrow());
+              const confirmed = await confirmPromise;
+              const qty = shopPurchaseQty(confirmed);
+              if (qty) {
+                buyShopItemTimes(qty, () => buyTower('rain'));
+              } else {
+                setTutorialProgress(32);
+                saveTutorialState(gameState);
+                requestAnimationFrame(() => updateTutorialArrow());
+              }
+            })();
+            return;
+          }
+        }
+        // Step 37 (Resume): allow resume; finish advances when grove fire is extinguished
+        if (step.target === '#pauseBtn' && stepIndex === 36) {
+          gameState.tutorialStep36ResumeClicked = true;
+          setTimeout(() => {
+            const arrow = document.getElementById('tutorialArrow');
+            if (arrow) arrow.style.display = 'none';
+          }, 0);
+          return; // Allow through - rain extinguish handler advances to finish
         }
         setTutorialProgress(stepIndex + 1);
         saveTutorialState(gameState);
@@ -1751,7 +2179,7 @@ function init() {
       return; // Allow through
     }
     // Step 6, 7, 9, 10, 11: allow canvas for tower placement/move/rotation; Step 15: rotation; 26–27 shield/water tank;
-    // Step 25 + shield selected: allow canvas so shield click-to-apply reaches inputHandler (otherwise capture blocks it)
+    // Step 35: rain tower placement; Step 25 + shield selected: allow canvas for shield apply
     const tutorialCanvasShieldPrep =
       stepIndex === 25 && gameState.inputHandler?.selectedShieldForPlacement;
     if (
@@ -1763,6 +2191,7 @@ function init() {
         stepIndex === 15 ||
         stepIndex === 26 ||
         stepIndex === 27 ||
+        stepIndex === 35 ||
         tutorialCanvasShieldPrep) &&
       target.id === 'gameCanvas'
     ) {
@@ -1803,7 +2232,7 @@ function init() {
     // Block all other interactions - show notification near click (only on click, not mousedown)
     // Don't show when: (a) step allows canvas, or (b) canvas click just advanced the step (mousedown did rotation/placement,
     // so the ensuing click would wrongly show "follow tutorial" - use flag set by checkTutorial*Advance)
-    const canvasAllowedSteps = [5, 6, 8, 9, 10, 15, 26, 27];
+    const canvasAllowedSteps = [5, 6, 8, 9, 10, 15, 26, 27, 35];
     const shieldCanvasPrep = stepIndex === 25 && gameState.inputHandler?.selectedShieldForPlacement;
     const suppressNotification =
       canvasAllowedSteps.includes(stepIndex) ||
@@ -1894,7 +2323,7 @@ function init() {
     const from = e.relatedTarget?.closest?.('.inventory-item');
     if (from === item) return; // moving within same item
     if (!item.closest('#shopGridTowers, #shopGridItems, #shopGridPowerups, #inventoryGrid, #inventoryGridArtifacts')) return;
-    window.AudioManager.playSFX('hover1', { volume: 0.5 });
+    window.AudioManager.playSFX('hover1');
   }, true);
   
   // Setup pause button - completely simple approach
@@ -2039,7 +2468,7 @@ function setupViewportResize() {
  * @returns {number}
  */
 function snapMapZoomLevel(zoom) {
-  const levels = CONFIG.MAP_ZOOM_LEVELS || [0.75, 1, 1.25];
+  const levels = CONFIG.MAP_ZOOM_LEVELS || [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
   let bestIdx = 0;
   let bestDist = Infinity;
   for (let i = 0; i < levels.length; i++) {
@@ -2053,30 +2482,35 @@ function snapMapZoomLevel(zoom) {
 }
 
 /**
- * Sync the Settings map-zoom slider / label to CONFIG.MAP_ZOOM.
+ * Sync the on-map zoom controls to CONFIG.MAP_ZOOM.
  */
 function updateMapZoomSettingsUI() {
-  const levels = CONFIG.MAP_ZOOM_LEVELS || [0.75, 1, 1.25];
+  const levels = CONFIG.MAP_ZOOM_LEVELS || [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
   const z = snapMapZoomLevel(CONFIG.MAP_ZOOM ?? CONFIG.MAP_ZOOM_DEFAULT ?? 1);
   const idx = Math.max(0, levels.indexOf(z));
-  const slider = document.getElementById('settingMapZoom');
-  const valueEl = document.getElementById('settingMapZoomValue');
-  if (slider) {
-    slider.value = String(idx);
-    slider.setAttribute('aria-valuetext', `${Math.round(z * 100)}%`);
-  }
-  if (valueEl) valueEl.textContent = `${Math.round(z * 100)}%`;
+  const label = `${Math.round(z * 100)}%`;
+  const valueEl = document.getElementById('minimapZoomValue');
+  if (valueEl) valueEl.textContent = label;
+  const zoomIn = document.getElementById('minimapZoomInBtn');
+  const zoomOut = document.getElementById('minimapZoomOutBtn');
+  const setZoomBtnDisabled = (btn, disabled) => {
+    if (!btn) return;
+    btn.classList.toggle('is-disabled', disabled);
+    btn.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+  };
+  setZoomBtnDisabled(zoomIn, idx >= levels.length - 1);
+  setZoomBtnDisabled(zoomOut, idx <= 0);
 }
 
 /**
  * Apply map zoom from absolute scale and/or ±1 level step. Updates renderer, CONFIG,
- * Settings UI, and optionally persists to localStorage.
+ * on-map zoom controls, and optionally persists to localStorage.
  * @param {{ zoom?: number, direction?: number, persist?: boolean }} opts
  * @returns {number} Applied zoom scale
  */
 function applyMapZoomSetting(opts = {}) {
   const persist = opts.persist !== false;
-  const levels = CONFIG.MAP_ZOOM_LEVELS || [0.75, 1, 1.25];
+  const levels = CONFIG.MAP_ZOOM_LEVELS || [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
   let next;
   if (typeof opts.direction === 'number' && opts.direction !== 0 && gameState.renderer?.cycleMapZoom) {
     next = gameState.renderer.cycleMapZoom(opts.direction);
@@ -2112,6 +2546,23 @@ function setupKeyboardShortcuts() {
     // Rename modal handles its own Enter
     const renameModal = document.getElementById('renameModal');
     if (renameModal?.classList.contains('active')) return;
+    // Map instruction panels (reposition / upgrade / repair / recycle / sellback) — Enter clicks Done
+    const mapInstructionDoneIds = [
+      'doneMovementModalBtn',
+      'cancelMovementModalBtn',
+      'skipUpgradeBtn',
+      'doneRepairModalBtn',
+      'donePartsRecycleModalBtn',
+      'cancelTowerSellbackBtn',
+    ];
+    for (const id of mapInstructionDoneIds) {
+      const btn = document.getElementById(id);
+      if (btn && btn.offsetParent !== null && !btn.disabled) {
+        e.preventDefault();
+        btn.click();
+        return;
+      }
+    }
     // Splash screen - Enter starts New Game when no sub-modal is open
     const settingsModal = document.getElementById('settingsModal');
     const settingsModalInner = document.getElementById('settingsModalInner');
@@ -2272,6 +2723,21 @@ function setupOverlayTooltips() {
       });
       return;
     }
+    if (row.classList.contains('overlay-row-score')) {
+      row.addEventListener('mouseenter', (e) => {
+        const tooltipSystem = gameState?.inputHandler?.tooltipSystem;
+        if (!tooltipSystem) return;
+        tooltipSystem.show(getStarRatingHudTooltipHtml(), e.clientX, e.clientY);
+      });
+      row.addEventListener('mouseleave', () => {
+        gameState?.inputHandler?.tooltipSystem?.hide();
+      });
+      row.addEventListener('mousemove', (e) => {
+        const ts = gameState?.inputHandler?.tooltipSystem;
+        if (ts?.currentContent) ts.updateMousePosition(e.clientX, e.clientY);
+      });
+      return;
+    }
     const tooltipText = row.getAttribute('data-tooltip');
     if (!tooltipText) return;
     bindTooltipPlainText(row, tooltipText);
@@ -2297,7 +2763,7 @@ function setupUI() {
       if ((gameState.isUpgradeSelectionMode || gameState.isRepairSelectionMode || gameState.isPartsRecycleMode || gameState.isTowerSellbackMode || gameState.isMovementTokenMode) && tabName === 'shop') {
         return;
       }
-      if (gameState.isMovementTokenMode) {
+      if (gameState.isMovementTokenMode && tabName !== 'inventory') {
         return;
       }
       switchTab(tabName);
@@ -2324,7 +2790,7 @@ function setupUI() {
         if ((gameState.isUpgradeSelectionMode || gameState.isRepairSelectionMode || gameState.isPartsRecycleMode || gameState.isTowerSellbackMode) && subTabName === 'artifacts') {
           return;
         }
-        if (gameState.isMovementTokenMode) {
+        if (gameState.isMovementTokenMode && subTabName !== 'items') {
           return;
         }
         if (subTabName) switchInventorySubTab(subTabName);
@@ -2476,6 +2942,7 @@ function setupUI() {
   
   // Show splash screen on initial page load
   openSplashScreen(false); // false = initial load (hide save/close)
+  void promptDisplayNameIfNeeded();
 }
 
 function positionLeftOverlayToggle() {
@@ -2582,6 +3049,27 @@ function setupScenarioModals() {
       if (window.AudioManager) window.AudioManager.playSFX('new_game');
       closeSplashScreen();
       startNewGame();
+    });
+  }
+
+  const splashDailyChallengeBtn = document.getElementById('splashDailyChallengeBtn');
+  if (splashDailyChallengeBtn) {
+    splashDailyChallengeBtn.addEventListener('click', async () => {
+      const isActiveRun = !document.body.classList.contains('game-not-started') && !gameState.gameOver;
+      if (isActiveRun) {
+        const confirmed = await showConfirmModal({
+          title: 'Start Daily Challenge?',
+          message: 'This will abandon your current run and start today\'s seeded challenge. Are you sure?',
+          confirmText: 'Daily Challenge',
+          cancelText: 'Cancel',
+          confirmButtonClass: 'cta-yellow',
+          confirmButtonIcon: 'assets/images/ui/icon-trophy.png',
+        });
+        if (!confirmed) return;
+      }
+      if (window.AudioManager) window.AudioManager.playSFX('new_game');
+      closeSplashScreen();
+      startNewGame({ mode: 'daily' });
     });
   }
   
@@ -2834,6 +3322,7 @@ function setupScenarioModals() {
   wireMapProgressionModal(gameState, bindTooltipPlainText);
   wireSpecialtyModal(gameState);
   wireTowerStatsModal(gameState, bindTooltipPlainText);
+  wireSuperchargeModal(gameState);
 
   const splashFeedbackBtn = document.getElementById('splashFeedbackBtn');
   const cancelFeedbackModalBtn = document.getElementById('cancelFeedbackModalBtn');
@@ -2855,7 +3344,7 @@ function setupScenarioModals() {
       const msg = (textarea?.value || '').trim();
       if (!msg) {
         if (gameState.notificationSystem) {
-          gameState.notificationSystem.showToast('Please enter a message.', 3000, 'neutral');
+          gameState.notificationSystem.showToast('Please enter a message.', 3000, 'neutral', { critical: true });
         } else {
           window.alert('Please enter a message.');
         }
@@ -2881,7 +3370,7 @@ function setupScenarioModals() {
       } catch (err) {
         const m = err && err.message ? err.message : String(err);
         if (gameState.notificationSystem) {
-          gameState.notificationSystem.showToast(m, 5000, 'negative');
+          gameState.notificationSystem.showToast(m, 5000, 'negative', { critical: true });
         } else {
           window.alert(m);
         }
@@ -2940,8 +3429,7 @@ function setupScenarioModals() {
         // Update display
         selectedScenarioName = name;
         scenarioDropdownText.textContent = name;
-        scenarioDropdownSelected.classList.remove('active');
-        scenarioDropdownMenu.classList.remove('active');
+        closeAllCustomDropdowns();
         
         // Update description and show it
         const scenario = getScenarioByName(name);
@@ -2963,23 +3451,14 @@ function setupScenarioModals() {
   if (scenarioDropdownSelected) {
     scenarioDropdownSelected.addEventListener('click', (e) => {
       e.stopPropagation();
-      const isActive = scenarioDropdownSelected.classList.contains('active');
-      
-      if (isActive) {
-        scenarioDropdownSelected.classList.remove('active');
-        scenarioDropdownMenu.classList.remove('active');
-      } else {
-        scenarioDropdownSelected.classList.add('active');
-        scenarioDropdownMenu.classList.add('active');
-      }
+      toggleCustomDropdown(scenarioDropdownSelected, scenarioDropdownMenu);
     });
   }
   
   // Close dropdown when clicking outside
   document.addEventListener('click', (e) => {
-    if (scenarioDropdown && !scenarioDropdown.contains(e.target)) {
-      scenarioDropdownSelected.classList.remove('active');
-      scenarioDropdownMenu.classList.remove('active');
+    if (!e.target.closest('.scenario-dropdown') && !e.target.closest('.scenario-dropdown-menu')) {
+      closeAllCustomDropdowns();
     }
   });
   
@@ -3033,25 +3512,18 @@ function setupScenarioModals() {
   // Leaderboard modal
   const leaderboardModal = document.getElementById('leaderboardModal');
   const leaderboardCloseBtn = document.getElementById('leaderboardCloseBtn');
-  const leaderboardResetBtn = document.getElementById('leaderboardResetBtn');
+  const leaderboardRefreshBtn = document.getElementById('leaderboardRefreshBtn');
   if (leaderboardCloseBtn) {
     leaderboardCloseBtn.addEventListener('click', () => closeLeaderboardModal());
   }
-  if (leaderboardResetBtn) {
-    leaderboardResetBtn.addEventListener('click', async () => {
-      const confirmed = await showConfirmModal({
-        title: 'Reset High Scores?',
-        message: 'This will permanently delete all leaderboard entries. This cannot be undone.',
-        confirmText: 'Yes, Reset',
-        cancelText: 'Cancel',
-        confirmButtonClass: 'cta-red',
-      });
-      if (confirmed) {
-        clearLeaderboard();
-        openLeaderboardModal();
-      }
-    });
+  if (leaderboardRefreshBtn) {
+    leaderboardRefreshBtn.addEventListener('click', () => openLeaderboardModal({ forceRefresh: true }));
   }
+  document.querySelectorAll('.leaderboard-tab').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      openLeaderboardModal({ board: btn.dataset.board, forceRefresh: true });
+    });
+  });
   if (leaderboardModal) {
     leaderboardModal.addEventListener('click', (e) => {
       if (e.target === leaderboardModal) closeLeaderboardModal();
@@ -3393,6 +3865,7 @@ function openSettingsModalInner() {
  * Close settings modal (inner)
  */
 function closeSettingsModalInner() {
+  closeAllCustomDropdowns();
   const settingsModalInner = document.getElementById('settingsModalInner');
   if (settingsModalInner) {
     closeModalOverlay(settingsModalInner);
@@ -3549,9 +4022,6 @@ function formatWaterVisibilityLabel(pct) {
   return `${pct}%`;
 }
 
-/**
- * Default settings values (from CONFIG)
- */
 const DEFAULT_SETTINGS = {
   GAME_DIFFICULTY: CONFIG.GAME_DIFFICULTY,
   TOWER_SELECT_MODE: CONFIG.TOWER_SELECT_MODE,
@@ -3566,8 +4036,8 @@ const DEFAULT_SETTINGS = {
   SCREEN_SHAKE_ENABLED: CONFIG.SCREEN_SHAKE_ENABLED,
   SHOW_FPS_COUNTER: CONFIG.SHOW_FPS_COUNTER,
   MAP_ZOOM: CONFIG.MAP_ZOOM,
-  DISABLE_GAME_TOOLTIPS: CONFIG.DISABLE_GAME_TOOLTIPS,
-  DISABLE_NOTIFICATIONS: CONFIG.DISABLE_NOTIFICATIONS,
+  TOOLTIP_LEVEL: CONFIG.TOOLTIP_LEVEL,
+  NOTIFICATION_LEVEL: CONFIG.NOTIFICATION_LEVEL,
   SIMPLIFIED_WATER_VISUALS: CONFIG.SIMPLIFIED_WATER_VISUALS,
   SIMPLIFIED_FIRE_VISUALS: CONFIG.SIMPLIFIED_FIRE_VISUALS,
   WATER_VISIBILITY: CONFIG.WATER_VISIBILITY,
@@ -3577,6 +4047,18 @@ const DEFAULT_SETTINGS = {
   AUDIO_SFX_VOLUME: CONFIG.AUDIO_SFX_VOLUME,
   AUDIO_MUSIC_VOLUME: CONFIG.AUDIO_MUSIC_VOLUME,
 };
+
+function notificationLevelLabel(level) {
+  if (level === 'critical') return 'Critical';
+  if (level === 'none') return 'None';
+  return 'All';
+}
+
+function tooltipLevelLabel(level) {
+  if (level === 'hud') return 'HUD only';
+  if (level === 'none') return 'None';
+  return 'All';
+}
 
 /**
  * Load user settings from localStorage and apply to CONFIG
@@ -3612,6 +4094,14 @@ function loadUserSettings() {
     if (CONFIG.TOWER_SELECT_MODE !== 'hover' && CONFIG.TOWER_SELECT_MODE !== 'click') {
       CONFIG.TOWER_SELECT_MODE = 'hover';
     }
+    CONFIG.NOTIFICATION_LEVEL = normalizeNotificationLevel(
+      savedSettings.NOTIFICATION_LEVEL,
+      savedSettings.DISABLE_NOTIFICATIONS === true
+    );
+    CONFIG.TOOLTIP_LEVEL = normalizeTooltipLevel(
+      savedSettings.TOOLTIP_LEVEL,
+      savedSettings.DISABLE_GAME_TOOLTIPS === true
+    );
     if (savedSettings.hasOwnProperty('MAP_ZOOM')) {
       CONFIG.MAP_ZOOM = snapMapZoomLevel(Number(savedSettings.MAP_ZOOM));
     } else {
@@ -3635,7 +4125,16 @@ function loadUserSettings() {
     if (savedSettings.hasOwnProperty('ENDLESS_UNLOCKED')) {
       gameState.meta.endlessUnlocked = !!savedSettings.ENDLESS_UNLOCKED;
     }
+    if (typeof savedSettings.DISPLAY_NAME === 'string') {
+      gameState.meta.displayName = sanitizeDisplayName(savedSettings.DISPLAY_NAME, '');
+    }
+    if (savedSettings.DISPLAY_NAME_SET === true) {
+      gameState.meta.displayNameSet = true;
+    } else if (gameState.meta.displayName && gameState.meta.displayName !== 'Player') {
+      gameState.meta.displayNameSet = true;
+    }
     gameState.meta.progression = normalizeMetaProgression(savedSettings.META_PROGRESSION);
+    snapshotLoadedSaveMetaProgression(gameState);
     if (
       savedSettings.MAX_FIRES_EXTINGUISHED_BY_WAVE &&
       typeof savedSettings.MAX_FIRES_EXTINGUISHED_BY_WAVE === 'object'
@@ -3674,6 +4173,8 @@ function saveUserSettings() {
     const settings = {
       ENDLESS_MODE: gameState.meta?.endlessMode ?? false,
       ENDLESS_UNLOCKED: gameState.meta?.endlessUnlocked ?? false,
+      DISPLAY_NAME: sanitizeDisplayName(gameState.meta?.displayName || '', ''),
+      DISPLAY_NAME_SET: !!gameState.meta?.displayNameSet,
       META_PROGRESSION: normalizeMetaProgression(gameState.meta?.progression),
       MAX_FIRES_EXTINGUISHED_BY_WAVE: normalizeMaxFiresExtinguishedByWave(
         gameState.meta?.maxFiresExtinguishedByWave
@@ -3694,8 +4195,8 @@ function saveUserSettings() {
       SCREEN_SHAKE_ENABLED: CONFIG.SCREEN_SHAKE_ENABLED,
       SHOW_FPS_COUNTER: CONFIG.SHOW_FPS_COUNTER === true,
       MAP_ZOOM: snapMapZoomLevel(CONFIG.MAP_ZOOM ?? CONFIG.MAP_ZOOM_DEFAULT ?? 1),
-      DISABLE_GAME_TOOLTIPS: CONFIG.DISABLE_GAME_TOOLTIPS === true,
-      DISABLE_NOTIFICATIONS: CONFIG.DISABLE_NOTIFICATIONS === true,
+      TOOLTIP_LEVEL: normalizeTooltipLevel(CONFIG.TOOLTIP_LEVEL),
+      NOTIFICATION_LEVEL: normalizeNotificationLevel(CONFIG.NOTIFICATION_LEVEL),
       SIMPLIFIED_WATER_VISUALS: CONFIG.SIMPLIFIED_WATER_VISUALS === true,
       SIMPLIFIED_FIRE_VISUALS: CONFIG.SIMPLIFIED_FIRE_VISUALS === true,
       WATER_VISIBILITY: (() => {
@@ -3723,7 +4224,38 @@ function saveUserSettings() {
 /**
  * Update settings UI to reflect current CONFIG values
  */
+function persistDisplayName(rawName) {
+  gameState.meta = gameState.meta || {};
+  gameState.meta.displayName = sanitizeDisplayName(rawName, 'Player');
+  gameState.meta.displayNameSet = true;
+  saveUserSettings();
+  const input = document.getElementById('settingDisplayName');
+  if (input) input.value = gameState.meta.displayName;
+}
+
+function hasChosenDisplayName() {
+  if (gameState.meta?.displayNameSet) return true;
+  const name = sanitizeDisplayName(gameState.meta?.displayName || '', '');
+  return !!(name && name !== 'Player');
+}
+
+async function promptDisplayNameIfNeeded() {
+  if (hasChosenDisplayName()) return;
+  const entered = await showRenameModal('', 'Player Name', {
+    subtitle: 'This name is used on leaderboards and in multiplayer. You can change it anytime in Settings.',
+    confirmText: 'Save',
+    hideCancel: true,
+    placeholder: 'Your name',
+    maxLength: 24,
+  });
+  persistDisplayName(entered || 'Player');
+}
+
 function updateSettingsUI() {
+  const displayNameInput = document.getElementById('settingDisplayName');
+  if (displayNameInput) {
+    displayNameInput.value = sanitizeDisplayName(gameState.meta?.displayName || '', '');
+  }
   // Game Difficulty - Update custom dropdown
   const gameDifficultyText = document.getElementById('settingGameDifficultyText');
   const gameDifficultyMenu = document.getElementById('settingGameDifficultyMenu');
@@ -3859,16 +4391,31 @@ function updateSettingsUI() {
   if (showFpsCheckbox) {
     showFpsCheckbox.checked = CONFIG.SHOW_FPS_COUNTER === true;
   }
-  
-  const disableTooltipsCheckbox = document.getElementById('settingDisableGameTooltips');
-  if (disableTooltipsCheckbox) {
-    // Toggle ON = tooltips enabled (CONFIG flag is inverted "disable")
-    disableTooltipsCheckbox.checked = CONFIG.DISABLE_GAME_TOOLTIPS !== true;
+
+  const tooltipLevel = normalizeTooltipLevel(CONFIG.TOOLTIP_LEVEL);
+  CONFIG.TOOLTIP_LEVEL = tooltipLevel;
+  const tooltipLevelText = document.getElementById('settingTooltipLevelText');
+  const tooltipLevelMenu = document.getElementById('settingTooltipLevelMenu');
+  if (tooltipLevelText) {
+    tooltipLevelText.textContent = tooltipLevelLabel(tooltipLevel);
+  }
+  if (tooltipLevelMenu) {
+    tooltipLevelMenu.querySelectorAll('.scenario-dropdown-option').forEach((option) => {
+      option.classList.toggle('selected', option.dataset.value === tooltipLevel);
+    });
   }
 
-  const disableNotificationsCheckbox = document.getElementById('settingDisableNotifications');
-  if (disableNotificationsCheckbox) {
-    disableNotificationsCheckbox.checked = CONFIG.DISABLE_NOTIFICATIONS !== true;
+  const notificationLevel = normalizeNotificationLevel(CONFIG.NOTIFICATION_LEVEL);
+  CONFIG.NOTIFICATION_LEVEL = notificationLevel;
+  const notificationLevelText = document.getElementById('settingNotificationLevelText');
+  const notificationLevelMenu = document.getElementById('settingNotificationLevelMenu');
+  if (notificationLevelText) {
+    notificationLevelText.textContent = notificationLevelLabel(notificationLevel);
+  }
+  if (notificationLevelMenu) {
+    notificationLevelMenu.querySelectorAll('.scenario-dropdown-option').forEach((option) => {
+      option.classList.toggle('selected', option.dataset.value === notificationLevel);
+    });
   }
 
   const simplifiedWaterCheckbox = document.getElementById('settingSimplifiedWaterVisuals');
@@ -4005,6 +4552,7 @@ function applyWaveJumpAfterVictory(targetWaveGroup, targetWaveNumber) {
   }
   
   // Generate paths for this wave (use absolute wave number)
+  bindWaveRng(gameState, absoluteWaveNumber, { force: true });
   if (gameState.pathSystem) {
     gameState.pathSystem.generatePaths(absoluteWaveNumber);
   }
@@ -4206,9 +4754,117 @@ function listTempPowerUps() {
 }
 
 /**
+ * Custom dropdowns (settings + load-scenario): portal the menu to `document.body`
+ * with `position: fixed` so it overlays sibling cards and the settings footer
+ * instead of clipping inside overflow:auto / overflow:hidden ancestors.
+ */
+const customDropdownMenuPlaceholders = new WeakMap();
+
+function restoreCustomDropdownMenu(menu) {
+  if (!menu) return;
+  const placeholder = customDropdownMenuPlaceholders.get(menu);
+  if (placeholder?.parentNode) {
+    placeholder.parentNode.insertBefore(menu, placeholder);
+    placeholder.remove();
+    customDropdownMenuPlaceholders.delete(menu);
+  }
+  menu.style.position = '';
+  menu.style.top = '';
+  menu.style.left = '';
+  menu.style.width = '';
+  menu.style.right = '';
+  menu.style.maxHeight = '';
+  menu.style.zIndex = '';
+}
+
+function closeAllCustomDropdowns() {
+  document.querySelectorAll('.scenario-dropdown-menu.active').forEach((menu) => {
+    restoreCustomDropdownMenu(menu);
+    menu.classList.remove('active');
+  });
+  document.querySelectorAll('.scenario-dropdown-selected.active').forEach((el) => {
+    el.classList.remove('active');
+  });
+  document.querySelectorAll('.scenario-dropdown-container.is-open').forEach((el) => {
+    el.classList.remove('is-open');
+  });
+}
+
+function positionCustomDropdownMenu(selectedEl, menuEl) {
+  if (!selectedEl || !menuEl) return;
+  const rect = selectedEl.getBoundingClientRect();
+  const gap = 4;
+  const viewportH = window.innerHeight;
+  menuEl.style.position = 'fixed';
+  menuEl.style.left = `${rect.left}px`;
+  menuEl.style.width = `${rect.width}px`;
+  menuEl.style.right = 'auto';
+  menuEl.style.zIndex = '4000';
+  menuEl.style.maxHeight = '';
+  menuEl.style.top = `${rect.bottom + gap}px`;
+
+  const menuRect = menuEl.getBoundingClientRect();
+  if (menuRect.bottom > viewportH - 8) {
+    const spaceBelow = viewportH - rect.bottom - 8;
+    const spaceAbove = rect.top - 8;
+    if (spaceAbove > spaceBelow && spaceAbove >= menuRect.height) {
+      menuEl.style.top = `${rect.top - menuRect.height - gap}px`;
+    } else {
+      menuEl.style.maxHeight = `${Math.max(80, spaceBelow)}px`;
+    }
+  }
+}
+
+function openCustomDropdown(selectedEl, menuEl) {
+  if (!selectedEl || !menuEl) return;
+  closeAllCustomDropdowns();
+  selectedEl.classList.add('active');
+  menuEl.classList.add('active');
+  selectedEl.closest('.scenario-dropdown-container')?.classList.add('is-open');
+
+  if (!customDropdownMenuPlaceholders.has(menuEl) && menuEl.parentNode) {
+    const placeholder = document.createComment('custom-dropdown-menu');
+    menuEl.parentNode.insertBefore(placeholder, menuEl);
+    customDropdownMenuPlaceholders.set(menuEl, placeholder);
+    document.body.appendChild(menuEl);
+  }
+  positionCustomDropdownMenu(selectedEl, menuEl);
+}
+
+function toggleCustomDropdown(selectedEl, menuEl) {
+  if (!selectedEl || !menuEl) return;
+  if (menuEl.classList.contains('active')) {
+    closeAllCustomDropdowns();
+  } else {
+    openCustomDropdown(selectedEl, menuEl);
+  }
+}
+
+/**
  * Setup settings controls event listeners
  */
 function setupSettingsControls() {
+  const displayNameInput = document.getElementById('settingDisplayName');
+  if (displayNameInput) {
+    const commitDisplayName = () => {
+      const next = displayNameInput.value.trim();
+      if (!next) {
+        const kept = sanitizeDisplayName(gameState.meta?.displayName || '', '');
+        displayNameInput.value = kept;
+        return;
+      }
+      persistDisplayName(next);
+    };
+    displayNameInput.addEventListener('change', commitDisplayName);
+    displayNameInput.addEventListener('blur', commitDisplayName);
+    displayNameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        displayNameInput.blur();
+      }
+    });
+  }
+
   // Game Difficulty - Custom dropdown
   const gameDifficultyDropdown = document.getElementById('settingGameDifficultyDropdown');
   const gameDifficultySelected = document.getElementById('settingGameDifficultySelected');
@@ -4218,19 +4874,7 @@ function setupSettingsControls() {
   if (gameDifficultySelected && gameDifficultyMenu) {
     gameDifficultySelected.addEventListener('click', (e) => {
       e.stopPropagation();
-      const isActive = gameDifficultySelected.classList.contains('active');
-      
-      // Close all other dropdowns
-      document.querySelectorAll('.scenario-dropdown-selected').forEach(selected => {
-        if (selected !== gameDifficultySelected) {
-          selected.classList.remove('active');
-          selected.parentElement.querySelector('.scenario-dropdown-menu')?.classList.remove('active');
-        }
-      });
-      
-      // Toggle this dropdown
-      gameDifficultySelected.classList.toggle('active');
-      gameDifficultyMenu.classList.toggle('active');
+      toggleCustomDropdown(gameDifficultySelected, gameDifficultyMenu);
     });
     
     gameDifficultyMenu.querySelectorAll('.scenario-dropdown-option').forEach(option => {
@@ -4255,10 +4899,7 @@ function setupSettingsControls() {
           opt.classList.remove('selected');
         });
         option.classList.add('selected');
-        
-        // Close dropdown
-        gameDifficultySelected.classList.remove('active');
-        gameDifficultyMenu.classList.remove('active');
+        closeAllCustomDropdowns();
         
         saveUserSettings();
       });
@@ -4273,16 +4914,7 @@ function setupSettingsControls() {
   if (towerSelectModeSelected && towerSelectModeMenu) {
     towerSelectModeSelected.addEventListener('click', (e) => {
       e.stopPropagation();
-
-      document.querySelectorAll('.scenario-dropdown-selected').forEach(selected => {
-        if (selected !== towerSelectModeSelected) {
-          selected.classList.remove('active');
-          selected.parentElement.querySelector('.scenario-dropdown-menu')?.classList.remove('active');
-        }
-      });
-
-      towerSelectModeSelected.classList.toggle('active');
-      towerSelectModeMenu.classList.toggle('active');
+      toggleCustomDropdown(towerSelectModeSelected, towerSelectModeMenu);
     });
 
     towerSelectModeMenu.querySelectorAll('.scenario-dropdown-option').forEach(option => {
@@ -4298,9 +4930,7 @@ function setupSettingsControls() {
           opt.classList.remove('selected');
         });
         option.classList.add('selected');
-
-        towerSelectModeSelected.classList.remove('active');
-        towerSelectModeMenu.classList.remove('active');
+        closeAllCustomDropdowns();
 
         // Switching to click: drop hover-based selection so arrows don't linger until click.
         if (value === 'click') {
@@ -4316,12 +4946,22 @@ function setupSettingsControls() {
   
   // Close dropdowns when clicking outside
   document.addEventListener('click', (e) => {
-    if (!e.target.closest('.scenario-dropdown')) {
-      document.querySelectorAll('.scenario-dropdown-selected').forEach(selected => {
-        selected.classList.remove('active');
-        selected.parentElement.querySelector('.scenario-dropdown-menu')?.classList.remove('active');
-      });
+    if (!e.target.closest('.scenario-dropdown') && !e.target.closest('.scenario-dropdown-menu')) {
+      closeAllCustomDropdowns();
     }
+  });
+
+  document.getElementById('settingsContent')?.addEventListener('scroll', () => {
+    closeAllCustomDropdowns();
+  }, { passive: true });
+  document.getElementById('settingsModalInner')?.addEventListener('scroll', () => {
+    closeAllCustomDropdowns();
+  }, { passive: true });
+
+  window.addEventListener('resize', () => {
+    const openMenu = document.querySelector('.scenario-dropdown-menu.active');
+    const openSelected = document.querySelector('.scenario-dropdown-selected.active');
+    if (openMenu && openSelected) positionCustomDropdownMenu(openSelected, openMenu);
   });
   
   // Click to Scroll
@@ -4469,13 +5109,27 @@ function setupSettingsControls() {
     });
   }
 
-  // Map zoom: 0=75%, 1=100%, 2=125%
-  const mapZoomSlider = document.getElementById('settingMapZoom');
-  if (mapZoomSlider) {
-    mapZoomSlider.addEventListener('input', (e) => {
-      applyMapZoomSetting({ levelIndex: parseInt(e.target.value, 10) || 0 });
+  // Map zoom: on-minimap + / − (keyboard - / = / 0 still work)
+  const stopZoomEvent = (e) => e.stopPropagation();
+  const wireMinimapZoomBtn = (id, direction) => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (btn.classList.contains('is-disabled') || btn.getAttribute('aria-disabled') === 'true') return;
+      applyMapZoomSetting({ direction });
     });
-  }
+    btn.addEventListener('mousedown', stopZoomEvent);
+    btn.addEventListener('mouseup', stopZoomEvent);
+  };
+  wireMinimapZoomBtn('minimapZoomInBtn', 1);
+  wireMinimapZoomBtn('minimapZoomOutBtn', -1);
+  const zoomControls = document.getElementById('minimapZoomControls');
+  zoomControls?.addEventListener('click', stopZoomEvent);
+  zoomControls?.addEventListener('mouseenter', () => {
+    gameState?.inputHandler?.tooltipSystem?.hide();
+  });
 
   const showFpsCheckbox = document.getElementById('settingShowFpsCounter');
   if (showFpsCheckbox) {
@@ -4486,23 +5140,55 @@ function setupSettingsControls() {
     });
   }
   
-  const disableTooltipsCheckbox = document.getElementById('settingDisableGameTooltips');
-  if (disableTooltipsCheckbox) {
-    disableTooltipsCheckbox.addEventListener('change', (e) => {
-      CONFIG.DISABLE_GAME_TOOLTIPS = !e.target.checked;
-      gameState?.inputHandler?.tooltipSystem?.hide();
-      saveUserSettings();
+  const tooltipLevelSelected = document.getElementById('settingTooltipLevelSelected');
+  const tooltipLevelText = document.getElementById('settingTooltipLevelText');
+  const tooltipLevelMenu = document.getElementById('settingTooltipLevelMenu');
+  if (tooltipLevelSelected && tooltipLevelMenu) {
+    tooltipLevelSelected.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleCustomDropdown(tooltipLevelSelected, tooltipLevelMenu);
+    });
+    tooltipLevelMenu.querySelectorAll('.scenario-dropdown-option').forEach((option) => {
+      option.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const value = normalizeTooltipLevel(option.dataset.value);
+        CONFIG.TOOLTIP_LEVEL = value;
+        if (tooltipLevelText) tooltipLevelText.textContent = tooltipLevelLabel(value);
+        tooltipLevelMenu.querySelectorAll('.scenario-dropdown-option').forEach((opt) => {
+          opt.classList.toggle('selected', opt === option);
+        });
+        closeAllCustomDropdowns();
+        if (value === 'none' || value === 'hud') {
+          gameState?.inputHandler?.tooltipSystem?.hide();
+        }
+        saveUserSettings();
+      });
     });
   }
 
-  const disableNotificationsCheckbox = document.getElementById('settingDisableNotifications');
-  if (disableNotificationsCheckbox) {
-    disableNotificationsCheckbox.addEventListener('change', (e) => {
-      CONFIG.DISABLE_NOTIFICATIONS = !e.target.checked;
-      if (CONFIG.DISABLE_NOTIFICATIONS) {
-        gameState?.notificationSystem?.clearToasts?.();
-      }
-      saveUserSettings();
+  const notificationLevelSelected = document.getElementById('settingNotificationLevelSelected');
+  const notificationLevelText = document.getElementById('settingNotificationLevelText');
+  const notificationLevelMenu = document.getElementById('settingNotificationLevelMenu');
+  if (notificationLevelSelected && notificationLevelMenu) {
+    notificationLevelSelected.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleCustomDropdown(notificationLevelSelected, notificationLevelMenu);
+    });
+    notificationLevelMenu.querySelectorAll('.scenario-dropdown-option').forEach((option) => {
+      option.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const value = normalizeNotificationLevel(option.dataset.value);
+        CONFIG.NOTIFICATION_LEVEL = value;
+        if (notificationLevelText) notificationLevelText.textContent = notificationLevelLabel(value);
+        notificationLevelMenu.querySelectorAll('.scenario-dropdown-option').forEach((opt) => {
+          opt.classList.toggle('selected', opt === option);
+        });
+        closeAllCustomDropdowns();
+        if (value === 'none') {
+          gameState?.notificationSystem?.clearToasts?.();
+        }
+        saveUserSettings();
+      });
     });
   }
 
@@ -4568,6 +5254,7 @@ function setupSettingsControls() {
   if (debugModeCheckbox) {
     debugModeCheckbox.addEventListener('change', (e) => {
       CONFIG.DEBUG_MODE = e.target.checked;
+      if (CONFIG.DEBUG_MODE) gameState.runStats?.markDebugModeUsed?.();
       saveUserSettings();
       updateDebugPanelVisibility();
       updateSettingsUI();
@@ -4632,12 +5319,12 @@ function setupSettingsControls() {
           gameState.gridSystem.getCanonicalTownMaxHealth(gameState.townLevel)
       );
       const currentHealth = Math.max(0, townCenter.townHealth ?? 0);
-      const newMax = maxHealth + 100;
-      const newCurrent = currentHealth + 100;
+      const newMax = maxHealth + 1000;
+      const newCurrent = currentHealth + 1000;
       gameState.gridSystem.setTownHealth(newCurrent, newMax);
       if (window.updateUI) window.updateUI();
       gameState.notificationSystem?.showToast?.(
-        `Ancient Grove +100 HP (${Math.round(newCurrent)} / ${Math.round(newMax)})`,
+        `Ancient Grove +1000 HP (${Math.round(newCurrent)} / ${Math.round(newMax)})`,
         2000,
         'positive'
       );
@@ -4649,10 +5336,10 @@ function setupSettingsControls() {
     debugCurrencyBtn.addEventListener('click', () => {
       if (!CONFIG.DEBUG_MODE || !gameState?.player) return;
       const prev = Math.max(0, Math.floor(Number(gameState.player.currency)) || 0);
-      const next = prev + 1000;
+      const next = prev + 10000;
       gameState.player.currency = next;
       if (window.updateUI) window.updateUI();
-      gameState.notificationSystem?.showToast?.(`+$1000 (${next.toLocaleString()})`, 2000, 'positive');
+      gameState.notificationSystem?.showToast?.(`+$10,000 (${next.toLocaleString()})`, 2000, 'positive');
     });
   }
   
@@ -4667,7 +5354,9 @@ function setupSettingsControls() {
   const debugPlacePowerupsBtn = document.getElementById('debugPlacePowerupsBtn');
   const debugPlaceArtifactsBtn = document.getElementById('debugPlaceArtifactsBtn');
   const debugResetMetaProgressionBtn = document.getElementById('debugResetMetaProgressionBtn');
+  const debugMatchMetaProgressionBtn = document.getElementById('debugMatchMetaProgressionBtn');
   const debugMaxMetaProgressionBtn = document.getElementById('debugMaxMetaProgressionBtn');
+  const debugResetScoresBtn = document.getElementById('debugResetScoresBtn');
   if (debugPlaceBoxesBtn) {
     debugPlaceBoxesBtn.addEventListener('click', () => {
       placeDebugMysteryBoxes();
@@ -4712,8 +5401,33 @@ function setupSettingsControls() {
       gameState.notificationSystem?.showToast?.('Meta progression reset.', 2500, 'warning');
     });
   }
+  if (debugMatchMetaProgressionBtn) {
+    debugMatchMetaProgressionBtn.addEventListener('click', () => {
+      const restored = restoreLoadedSaveMetaProgression(gameState);
+      if (!restored) {
+        gameState.notificationSystem?.showToast?.('No loaded save meta to match.', 2500, 'warning');
+        return;
+      }
+      gameState.player.tempPowerUps = (gameState.player.tempPowerUps || []).filter((temp) => isMetaItemUnlocked(gameState, temp.powerUpId));
+      Object.keys(gameState.player.powerUps || {}).forEach((powerUpId) => {
+        if (!isMetaItemUnlocked(gameState, powerUpId)) delete gameState.player.powerUps[powerUpId];
+      });
+      if (typeof gameState.persistMeta === 'function') {
+        gameState.persistMeta();
+      } else {
+        saveUserSettings();
+      }
+      if (window.updateShop) window.updateShop();
+      if (window.updateInventoryBadge) window.updateInventoryBadge();
+      if (window.updateBottomEdgePowerUps) window.updateBottomEdgePowerUps();
+      gameState.notificationSystem?.showToast?.('Meta progression matched to loaded save.', 2500, 'positive');
+    });
+  }
   if (debugMaxMetaProgressionBtn) {
     debugMaxMetaProgressionBtn.addEventListener('click', () => {
+      if (!gameState.meta?.loadedSaveProgressionSnapshot) {
+        snapshotLoadedSaveMetaProgression(gameState);
+      }
       unlockAllMetaProgression(gameState);
       if (typeof gameState.persistMeta === 'function') {
         gameState.persistMeta();
@@ -4723,6 +5437,31 @@ function setupSettingsControls() {
       if (window.updateShop) window.updateShop();
       if (window.updateInventoryBadge) window.updateInventoryBadge();
       gameState.notificationSystem?.showToast?.('All meta progression unlocked.', 2500, 'positive');
+    });
+  }
+
+  if (debugResetScoresBtn) {
+    debugResetScoresBtn.addEventListener('click', async () => {
+      if (!CONFIG.DEBUG_MODE) return;
+      const confirmed = await showConfirmModal({
+        title: 'Reset All Scores?',
+        message: 'This deletes every daily and all-time leaderboard score from local storage and the live database. This cannot be undone.',
+        confirmText: 'Yes, Reset',
+        cancelText: 'Cancel',
+        confirmButtonClass: 'cta-red',
+      });
+      if (!confirmed) return;
+      try {
+        await resetAllLeaderboards();
+        gameState.notificationSystem?.showToast?.('All leaderboard scores cleared.', 2500, 'warning');
+      } catch (err) {
+        console.error('Failed to reset leaderboards:', err);
+        gameState.notificationSystem?.showToast?.(
+          `Could not reset live scores. ${err?.message || ''}`,
+          4000,
+          'warning'
+        );
+      }
     });
   }
 
@@ -4762,6 +5501,17 @@ function setupSettingsControls() {
       gameState.waveSystem?.completeWave();
     });
   }
+
+  const debugEndWaveWithStars = (stars, perfect = false) => {
+    if (!CONFIG.DEBUG_MODE) return;
+    if (!gameState.wave?.isActive) return;
+    if (gameState.gridSystem?.isTownDestroyed?.()) return;
+    gameState.waveSystem?.completeWave({ forceStars: stars, forcePerfect: perfect });
+  };
+  document.getElementById('debugStar1Btn')?.addEventListener('click', () => debugEndWaveWithStars(1));
+  document.getElementById('debugStar2Btn')?.addEventListener('click', () => debugEndWaveWithStars(2));
+  document.getElementById('debugStar3Btn')?.addEventListener('click', () => debugEndWaveWithStars(3));
+  document.getElementById('debugStarPerfectBtn')?.addEventListener('click', () => debugEndWaveWithStars(3, true));
 
   if (debugPlayerLevelInput) {
     debugPlayerLevelInput.addEventListener('input', (e) => {
@@ -5059,7 +5809,8 @@ function notifyAutosaveResult(saved) {
       gameState.notificationSystem?.showToast?.(
         'Autosaved (freed browser storage by clearing old saves/history)',
         4500,
-        'warning'
+        'warning',
+        { critical: true }
       );
       delete gameState._lastSaveRecovered;
     }
@@ -5070,7 +5821,8 @@ function notifyAutosaveResult(saved) {
     gameState.notificationSystem?.showToast?.(
       'Autosave failed — browser storage is full. Delete old manual saves from the Load menu.',
       6500,
-      'negative'
+      'negative',
+      { critical: true }
     );
     delete gameState._lastSaveFailed;
   }
@@ -5120,22 +5872,13 @@ function closeSaveGameModal(_skipResume = false) {
 }
 
 /**
- * Update save game modal with current save slots
+ * HTML for one save-slot row (filled or empty).
+ * @param {number} i
+ * @param {object|null} saveInfo
  */
-async function updateSaveGameModal() {
-  const saveSlotsContainer = document.getElementById('saveSlotsContainer');
-  if (!saveSlotsContainer) return;
-  
-  saveSlotsContainer.innerHTML = '';
-  
-  // Show all 10 save slots
-  for (let i = 0; i < 10; i++) {
-    const saveInfo = await getSaveInfo(i);
-    const slotDiv = document.createElement('div');
-    slotDiv.className = 'save-slot';
-    
-    if (saveInfo) {
-      slotDiv.innerHTML = `
+function buildSaveSlotInnerHTML(i, saveInfo) {
+  if (saveInfo) {
+    return `
         <div class="save-slot-info">
           <div class="save-slot-name" id="saveSlotName${i}">${saveInfo.name}</div>
           <div class="save-slot-details">Wave ${saveInfo.waveGroup}-${saveInfo.waveInGroup || 1} | <span class="save-slot-level">Level ${saveInfo.level}</span> | <span class="save-slot-currency">$${saveInfo.currency}</span></div>
@@ -5152,8 +5895,8 @@ async function updateSaveGameModal() {
           </button>
         </div>
       `;
-    } else {
-      slotDiv.innerHTML = `
+  }
+  return `
         <div class="save-slot-info">
           <div class="save-slot-name">Empty Slot</div>
           <div class="save-slot-details">No save data</div>
@@ -5164,31 +5907,67 @@ async function updateSaveGameModal() {
           </button>
         </div>
       `;
-    }
-    
-    saveSlotsContainer.appendChild(slotDiv);
-  }
-  
-  // Add event listeners
-  saveSlotsContainer.querySelectorAll('.save-btn').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      const slot = parseInt(e.currentTarget.dataset.slot);
-      const existingSave = await getSaveInfo(slot);
+}
 
-      const showSaveSuccess = () => {
-        const notification = document.createElement('div');
-        notification.className = 'save-success-notification';
-        notification.textContent = 'Game saved!';
-        saveSlotsContainer.appendChild(notification);
-        setTimeout(() => notification.remove(), 2000);
-      };
+/**
+ * Update a single save-slot row in place (no full-list rebuild).
+ * Overwriting an existing save only patches name/details text so the list does not flash.
+ * @param {number} slot
+ */
+async function refreshSaveSlotInPlace(slot) {
+  const container = document.getElementById('saveSlotsContainer');
+  const slotDiv = container?.querySelector(`.save-slot[data-slot-index="${slot}"]`);
+  if (!slotDiv) return;
+
+  const saveInfo = await getSaveInfo(slot);
+  const wasFilled = !!slotDiv.querySelector('.edit-btn');
+  const isFilled = !!saveInfo;
+
+  if (wasFilled && isFilled) {
+    const nameEl = slotDiv.querySelector('.save-slot-name');
+    const detailsEl = slotDiv.querySelector('.save-slot-details');
+    if (nameEl) nameEl.textContent = saveInfo.name;
+    if (detailsEl) {
+      detailsEl.innerHTML = `Wave ${saveInfo.waveGroup}-${saveInfo.waveInGroup || 1} | <span class="save-slot-level">Level ${saveInfo.level}</span> | <span class="save-slot-currency">$${saveInfo.currency}</span>`;
+    }
+    return;
+  }
+
+  slotDiv.innerHTML = buildSaveSlotInnerHTML(slot, saveInfo);
+  bindDataTooltipsIn(slotDiv);
+}
+
+function showSaveGameSuccessNotification() {
+  const saveSlotsContainer = document.getElementById('saveSlotsContainer');
+  if (!saveSlotsContainer) return;
+  saveSlotsContainer.querySelectorAll('.save-success-notification').forEach((el) => el.remove());
+  const notification = document.createElement('div');
+  notification.className = 'save-success-notification';
+  notification.textContent = 'Game saved!';
+  saveSlotsContainer.appendChild(notification);
+  setTimeout(() => notification.remove(), 2000);
+}
+
+function wireSaveSlotsContainerActions(saveSlotsContainer) {
+  if (!saveSlotsContainer || saveSlotsContainer.dataset.actionsWired === '1') return;
+  saveSlotsContainer.dataset.actionsWired = '1';
+
+  saveSlotsContainer.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.save-btn, .edit-btn, .delete-btn');
+    if (!btn || !saveSlotsContainer.contains(btn)) return;
+
+    const slot = parseInt(btn.dataset.slot, 10);
+    if (!Number.isFinite(slot)) return;
+
+    if (btn.classList.contains('save-btn')) {
+      const existingSave = await getSaveInfo(slot);
 
       const persistSave = async (customName = null) => {
         const saved = await saveGame(gameState, slot, customName);
         if (saved) {
-          await updateSaveGameModal();
+          await refreshSaveSlotInPlace(slot);
           updateLoadGameButtonState();
-          showSaveSuccess();
+          showSaveGameSuccessNotification();
         }
       };
 
@@ -5211,25 +5990,21 @@ async function updateSaveGameModal() {
       });
       if (!newName || !newName.trim()) return;
       await persistSave(newName.trim());
-    });
-  });
-  
-  saveSlotsContainer.querySelectorAll('.edit-btn').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      const slot = parseInt(e.currentTarget.dataset.slot);
+      return;
+    }
+
+    if (btn.classList.contains('edit-btn')) {
       const currentName = (await getSaveInfo(slot))?.name || '';
       const newName = await showRenameModal(currentName, 'Rename Save');
       if (newName && newName.trim()) {
         renameSave(slot, newName.trim());
-        await updateSaveGameModal();
-        updateLoadGameButtonState(); // Update Load Game button in main menu
+        await refreshSaveSlotInPlace(slot);
+        updateLoadGameButtonState();
       }
-    });
-  });
+      return;
+    }
 
-  saveSlotsContainer.querySelectorAll('.delete-btn').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      const slot = parseInt(e.currentTarget.dataset.slot);
+    if (btn.classList.contains('delete-btn')) {
       const confirmed = await showConfirmModal({
         title: 'Delete Save?',
         message: 'This will permanently delete this save. Are you sure?',
@@ -5237,15 +6012,34 @@ async function updateSaveGameModal() {
         cancelText: 'Cancel',
         confirmButtonClass: 'cta-red',
       });
-
       if (confirmed) {
         deleteSave(slot);
-        await updateSaveGameModal();
+        await refreshSaveSlotInPlace(slot);
         updateLoadGameButtonState();
       }
-    });
+    }
   });
+}
 
+/**
+ * Update save game modal with current save slots
+ */
+async function updateSaveGameModal() {
+  const saveSlotsContainer = document.getElementById('saveSlotsContainer');
+  if (!saveSlotsContainer) return;
+
+  saveSlotsContainer.innerHTML = '';
+
+  for (let i = 0; i < 10; i++) {
+    const saveInfo = await getSaveInfo(i);
+    const slotDiv = document.createElement('div');
+    slotDiv.className = 'save-slot';
+    slotDiv.dataset.slotIndex = String(i);
+    slotDiv.innerHTML = buildSaveSlotInnerHTML(i, saveInfo);
+    saveSlotsContainer.appendChild(slotDiv);
+  }
+
+  wireSaveSlotsContainerActions(saveSlotsContainer);
   bindDataTooltipsIn(saveSlotsContainer);
 }
 
@@ -5491,6 +6285,7 @@ function openLoadScenarioModal() {
  * Close load scenario modal
  */
 function closeLoadScenarioModal() {
+  closeAllCustomDropdowns();
   const loadScenarioModal = document.getElementById('loadScenarioModal');
   if (loadScenarioModal) closeModalOverlay(loadScenarioModal);
 }
@@ -5498,29 +6293,95 @@ function closeLoadScenarioModal() {
 /**
  * Open score leaderboard modal
  */
-function openLeaderboardModal() {
+let leaderboardActiveBoard = 'daily';
+
+function yesterdayUtcDateKey() {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - 1);
+  return getUtcDateKey(d);
+}
+
+function renderLeaderboardEntries(listEl, entries, emptyMessage) {
+  const myId = getOrCreatePlayerId();
+  if (!entries.length) {
+    listEl.innerHTML = `<p style="color: #aaa; padding: 20px;">${emptyMessage}</p>`;
+    return;
+  }
+  listEl.innerHTML = entries.map((entry, i) => {
+    const rank = entry.rank || i + 1;
+    const scoreStr = Number(entry.score || 0).toLocaleString();
+    const waveLabel = entry.wave ? `W${entry.wave}` : '';
+    const you = entry.playerId && entry.playerId === myId ? ' is-you' : '';
+    const name = String(entry.name || 'Player')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/"/g, '&quot;');
+    return `<div class="leaderboard-entry${you}"><span class="leaderboard-rank">${rank}.</span><span class="leaderboard-name">${name}</span><span class="leaderboard-score">${scoreStr}</span><span class="leaderboard-wave">${waveLabel}</span></div>`;
+  }).join('');
+}
+
+async function openLeaderboardModal(options = {}) {
   const modal = document.getElementById('leaderboardModal');
   const listEl = document.getElementById('leaderboardList');
+  const subtitleEl = document.getElementById('leaderboardSubtitle');
   if (!modal || !listEl) return;
 
-  const entries = getLeaderboard();
-  if (entries.length === 0) {
-    listEl.innerHTML = '<p style="color: #aaa; padding: 20px;">No scores yet. Complete a run to see your score on the leaderboard!</p>';
+  const requested = options.board || leaderboardActiveBoard || 'daily';
+  leaderboardActiveBoard = requested === 'alltime' || requested === 'yesterday' ? requested : 'daily';
+  const isAllTime = leaderboardActiveBoard === 'alltime';
+  const dateKey = leaderboardActiveBoard === 'yesterday' ? yesterdayUtcDateKey() : getUtcDateKey();
+  const fetchBoard = isAllTime ? 'alltime' : 'daily';
+
+  document.querySelectorAll('.leaderboard-tab').forEach((btn) => {
+    const isActive = btn.dataset.board === leaderboardActiveBoard;
+    btn.classList.toggle('is-active', isActive);
+    btn.classList.toggle('cta-yellow', isActive);
+    btn.classList.toggle('cta-red', !isActive);
+    btn.classList.remove('cta-blue');
+    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  });
+
+  if (isAllTime) {
+    if (subtitleEl) subtitleEl.textContent = 'All-time global high scores';
   } else {
-    listEl.innerHTML = entries.map((entry, i) => {
-      const rank = i + 1;
-      const scoreStr = entry.score.toLocaleString();
-      const dateStr = formatLeaderboardDate(entry.timestamp);
-      return `<div class="leaderboard-entry"><span class="leaderboard-rank">${rank}.</span><span class="leaderboard-score">${scoreStr}</span><span class="leaderboard-date">${dateStr}</span></div>`;
-    }).join('');
+    const label = leaderboardActiveBoard === 'yesterday' ? 'Yesterday' : 'Today';
+    if (subtitleEl) subtitleEl.textContent = `${label} (UTC ${dateKey})`;
   }
 
-  const resetBtn = document.getElementById('leaderboardResetBtn');
-  if (resetBtn) {
-    resetBtn.disabled = entries.length === 0;
-  }
+  listEl.innerHTML = '<p style="color: #aaa; padding: 20px;">Loading…</p>';
+  const alreadyOpen = modal.classList.contains('active');
+  openModalOverlay(modal, { skipEnterAnimation: alreadyOpen });
 
-  openModalOverlay(modal);
+  try {
+    const payload = await fetchLeaderboard(fetchBoard, isAllTime ? undefined : dateKey);
+    const empty = isAllTime
+      ? 'No all-time scores yet. Finish a campaign or daily run to post one!'
+      : 'No scores for this day yet. Play Daily Challenge to post one!';
+    renderLeaderboardEntries(listEl, payload.entries || [], empty);
+    if (!isAllTime && subtitleEl) {
+      const shownDate = payload.date || dateKey;
+      const seed = dailyRunSeed(shownDate, CONFIG.CONTENT_VERSION);
+      const label = leaderboardActiveBoard === 'yesterday' ? 'Yesterday' : 'Today';
+      subtitleEl.textContent = `${label} (UTC ${shownDate}) · seed ${seed}`;
+    }
+  } catch (err) {
+    listEl.innerHTML = `<p style="color: #f88; padding: 20px;">Could not reach the leaderboard server. ${err?.message || ''}</p>
+      <p style="color: #aaa; padding: 0 20px 20px;">Make sure <code>api/leaderboard.php</code> is on the live host and <code>api/data</code> is writable. Local python servers talk to the live API automatically.</p>`;
+  }
+}
+
+async function submitRunToLeaderboards() {
+  const skipReason = getLeaderboardSubmitSkipReason(gameState);
+  if (skipReason) {
+    console.warn('Leaderboard submit skipped:', skipReason);
+    return { ok: false, skipped: skipReason };
+  }
+  const name = sanitizeDisplayName(gameState.meta?.displayName || '', 'Player');
+  const result = await submitRunScore(gameState, name);
+  if (!result?.ok) {
+    console.warn('Leaderboard submit failed:', result?.error || result?.skipped || result);
+  }
+  return result;
 }
 
 /**
@@ -5535,6 +6396,7 @@ function closeLeaderboardModal() {
  * Start a new game (reset to default starting state)
  */
 function startNewGame() {
+  const opts = arguments[0] || {};
   hideGameOverReturnButton();
 
   if (window.AudioManager) {
@@ -5566,6 +6428,17 @@ function startNewGame() {
   gameState.tickCount = 0;
   gameState.scenarioUnlockedItems = null;
   startMetaProgressionRunSnapshot(gameState);
+
+  const urlSeed = typeof location !== 'undefined'
+    ? parseSeedParam(new URLSearchParams(location.search).get('seed'))
+    : null;
+  initRunRng(gameState, {
+    mode: opts.mode === 'daily' ? 'daily' : 'campaign',
+    runSeed: urlSeed,
+    contentVersion: CONFIG.CONTENT_VERSION,
+    waveNumber: 1,
+  });
+  document.body.classList.toggle('daily-challenge-mode', gameState.rng?.mode === 'daily');
   
   // Re-enable pause button
   let pauseBtn = document.getElementById('pauseBtn');
@@ -5596,11 +6469,29 @@ function startNewGame() {
   gameState.player.currency = CONFIG.DEBUG_MODE ? 99999 : CONFIG.STARTING_CURRENCY;
   gameState.player.upgradePlans = CONFIG.STARTING_UPGRADE_PLANS;
   gameState.player.specialtyPlans = CONFIG.STARTING_SPECIALTY_PLANS;
+  gameState.player.superchargers = CONFIG.STARTING_SUPERCHARGERS;
+  gameState.player.towerSupercharges = {};
   gameState.player.specialties = { time: 0, power: 0, money: 0, health: 0 };
   gameState.player.specialtyTimeMilestonePowerUps = null;
+  gameState.player.specialtyPowerMilestonePowerUps = null;
   ensureSpecialtyMilestoneRewards(gameState);
   gameState.player.movementTokens = 0;
   gameState.player.movementTokensPurchased = 0;
+  gameState.player.upgradePlansPurchased = 0;
+  gameState.player.townHealthUpgradesPurchased = 0;
+  gameState.player.treeJuice = 0;
+  gameState.player.towerRepairsPurchased = 0;
+  gameState.player.shieldPurchasesByLevel = { 1: 0, 2: 0, 3: 0, 4: 0 };
+  gameState.player.suppressionBombPurchasesByLevel = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+  gameState.player.runShopPricePasses = [];
+  gameState.player.upgradePlanPriceLocked = null;
+  gameState.player.townUpgradePriceLocked = null;
+  gameState.player.towerRepairPriceLocked = null;
+  gameState.player.shieldPriceLockedByLevel = null;
+  gameState.player.suppressionBombPriceLockedByLevel = null;
+  gameState.player.shieldBundlePriceLocked = null;
+  gameState.player.suppressionBundlePriceLocked = null;
+  gameState.player.powerUpPriceLockedById = null;
   gameState.player.towerSellbacks = 0;
   gameState.player.towerRepairs = 0;
   gameState.player.partsVouchers = 0;
@@ -5623,14 +6514,14 @@ function startNewGame() {
   gameState.player.newlyUnlockedItems = new Set();
   gameState.player.announcedUnlocks = new Set();
   gameState.isMovementTokenMode = false;
-  gameState.movementTokenTargetTowerId = null;
-  gameState.movementTokenRepositioned = false;
-  gameState.movementTokenCommitted = false;
+  gameState.movementTokenOrigins = null;
+  gameState.movementTokenStoredTowerIds = [];
+  gameState.movementTokenIdRemap = null;
+  gameState.movementTokenAvailableAtStart = 0;
   if (typeof document !== 'undefined') {
     document.body.classList.remove('movement-token-mode');
   }
   window.hideMovementInstructions?.();
-  window.hideMovementDoneInstructions?.();
   
   // Reset town
   gameState.townLevel = 1;
@@ -5651,6 +6542,7 @@ function startNewGame() {
   gameState.wave.scenarioNumber = null;
   gameState.wave.scenarioName = null;
   gameState.wave.pendingGroupRewards = null;
+  gameState.wave.lastStarResult = null;
   gameState.wave.townBonusAward = 0;
   gameState.wave.townNoSpreadBonusAward = 0;
   gameState.wave.currentGroup = 1;
@@ -5789,7 +6681,6 @@ function startNewGame() {
   const tutorialButtonsContainer = document.getElementById('tutorialButtonsContainer');
   if (tutorialButtonsContainer) tutorialButtonsContainer.style.display = 'none';
   
-  const opts = arguments[0] || {};
   if (opts.skipStoryAndEnterTutorial) {
     document.body.classList.remove('game-not-started');
     void enterTutorialMode();
@@ -5853,7 +6744,60 @@ function checkTutorialPlacementAdvance(q, r) {
     setTutorialProgress(9);
     saveTutorialState(gameState);
     requestAnimationFrame(() => updateTutorialArrow());
+    return;
   }
+  // Step 35: rain tower placed on grove - advance to step 36 (resume)
+  if (getTutorialProgress() === 35 && q === TUTORIAL_GROVE_HEX.q && r === TUTORIAL_GROVE_HEX.r) {
+    gameState.tutorialJustAdvancedFromCanvas = true;
+    setTutorialProgress(36);
+    saveTutorialState(gameState);
+    requestAnimationFrame(() => updateTutorialArrow());
+  }
+}
+
+/**
+ * After water tank demo: clear other fires, ignite path east of grove (lightning),
+ * then script "spread" into the grove 1s later. Advances to step 30 (pause).
+ */
+function beginTutorialGroveFireSequence() {
+  gameState.tutorialStep28ResumeClicked = false;
+  gameState.tutorialStep36ResumeClicked = false;
+  const waterTankBubble = document.getElementById('tutorialWaterTankBubble');
+  if (waterTankBubble) waterTankBubble.style.display = 'none';
+
+  // Only the scripted path + grove fires should remain for this beat
+  if (gameState.fireSystem && gameState.gridSystem) {
+    gameState.fireSystem.clearAllFires();
+    gameState.fireSystem.igniteHex(
+      TUTORIAL_GROVE_PATH_FIRE_HEX.q,
+      TUTORIAL_GROVE_PATH_FIRE_HEX.r,
+      CONFIG.FIRE_TYPE_CINDER,
+      true // lightning spawn FX
+    );
+    setTimeout(() => {
+      // Ignite even if the player already paused — they still need the grove fire for the rain beat
+      if (!gameState.tutorialMode || getTutorialProgress() !== 29) return;
+      gameState.fireSystem?.igniteHex(
+        TUTORIAL_GROVE_FIRE_HEX.q,
+        TUTORIAL_GROVE_FIRE_HEX.r,
+        CONFIG.FIRE_TYPE_CINDER,
+        false // spread (no lightning)
+      );
+    }, 1000);
+  }
+
+  const mapScroll = gameState.inputHandler?.getMapScrollSystem?.();
+  if (mapScroll) {
+    mapScroll.scrollToShowHex(TUTORIAL_GROVE_HEX.q, TUTORIAL_GROVE_HEX.r, {
+      horizontal: 'center',
+      vertical: 'center',
+      animated: true,
+    });
+  }
+
+  setTutorialProgress(29);
+  saveTutorialState(gameState);
+  requestAnimationFrame(() => updateTutorialArrow());
 }
 
 /** Called from inputHandler when a tower is moved - step 10: moved to (7,0) advances to step 11 (rotate) */
@@ -6016,11 +6960,29 @@ function resetGameStateForTutorial() {
   gameState.player.currency = TUTORIAL_CONFIG.currency ?? CONFIG.STARTING_CURRENCY;
   gameState.player.upgradePlans = CONFIG.STARTING_UPGRADE_PLANS;
   gameState.player.specialtyPlans = CONFIG.STARTING_SPECIALTY_PLANS;
+  gameState.player.superchargers = CONFIG.STARTING_SUPERCHARGERS;
+  gameState.player.towerSupercharges = {};
   gameState.player.specialties = { time: 0, power: 0, money: 0, health: 0 };
   gameState.player.specialtyTimeMilestonePowerUps = null;
+  gameState.player.specialtyPowerMilestonePowerUps = null;
   ensureSpecialtyMilestoneRewards(gameState);
   gameState.player.movementTokens = 0;
   gameState.player.movementTokensPurchased = 0;
+  gameState.player.upgradePlansPurchased = 0;
+  gameState.player.townHealthUpgradesPurchased = 0;
+  gameState.player.treeJuice = 0;
+  gameState.player.towerRepairsPurchased = 0;
+  gameState.player.shieldPurchasesByLevel = { 1: 0, 2: 0, 3: 0, 4: 0 };
+  gameState.player.suppressionBombPurchasesByLevel = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+  gameState.player.runShopPricePasses = [];
+  gameState.player.upgradePlanPriceLocked = null;
+  gameState.player.townUpgradePriceLocked = null;
+  gameState.player.towerRepairPriceLocked = null;
+  gameState.player.shieldPriceLockedByLevel = null;
+  gameState.player.suppressionBombPriceLockedByLevel = null;
+  gameState.player.shieldBundlePriceLocked = null;
+  gameState.player.suppressionBundlePriceLocked = null;
+  gameState.player.powerUpPriceLockedById = null;
   gameState.player.towerSellbacks = 0;
   gameState.player.towerRepairs = 0;
   gameState.player.partsVouchers = 0;
@@ -6043,14 +7005,14 @@ function resetGameStateForTutorial() {
   gameState.player.newlyUnlockedItems = new Set();
   gameState.player.announcedUnlocks = new Set();
   gameState.isMovementTokenMode = false;
-  gameState.movementTokenTargetTowerId = null;
-  gameState.movementTokenRepositioned = false;
-  gameState.movementTokenCommitted = false;
+  gameState.movementTokenOrigins = null;
+  gameState.movementTokenStoredTowerIds = [];
+  gameState.movementTokenIdRemap = null;
+  gameState.movementTokenAvailableAtStart = 0;
   if (typeof document !== 'undefined') {
     document.body.classList.remove('movement-token-mode');
   }
   window.hideMovementInstructions?.();
-  window.hideMovementDoneInstructions?.();
 
   gameState.townLevel = 1;
   if (gameState.gridSystem) {
@@ -6066,8 +7028,7 @@ function resetGameStateForTutorial() {
   gameState.wave.isScenario = false;
   gameState.wave.scenarioNumber = null;
   gameState.wave.scenarioName = null;
-
-  if (gameState.waveSystem) {
+  gameState.wave.lastStarResult = null;  if (gameState.waveSystem) {
     gameState.waveSystem.currentWaveGroup = 1;
     gameState.waveSystem.waveInGroup = 1;
     gameState.waveSystem.introducedFireTypes = new Set();
@@ -6087,6 +7048,7 @@ function resetGameStateForTutorial() {
   const waterTankBubble = document.getElementById('tutorialWaterTankBubble');
   if (waterTankBubble) waterTankBubble.style.display = 'none';
   gameState.tutorialStep28ResumeClicked = false;
+  gameState.tutorialStep36ResumeClicked = false;
 
   if (gameState.gridSystem) gameState.gridSystem.reset();
   if (gameState.fireSystem) gameState.fireSystem.clearAllFires();
@@ -6176,10 +7138,21 @@ async function enterTutorialMode(opts = {}) {
     }
     // Ensure tutorial lightning hex is burning when resuming past step 2 (step 3+)
     const progress = parseInt(sessionStorage.getItem(TUTORIAL_STORAGE_KEYS.PROGRESS) || '0', 10);
-    if (progress >= 2 && gameState.fireSystem && gameState.gridSystem) {
+    if (progress >= 2 && progress < 29 && gameState.fireSystem && gameState.gridSystem) {
       const hex = gameState.gridSystem.getHex(TUTORIAL_LIGHTNING_HEX.q, TUTORIAL_LIGHTNING_HEX.r);
       if (hex && !hex.isBurning && !hex.hasFireSpawner) {
         gameState.fireSystem.igniteHex(TUTORIAL_LIGHTNING_HEX.q, TUTORIAL_LIGHTNING_HEX.r, CONFIG.FIRE_TYPE_CINDER, false);
+      }
+    }
+    // Grove-fire sequence (step 30+): ensure path + grove fires exist when resuming mid-tutorial
+    if (progress >= 29 && progress <= 36 && gameState.fireSystem && gameState.gridSystem) {
+      const pathHex = gameState.gridSystem.getHex(TUTORIAL_GROVE_PATH_FIRE_HEX.q, TUTORIAL_GROVE_PATH_FIRE_HEX.r);
+      if (pathHex && !pathHex.isBurning) {
+        gameState.fireSystem.igniteHex(TUTORIAL_GROVE_PATH_FIRE_HEX.q, TUTORIAL_GROVE_PATH_FIRE_HEX.r, CONFIG.FIRE_TYPE_CINDER, false);
+      }
+      const groveHex = gameState.gridSystem.getHex(TUTORIAL_GROVE_FIRE_HEX.q, TUTORIAL_GROVE_FIRE_HEX.r);
+      if (groveHex && !groveHex.isBurning) {
+        gameState.fireSystem.igniteHex(TUTORIAL_GROVE_FIRE_HEX.q, TUTORIAL_GROVE_FIRE_HEX.r, CONFIG.FIRE_TYPE_CINDER, false);
       }
     }
   } else {
@@ -6264,10 +7237,10 @@ function updateTutorialAllowedElements(stepIndex, step) {
   addAllowed(document.getElementById('exitTutorialBtn'));
   if (step?.centered) addAllowed(document.getElementById('tutorialContinueBtn'));
   if (step?.buttonText) addAllowed(document.getElementById('tutorialArrowContinueBtn'));
-  // Steps 13, 15, 17: allow pause button. Step 26: only allow when paused (block after Resume clicked, while waiting for water tank)
-  if (stepIndex === 12 || stepIndex === 14 || stepIndex === 16) {
+  // Steps 13, 15, 17, 30: allow pause. Step 29/36: only when paused (block after Resume while waiting)
+  if (stepIndex === 12 || stepIndex === 14 || stepIndex === 16 || stepIndex === 29) {
     addAllowed(document.getElementById('pauseBtn'));
-  } else if (stepIndex === 28 && window.gameLoop?.isPaused) {
+  } else if ((stepIndex === 28 || stepIndex === 36) && window.gameLoop?.isPaused) {
     addAllowed(document.getElementById('pauseBtn')); // Allow only when paused (before Resume click)
   }
   if (step?.target) {
@@ -6286,13 +7259,20 @@ function updateTutorialAllowedElements(stepIndex, step) {
       if (shieldOverlayEl) shieldOverlayEl.classList.add('tutorial-allowed');
       const shieldBtn = document.getElementById('shield-1-shop');
       if (shieldBtn) shieldBtn.classList.add('tutorial-allowed');
+    } else if (stepIndex === 31) {
+      // Step 32: only allow Towers sub-tab
+      const towersBtn = document.querySelector('#shopTab .shop-sub-tab-button[data-shop-sub-tab="towers"]');
+      if (towersBtn) towersBtn.classList.add('tutorial-allowed');
+    } else if (stepIndex === 32) {
+      const rainBtn = document.getElementById('rain-tower-shop');
+      if (rainBtn) rainBtn.classList.add('tutorial-allowed');
     } else {
       const target = document.querySelector(step.target);
       if (target) target.classList.add('tutorial-allowed');
     }
   }
-  // Step 6, 7, 9, 10, 11: allow canvas for tower placement/move/rotation; Step 16: rotation; 26–27 shield/water tank;
-  // Step 25 + shield selected: canvas must receive events for shield apply (see tutorialCanvasInteractionAllowed)
+  // Step 6, 7, 9, 10, 11: allow canvas for tower placement/move/rotation; Step 16: rotate; 26-27 shield/water tank;
+  // Step 35: rain placement; Step 25 + shield selected: canvas for shield apply
   const allowCanvasShieldPrep = stepIndex === 25 && gameState.inputHandler?.selectedShieldForPlacement;
   if (
     stepIndex === 5 ||
@@ -6303,6 +7283,7 @@ function updateTutorialAllowedElements(stepIndex, step) {
     stepIndex === 15 ||
     stepIndex === 26 ||
     stepIndex === 27 ||
+    stepIndex === 35 ||
     allowCanvasShieldPrep
   ) {
     const canvas = document.getElementById('gameCanvas');
@@ -6402,10 +7383,17 @@ function updateTutorialArrow() {
   if (waterTankBubble && (stepIndex < 28 || stepIndex >= 29)) {
     waterTankBubble.style.display = 'none';
   }
-  // Step 28 part 2: after Resume clicked, hide arrow and show water tank bubble (don't re-show arrow)
+  // Step 29 part 2: after Resume clicked, hide arrow and show water tank bubble (don't re-show arrow)
   if (stepIndex === 28 && gameState.tutorialStep28ResumeClicked) {
     if (arrow) arrow.style.display = 'none';
     showTutorialWaterTankBubble();
+    return;
+  }
+  // Step 36 part 2: after Resume clicked, hide arrow while rain extinguishes the grove
+  if (stepIndex === 36 && gameState.tutorialStep36ResumeClicked) {
+    if (arrow) arrow.style.display = 'none';
+    centeredBubble.style.display = 'none';
+    updateTutorialAllowedElements(stepIndex, getTutorialStep(stepIndex));
     return;
   }
   const step = getTutorialStep(stepIndex);
@@ -6481,7 +7469,37 @@ function updateTutorialArrow() {
     }
   }
 
-  // Set placement hex for tutorial steps that restrict tower placement (6 and 9)
+  // Steps 31-34: grove-fire shop / rain purchase flow
+  if (stepIndex === 30) {
+    // Ensure sidebar is open so Shop tab is reachable
+    if (window.toggleSidebar) window.toggleSidebar(true);
+    switchTab('inventory', true);
+    updateTutorialButtonsPosition();
+  }
+  if (stepIndex >= 31 && stepIndex <= 33) {
+    if (window.toggleSidebar) window.toggleSidebar(true);
+    switchTab('shop', true);
+    updateTutorialButtonsPosition();
+  }
+  if (stepIndex === 31) {
+    // Show towers list muted until user clicks Towers (Items/Power-ups blocked)
+    switchShopSubTab('items', true);
+    document.querySelectorAll('#shopTab .shop-sub-tab-button.tutorial-disabled').forEach(el => el.classList.remove('tutorial-disabled'));
+    const itemsBtn = document.querySelector('#shopTab .shop-sub-tab-button[data-shop-sub-tab="items"]');
+    const powerupsBtn = document.querySelector('#shopTab .shop-sub-tab-button[data-shop-sub-tab="powerups"]');
+    if (itemsBtn) itemsBtn.classList.add('tutorial-disabled');
+    if (powerupsBtn) powerupsBtn.classList.add('tutorial-disabled');
+  }
+  if (stepIndex === 32 || stepIndex === 33) {
+    switchShopSubTab('towers', true);
+    document.querySelectorAll('#shopTab .shop-sub-tab-button.tutorial-disabled').forEach(el => el.classList.remove('tutorial-disabled'));
+    const itemsBtn = document.querySelector('#shopTab .shop-sub-tab-button[data-shop-sub-tab="items"]');
+    const powerupsBtn = document.querySelector('#shopTab .shop-sub-tab-button[data-shop-sub-tab="powerups"]');
+    if (itemsBtn) itemsBtn.classList.add('tutorial-disabled');
+    if (powerupsBtn) powerupsBtn.classList.add('tutorial-disabled');
+  }
+
+  // Set placement hex for tutorial steps that restrict tower placement (6, 9, and 35)
   if (stepIndex === 5) {
     gameState.tutorialTowerPlacementHex = TUTORIAL_TOWER_PLACEMENT_HEX;
     // skipIfAlreadyActive: updateTutorialArrow runs every frame — avoid full inventory rebuild / hover SFX spam
@@ -6534,7 +7552,7 @@ function updateTutorialArrow() {
       }
     }
   } else if (stepIndex === 27) {
-    // Index 27 = rotate toward water tank — prep tank and scroll (shield apply restriction cleared when leaving 26)
+    // Index 27 = rotate toward water tank — prep tank, ignite spawner rings 1–2 (except bucket), scroll
     const hex = gameState.gridSystem?.getHex(TUTORIAL_WATER_TANK_HEX.q, TUTORIAL_WATER_TANK_HEX.r);
     if (hex?.isBurning && gameState.fireSystem) {
       gameState.fireSystem.extinguishHex(TUTORIAL_WATER_TANK_HEX.q, TUTORIAL_WATER_TANK_HEX.r, 999);
@@ -6543,9 +7561,28 @@ function updateTutorialArrow() {
     if (!existingTank && gameState.waterTankSystem?.spawnWaterTank) {
       gameState.waterTankSystem.spawnWaterTank(TUTORIAL_WATER_TANK_HEX.q, TUTORIAL_WATER_TANK_HEX.r);
     }
+    // Ignite nearest two rings around the spawner (skip bucket hex) so the blast clears a big cluster
+    if (gameState.fireSystem && gameState.gridSystem) {
+      for (const h of TUTORIAL_STEP27_SPAWNER_RING_FIRE_HEXES) {
+        const ringHex = gameState.gridSystem.getHex(h.q, h.r);
+        if (!ringHex || ringHex.hasFireSpawner || ringHex.isBurning) continue;
+        gameState.fireSystem.igniteHex(h.q, h.r, CONFIG.FIRE_TYPE_CINDER, false);
+      }
+    }
     const mapScrollWaterTank = gameState.inputHandler?.getMapScrollSystem?.();
     if (mapScrollWaterTank) {
       mapScrollWaterTank.scrollToShowHex(TUTORIAL_WATER_TANK_HEX.q, TUTORIAL_WATER_TANK_HEX.r, { horizontal: 'center', vertical: 'center', animated: true });
+    }
+  } else if (stepIndex === 35) {
+    // Step 36: place rain tower on grove only
+    gameState.tutorialTowerPlacementHex = TUTORIAL_GROVE_HEX;
+    gameState.tutorialTowerMoveToHex = null;
+    gameState.tutorialTowerMoveFromHex = null;
+    gameState.tutorialDisableTowerMovement = true;
+    switchTab('inventory', true);
+    const mapScrollRain = gameState.inputHandler?.getMapScrollSystem?.();
+    if (mapScrollRain) {
+      mapScrollRain.scrollToShowHex(TUTORIAL_GROVE_HEX.q, TUTORIAL_GROVE_HEX.r, { horizontal: 'center', vertical: 'center', animated: true });
     }
   } else {
     // Don't clear apply-only guard while on step 25 with shield selected (that state is set in the branch above)
@@ -6559,7 +7596,7 @@ function updateTutorialArrow() {
     if (mapScroll13) {
       mapScroll13.scrollToShowHex(TUTORIAL_STEP13_PATH_HEX.q, TUTORIAL_STEP13_PATH_HEX.r, { horizontal: 'right', vertical: 'top', extraOffsetY: 120, animated: true });
     }
-  } else if (stepIndex !== 5 && stepIndex !== 6 && stepIndex !== 7 && stepIndex !== 8 && stepIndex !== 9 && stepIndex !== 10 && stepIndex !== 15 && stepIndex !== 25 && stepIndex !== 26 && stepIndex !== 27) {
+  } else if (stepIndex !== 5 && stepIndex !== 6 && stepIndex !== 7 && stepIndex !== 8 && stepIndex !== 9 && stepIndex !== 10 && stepIndex !== 15 && stepIndex !== 25 && stepIndex !== 26 && stepIndex !== 27 && stepIndex !== 35) {
     gameState.tutorialTowerPlacementHex = null;
     gameState.tutorialTowerMoveToHex = null;
     gameState.tutorialTowerMoveFromHex = null;
@@ -6594,13 +7631,14 @@ function updateTutorialArrow() {
   // Target step: show arrow, hide centered bubble
   centeredBubble.style.display = 'none';
 
-  // Step 21: when Purchase Shield modal is open, point at confirm button instead
+  // When Purchase Shield / Rain modal is open, keep tutorial arrow (confirm step targets #confirmOkBtn).
   // Hide tutorial arrow when Restart/Exit Tutorial modals are shown (same confirmModal, different title)
   const confirmModal = document.getElementById('confirmModal');
   const confirmTitle = confirmModal?.querySelector('#confirmTitle')?.textContent || '';
-  const isShieldPurchaseModal = confirmTitle === 'Purchase Shield?';
-  const useModalOverlay = step.modalOverlayTarget && confirmModal?.classList.contains('active') && isShieldPurchaseModal;
-  if (confirmModal?.classList.contains('active') && !isShieldPurchaseModal) {
+  const isTutorialPurchaseModal =
+    confirmTitle === 'Purchase Shield?' || confirmTitle === 'Purchase Rain Tower?';
+  const useModalOverlay = step.modalOverlayTarget && confirmModal?.classList.contains('active') && isTutorialPurchaseModal;
+  if (confirmModal?.classList.contains('active') && !isTutorialPurchaseModal) {
     arrow.style.display = 'none';
     return;
   }
@@ -6717,8 +7755,8 @@ function updateTutorialArrow() {
   }
 
   let displayMessage = (useModalOverlay ? effectiveMessage : step.message) || '';
-  // Step 7: hover vs click tower-select wording
-  if (!useModalOverlay && stepIndex === 6 && step.messageClickMode) {
+  // Hover vs click tower-select wording (e.g. steps 7 and 11)
+  if (!useModalOverlay && step.messageClickMode) {
     displayMessage =
       CONFIG.TOWER_SELECT_MODE === 'click' ? step.messageClickMode : step.message;
   }
@@ -6850,6 +7888,7 @@ async function exitTutorialMode() {
   const waterTankBubble = document.getElementById('tutorialWaterTankBubble');
   if (waterTankBubble) waterTankBubble.style.display = 'none';
   gameState.tutorialStep28ResumeClicked = false;
+  gameState.tutorialStep36ResumeClicked = false;
 
   if (gameState.tutorialModeHadAutosave) {
     const loadedData = await loadGame(null);
@@ -6945,6 +7984,8 @@ function updateStoryScreenUI() {
  */
 function closeStoryScreenAndStart(opts = {}) {
   setStoryVortexFxActive(false);
+  setStorySpawnerFxActive(false);
+  setStoryCollectiblesFxActive(false);
   const storyScreenModal = document.getElementById('storyScreenModal');
   const mapProgressionModal = document.getElementById('mapProgressionModal');
   const showTutorial = opts.skipTutorial ? false : getShowTutorialPreference();
@@ -7002,7 +8043,7 @@ function closeStoryScreenAndStart(opts = {}) {
  * @param {number} panelNumber
  */
 function showStoryPanel(panelNumber) {
-  if (panelNumber < 1 || panelNumber > 4) return;
+  if (panelNumber < 1 || panelNumber > 5) return;
   if (storyPanelAnimating) return;
 
   const nextPanel = document.getElementById(`storyPanel${panelNumber}`);
@@ -7010,7 +8051,7 @@ function showStoryPanel(panelNumber) {
 
   const prevNum = currentStoryPanel;
   const prevPanel =
-    prevNum >= 1 && prevNum <= 4 ? document.getElementById(`storyPanel${prevNum}`) : null;
+    prevNum >= 1 && prevNum <= 5 ? document.getElementById(`storyPanel${prevNum}`) : null;
   const prevVisible =
     prevPanel &&
     prevPanel !== nextPanel &&
@@ -7027,6 +8068,16 @@ function showStoryPanel(panelNumber) {
     nextPanel.style.removeProperty('z-index');
     currentStoryPanel = panelNumber;
     setStoryVortexFxActive(panelNumber === 2);
+    setStorySpawnerFxActive(panelNumber === 2);
+    setStoryCollectiblesFxActive(panelNumber === 4);
+    if (panelNumber === 3) {
+      nextPanel.querySelectorAll('.story-tower-icon--spin').forEach((img) => {
+        if (typeof window.alignInventorySpinTurretPivot === 'function') {
+          delete img.dataset.pivotAligned;
+          window.alignInventorySpinTurretPivot(img);
+        }
+      });
+    }
     if (releaseAnimating) storyPanelAnimating = false;
     const storyScreenModal = document.getElementById('storyScreenModal');
     if (storyScreenModal?.classList.contains('active')) {
@@ -7040,8 +8091,10 @@ function showStoryPanel(panelNumber) {
     const done = onRevealDone ?? (() => finishReveal());
     nextPanel.style.removeProperty('display');
     nextPanel.classList.remove('story-panel-fade-out', 'story-panel-visible');
-    // Start vortex FX as soon as panel 2 is shown (incl. during fade-in)
+    // Start panel FX as soon as the panel is shown (incl. during fade-in)
     setStoryVortexFxActive(panelNumber === 2);
+    setStorySpawnerFxActive(panelNumber === 2);
+    setStoryCollectiblesFxActive(panelNumber === 4);
     if (reducedMotion) {
       nextPanel.classList.remove('story-panel-fade-in');
       done();
@@ -7080,7 +8133,7 @@ function showStoryPanel(panelNumber) {
     return;
   }
 
-  for (let i = 1; i <= 4; i++) {
+  for (let i = 1; i <= 5; i++) {
     if (i === panelNumber) continue;
     const panel = document.getElementById(`storyPanel${i}`);
     if (!panel) continue;
@@ -7119,7 +8172,7 @@ function setupStoryScreen() {
       }
       
       // Advance to next panel
-      if (currentStoryPanel < 4) {
+      if (currentStoryPanel < 5) {
         currentStoryPanel++;
         showStoryPanel(currentStoryPanel);
       } else {
@@ -7144,12 +8197,12 @@ function setupStoryScreen() {
   document.querySelectorAll('.story-next-btn').forEach((btn, index) => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (index < 3) {
-        // Panels 1, 2, 3 - go to next panel
+      if (index < 4) {
+        // Panels 1–4 - go to next panel
         currentStoryPanel = index + 2;
         showStoryPanel(currentStoryPanel);
       } else {
-        // Panel 4 - start game
+        // Panel 5 - start game
         closeStoryScreenAndStart();
       }
     });
@@ -7237,11 +8290,29 @@ function loadScenario(scenarioName) {
   gameState.player.currency = CONFIG.DEBUG_MODE ? 99999 : (scenario.currency !== undefined ? scenario.currency : CONFIG.STARTING_CURRENCY);
   gameState.player.upgradePlans = 0;
   gameState.player.specialtyPlans = 0;
+  gameState.player.superchargers = 0;
+  gameState.player.towerSupercharges = {};
   gameState.player.specialties = { time: 0, power: 0, money: 0, health: 0 };
   gameState.player.specialtyTimeMilestonePowerUps = null;
+  gameState.player.specialtyPowerMilestonePowerUps = null;
   ensureSpecialtyMilestoneRewards(gameState);
   gameState.player.movementTokens = 0;
   gameState.player.movementTokensPurchased = 0;
+  gameState.player.upgradePlansPurchased = 0;
+  gameState.player.townHealthUpgradesPurchased = 0;
+  gameState.player.treeJuice = 0;
+  gameState.player.towerRepairsPurchased = 0;
+  gameState.player.shieldPurchasesByLevel = { 1: 0, 2: 0, 3: 0, 4: 0 };
+  gameState.player.suppressionBombPurchasesByLevel = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+  gameState.player.runShopPricePasses = [];
+  gameState.player.upgradePlanPriceLocked = null;
+  gameState.player.townUpgradePriceLocked = null;
+  gameState.player.towerRepairPriceLocked = null;
+  gameState.player.shieldPriceLockedByLevel = null;
+  gameState.player.suppressionBombPriceLockedByLevel = null;
+  gameState.player.shieldBundlePriceLocked = null;
+  gameState.player.suppressionBundlePriceLocked = null;
+  gameState.player.powerUpPriceLockedById = null;
   gameState.player.towerSellbacks = 0;
   gameState.player.towerRepairs = 0;
   gameState.player.partsVouchers = 0;
@@ -7263,14 +8334,14 @@ function loadScenario(scenarioName) {
   gameState.player.newlyUnlockedItems = new Set();
   gameState.player.announcedUnlocks = new Set();
   gameState.isMovementTokenMode = false;
-  gameState.movementTokenTargetTowerId = null;
-  gameState.movementTokenRepositioned = false;
-  gameState.movementTokenCommitted = false;
+  gameState.movementTokenOrigins = null;
+  gameState.movementTokenStoredTowerIds = [];
+  gameState.movementTokenIdRemap = null;
+  gameState.movementTokenAvailableAtStart = 0;
   if (typeof document !== 'undefined') {
     document.body.classList.remove('movement-token-mode');
   }
   window.hideMovementInstructions?.();
-  window.hideMovementDoneInstructions?.();
   
   // Reset town
   gameState.townLevel = 1;
@@ -7295,6 +8366,7 @@ function loadScenario(scenarioName) {
   gameState.wave.isScenario = true; // Mark as scenario mode
   gameState.wave.scenarioNumber = scenario.number; // Store scenario number
   gameState.wave.scenarioName = scenario.name; // Store scenario name
+  gameState.wave.lastStarResult = null;
   
   // Set unlocked items for this scenario
   gameState.scenarioUnlockedItems = scenario.unlockedItems || [];
@@ -7588,7 +8660,7 @@ function checkIfUpgradesAvailable() {
   if (!gameState.towerSystem) return false;
   
   const towers = Array.from(gameState.towerSystem.towers.values());
-  return towers.some(tower => tower.rangeLevel < 4 || tower.powerLevel < 4);
+  return towers.some(tower => canTowerBeUpgraded(gameState, tower));
 }
 
 /**
@@ -7616,7 +8688,7 @@ function handleUpgradePlanClick() {
 }
 
 /**
- * Handle movement token click — enter movement mode to reposition one tower during a wave.
+ * Handle movement token click — enter movement mode to reposition towers during a wave.
  */
 async function handleMovementTokenClick() {
   if (gameState.isUpgradeSelectionMode || gameState.isTowerSellbackMode || gameState.isRepairSelectionMode || gameState.isPartsRecycleMode) return;
@@ -7630,7 +8702,7 @@ async function handleMovementTokenClick() {
   // Only usable during an active wave
   if (!gameState.wave.isActive) {
     if (gameState.notificationSystem) {
-      gameState.notificationSystem.showToast('Movement tokens can only be used during a wave.', 3000, 'neutral');
+      gameState.notificationSystem.showToast('Movement tokens can only be used during a wave.', 3000, 'neutral', { critical: true });
     }
     return;
   }
@@ -7642,7 +8714,7 @@ async function handleMovementTokenClick() {
   
   if (towers.length === 0 && suppressionBombs.length === 0 && waterTanks.length === 0) {
     if (gameState.notificationSystem) {
-      gameState.notificationSystem.showToast('There are no items currently placed on the map.', 3000, 'neutral');
+      gameState.notificationSystem.showToast('There are no items currently placed on the map.', 3000, 'neutral', { critical: true });
     }
     return;
   }
@@ -7657,7 +8729,9 @@ async function handleMovementTokenClick() {
 
   const confirmed = await showConfirmModal({
     title: 'Movement Token',
-    message: 'Reposition one tower or item on the map during a wave.',
+    message:
+      'Reposition towers on the map during a wave.<br><br><span style="color: #8aa0c8; font-size: 13px;">Right-click to store towers in inventory</span>',
+    messageIsHtml: true,
     confirmText: 'Continue',
     cancelText: 'Cancel',
   });
@@ -7683,7 +8757,7 @@ async function handleRepairKitClick() {
 
   const hasBroken = (gameState.player.inventory.storedTowers || []).some((t) => t.broken);
   if (!hasBroken) {
-    gameState.notificationSystem?.showToast('You have no broken towers in inventory.', 3500, 'neutral');
+    gameState.notificationSystem?.showToast('You have no broken towers in inventory.', 3500, 'neutral', { critical: true });
     return;
   }
 
@@ -7731,7 +8805,7 @@ function destroyBrokenTowerFromInventory(kind, index) {
     window.AudioManager.playSFX('destroyed_dig_site');
   }
 
-  gameState.notificationSystem?.showToast('Tower permanently destroyed', 3500, 'warning');
+  gameState.notificationSystem?.showToast('Tower permanently destroyed', 3500, 'warning', { critical: true });
 
   if (window.updateInventory) window.updateInventory();
   if (window.updateUI) window.updateUI();
@@ -7750,7 +8824,7 @@ async function promptDestroyBrokenInventoryTower(kind, index) {
   const tower = list?.[index];
   if (!tower?.broken) return;
 
-  gameState.notificationSystem?.showToast?.('Tower needs repaired!', 3000, 'neutral');
+  gameState.notificationSystem?.showToast?.('Tower needs repaired!', 3000, 'neutral', { critical: true });
 
   if (typeof window !== 'undefined' && window.AudioManager) {
     window.AudioManager.playSFX('button1');
@@ -7822,13 +8896,13 @@ async function handlePartsVoucherClick() {
   if (vouchers <= 0) return;
 
   if (gameState.wave.isActive) {
-    gameState.notificationSystem?.showToast('You can only recycle towers between waves', 3500, 'warning');
+    gameState.notificationSystem?.showToast('You can only recycle towers between waves', 3500, 'warning', { critical: true });
     return;
   }
 
   const hasBroken = (gameState.player.inventory.storedTowers || []).some((t) => t.broken);
   if (!hasBroken) {
-    gameState.notificationSystem?.showToast('No broken towers to recycle', 3500, 'warning');
+    gameState.notificationSystem?.showToast('No broken towers to recycle', 3500, 'warning', { critical: true });
     return;
   }
 
@@ -7868,7 +8942,7 @@ function ensureBrokenTowerPartsValue(tower) {
 
 function applyPartsVoucherFromInventory(storedIndex, floatingTarget = null) {
   if (gameState.wave.isActive) {
-    gameState.notificationSystem?.showToast('You can only recycle towers between waves', 3500, 'warning');
+    gameState.notificationSystem?.showToast('You can only recycle towers between waves', 3500, 'warning', { critical: true });
     return;
   }
   const list = gameState.player.inventory.storedTowers;
@@ -7916,7 +8990,7 @@ async function handleTowerSellbackClick() {
   if (window.AudioManager) window.AudioManager.playSFX('button1');
 
   if (getTotalTowerCountForSellback() === 0) {
-    gameState.notificationSystem?.showToast?.('No towers available', 3000, 'neutral');
+    gameState.notificationSystem?.showToast?.('No towers available', 3000, 'neutral', { critical: true });
     return;
   }
 
@@ -8286,7 +9360,16 @@ function updateUI() {
   
   const overlayScore = document.getElementById('overlayScore');
   if (overlayScore) {
-    overlayScore.textContent = gameState.player.score ?? 0;
+    const score = gameState.player.score ?? 0;
+    overlayScore.textContent = score;
+    const scoreDigits = String(Math.abs(Math.trunc(Number(score) || 0))).length;
+    overlayScore.classList.toggle('is-compact', scoreDigits > 6);
+  }
+  const overlayStarScore = document.getElementById('overlayStarScore');
+  if (overlayStarScore) {
+    const stars = getTotalStarsEarned(gameState);
+    overlayStarScore.textContent = String(stars);
+    overlayStarScore.style.fontSize = stars >= 1000 ? '10px' : stars >= 100 ? '12px' : '13px';
   }
 
   // (Grove HP bar handled by updateSmoothedUiBars above.)
@@ -8342,7 +9425,27 @@ function updateInventory() {
 
 // Helper function to create tower icon HTML (base + turret sprites for jet, spread, and bomber towers)
 // Matches the exact rendering logic from the map
-function createTowerIconHTML(towerType, rangeLevel = 1, powerLevel = 1, isShop = false, freezeTurretAnimation = false) {
+/**
+ * Shift a spinning rain/pulsing inventory turret so CSS rotation matches the map:
+ * pivot on the opaque-pixel center, not the PNG box. Does not modify image files.
+ * @param {HTMLImageElement} img
+ */
+function alignInventorySpinTurretPivot(img) {
+  if (!img || img.dataset.pivotAligned === '1') return;
+  const renderer = (typeof gameState !== 'undefined' && gameState?.renderer) || window.gameState?.renderer;
+  if (!renderer?.getSpriteOpaqueCenterOffset) return;
+  if (!img.naturalWidth || !img.naturalHeight) return;
+  const vis = renderer.getSpriteOpaqueCenterOffset(img);
+  const size = Number(img.dataset.displaySize) || img.naturalWidth;
+  const dx = vis.dx * (size / img.naturalWidth);
+  const dy = vis.dy * (size / img.naturalHeight);
+  img.style.left = `${-size / 2 - dx}px`;
+  img.style.top = `${-size / 2 - dy}px`;
+  img.dataset.pivotAligned = '1';
+}
+
+function createTowerIconHTML(towerType, rangeLevel = 1, powerLevel = 1, isShop = false, freezeTurretAnimation = false, options = {}) {
+  const isPlayerInventory = options?.playerInventory === true;
   if (towerType === 'jet' || towerType === 'spread' || towerType === 'bomber' || towerType === 'charge' || towerType === 'rain' || towerType === 'pulsing' || towerType === 'sentinel' || towerType === 'perimeter') {
     const safePowerLevel = Math.min(4, Math.max(1, Math.floor(Number(powerLevel) || 1)));
     const safeRangeLevel = Math.min(4, Math.max(1, Math.floor(Number(rangeLevel) || 1)));
@@ -8375,8 +9478,12 @@ function createTowerIconHTML(towerType, rangeLevel = 1, powerLevel = 1, isShop =
     // Scale factor: how much smaller the inventory is compared to map
     const scaleFactor = (containerSize / baseSizeMap) * graphicsScale;
     
-    // Base size in inventory (scaled proportionally)
-    const baseSize = containerSize * graphicsScale * (baseSizeMultiplier / 3.8709);
+    // Base size in inventory/shop (scaled proportionally)
+    let baseSize = containerSize * graphicsScale * (baseSizeMultiplier / 3.8709);
+    // Inventory (not shop): 25% larger bases + turrets
+    if (!isShop) {
+      baseSize *= 1.25;
+    }
     
     // Check if tower is rotatable (jet, spread, bomber) or non-rotatable (rain, pulsing)
     const isRotatable = towerType === 'jet' || towerType === 'spread' || towerType === 'bomber' || towerType === 'charge';
@@ -8401,14 +9508,17 @@ function createTowerIconHTML(towerType, rangeLevel = 1, powerLevel = 1, isShop =
         baseTurretMultiplier *= 0.95; // Decrease by 5%
         baseTurretMultiplier *= 0.9; // Decrease by 10%
       }
-      // Spread range level 3: increase by 10%, then increase by 5%
+      // Spread range level 3: increase by 10%, then increase by 5%, then decrease by 25%, then increase by 10%
       else if (rangeLevel === 3) {
         baseTurretMultiplier *= 1.1; // Increase by 10%
         baseTurretMultiplier *= 1.05; // Increase by 5%
+        baseTurretMultiplier *= 0.75; // Decrease by 25%
+        baseTurretMultiplier *= 1.1; // Increase by 10%
       }
-      // Spread range level 4: increase by 3%
+      // Spread range level 4: increase by 3%, then increase by 25%
       else if (rangeLevel === 4) {
         baseTurretMultiplier *= 1.03; // Increase by 3%
+        baseTurretMultiplier *= 1.25; // Increase by 25%
       }
     }
     
@@ -8431,11 +9541,17 @@ function createTowerIconHTML(towerType, rangeLevel = 1, powerLevel = 1, isShop =
       baseTurretMultiplier *= 0.9; // Reduce by 10%
       baseTurretMultiplier *= 1.05; // Increase by 5% from current size
     }
+    if (towerType === 'bomber' && (rangeLevel === 1 || rangeLevel === 2)) {
+      baseTurretMultiplier *= 1.1; // Bomber levels 1–2: increase by 10%
+    }
+    if (towerType === 'bomber' && rangeLevel === 1) {
+      baseTurretMultiplier *= 1.05; // Bomber level 1: another 5%
+    }
     // Bomber range levels 3 and 4: keep as is (no change)
 
     // Rain and pulsing towers: reduce size by 15%, then increase by 10% (net: 6.5% smaller)
     if (towerType === 'charge') {
-      baseTurretMultiplier = getChargeTurretHeightMultiplier();
+      baseTurretMultiplier = getChargeTurretHeightMultiplier(safeRangeLevel);
     } else if (towerType === 'sentinel') {
       baseTurretMultiplier = getSentinelTurretSizeMultiplier(safeRangeLevel);
     } else if (towerType === 'perimeter') {
@@ -8462,6 +9578,20 @@ function createTowerIconHTML(towerType, rangeLevel = 1, powerLevel = 1, isShop =
         baseTurretMultiplier *= 1.12; // Increase by 12%
         baseTurretMultiplier *= 0.95; // Decrease by 5%
       }
+      if (towerType === 'rain' && safeRangeLevel >= 1 && safeRangeLevel <= 3) {
+        baseTurretMultiplier *= 1.1; // Rain levels 1–3: increase by 10%
+        if (safeRangeLevel === 1) {
+          baseTurretMultiplier *= 1.1; // Rain level 1: another 10%
+        }
+      }
+      if (towerType === 'pulsing') {
+        if (safeRangeLevel === 1 || safeRangeLevel === 2) {
+          baseTurretMultiplier *= 1.1; // Pulsing levels 1–2: increase by 10%
+          baseTurretMultiplier *= 1.1; // Pulsing levels 1–2: another 10%
+        } else if (safeRangeLevel === 3) {
+          baseTurretMultiplier *= 1.05; // Pulsing level 3: increase by 5%
+        }
+      }
     }
     
     const turretHeightMultiplier = baseTurretMultiplier;
@@ -8475,13 +9605,57 @@ function createTowerIconHTML(towerType, rangeLevel = 1, powerLevel = 1, isShop =
     // Base is centered, turret is shifted to the right for all towers
     // Use the same relative sizing as map: turret height is relative to base size
     let turretHeightRelative = (turretHeightMap / baseSizeMap) * baseSize;
-    // Increase turret size by 25% in shop (not inventory)
+    // Increase turret size by 25% in shop (not inventory), then per-type shop tweaks
     if (isShop) {
       turretHeightRelative *= 1.25;
+      if (towerType === 'spread') {
+        turretHeightRelative *= 1.32;
+        turretHeightRelative *= 1.15; // Shop spread: 15% larger
+      } else if (towerType === 'rain' || towerType === 'pulsing') {
+        turretHeightRelative *= 1.26;
+      } else if (towerType === 'perimeter' || towerType === 'bomber' || towerType === 'charge') {
+        turretHeightRelative *= 1.21;
+      }
     }
+    if (isPlayerInventory) {
+      if (towerType === 'spread' && safeRangeLevel >= 1 && safeRangeLevel <= 3) {
+        turretHeightRelative *= 1.5; // Inventory spread levels 1–3: 50% larger turrets
+      }
+      if (towerType === 'bomber' && (safeRangeLevel === 1 || safeRangeLevel === 2)) {
+        turretHeightRelative *= 1.1; // Inventory bomber levels 1–2: 10% larger turrets
+      }
+      if ((towerType === 'rain' || towerType === 'pulsing') && safeRangeLevel >= 1 && safeRangeLevel <= 3) {
+        turretHeightRelative *= 1.1; // Inventory rain/pulsing levels 1–3: 10% larger turrets
+      }
+    }
+    let shopShiftX = 0;
+    if (isShop) {
+      if (towerType === 'spread') {
+        shopShiftX = -12; // -15, then 3px right
+      } else if (towerType === 'perimeter' || towerType === 'charge') {
+        shopShiftX = -17;
+      } else if (towerType === 'bomber') {
+        shopShiftX = -10;
+      } else if (towerType === 'jet') {
+        shopShiftX = -10;
+      }
+    }
+    let inventoryShiftX = 0;
+    if (!isShop && (towerType === 'spread' || towerType === 'jet' || towerType === 'bomber')) {
+      inventoryShiftX = -5;
+    }
+    if (isPlayerInventory && (towerType === 'jet' || towerType === 'spread' || towerType === 'bomber')) {
+      inventoryShiftX += 5; // Inventory: 5px right
+    }
+    const turretAlignShiftX = 0;
+    const turretAlignShiftY =
+      towerType === 'bomber' || towerType === 'jet' || towerType === 'pulsing' ? -2 : -1;
     
     // Rain and pulsing power level 1: shift up 3px (scaled for inventory)
-    const baseOffsetY = ((isRainPulsingOrSentinel || isPerimeterCannon) && safePowerLevel === 1) ? -3 * scaleFactor : 0;
+    let baseOffsetY = ((isRainPulsingOrSentinel || isPerimeterCannon) && safePowerLevel === 1) ? -3 * scaleFactor : 0;
+    if ((towerType === 'charge' || towerType === 'perimeter') && safePowerLevel === 4) {
+      baseOffsetY = 1; // Charge / perimeter power 4: shift base down 1px
+    }
     const baseTopOffset = baseOffsetY !== 0 ? `calc(50% + ${baseOffsetY}px)` : '50%';
     
     // Shift turret to the right (scaled for inventory)
@@ -8518,29 +9692,23 @@ function createTowerIconHTML(towerType, rangeLevel = 1, powerLevel = 1, isShop =
     // On map, for east-facing (0 direction), offsetX = offsetDistance, offsetY = 0
     // In inventory, we display towers facing east, so use the same shift scaled
     const turretShiftX = turretShiftDistance * scaleFactor;
-    
-    // Darken base: 40% for jet/spread/bomber, 20% for rain/pulsing (half as much darkening)
-    // Darken base: 40% for jet/spread/bomber, 20% for rain, 10% for pulsing (half of rain's darkening)
-    let baseFilter = 'filter: brightness(0.6);'; // Default for jet/spread/bomber
-    if (towerType === 'rain' || towerType === 'sentinel' || towerType === 'perimeter') {
-      baseFilter = 'filter: brightness(0.8);'; // 20% darker
-    } else if (towerType === 'pulsing') {
-      baseFilter = 'filter: brightness(0.9);'; // 10% darker (half of rain's darkening)
-    }
-    // Brighten turret by 35% for other tower types; sentinel turret uses full-color art
-    const turretFilter = (towerType === 'sentinel' || towerType === 'perimeter') ? '' : 'filter: brightness(1.35);';
+
     const baseSizeRounded = Math.round(baseSize);
     const isChargeTurret = towerType === 'charge';
     const turretSizeRounded = Math.round(turretHeightRelative);
     // Charge turrets rotate 90° in inventory: CSS width → visual height, CSS height → visual width.
     // Shop/inventory charge art is a fixed 52×68 CSS box (sprite aspect; ~68×52 after rotate).
-    const turretWidthRounded = isChargeTurret ? 52 : turretSizeRounded;
-    const turretHeightRounded = isChargeTurret ? 68 : turretSizeRounded;
-    // Sentinel downscales large art — smooth scaling reads rounder than pixelated at inventory size
-    const imageRendering = (towerType === 'sentinel' || towerType === 'perimeter') ? 'auto' : 'pixelated';
+    const chargeSizeBoost = isChargeTurret
+      ? (safeRangeLevel === 1 ? 0.9 : safeRangeLevel === 2 ? 0.95 : safeRangeLevel === 4 ? 1.1 : 1)
+      : 1;
+    const turretWidthRounded = isChargeTurret ? Math.round(52 * (isShop ? 1.21 : 1.25) * chargeSizeBoost) : turretSizeRounded;
+    const turretHeightRounded = isChargeTurret ? Math.round(68 * (isShop ? 1.21 : 1.25) * chargeSizeBoost) : turretSizeRounded;
+    // High-res illustrated art (not pixel art): same bilinear downscale as map/dungeon.
+    // CSS brightness filters rasterize at 1× CSS px and look soft on Retina — omit them.
     const layerFit = 'object-fit: contain; object-position: center;';
+    const crispSprite = 'image-rendering: -webkit-optimize-contrast; image-rendering: auto;';
     const baseImgHtml = showBaseLayer
-      ? `<img src="assets/images/towers/${baseFilename}" alt="" style="position: absolute; width: ${baseSizeRounded}px; height: ${baseSizeRounded}px; ${layerFit} top: ${baseTopOffset}; left: 50%; transform: translate(-50%, -50%); image-rendering: ${imageRendering}; ${baseFilter}" />`
+      ? `<img src="${assetUrl(`assets/images/towers/${baseFilename}`)}" alt="" style="position: absolute; width: ${baseSizeRounded}px; height: ${baseSizeRounded}px; ${layerFit} top: ${baseTopOffset}; left: 50%; transform: translate(-50%, -50%); ${crispSprite}" />`
       : '';
     
     if (isRotatable || isPerimeterCannon) {
@@ -8548,18 +9716,34 @@ function createTowerIconHTML(towerType, rangeLevel = 1, powerLevel = 1, isShop =
       return `
         <div style="position: relative; width: ${containerSize}px; height: ${containerSize}px; margin: 0 auto; overflow: visible;">
           ${baseImgHtml}
-          <img src="assets/images/towers/${turretFilename}" alt="" style="position: absolute; width: ${isChargeTurret ? turretWidthRounded : turretSizeRounded}px; height: ${turretHeightRounded}px; ${layerFit} top: 50%; left: calc(50% + ${turretShiftX / 2 - 1}px); transform: translate(-50%, -50%) rotate(90deg); image-rendering: ${imageRendering}; pointer-events: none; ${turretFilter}" />
+          <img src="${assetUrl(`assets/images/towers/${turretFilename}`)}" alt="" style="position: absolute; width: ${isChargeTurret ? turretWidthRounded : turretSizeRounded}px; height: ${turretHeightRounded}px; ${layerFit} top: calc(50% + ${turretAlignShiftY}px); left: calc(50% + ${turretShiftX / 2 - 1 + shopShiftX + inventoryShiftX + turretAlignShiftX}px); transform: translate(-50%, -50%) rotate(90deg); ${crispSprite} pointer-events: none;" />
         </div>
       `;
     } else {
       // Non-rotatable towers (rain, pulsing, sentinel): centered, slow continuous rotation, no shift
+      const isRainOrPulsing = towerType === 'rain' || towerType === 'pulsing';
+      if (isRainOrPulsing) {
+        // Rotate a 0×0 pivot (same as the map): offset the img so the opaque hub sits on the axis.
+        const half = turretSizeRounded / 2;
+        const pivotSpinStyle = freezeTurretAnimation
+          ? ''
+          : ' animation: turretRotatePivot 8s linear infinite;';
+        return `
+        <div style="position: relative; width: ${containerSize}px; height: ${containerSize}px; margin: 0 auto; overflow: visible;">
+          ${baseImgHtml}
+          <div style="position: absolute; left: 50%; top: calc(50% + ${turretAlignShiftY}px); width: 0; height: 0;${pivotSpinStyle}">
+            <img src="${assetUrl(`assets/images/towers/${turretFilename}`)}" alt="" class="inventory-spin-turret" data-display-size="${turretSizeRounded}" onload="window.alignInventorySpinTurretPivot&&window.alignInventorySpinTurretPivot(this)" style="position: absolute; width: ${turretSizeRounded}px; height: ${turretSizeRounded}px; left: ${-half}px; top: ${-half}px; ${layerFit} ${crispSprite} pointer-events: none;" />
+          </div>
+        </div>
+      `;
+      }
       const turretSpinStyle = freezeTurretAnimation
         ? ''
         : ' animation: turretRotate 8s linear infinite;';
       return `
         <div style="position: relative; width: ${containerSize}px; height: ${containerSize}px; margin: 0 auto; overflow: visible;">
           ${baseImgHtml}
-          <img src="assets/images/towers/${turretFilename}" alt="" style="position: absolute; width: ${turretSizeRounded}px; height: ${turretSizeRounded}px; ${layerFit} top: 50%; left: 50%; transform: translate(-50%, -50%); image-rendering: ${imageRendering}; pointer-events: none; ${turretFilter};${turretSpinStyle}" />
+          <img src="${assetUrl(`assets/images/towers/${turretFilename}`)}" alt="" style="position: absolute; width: ${turretSizeRounded}px; height: ${turretSizeRounded}px; ${layerFit} top: calc(50% + ${turretAlignShiftY}px); left: 50%; transform: translate(-50%, -50%); ${crispSprite} pointer-events: none;${turretSpinStyle}" />
         </div>
       `;
     }
@@ -8568,6 +9752,52 @@ function createTowerIconHTML(towerType, rangeLevel = 1, powerLevel = 1, isShop =
   // All real tower types are handled by the image-based branches above; this should never trigger
   // in normal play, but emojis are no longer used anywhere in the UI.
   return '';
+}
+
+function getSuperchargerSpriteUrl() {
+  return assetUrl(`assets/images/items/${CONFIG.TOWER_SUPERCHARGE?.sprite || 'supercharger.png'}`);
+}
+
+function getSuperchargedOverlayUrl() {
+  return assetUrl(`assets/images/items/${CONFIG.TOWER_SUPERCHARGE?.overlaySprite || 'supercharged.png'}`);
+}
+
+/** Supercharger tokens at the bottom-right of a shop/inventory frame — one per applied supercharge. */
+function appendTowerTypeSuperchargerBadge(itemEl, towerType) {
+  if (!itemEl || !towerType) return;
+  const chargedAttrs = getTowerSuperchargedAttrs(gameState, towerType);
+  if (!chargedAttrs.length) return;
+  if (itemEl.querySelector('.tower-frame-supercharger-tokens')) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'tower-frame-supercharger-tokens';
+  wrap.setAttribute('aria-hidden', 'true');
+  chargedAttrs.forEach(() => {
+    const img = document.createElement('img');
+    img.src = getSuperchargerSpriteUrl();
+    img.className = 'tower-frame-supercharger-token';
+    img.alt = '';
+    wrap.appendChild(img);
+  });
+  itemEl.appendChild(wrap);
+}
+
+/** White bolts on an inventory tower frame only for tracks actually upgraded to level 5. */
+function appendInventorySuperchargeLevelBadges(itemEl, tower) {
+  if (!itemEl || !tower) return;
+  const attrs = getTowerReachedSuperchargeLevelAttrs(gameState, tower);
+  if (!attrs.length) return;
+  if (itemEl.querySelector('.tower-frame-supercharge-badges')) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'tower-frame-supercharge-badges';
+  wrap.setAttribute('aria-hidden', 'true');
+  attrs.forEach(() => {
+    const img = document.createElement('img');
+    img.src = getSuperchargedOverlayUrl();
+    img.className = 'tower-frame-supercharge-badge';
+    img.alt = '';
+    wrap.appendChild(img);
+  });
+  itemEl.appendChild(wrap);
 }
 
 // Helper function to create shop item with tooltip
@@ -8619,6 +9849,10 @@ function createShopItemWithTooltip(icon, name, cost, description, isUnlocked, un
       <div class="icon"><div class="icon-inner">${iconHtml}</div></div>
       <div style="font-size: 15px; margin-top: 4px; font-weight: bold; position: relative; z-index: 1000;"><span style="color: ${costColor};">$${cost}</span></div>
     `;
+  }
+
+  if (isTower && isUnlocked) {
+    appendTowerTypeSuperchargerBadge(item, itemType);
   }
 
   if (showDiscountBadge) {
@@ -8744,7 +9978,7 @@ function createShopItemWithTooltip(icon, name, cost, description, isUnlocked, un
       if (onClick) {
         onClick();
       } else if (!canAfford) {
-        gameState.notificationSystem?.showToast?.("You can't afford that", 3000, 'negative');
+        gameState.notificationSystem?.showToast?.("You can't afford that", 3000, 'negative', { critical: true });
       }
     };
     item.style.cursor = soldOut
@@ -8864,13 +10098,7 @@ function buyShopItemTimes(qty, buyFn) {
 
 /** Cumulative shop cost when buying `qty` movement tokens starting from current purchased count. */
 function getMovementTokenBulkShopCost(startPurchased, qty) {
-  let total = 0;
-  const start = Math.max(0, Math.floor(Number(startPurchased) || 0));
-  const n = Math.max(0, Math.floor(Number(qty) || 0));
-  for (let i = 0; i < n; i++) {
-    total += getMovementTokenShopCost(start + i);
-  }
-  return total;
+  return getEscalatingShopBulkCost(getMovementTokenShopCost, startPurchased, qty);
 }
 
 /** Cumulative shop cost when buying `qty` stacks of a permanent power-up. */
@@ -9198,30 +10426,31 @@ function updateShopItems(currency, playerLevel) {
   
   // Town Health Upgrade - always check with isWaveActive = false so items are immediately available
   const townHealthStatus = getTowerUnlockStatus('town_health', playerLevel, null, false);
-  const canAffordTownUpgrade = currency >= CONFIG.TOWN_UPGRADE_COST;
+  const townHealthPurchased = gameState.player.townHealthUpgradesPurchased || 0;
+  const townUpgradeCost = getTownUpgradeShopCost(townHealthPurchased, gameState);
+  const canAffordTownUpgrade = currency >= townUpgradeCost;
   const townUpgradeItem = createShopItemWithTooltip(
     `<img src="assets/images/items/town_defense.png" style="width: 56px; height: auto; image-rendering: pixelated;" />`,
     'Tree Juice',
-    CONFIG.TOWN_UPGRADE_COST,
-    'This elixir of life permanently adds +50 health to the Ancient Grove',
+    townUpgradeCost,
+    'Adds Tree Juice to your inventory. Use it to raise grove max HP and restore grove health to 100%',
     townHealthStatus.unlocked,
     townHealthStatus.unlockLevel,
     townHealthStatus.unlocked && canAffordTownUpgrade ? async () => {
+      const purchasedCount = gameState.player.townHealthUpgradesPurchased || 0;
+      const cost = getTownUpgradeShopCost(purchasedCount, gameState);
       const confirmed = await showConfirmModal({
         title: 'Confirm Purchase',
-        message: `Add ${CONFIG.TOWN_HEALTH_PER_UPGRADE} HP to the Ancient Grove`,
+        message: `Add Tree Juice to your inventory. Use it to add ${CONFIG.TOWN_HEALTH_PER_UPGRADE} max HP and restore the grove to 100%.`,
         confirmText: 'Confirm',
         cancelText: 'Cancel',
-        itemIcon: `<div style="display:flex;align-items:center;justify-content:center;gap:10px;">
-          <img src="assets/images/items/town_defense.png" style="width: 64px; height: auto; image-rendering: pixelated;" />
-          <img src="assets/images/ui/trade-arrow.png" style="width: 30px; height: auto; image-rendering: pixelated;" />
-          <img src="assets/images/items/town.png" style="width: 84px; height: auto; image-rendering: pixelated;" />
-        </div>`,
-        cost: CONFIG.TOWN_UPGRADE_COST,
+        itemIcon: `<img src="assets/images/items/town_defense.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
+        cost,
         allowQuantity: true,
+        getPurchaseTotalCost: (qty) => getEscalatingShopBulkCost(getTownUpgradeShopCost, purchasedCount, qty),
       });
       const qty = shopPurchaseQty(confirmed);
-      if (qty) buyShopItemTimes(qty, () => buyTownHealthUpgrade());
+      if (qty) buyTownHealthUpgrade(qty);
     } : null,
     canAffordTownUpgrade,
     'town_health'
@@ -9234,23 +10463,29 @@ function updateShopItems(currency, playerLevel) {
   
   // Upgrade Plan Purchase - always check with isWaveActive = false so items are immediately available
   const upgradeTokenStatus = getTowerUnlockStatus('upgrade_token', playerLevel, null, false);
-  const canAffordUpgradeToken = currency >= CONFIG.UPGRADE_PLAN_COST;
+  const upgradePlansPurchased = gameState.player.upgradePlansPurchased || 0;
+  const upgradePlanCost = getUpgradePlanShopCost(upgradePlansPurchased, gameState);
+  const canAffordUpgradeToken = currency >= upgradePlanCost;
   const upgradeTokenCount = gameState.player.upgradePlans || 0;
   const upgradeTokenItem = createShopItemWithTooltip(
     `<img src="assets/images/items/upgrade_token.png" style="width: 56px; height: auto; image-rendering: pixelated;" />`,
     'Upgrade Plans',
-    CONFIG.UPGRADE_PLAN_COST,
+    upgradePlanCost,
     'Upgrade one tower at any time',
     upgradeTokenStatus.unlocked,
     upgradeTokenStatus.unlockLevel,
     upgradeTokenStatus.unlocked && canAffordUpgradeToken ? async () => {
+      const purchasedCount = gameState.player.upgradePlansPurchased || 0;
+      const cost = getUpgradePlanShopCost(purchasedCount, gameState);
       const confirmed = await showConfirmModal({
         title: 'Purchase Upgrade Plans?',
         message: '',
         confirmText: 'Purchase',
         cancelText: 'Cancel',
         itemIcon: `<img src="assets/images/items/upgrade_token.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
-        cost: CONFIG.UPGRADE_PLAN_COST,
+        cost,
+        allowQuantity: true,
+        getPurchaseTotalCost: (qty) => getEscalatingShopBulkCost(getUpgradePlanShopCost, purchasedCount, qty),
       });
       const qty = shopPurchaseQty(confirmed);
       if (qty) buyUpgradePlan(qty);
@@ -9279,7 +10514,7 @@ function updateShopItems(currency, playerLevel) {
     `<img src="assets/images/items/movement_token.png" style="width: 56px; height: auto; image-rendering: pixelated;" />`,
     'Movement Token',
     movementTokenCost,
-    'Reposition one tower during a wave',
+    'Reposition towers during a wave (1 token each)',
     movementTokenStatus.unlocked,
     movementTokenStatus.unlockLevel,
     movementTokenStatus.unlocked && canAffordMovementToken ? async () => {
@@ -9424,7 +10659,9 @@ function updateShopItems(currency, playerLevel) {
   }
 
   const repairShopUnlocked = isTowerRepairShopUnlocked(gameState);
-  const canAffordRepair = currency >= CONFIG.TOWER_REPAIR_COST;
+  const towerRepairsPurchased = gameState.player.towerRepairsPurchased || 0;
+  const towerRepairCost = getTowerRepairShopCost(towerRepairsPurchased, gameState);
+  const canAffordRepair = currency >= towerRepairCost;
   const repairTooltip = gameState.inputHandler?.tooltipSystem?.getLevelUpRewardTooltipContent(
     { towerType: 'tower_repair' },
     gameState,
@@ -9433,18 +10670,22 @@ function updateShopItems(currency, playerLevel) {
   const repairShopItem = createShopItemWithTooltip(
     `<img src="assets/images/items/repair.png" style="width: 56px; height: auto; image-rendering: pixelated;" />`,
     'Repair Supplies',
-    CONFIG.TOWER_REPAIR_COST,
+    towerRepairCost,
     'Restore one broken tower so it can be placed again.',
     repairShopUnlocked,
     999,
     repairShopUnlocked && canAffordRepair ? async () => {
+      const purchasedCount = gameState.player.towerRepairsPurchased || 0;
+      const cost = getTowerRepairShopCost(purchasedCount, gameState);
       const confirmed = await showConfirmModal({
         title: 'Purchase Repair Supplies?',
         message: '',
         confirmText: 'Purchase',
         cancelText: 'Cancel',
         itemIcon: `<img src="assets/images/items/repair.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
-        cost: CONFIG.TOWER_REPAIR_COST,
+        cost,
+        allowQuantity: true,
+        getPurchaseTotalCost: (qty) => getEscalatingShopBulkCost(getTowerRepairShopCost, purchasedCount, qty),
       });
       const qty = shopPurchaseQty(confirmed);
       if (qty) buyTowerRepairKit(qty);
@@ -9468,9 +10709,10 @@ function updateShopItems(currency, playerLevel) {
     if (!isMetaItemUnlocked(gameState, `suppression_bomb_${level}`)) continue;
     // Always check unlock status with isWaveActive = false so items are immediately available when unlocked
     const suppressionBombStatus = getTowerUnlockStatus('suppression_bomb', playerLevel, level, false);
-    const canAfford = currency >= CONFIG[`SUPPRESSION_BOMB_COST_LEVEL_${level}`];
-    const bombCost = CONFIG[`SUPPRESSION_BOMB_COST_LEVEL_${level}`];
-    const bombTooltip = tooltipSystem ? tooltipSystem.getSuppressionBombTooltipContentForInventory({ level }, { cost: bombCost }) : null;
+    const bombPurchased = getSuppressionBombPurchasesForLevel(gameState, level);
+    const bombCost = getSuppressionBombShopCost(level, bombPurchased, gameState);
+    const canAfford = currency >= bombCost;
+    const bombTooltip = tooltipSystem ? tooltipSystem.getSuppressionBombTooltipContentForInventory({ level }, { cost: bombCost, gameState }) : null;
     const uses = getSuppressionBombTotalUses(level);
     const bombPower = formatWaterDamageRate(getEffectiveSuppressionBombPower(gameState, level));
     const item = createShopItemWithTooltip(
@@ -9481,14 +10723,20 @@ function updateShopItems(currency, playerLevel) {
       suppressionBombStatus.unlocked,
       suppressionBombStatus.unlockLevel,
       suppressionBombStatus.unlocked && canAfford ? async () => {
-        const cost = bombCost;
+        const purchasedCount = getSuppressionBombPurchasesForLevel(gameState, level);
         const confirmed = await showConfirmModal({
           title: 'Purchase Suppression Bomb?',
           message: '',
           confirmText: 'Purchase',
           cancelText: 'Cancel',
           itemIcon: `<img src="assets/images/items/suppression_${level}.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
-          cost: cost,
+          cost: getSuppressionBombShopCost(level, purchasedCount, gameState),
+          allowQuantity: true,
+          getPurchaseTotalCost: (qty) => getEscalatingShopBulkCost(
+            (count) => getSuppressionBombShopCost(level, count, gameState),
+            purchasedCount,
+            qty
+          ),
         });
         const qty = shopPurchaseQty(confirmed);
         if (qty) buyShopItemTimes(qty, () => buySuppressionBomb(level));
@@ -9506,7 +10754,7 @@ function updateShopItems(currency, playerLevel) {
 
   if (isMetaItemUnlocked(gameState, 'suppression_bundle')) {
     const bundleStatus = getTowerUnlockStatus('suppression_bundle', playerLevel, null, false);
-    const bundleCost = CONFIG.SUPPRESSION_BUNDLE_COST;
+    const bundleCost = getSuppressionBundleShopCost(getTotalSuppressionBombUnitsPurchased(gameState), gameState);
     const canAffordBundle = currency >= bundleCost;
     const bundleIcon = `<img src="assets/images/items/suppression_bundle.png" style="width: 56px; height: auto; image-rendering: pixelated;" />`;
     const bundleDescription = 'Buy in bulk and save! A random assortment of 10 Suppression Bombs.';
@@ -9524,7 +10772,7 @@ function updateShopItems(currency, playerLevel) {
           confirmText: 'Purchase',
           cancelText: 'Cancel',
           itemIcon: `<img src="assets/images/items/suppression_bundle.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
-          cost: bundleCost,
+          cost: getSuppressionBundleShopCost(getTotalSuppressionBombUnitsPurchased(gameState), gameState),
         });
         const qty = shopPurchaseQty(confirmed);
         for (let i = 0; i < qty; i++) {
@@ -9533,7 +10781,9 @@ function updateShopItems(currency, playerLevel) {
       } : null,
       canAffordBundle,
       'suppression_bundle',
-      null,
+      tooltipSystem
+        ? tooltipSystem.getLevelUpRewardTooltipContent({ towerType: 'suppression_bundle' }, gameState)
+        : null,
       null,
       true
     );
@@ -9548,30 +10798,42 @@ function updateShopItems(currency, playerLevel) {
   for (let level = 1; level <= 4; level++) {
     // Always check unlock status with isWaveActive = false so items are immediately available when unlocked
     const shieldStatus = getTowerUnlockStatus('shield', playerLevel, level, false);
-    const canAfford = currency >= CONFIG[`SHIELD_COST_LEVEL_${level}`];
+    const shieldPurchased = getShieldPurchasesForLevel(gameState, level);
+    const shieldCost = getShieldShopCost(level, shieldPurchased, gameState);
+    const canAfford = currency >= shieldCost;
     const hp = CONFIG[`SHIELD_HEALTH_LEVEL_${level}`];
+    const shieldTooltip = tooltipSystem
+      ? tooltipSystem.getLevelUpRewardTooltipContent({ towerType: 'shield', level }, gameState)
+      : null;
     const item = createShopItemWithTooltip(
       `<img src="assets/images/items/shield_${level}.png" style="width: 56px; height: auto; image-rendering: pixelated;" />`,
       `Shield Level ${level}`,
-      CONFIG[`SHIELD_COST_LEVEL_${level}`],
+      shieldCost,
       `Apply to any tower for +${hp} HP of fire protection`,
       shieldStatus.unlocked,
       shieldStatus.unlockLevel,
       shieldStatus.unlocked && canAfford ? async () => {
-        const cost = CONFIG[`SHIELD_COST_LEVEL_${level}`];
+        const purchasedCount = getShieldPurchasesForLevel(gameState, level);
         const confirmed = await showConfirmModal({
           title: 'Purchase Shield?',
           message: '',
           confirmText: 'Purchase',
           cancelText: 'Cancel',
           itemIcon: `<img src="assets/images/items/shield_${level}.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
-          cost: cost,
+          cost: getShieldShopCost(level, purchasedCount, gameState),
+          allowQuantity: true,
+          getPurchaseTotalCost: (qty) => getEscalatingShopBulkCost(
+            (count) => getShieldShopCost(level, count, gameState),
+            purchasedCount,
+            qty
+          ),
         });
         const qty = shopPurchaseQty(confirmed);
         if (qty) buyShopItemTimes(qty, () => buyShield(level));
       } : null,
       canAfford,
-      `shield_${level}`
+      `shield_${level}`,
+      shieldTooltip
     );
     item.id = `shield-${level}-shop`;
     if (!shieldStatus.unlocked) {
@@ -9586,7 +10848,7 @@ function updateShopItems(currency, playerLevel) {
 
   if (isMetaItemUnlocked(gameState, 'shield_bundle')) {
     const bundleStatus = getTowerUnlockStatus('shield_bundle', playerLevel, null, false);
-    const bundleCost = CONFIG.SHIELD_BUNDLE_COST;
+    const bundleCost = getShieldBundleShopCost(getTotalShieldUnitsPurchased(gameState), gameState);
     const canAffordBundle = currency >= bundleCost;
     const bundleIcon = `<img src="assets/images/items/shield_bundle.png" style="width: 56px; height: auto; image-rendering: pixelated;" />`;
     const bundleDescription = 'Buy in bulk and save! A random assortment of 10 Shields.';
@@ -9604,7 +10866,7 @@ function updateShopItems(currency, playerLevel) {
           confirmText: 'Purchase',
           cancelText: 'Cancel',
           itemIcon: `<img src="assets/images/items/shield_bundle.png" style="width: 64px; height: auto; image-rendering: pixelated;" />`,
-          cost: bundleCost,
+          cost: getShieldBundleShopCost(getTotalShieldUnitsPurchased(gameState), gameState),
         });
         const qty = shopPurchaseQty(confirmed);
         for (let i = 0; i < qty; i++) {
@@ -9613,7 +10875,9 @@ function updateShopItems(currency, playerLevel) {
       } : null,
       canAffordBundle,
       'shield_bundle',
-      null,
+      tooltipSystem
+        ? tooltipSystem.getLevelUpRewardTooltipContent({ towerType: 'shield_bundle' }, gameState)
+        : null,
       null,
       true
     );
@@ -9766,6 +11030,8 @@ function populateScenarioInventoryPlaceholder() {
   towerEntries.forEach(({ kind, tower, index }) => {
     const { towerIcon, towerName, fullTooltipContent } = getTowerDisplayData(tower);
     const div = createInventoryItemWithTooltip(towerIcon, towerName, '', fullTooltipContent || '', borderColor, null, 'tower', fullTooltipContent);
+    appendTowerTypeSuperchargerBadge(div, tower.type);
+    appendInventorySuperchargeLevelBadges(div, tower);
     div.id = kind === 'stored' ? `scenario-stored-tower-${index}` : `scenario-tower-${index}`;
     if (tower.broken) {
       decorateBrokenInventoryTowerCard(div);
@@ -9821,6 +11087,30 @@ function populateScenarioInventoryPlaceholder() {
     div.id = 'scenario-upgrade-plan';
     placeholder.appendChild(div);
   }
+
+  const treeJuiceCount = gameState.player.treeJuice || 0;
+  if (treeJuiceCount > 0) {
+    const stats = stackCountLine(treeJuiceCount, TREE_JUICE_COLOR);
+    const extraInfo = `<div style="font-size: 11px; color: #FFFFFF; margin-top: 8px;">Click to restore grove health</div>`;
+    const icon = `<img src="assets/images/items/town_defense.png" style="height: 64px; width: auto; image-rendering: pixelated;" />`;
+    const div = createInventoryItemWithTooltip(icon, 'Tree Juice', stats, extraInfo, borderColor, null, 'item');
+    div.id = 'scenario-tree-juice';
+    placeholder.appendChild(div);
+  }
+
+  const superchargerCount = gameState.player.superchargers || 0;
+  if (superchargerCount > 0) {
+    const stats = stackCountLine(superchargerCount, '#FFD24A');
+    const fullTooltipContent = gameState.inputHandler?.tooltipSystem?.getLevelUpRewardTooltipContent(
+      { towerType: 'supercharger' },
+      gameState,
+      { omitShopCost: true }
+    );
+    const icon = `<img src="${getSuperchargerSpriteUrl()}" style="height: 64px; width: auto; image-rendering: pixelated;" />`;
+    const div = createInventoryItemWithTooltip(icon, 'Superchargers', stats, fullTooltipContent || '', borderColor, null, 'item', fullTooltipContent);
+    div.id = 'scenario-supercharger';
+    placeholder.appendChild(div);
+  }
   
   // Movement tokens
   const movementTokenCount = gameState.player.movementTokens || 0;
@@ -9854,16 +11144,17 @@ function getTowerDisplayData(tower) {
   const rl = tower.rangeLevel || 1;
   const pl = tower.powerLevel || 1;
   let towerIcon, towerName;
+  const inv = { playerInventory: true };
   switch (tower.type) {
-    case 'jet': towerIcon = createTowerIconHTML('jet', rl, pl, false, broken); towerName = 'Jet Tower'; break;
-    case 'spread': towerIcon = createTowerIconHTML('spread', rl, pl, false, broken); towerName = 'Spread Tower'; break;
-    case 'pulsing': towerIcon = createTowerIconHTML('pulsing', rl, pl, false, broken); towerName = 'Pulsing Tower'; break;
-    case 'rain': towerIcon = createTowerIconHTML('rain', rl, pl, false, broken); towerName = 'Rain Tower'; break;
-    case 'bomber': towerIcon = createTowerIconHTML('bomber', rl, pl, false, broken); towerName = 'Bomber Tower'; break;
-    case 'sentinel': towerIcon = createTowerIconHTML('sentinel', rl, pl, false, broken); towerName = 'Sentinel Tower'; break;
-    case 'perimeter': towerIcon = createTowerIconHTML('perimeter', rl, pl, false, broken); towerName = 'Perimeter Tower'; break;
-    case 'charge': towerIcon = createTowerIconHTML('charge', rl, pl, false, broken); towerName = 'Charge Tower'; break;
-    default: towerIcon = createTowerIconHTML('jet', 1, 1, false, broken); towerName = 'Jet Tower';
+    case 'jet': towerIcon = createTowerIconHTML('jet', rl, pl, false, broken, inv); towerName = 'Jet Tower'; break;
+    case 'spread': towerIcon = createTowerIconHTML('spread', rl, pl, false, broken, inv); towerName = 'Spread Tower'; break;
+    case 'pulsing': towerIcon = createTowerIconHTML('pulsing', rl, pl, false, broken, inv); towerName = 'Pulsing Tower'; break;
+    case 'rain': towerIcon = createTowerIconHTML('rain', rl, pl, false, broken, inv); towerName = 'Rain Tower'; break;
+    case 'bomber': towerIcon = createTowerIconHTML('bomber', rl, pl, false, broken, inv); towerName = 'Bomber Tower'; break;
+    case 'sentinel': towerIcon = createTowerIconHTML('sentinel', rl, pl, false, broken, inv); towerName = 'Sentinel Tower'; break;
+    case 'perimeter': towerIcon = createTowerIconHTML('perimeter', rl, pl, false, broken, inv); towerName = 'Perimeter Tower'; break;
+    case 'charge': towerIcon = createTowerIconHTML('charge', rl, pl, false, broken, inv); towerName = 'Charge Tower'; break;
+    default: towerIcon = createTowerIconHTML('jet', 1, 1, false, broken, inv); towerName = 'Jet Tower';
   }
   const tooltipSystem = gameState.inputHandler?.tooltipSystem;
   const towerData = {
@@ -9910,6 +11201,8 @@ function updateInventoryItemsSubTab() {
     const { towerIcon, towerName, fullTooltipContent } = getTowerDisplayData(tower);
     const stats = ``;
     const towerDiv = createInventoryItemWithTooltip(towerIcon, towerName, stats, fullTooltipContent || '', borderColor, null, 'tower', fullTooltipContent);
+    appendTowerTypeSuperchargerBadge(towerDiv, tower.type);
+    appendInventorySuperchargeLevelBadges(towerDiv, tower);
     towerDiv.id = kind === 'stored' ? `stored-tower-${index}` : `tower-to-place-${index}`;
     attachTowerDetailsButton(towerDiv, gameState);
     if (tower.broken) {
@@ -9969,7 +11262,7 @@ function updateInventoryItemsSubTab() {
       }
       towerDiv.addEventListener('mouseleave', () => gameState.inputHandler?.resetCursorToDefault());
     } else if (gameState.isUpgradeSelectionMode) {
-      const canBeUpgraded = !tower.broken && (tower.rangeLevel < 4 || tower.powerLevel < 4);
+      const canBeUpgraded = !tower.broken && canTowerBeUpgraded(gameState, tower);
       if (canBeUpgraded) {
         towerDiv.classList.add('upgradeable-size-pulse');
       } else {
@@ -9977,10 +11270,21 @@ function updateInventoryItemsSubTab() {
       }
       towerDiv.addEventListener('mouseenter', () => gameState.inputHandler?.setCursorForInventoryHover(canBeUpgraded));
       towerDiv.addEventListener('mouseleave', () => gameState.inputHandler?.resetCursorToDefault());
-    } else if (gameState.isMovementTokenMode && kind === 'stored' && !tower.broken) {
-      towerDiv.classList.add('movement-mode-stored-target');
-      towerDiv.addEventListener('mouseenter', () => gameState.inputHandler?.setCursorForInventoryHover(true));
-      towerDiv.addEventListener('mouseleave', () => gameState.inputHandler?.resetCursorToDefault());
+    } else if (gameState.isMovementTokenMode) {
+      const isSessionStored =
+        kind === 'stored' &&
+        !tower.broken &&
+        !!gameState.isMovementTokenSessionStoredTower?.(tower);
+      if (isSessionStored) {
+        towerDiv.classList.add('movement-mode-stored-target');
+        towerDiv.addEventListener('mouseenter', () => gameState.inputHandler?.setCursorForInventoryHover(true));
+        towerDiv.addEventListener('mouseleave', () => gameState.inputHandler?.resetCursorToDefault());
+      } else {
+        towerDiv.classList.add('upgrade-mode-dimmed');
+        towerDiv.classList.add('movement-mode-blocked');
+        towerDiv.addEventListener('mouseenter', () => gameState.inputHandler?.setCursorForInventoryHover(false));
+        towerDiv.addEventListener('mouseleave', () => gameState.inputHandler?.resetCursorToDefault());
+      }
     }
     inventoryGrid.appendChild(towerDiv);
   });
@@ -10079,6 +11383,37 @@ function updateInventoryItemsSubTab() {
     inventoryGrid.appendChild(upgradePlanDiv);
   }
 
+  const treeJuiceCount = gameState.player.treeJuice || 0;
+  if (treeJuiceCount > 0) {
+    const stats = stackCountLine(treeJuiceCount, TREE_JUICE_COLOR);
+    const fullTooltipContent = gameState.inputHandler?.tooltipSystem?.getLevelUpRewardTooltipContent(
+      { towerType: 'town_health' },
+      gameState,
+      { omitShopCost: true }
+    );
+    const treeJuiceIcon = `<img src="assets/images/items/town_defense.png" style="height: 64px; width: auto; image-rendering: pixelated;" />`;
+    const treeJuiceDiv = createInventoryItemWithTooltip(
+      treeJuiceIcon,
+      'Tree Juice',
+      stats,
+      fullTooltipContent || '',
+      borderColor,
+      () => handleTreeJuiceInventoryClick(gameState),
+      'item',
+      fullTooltipContent
+    );
+    treeJuiceDiv.id = 'tree-juice-inventory';
+    treeJuiceDiv.style.cursor = 'var(--cursor-default)';
+    if (gameState.isUpgradeSelectionMode || gameState.isRepairSelectionMode || gameState.isPartsRecycleMode || gameState.isTowerSellbackMode || gameState.inputHandler?.selectedShieldForPlacement) {
+      treeJuiceDiv.classList.add('upgrade-mode-dimmed');
+      if (gameState.isTowerSellbackMode) treeJuiceDiv.classList.add('sellback-mode-blocked');
+      else if (gameState.inputHandler?.selectedShieldForPlacement) treeJuiceDiv.classList.add('shield-mode-blocked');
+      treeJuiceDiv.addEventListener('mouseenter', () => gameState.inputHandler?.setCursorForInventoryHover(false));
+      treeJuiceDiv.addEventListener('mouseleave', () => gameState.inputHandler?.resetCursorToDefault());
+    }
+    inventoryGrid.appendChild(treeJuiceDiv);
+  }
+
   const specialtyPlanCount = gameState.player.specialtyPlans || 0;
   if (specialtyPlanCount > 0) {
     const stats = stackCountLine(specialtyPlanCount, '#FDA801');
@@ -10108,6 +11443,40 @@ function updateInventoryItemsSubTab() {
       specialtyPlanDiv.addEventListener('mouseleave', () => gameState.inputHandler?.resetCursorToDefault());
     }
     inventoryGrid.appendChild(specialtyPlanDiv);
+  }
+
+  const superchargerCount = gameState.player.superchargers || 0;
+  if (superchargerCount > 0) {
+    const stats = stackCountLine(superchargerCount, '#FFD24A');
+    const fullTooltipContent = gameState.inputHandler?.tooltipSystem?.getLevelUpRewardTooltipContent(
+      { towerType: 'supercharger' },
+      gameState,
+      { omitShopCost: true }
+    );
+    const superchargerIcon = `<img src="${getSuperchargerSpriteUrl()}" style="height: 64px; width: auto; image-rendering: pixelated;" />`;
+    const tokenCost = CONFIG.TOWER_SUPERCHARGE?.tokenCost ?? 5;
+    const blockedByMode = !!(gameState.isUpgradeSelectionMode || gameState.isRepairSelectionMode || gameState.isPartsRecycleMode || gameState.isTowerSellbackMode || gameState.inputHandler?.selectedShieldForPlacement);
+    const canOpen = superchargerCount >= tokenCost && !blockedByMode;
+    const superchargerDiv = createInventoryItemWithTooltip(
+      superchargerIcon,
+      'Superchargers',
+      stats,
+      fullTooltipContent || '',
+      borderColor,
+      canOpen ? () => handleSuperchargerInventoryClick(gameState) : null,
+      'item',
+      fullTooltipContent
+    );
+    superchargerDiv.id = 'supercharger-inventory';
+    superchargerDiv.style.cursor = 'var(--cursor-default)';
+    if (blockedByMode) {
+      superchargerDiv.classList.add('upgrade-mode-dimmed');
+      if (gameState.isTowerSellbackMode) superchargerDiv.classList.add('sellback-mode-blocked');
+      else if (gameState.inputHandler?.selectedShieldForPlacement) superchargerDiv.classList.add('shield-mode-blocked');
+      superchargerDiv.addEventListener('mouseenter', () => gameState.inputHandler?.setCursorForInventoryHover(false));
+      superchargerDiv.addEventListener('mouseleave', () => gameState.inputHandler?.resetCursorToDefault());
+    }
+    inventoryGrid.appendChild(superchargerDiv);
   }
 
   // Show movement tokens (if player has any)
@@ -10220,6 +11589,15 @@ function updateInventoryItemsSubTab() {
     }
     inventoryGrid.appendChild(repairDiv);
   }
+
+  // Movement-token phase: dim everything except towers stored during this session.
+  if (gameState.isMovementTokenMode) {
+    inventoryGrid.querySelectorAll('.inventory-item:not(.movement-mode-stored-target)').forEach((el) => {
+      el.classList.add('upgrade-mode-dimmed', 'movement-mode-blocked');
+      el.addEventListener('mouseenter', () => gameState.inputHandler?.setCursorForInventoryHover(false));
+      el.addEventListener('mouseleave', () => gameState.inputHandler?.resetCursorToDefault());
+    });
+  }
   
   // Show message if no towers, suppression bombs, shields, upgrade plans, movement tokens, sellbacks, parts vouchers, or repairs in inventory
   if ((!gameState.player.inventory.storedTowers || gameState.player.inventory.storedTowers.length === 0) && 
@@ -10227,7 +11605,9 @@ function updateInventoryItemsSubTab() {
       (!gameState.player.inventory.purchasedSuppressionBombs || gameState.player.inventory.purchasedSuppressionBombs.length === 0) &&
       (!gameState.player.inventory.purchasedShields || gameState.player.inventory.purchasedShields.length === 0) &&
       upgradePlanCount === 0 &&
+      treeJuiceCount === 0 &&
       specialtyPlanCount === 0 &&
+      superchargerCount === 0 &&
       movementTokenCount === 0 &&
       towerSellbackCount === 0 &&
       partsVoucherCount === 0 &&
@@ -10256,7 +11636,7 @@ async function promptLoanArtifactToMuseum(artifactId) {
 
   const block = getArtifactMuseumLoanBlockReason(gameState, artifactId);
   if (block) {
-    gameState.notificationSystem?.showToast?.(block, 3500, 'warning');
+    gameState.notificationSystem?.showToast?.(block, 3500, 'warning', { critical: true });
     return;
   }
 
@@ -10302,7 +11682,7 @@ async function promptLoanArtifactToMuseum(artifactId) {
 
   if (!loanArtifactToMuseum(gameState, artifactId, findersFee)) {
     const again = getArtifactMuseumLoanBlockReason(gameState, artifactId);
-    gameState.notificationSystem?.showToast?.(again || 'Could not loan artifact.', 3500, 'warning');
+    gameState.notificationSystem?.showToast?.(again || 'Could not loan artifact.', 3500, 'warning', { critical: true });
     return;
   }
 
@@ -10324,6 +11704,7 @@ function updateInventoryArtifactsSubTab() {
   if (!grid) return;
   grid.innerHTML = '';
   const borderColor = '#2a2a4a';
+  const passIds = getOwnedShopPricePassIds(gameState);
   const ids = gameState.player.inventory?.collectedArtifactIds;
   const list = Array.isArray(ids) ? [...ids] : [];
   const tooltipSystem = gameState.inputHandler?.tooltipSystem;
@@ -10331,6 +11712,76 @@ function updateInventoryArtifactsSubTab() {
     gameState.isUpgradeSelectionMode ||
     gameState.isRepairSelectionMode ||
     gameState.isPartsRecycleMode;
+
+  if (passIds.length > 0) {
+    const passesHeader = document.createElement('div');
+    passesHeader.className = 'collection-passes-header';
+    passesHeader.style.cssText = 'grid-column: 1 / -1; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #8aa0c8; margin: 0 0 4px 2px;';
+    passesHeader.textContent = 'Run Unlocks';
+    grid.appendChild(passesHeader);
+
+    passIds.forEach((passId) => {
+      const def = getShopPricePassDef(passId);
+      if (!def) return;
+      const icon = `<img src="assets/images/items/${def.sprite}" alt="" class="collectible-sprite-smooth" />`;
+      const getLiveTooltip = tooltipSystem
+        ? () => tooltipSystem.getShopPricePassTooltipContent(passId, gameState)
+        : null;
+      const div = createInventoryItemWithTooltip(
+        icon,
+        def.name,
+        '',
+        '',
+        borderColor,
+        null,
+        'artifact',
+        null,
+        undefined,
+        getLiveTooltip
+      );
+      div.id = `shop-price-pass-${passId}`;
+      div.classList.add('collection-pass-item');
+      if (selectionMode) {
+        div.classList.add('upgrade-mode-dimmed');
+      }
+      grid.appendChild(div);
+    });
+  }
+
+  if (list.length > 0) {
+    const artifactsHeader = document.createElement('div');
+    artifactsHeader.className = 'collection-artifacts-header';
+    artifactsHeader.style.cssText = `grid-column: 1 / -1; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #8aa0c8; margin: ${passIds.length > 0 ? '12px' : '0'} 0 4px 2px;`;
+    artifactsHeader.textContent = 'Artifacts';
+    grid.appendChild(artifactsHeader);
+
+    const traderBtn = document.createElement('button');
+    traderBtn.type = 'button';
+    traderBtn.id = 'collectionArtifactTraderBtn';
+    traderBtn.className = 'choice-btn cta-button cta-orange cta-small collection-artifact-trader-btn';
+    traderBtn.textContent = 'Artifact Trader';
+    traderBtn.style.cssText = 'grid-column: 1 / -1; width: 100%; margin: 4px 0 8px; box-sizing: border-box;';
+    if (selectionMode) {
+      traderBtn.disabled = true;
+      traderBtn.classList.add('upgrade-mode-dimmed');
+    } else {
+      traderBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (window.AudioManager) window.AudioManager.playSFX('button1');
+        const opened = gameState.waveSystem?.showArtifactTraderReviewModal?.();
+        if (!opened) {
+          gameState.notificationSystem?.showToast?.(
+            'Artifact Trader is unavailable right now.',
+            3000,
+            'warning',
+            { critical: true }
+          );
+        }
+      });
+    }
+    grid.appendChild(traderBtn);
+  }
 
   list.forEach((artifactId) => {
     const def = getArtifactById(artifactId);
@@ -10371,7 +11822,7 @@ function updateInventoryArtifactsSubTab() {
     }
     grid.appendChild(div);
   });
-  if (list.length === 0) {
+  if (list.length === 0 && passIds.length === 0) {
     const emptyDiv = document.createElement('div');
     emptyDiv.style.gridColumn = '1 / -1';
     emptyDiv.style.textAlign = 'center';
@@ -10432,14 +11883,18 @@ function updateInventoryBadge() {
     const bombStackSlots = bombs.length ? groupInventoryItemsByLevel(bombs).size : 0;
     const shieldStackSlots = shields.length ? groupInventoryItemsByLevel(shields).size : 0;
     const hasUpgradePlans = (gameState.player.upgradePlans || 0) > 0;
+    const hasTreeJuice = (gameState.player.treeJuice || 0) > 0;
     const hasSpecialtyPlans = (gameState.player.specialtyPlans || 0) > 0;
+    const hasSuperchargers = (gameState.player.superchargers || 0) > 0;
     const hasMovementTokens = (gameState.player.movementTokens || 0) > 0;
     const hasTowerSellbacks = (gameState.player.towerSellbacks || 0) > 0;
     const hasPartsVouchers = (gameState.player.partsVouchers || 0) > 0;
     const hasTowerRepairs = (gameState.player.towerRepairs || 0) > 0;
     const distinctFrameCount = purchasedTowers + storedTowers + bombStackSlots + shieldStackSlots
       + (hasUpgradePlans ? 1 : 0)
+      + (hasTreeJuice ? 1 : 0)
       + (hasSpecialtyPlans ? 1 : 0)
+      + (hasSuperchargers ? 1 : 0)
       + (hasMovementTokens ? 1 : 0)
       + (hasTowerSellbacks ? 1 : 0)
       + (hasPartsVouchers ? 1 : 0)
@@ -10644,7 +12099,8 @@ function buyTower(towerType) {
 // Buy a suppression bomb with currency
 function buySuppressionBomb(level) {
   const safeLevel = clampSuppressionBombLevel(level);
-  const cost = getSuppressionBombCost(safeLevel);
+  const purchasedCount = getSuppressionBombPurchasesForLevel(gameState, safeLevel);
+  const cost = getSuppressionBombShopCost(safeLevel, purchasedCount, gameState);
   
   if (gameState.player.currency >= cost) {
     gameState.player.currency -= cost;
@@ -10665,6 +12121,11 @@ function buySuppressionBomb(level) {
       totalUses,
       usesRemaining: totalUses,
     });
+
+    if (!gameState.player.suppressionBombPurchasesByLevel || typeof gameState.player.suppressionBombPurchasesByLevel !== 'object') {
+      gameState.player.suppressionBombPurchasesByLevel = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+    }
+    gameState.player.suppressionBombPurchasesByLevel[safeLevel] = purchasedCount + 1;
     
     // Trigger purchase animation
     triggerSuppressionBombPurchaseAnimation(safeLevel);
@@ -10688,7 +12149,7 @@ function buildBundleReceiptValueHtml(retailTotal, cost) {
 }
 
 async function buySuppressionBombBundle() {
-  const cost = CONFIG.SUPPRESSION_BUNDLE_COST;
+  const cost = getSuppressionBundleShopCost(getTotalSuppressionBombUnitsPurchased(gameState), gameState);
   if (gameState.player.currency < cost) return;
 
   gameState.player.currency -= cost;
@@ -10697,6 +12158,9 @@ async function buySuppressionBombBundle() {
 
   if (!gameState.player.inventory.purchasedSuppressionBombs) {
     gameState.player.inventory.purchasedSuppressionBombs = [];
+  }
+  if (!gameState.player.suppressionBombPurchasesByLevel || typeof gameState.player.suppressionBombPurchasesByLevel !== 'object') {
+    gameState.player.suppressionBombPurchasesByLevel = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
   }
 
   const counts = {};
@@ -10710,10 +12174,13 @@ async function buySuppressionBombBundle() {
     unlockedLevels.push(lv);
   }
   const pool = unlockedLevels.length > 0 ? unlockedLevels : [1];
+  const purchaseTracker = { ...gameState.player.suppressionBombPurchasesByLevel };
   for (let i = 0; i < 10; i++) {
     const level = pool[Math.floor(Math.random() * pool.length)];
     counts[level] = (counts[level] || 0) + 1;
-    retailTotal += getSuppressionBombCost(level);
+    const bought = Math.max(0, Math.floor(Number(purchaseTracker[level]) || 0));
+    retailTotal += getSuppressionBombShopCost(level, bought, gameState);
+    purchaseTracker[level] = bought + 1;
     const totalUses = getSuppressionBombTotalUses(level);
     gameState.player.inventory.purchasedSuppressionBombs.push({
       type: 'suppression_bomb',
@@ -10722,6 +12189,7 @@ async function buySuppressionBombBundle() {
       usesRemaining: totalUses,
     });
   }
+  gameState.player.suppressionBombPurchasesByLevel = purchaseTracker;
 
   rs?.recordShopPurchase?.('suppression_bundle', {
     currency: cost,
@@ -10763,7 +12231,7 @@ ${buildBundleReceiptValueHtml(retailTotal, cost)}
 }
 
 async function buyShieldBundle() {
-  const cost = CONFIG.SHIELD_BUNDLE_COST;
+  const cost = getShieldBundleShopCost(getTotalShieldUnitsPurchased(gameState), gameState);
   if (gameState.player.currency < cost) return;
 
   gameState.player.currency -= cost;
@@ -10773,18 +12241,25 @@ async function buyShieldBundle() {
   if (!gameState.player.inventory.purchasedShields) {
     gameState.player.inventory.purchasedShields = [];
   }
+  if (!gameState.player.shieldPurchasesByLevel || typeof gameState.player.shieldPurchasesByLevel !== 'object') {
+    gameState.player.shieldPurchasesByLevel = { 1: 0, 2: 0, 3: 0, 4: 0 };
+  }
 
   const counts = { 1: 0, 2: 0, 3: 0, 4: 0 };
   let retailTotal = 0;
+  const purchaseTracker = { ...gameState.player.shieldPurchasesByLevel };
   for (let i = 0; i < 10; i++) {
     const level = Math.floor(Math.random() * 4) + 1;
     counts[level]++;
-    retailTotal += getShieldCost(level);
+    const bought = Math.max(0, Math.floor(Number(purchaseTracker[level]) || 0));
+    retailTotal += getShieldShopCost(level, bought, gameState);
+    purchaseTracker[level] = bought + 1;
     gameState.player.inventory.purchasedShields.push({
       type: 'shield',
       level,
     });
   }
+  gameState.player.shieldPurchasesByLevel = purchaseTracker;
 
   rs?.recordShopPurchase?.('shield_bundle', {
     currency: cost,
@@ -10824,13 +12299,15 @@ ${buildBundleReceiptValueHtml(retailTotal, cost)}
 }
 
 function buyShield(level) {
-  const cost = getShieldCost(level);
+  const safeLevel = Math.min(4, Math.max(1, Math.round(Number(level) || 1)));
+  const purchasedCount = getShieldPurchasesForLevel(gameState, safeLevel);
+  const cost = getShieldShopCost(safeLevel, purchasedCount, gameState);
   
   if (gameState.player.currency >= cost) {
     gameState.player.currency -= cost;
     const rs = gameState.runStats;
     rs?.recordShopSpend?.(cost);
-    rs?.recordShopPurchase?.('shield', { level, currency: cost });
+    rs?.recordShopPurchase?.('shield', { level: safeLevel, currency: cost });
     
     // Initialize purchasedShields array if it doesn't exist
     if (!gameState.player.inventory.purchasedShields) {
@@ -10840,8 +12317,13 @@ function buyShield(level) {
     // Add the new shield to the purchased shields array
     gameState.player.inventory.purchasedShields.push({
       type: 'shield',
-      level: level
+      level: safeLevel
     });
+
+    if (!gameState.player.shieldPurchasesByLevel || typeof gameState.player.shieldPurchasesByLevel !== 'object') {
+      gameState.player.shieldPurchasesByLevel = { 1: 0, 2: 0, 3: 0, 4: 0 };
+    }
+    gameState.player.shieldPurchasesByLevel[safeLevel] = purchasedCount + 1;
     
     // Tutorial step 24: advance happens in confirm click handler; no advance needed here
     
@@ -10851,37 +12333,31 @@ function buyShield(level) {
   }
 }
 
-// Buy a town health upgrade with currency (immediate apply)
-function buyTownHealthUpgrade() {
-  const cost = CONFIG.TOWN_UPGRADE_COST;
-  if ((gameState.player.currency || 0) >= cost) {
-    gameState.player.currency -= cost;
+// Buy Tree Juice with currency (goes to inventory; spend later to raise grove HP)
+function buyTownHealthUpgrade(quantity = 1) {
+  const qty = Math.max(0, Math.floor(Number(quantity) || 0));
+  if (qty <= 0) return;
+  const startPurchased = gameState.player.townHealthUpgradesPurchased || 0;
+  const totalCost = getEscalatingShopBulkCost(getTownUpgradeShopCost, startPurchased, qty);
+  if ((gameState.player.currency || 0) >= totalCost) {
+    gameState.player.currency -= totalCost;
     const rs = gameState.runStats;
-    rs?.recordShopSpend?.(cost);
-    rs?.recordShopPurchase?.('town_health', { currency: cost });
-    rs?.recordTownHealthUpgrade?.();
-    
-    // Play tree juice purchase sound
-    AudioManager.playSFX('tree_juice');
-    // Increment town level
-    gameState.townLevel = (gameState.townLevel || 1) + 1;
-    // Apply health increase to town hexes
-    gameState.gridSystem?.applyTownUpgrade(CONFIG.TOWN_HEALTH_PER_UPGRADE, gameState.townLevel);
-    
-    // Trigger a brief glow/flash on town center
-    try {
-      const centerKey = `0,0`;
-      gameState.renderer.hexFlashes.set(centerKey, {
-        startTime: performance.now(),
-        duration: 800,
-        color: 'white'
-      });
-    } catch (e) {}
-    
-    // Set flag to skip inventory badge animation (town health doesn't add items to inventory)
-    gameState.skipInventoryBadgeAnimation = true;
-    
-    // Update UI
+    rs?.recordShopSpend?.(totalCost);
+    for (let i = 0; i < qty; i++) {
+      const cost = getTownUpgradeShopCost(startPurchased + i, gameState);
+      rs?.recordShopPurchase?.('town_health', { currency: cost });
+    }
+    gameState.player.townHealthUpgradesPurchased = startPurchased + qty;
+    grantTreeJuice(gameState, qty);
+
+    if (gameState.notificationSystem) {
+      gameState.notificationSystem.showToast(
+        qty === 1 ? 'Tree Juice purchased!' : `${qty} Tree Juice purchased!`,
+        3000,
+        'positive'
+      );
+    }
+
     updateInventory();
     updateUI();
   }
@@ -10891,13 +12367,14 @@ function buyTownHealthUpgrade() {
 function buyUpgradePlan(quantity = 1) {
   const qty = Math.max(0, Math.floor(Number(quantity) || 0));
   if (qty <= 0) return;
-  const unitCost = CONFIG.UPGRADE_PLAN_COST;
-  const totalCost = unitCost * qty;
+  const startPurchased = gameState.player.upgradePlansPurchased || 0;
+  const totalCost = getEscalatingShopBulkCost(getUpgradePlanShopCost, startPurchased, qty);
   if ((gameState.player.currency || 0) >= totalCost) {
     gameState.player.currency -= totalCost;
     const rs = gameState.runStats;
     rs?.recordShopSpend?.(totalCost);
     for (let i = 0; i < qty; i++) {
+      const unitCost = getUpgradePlanShopCost(startPurchased + i, gameState);
       rs?.recordShopPurchase?.('upgrade_plan', { currency: unitCost });
       rs?.recordUpgradePlanFromShop?.();
     }
@@ -10905,6 +12382,7 @@ function buyUpgradePlan(quantity = 1) {
       gameState.player.upgradePlans = 0;
     }
     gameState.player.upgradePlans += qty;
+    gameState.player.upgradePlansPurchased = startPurchased + qty;
     
     if (gameState.notificationSystem) {
       gameState.notificationSystem.showToast(
@@ -11030,17 +12508,19 @@ function buyTowerRepairKit(quantity = 1) {
   const qty = Math.max(0, Math.floor(Number(quantity) || 0));
   if (qty <= 0) return;
 
-  const unitCost = CONFIG.TOWER_REPAIR_COST;
-  const totalCost = unitCost * qty;
+  const startPurchased = gameState.player.towerRepairsPurchased || 0;
+  const totalCost = getEscalatingShopBulkCost(getTowerRepairShopCost, startPurchased, qty);
   if ((gameState.player.currency || 0) >= totalCost) {
     gameState.player.currency -= totalCost;
     const rs = gameState.runStats;
     rs?.recordShopSpend?.(totalCost);
     for (let i = 0; i < qty; i++) {
+      const unitCost = getTowerRepairShopCost(startPurchased + i, gameState);
       rs?.recordShopPurchase?.('tower_repair', { currency: unitCost });
     }
 
     gameState.player.towerRepairs = (gameState.player.towerRepairs || 0) + qty;
+    gameState.player.towerRepairsPurchased = startPurchased + qty;
     gameState.notificationSystem?.showToast(
       qty === 1 ? 'Repair Supplies purchased!' : `${qty} Repair Supplies purchased!`,
       3000,
@@ -11613,6 +13093,7 @@ function reopenGameOverModal() {
   const modalInner = modal.querySelector('.modal');
   gameState.isGameOverMapInspecting = false;
   document.body.classList.remove('game-over-map-locked');
+  modal.classList.remove('game-over-slow-enter');
   openModalOverlay(modal, { extraAdd: ['upgrade-token-mask'] });
   if (modalInner) {
     modalInner.classList.add('modal-upgrade-token', 'modal-no-frame');
@@ -11621,6 +13102,15 @@ function reopenGameOverModal() {
 
 function formatGameOverStatLine(label, value) {
   return `<p>${label}: <span class="game-over-stat-value">${value}</span></p>`;
+}
+
+function formatGameOverIconStatLine(label, iconSrc, count, { multiplier = false } = {}) {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  const shown = n.toLocaleString();
+  const value = multiplier
+    ? `<img class="game-over-stat-icon game-over-stat-icon--perfect" src="${iconSrc}" alt="" />×${shown}`
+    : `<img class="game-over-stat-icon" src="${iconSrc}" alt="" />${shown}`;
+  return `<p>${label}: <span class="game-over-stat-value game-over-stat-value-icons">${value}</span></p>`;
 }
 
 function hideGameOverModalToMap() {
@@ -11700,7 +13190,7 @@ function handleGameOver() {
   const statsDiv = document.getElementById('gameOverStats');
 
   const finalScore = gameState.player.score ?? 0;
-  addScoreToLeaderboard(finalScore);
+  void submitRunToLeaderboards();
   gameState.runStats?.finalizeWaveGroup30Outcome?.(gameState);
   appendRunToHistory(gameState.runStats, {
     outcome: 'game_over',
@@ -11760,6 +13250,8 @@ function handleGameOver() {
             ${formatGameOverStatLine('Level reached', gameState.player.level)}
             ${formatGameOverStatLine('Ancient Grove level', groveLevel)}
             ${formatGameOverStatLine('Fires Extinguished', firesExtinguishedTotal.toLocaleString())}
+            ${formatGameOverIconStatLine('Stars', assetUrl(STAR_FULL_SRC), getTotalStarsEarned(gameState))}
+            ${formatGameOverIconStatLine('Perfects', assetUrl(PERFECT_MEDAL_SRC), getPerfectWaveCount(gameState), { multiplier: true })}
             ${formatGameOverStatLine('Final Score', finalScore.toLocaleString())}
           </div>
           <div class="modal-choices game-over-stats-actions">
@@ -11775,6 +13267,7 @@ function handleGameOver() {
     `;
     
     hideGameOverReturnButton();
+    modal.classList.add('game-over-slow-enter');
     openModalOverlay(modal, { extraAdd: ['upgrade-token-mask'] });
     
     // Setup overlay click handler - clicking outside modal closes it

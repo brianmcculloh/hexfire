@@ -2,6 +2,23 @@
 
 import { CONFIG, getFireTypeDisplayColor } from '../config.js';
 
+/**
+ * @param {unknown} value
+ * @param {boolean} [legacyDisabled]
+ * @returns {'all'|'critical'|'none'}
+ */
+export function normalizeNotificationLevel(value, legacyDisabled = false) {
+  if (value === 'all' || value === 'critical' || value === 'none') return value;
+  return legacyDisabled === true ? 'none' : 'all';
+}
+
+/**
+ * @returns {'all'|'critical'|'none'}
+ */
+export function getNotificationLevel() {
+  return normalizeNotificationLevel(CONFIG.NOTIFICATION_LEVEL, CONFIG.DISABLE_NOTIFICATIONS === true);
+}
+
 export class NotificationSystem {
   constructor() {
     this.notifications = [];
@@ -41,11 +58,13 @@ export class NotificationSystem {
    * @param {string} message - The message to display
    * @param {number} [displayDurationMs=3000] - How long the toast stays visible before fading
    * @param {'negative'|'positive'|'neutral'|'warning'} [tone='neutral'] - Visual theme: bad / good / info / caution (yellow)
+   * @param {{ critical?: boolean }|boolean} [options] - `{ critical: true }` keeps the toast on the Critical setting
    */
-  showToast(message, displayDurationMs = 3000, tone = 'neutral') {
-    if (CONFIG.DISABLE_NOTIFICATIONS === true) {
-      return;
-    }
+  showToast(message, displayDurationMs = 3000, tone = 'neutral', options = {}) {
+    const level = getNotificationLevel();
+    if (level === 'none') return;
+    const critical = options === true || options?.critical === true;
+    if (level === 'critical' && !critical) return;
 
     if (!this.toastContainer) {
       this.initializeToastContainer();
@@ -312,7 +331,9 @@ export class NotificationSystem {
         ? 'power_ups'
         : spec.spriteCategory === 'artifacts'
           ? 'artifacts'
-          : 'items';
+          : spec.spriteCategory === 'towers'
+            ? 'towers'
+            : 'items';
     const notif = {
       id: this.nextId++,
       q,
